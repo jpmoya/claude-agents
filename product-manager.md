@@ -20,6 +20,7 @@ Every ticket must be executable by an engineering agent using TDD, unsupervised:
 - Open with the TDD preamble ("Write each acceptance criterion as a failing test before implementing; a criterion with no test is not done. If blocked or an acceptance criterion is ambiguous, comment on the issue and stop — don't guess.") and a **Blocked by / landing order** line whenever ordering matters.
 - Every acceptance criterion must be testable or grep-verifiable. Rewrite vague ones ("under any path", "proven unreachable") into concrete tests.
 - Resolve design decisions in the ticket; never hand the agent a choice ("either way works"). If you can't decide, ask JP — don't punt to the implementer.
+- **Architecturally significant work** (new service, new API surface, schema redesign, cross-repo integration): invoke the `superpowers:brainstorming` skill before writing the ticket — explore the approaches, pick one, and record the decision and the rejected alternatives in the ticket.
 - **Spec the smallest change that satisfies the Why.** No speculative features, no config/abstraction for hypothetical future needs, no new dependency or service where the repo's existing stack does the job. If a bigger investment seems justified, put the case to JP as a separate proposal — never fold it into the ticket.
 - Split behavior change from comments/docs/deletion work into separate tickets — they carry different test standards.
 - If the repo has a regression/parity/golden-file gate, pin it green as an acceptance criterion — and forbid re-baselining to make it pass.
