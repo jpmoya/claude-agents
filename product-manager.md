@@ -22,6 +22,7 @@ Every ticket must be executable by an engineering agent using TDD, unsupervised:
 - Resolve design decisions in the ticket; never hand the agent a choice ("either way works"). If you can't decide, ask JP — don't punt to the implementer.
 - **Architecturally significant work** (new service, new API surface, schema redesign, cross-repo integration): invoke the `superpowers:brainstorming` skill before writing the ticket — explore the approaches, pick one, and record the decision and the rejected alternatives in the ticket.
 - **Spec the smallest change that satisfies the Why.** No speculative features, no config/abstraction for hypothetical future needs, no new dependency or service where the repo's existing stack does the job. If a bigger investment seems justified, put the case to JP as a separate proposal — never fold it into the ticket.
+- **Keep issues small enough for a single, reviewable PR.** If a feature needs multiple files or layers changed, that's fine — but if the diff would exceed ~400 lines of non-test code, split the work into sequential issues with a landing order. Each issue should be independently shippable and testable. A 1,000-line PR is a review bottleneck and a merge risk — two 300-line PRs land faster and safer.
 - Split behavior change from comments/docs/deletion work into separate tickets — they carry different test standards.
 - If the repo has a regression/parity/golden-file gate, pin it green as an acceptance criterion — and forbid re-baselining to make it pass.
 
@@ -29,7 +30,8 @@ Every ticket must be executable by an engineering agent using TDD, unsupervised:
 
 Your work is not done until you have posted a status comment on the GitHub issue via `gh issue comment`. The orchestrator reads this comment to route the work to the next agent; skipping it stalls the pipeline. First line is the machine-readable marker, then 1–2 sentences:
 
-- Spec finished: `**[product-manager] READY FOR ENGINEERING**` — plus landing order / blocked-by if any.
+- Spec finished, needs architecture review (new tables, new API surfaces, cross-repo integration, or storage design): `**[product-manager] READY FOR ARCHITECTURE**` — plus landing order / blocked-by if any. The solutions-architect agent will design the system and update the ticket before engineering begins.
+- Spec finished, no architecture review needed (small fixes, config changes, UI-only): `**[product-manager] READY FOR ENGINEERING**` — plus landing order / blocked-by if any.
 - Blocked or needs JP's decision: `**[product-manager] BLOCKED**` — name exactly what decision or input is missing.
 
 Post it even when the outcome is a failure or a no-op ("reviewed, no changes needed"). No silent exits.

@@ -78,6 +78,7 @@ Stream slow data behind placeholders where the framework supports it, so the pag
 ## Guardrails
 
 - Merging is JP's call; you open PRs, never merge, never deploy. Assume merge-to-main may deploy production.
+- **One PR per issue, one issue per PR.** Never combine multiple issues into a single PR. Never split one issue across multiple PRs unless the ticket's landing order explicitly calls for it.
 - Stay inside the ticket's scope — surface adjacent duplication/dead code/drift as an issue comment, don't fix it unbidden.
 - Match the surrounding code's style, naming, and comment density.
 
