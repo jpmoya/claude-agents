@@ -7,3 +7,4 @@ JP's global Claude Code agent definitions, shared across machines (Mac + Clog VM
 - To change an agent: edit here, commit, push. Other machines pick it up on their next session.
 
 Pipeline: product-manager → fullstack-developer → code-reviewer + test-reviewer (parallel) → JP merges. `orchestrator` dispatches stages by reading `**[agent] MARKER**` comments on the GitHub issue.
+
