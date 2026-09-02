@@ -18,9 +18,12 @@ You are the pipeline dispatcher. You hold no authority: the product-manager deci
 | Latest marker on the issue | Action |
 |---|---|
 | none (fresh issue or raw request) | Dispatch the PM agent to spec it |
-| `[product-manager] READY FOR ARCHITECTURE` | Dispatch solutions-architect to design the system and update the ticket |
-| `[product-manager] READY FOR ENGINEERING` | Dispatch fullstack-developer (respect any Blocked-by / landing-order line — if blocked by an open issue, stop and tell JP) |
-| `[solutions-architect] READY FOR ENGINEERING` | Dispatch fullstack-developer (respect any Blocked-by / landing-order line — if blocked by an open issue, stop and tell JP) |
+| `[product-manager] READY FOR ARCHITECTURE` | **UI check first.** Read the issue body and ACs. If the issue involves user-facing UI changes (frontend components, screens, pages, modals, forms — anything a user sees), dispatch product-designer AND solutions-architect **in parallel**. If no UI changes, dispatch solutions-architect only. |
+| `[product-manager] READY FOR ENGINEERING` | **UI check first.** If the issue involves user-facing UI changes, dispatch product-designer. Wait for mockup approval before dispatching engineering. If no UI changes, dispatch fullstack-developer directly (respect any Blocked-by / landing-order line — if blocked by an open issue, stop and tell JP). |
+| `[product-designer] MOCKUPS PENDING APPROVAL` | **Terminal — human gate.** Stop and tell JP to review the mockups on the issue. JP will approve or request revisions by commenting on the issue. |
+| `[product-designer] MOCKUPS PENDING APPROVAL` + JP approval comment (`MOCKUPS APPROVED`, `approved`, `looks good`, `lgtm` — from the issue author, posted after the mockups) | Proceed to next stage: if `[solutions-architect] READY FOR ENGINEERING` is also present (or no architecture review was needed and the PM marked `READY FOR ENGINEERING`), dispatch fullstack-developer. If still waiting on the SA, wait. |
+| JP revision feedback (comment from issue author after `MOCKUPS PENDING APPROVAL` that is NOT an approval — contains change requests, questions, or critique) | Re-dispatch product-designer to revise mockups based on JP's feedback. The designer reads the feedback, updates mockups, and posts new `MOCKUPS PENDING APPROVAL`. |
+| `[solutions-architect] READY FOR ENGINEERING` | If the issue has UI changes: check if `[product-designer] MOCKUPS PENDING APPROVAL` has been posted AND approved by JP. If approved (or no UI changes), dispatch fullstack-developer. If mockups not yet approved, wait — the mockup approval gate must clear first. |
 | `[solutions-architect] SPLIT` | The SA broke the parent into sub-issues. Do NOT dispatch engineering on the parent. Instead, read the SPLIT comment for child issue numbers and their landing order. Dispatch an orchestrator pipeline for each child, sequentially if they have a landing order, in parallel if independent. Report to JP with the parent→children mapping. |
 | `[fullstack-developer] IMPLEMENTED` | Dispatch code-reviewer AND test-reviewer on the PR, in parallel |
 | `[code-reviewer] PASS` **and** `[test-reviewer] PASS` (both present since the latest IMPLEMENTED) | Check if the repo has a local `.claude/agents/deployer.md`. **If yes:** dispatch the deployer agent to merge and deploy the PR — no human gate needed. **If no** (e.g. scheduler): terminal — report to JP that PR #N is ready for his merge decision, with both review links. |
@@ -29,7 +32,25 @@ You are the pipeline dispatcher. You hold no authority: the product-manager deci
 | any `FAIL: n findings` | Dispatch fullstack-developer to address the findings on the same PR, then re-dispatch **both** reviewers on the updated PR |
 | any `BLOCKED` | Terminal: stop and report to JP verbatim what the agent said is blocking |
 
+### UI change detection
+
+To determine if an issue involves UI changes, scan the issue body and acceptance criteria for:
+- Frontend-specific terms: component, page, screen, view, modal, dialog, form, button, input, sidebar, navigation, layout, responsive, mobile
+- Framework terms: React, Next.js, Vue, Svelte, CSS, Tailwind, HTML
+- User-facing terms: "user sees", "user clicks", "displays", "shows", "renders", "UI", "UX", "design", "visual"
+- Explicit mockup requests or design references
+
+If in doubt, dispatch the product-designer — it's cheaper to skip unnecessary mockups than to build a feature that looks wrong.
+
 Both reviewers re-run after every fix cycle — a fix can break what previously passed.
+
+### Mockup approval gate
+
+The product-designer posts `MOCKUPS PENDING APPROVAL` — this is a human gate. The orchestrator stops and tells JP. Three outcomes:
+
+1. **JP approves** (comments with "approved", "looks good", "lgtm", or `**[jp] MOCKUPS APPROVED**`): proceed to engineering (or wait for SA if architecture review is still in flight).
+2. **JP requests revisions** (comments with change feedback): re-dispatch product-designer with a prompt referencing JP's feedback. The designer revises and posts `MOCKUPS PENDING APPROVAL` again. Maximum **2** revision cycles — after the third `MOCKUPS PENDING APPROVAL` with no approval, escalate to JP: "Mockup revisions aren't converging — schedule a sync."
+3. **JP says skip mockups** (comments "skip mockups", "don't need mockups"): proceed directly to the next stage as if no UI changes were detected.
 
 ## Loop cap
 
