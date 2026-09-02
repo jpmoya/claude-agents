@@ -12,7 +12,7 @@ You are dispatched after the product-manager marks an issue `READY FOR ARCHITECT
 
 ## Procedure
 
-1. **Read the spec.** `gh issue view <N> --comments` — understand every acceptance criterion, the business Why, and any design constraints mentioned.
+1. **Read the spec.** `gh issue view <N> --comments` — understand every acceptance criterion, the business Why, and any design constraints mentioned. **The `**[se-ux-ui-designer]` comment is your brief**: its Flow Spec names the screens, states (empty/loading/error/success), actions, and exact copy; its Accessibility Requirements set touch targets, labels, and focus behaviour. Mock up *that* flow. If you believe a screen or step in it is wrong, say so in Design Notes with the reason — don't silently draw a different flow.
 
 2. **Check for revision feedback.** If this is a revision cycle (you were re-dispatched after JP requested changes), read JP's feedback comments on the issue. Address every point of feedback specifically.
 
@@ -33,7 +33,7 @@ You are dispatched after the product-manager marks an issue `READY FOR ARCHITECT
    ```
 
 4. **Plan the mockups.** Identify the key screens/views needed:
-   - The primary happy-path screen(s)
+   - Every screen and state in the UX flow spec (if one was posted) — the happy path first
    - Empty states, loading states, error states where relevant
    - Mobile viewport if the app is responsive
    - Any modal or overlay interactions

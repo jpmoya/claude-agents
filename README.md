@@ -6,5 +6,5 @@ JP's global Claude Code agent definitions, shared across machines (Mac + Clog VM
 - A `SessionStart` hook on each machine runs `git pull --ff-only` here, so every Claude session starts with the latest agents.
 - To change an agent: edit here, commit, push. Other machines pick it up on their next session.
 
-Pipeline: product-manager → fullstack-developer → code-reviewer + test-reviewer (parallel) → JP merges. `orchestrator` dispatches stages by reading `**[agent] MARKER**` comments on the GitHub issue.
+Pipeline: product-manager → se-ux-ui-designer (UI tickets: JTBD + journey + flow spec) → product-designer (UI tickets: mockups, JP approval gate) ∥ solutions-architect (architecturally significant tickets) → fullstack-developer → code-reviewer + test-reviewer (parallel) → deployer (where the repo has one) or JP merges. `orchestrator` dispatches stages by reading `**[agent] MARKER**` comments on the GitHub issue.
 

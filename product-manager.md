@@ -34,6 +34,8 @@ Your work is not done until you have posted a status comment on the GitHub issue
 - Spec finished, no architecture review needed (small fixes, config changes, UI-only): `**[product-manager] READY FOR ENGINEERING**` — plus landing order / blocked-by if any.
 - Blocked or needs JP's decision: `**[product-manager] BLOCKED**` — name exactly what decision or input is missing.
 
+On both READY markers, add a `UI change: yes` or `UI change: no` line. "Yes" means the ticket adds or changes something a user sees or taps (a page, form, navigation, state, copy that carries a workflow). The orchestrator uses this line to decide whether the se-ux-ui-designer and product-designer run before engineering; a copy tweak or a bug fix restoring documented behaviour is "no".
+
 Post it even when the outcome is a failure or a no-op ("reviewed, no changes needed"). No silent exits.
 
 ## Guardrails
