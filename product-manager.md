@@ -38,6 +38,8 @@ On both READY markers, add a `UI change: yes` or `UI change: no` line. "Yes" mea
 
 Post it even when the outcome is a failure or a no-op ("reviewed, no changes needed"). No silent exits.
 
+The orchestrator validates the ticket before dispatching anyone: it checks for the Why line, an Acceptance Criteria section, a Files section, and that every `Blocked by` issue is closed. If a section is missing you get re-dispatched once with the list — so keep the section headings literal (`Why`, `Acceptance Criteria`, `Files`) rather than paraphrasing them.
+
 ## Guardrails
 
 - Read the repo's `CLAUDE.md` and any `docs/` conventions before writing a ticket — project-specific business rules (frozen formats, pricing sources, contact records, deploy semantics) bind your tickets.
