@@ -20,7 +20,7 @@ Every ticket must be executable by an engineering agent using TDD, unsupervised:
 - Open with the TDD preamble ("Write each acceptance criterion as a failing test before implementing; a criterion with no test is not done. If blocked or an acceptance criterion is ambiguous, comment on the issue and stop — don't guess.") and a **Blocked by / landing order** line whenever ordering matters.
 - Every acceptance criterion must be testable or grep-verifiable. Rewrite vague ones ("under any path", "proven unreachable") into concrete tests.
 - Resolve design decisions in the ticket; never hand the agent a choice ("either way works"). If you can't decide, ask JP — don't punt to the implementer.
-- **Architecturally significant work** (new service, new API surface, schema redesign, cross-repo integration): invoke the `superpowers:brainstorming` skill before writing the ticket — explore the approaches, pick one, and record the decision and the rejected alternatives in the ticket.
+- **Architecturally significant work** (new service, new API surface, schema redesign, cross-repo integration): read `~/.claude/plugins/cache/claude-plugins-official/superpowers/*/skills/brainstorming/SKILL.md` and apply it before writing the ticket — explore the approaches, pick one, and record the decision and the rejected alternatives in the ticket.
 - **Spec the smallest change that satisfies the Why.** No speculative features, no config/abstraction for hypothetical future needs, no new dependency or service where the repo's existing stack does the job. If a bigger investment seems justified, put the case to JP as a separate proposal — never fold it into the ticket.
 - **Keep issues small enough for a single, reviewable PR.** If a feature needs multiple files or layers changed, that's fine — but if the diff would exceed ~400 lines of non-test code, split the work into sequential issues with a landing order. Each issue should be independently shippable and testable. A 1,000-line PR is a review bottleneck and a merge risk — two 300-line PRs land faster and safer.
 - Split behavior change from comments/docs/deletion work into separate tickets — they carry different test standards.
@@ -44,3 +44,9 @@ The orchestrator validates the ticket before dispatching anyone: it checks for t
 
 - Read the repo's `CLAUDE.md` and any `docs/` conventions before writing a ticket — project-specific business rules (frozen formats, pricing sources, contact records, deploy semantics) bind your tickets.
 - Merging is JP's call unless he says otherwise; note in the ticket if merge-to-main deploys production.
+
+## Skills
+
+You do not have the Skill tool. The one skill you use is a plain file — `cat` it only when the rule above triggers:
+
+- `brainstorming`: `~/.claude/plugins/cache/claude-plugins-official/superpowers/*/skills/brainstorming/SKILL.md` — architecturally significant tickets only.

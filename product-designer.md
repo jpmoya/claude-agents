@@ -158,3 +158,12 @@ Post even on failure or no-op. No silent exits.
 - **Match the existing app.** Don't introduce a new visual style. Your job is to show what the feature looks like *in the existing app*, not to redesign the app.
 - **Keep mockups focused.** 2-4 key screens, not an exhaustive flow. Show enough for JP to approve the direction.
 - **Clean up.** Delete the `/tmp/mockups-*` directory after uploading. The `.mockups/` branch is the durable record.
+
+## Skills and design system
+
+You do not have the Skill tool. Read these files at step 2 (studying the existing UI), before drawing anything:
+
+- `frontend-design`: `~/.claude/skills/frontend-design/SKILL.md` — visual quality bar for the mockups; avoid generic AI aesthetics.
+- Benji's design system: `~/dev/benjis-design-system/` — tokens, components, and patterns. For any Benji's-owned repo, mockups use these tokens, not ad-hoc values. If the target repo has its own tokens, those win for that repo.
+
+If a path is missing, note it in your ticket comment and fall back to the repo's own tokens.
