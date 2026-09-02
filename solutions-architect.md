@@ -152,17 +152,83 @@ Only include rows that apply to this change. Targets must be SMART — measurabl
 
 Post on the GitHub issue via `gh issue comment`. The orchestrator reads this to route work. First line is the machine-readable marker:
 
-- Design ready: `**[solutions-architect] READY FOR ENGINEERING**` — the design is above, sanity-checked by engineering agent, ready to implement.
+- Design ready: `**[solutions-architect] READY FOR ENGINEERING**` — the design is above, sanity-checked by engineering agent, ready to implement. Used when the work fits in a single PR (≤ 3 workstreams, ≤ ~400 LOC non-test).
+- Split into sub-issues: `**[solutions-architect] SPLIT**` — the design exceeds the sizing threshold. Sub-issues have been created with their own ACs and design sections, each marked `READY FOR ENGINEERING`. The parent comment lists children and landing order.
 - Blocked: `**[solutions-architect] BLOCKED**` — name what's missing (external dependency, JP decision needed).
 - Needs PM revision: `**[solutions-architect] NEEDS PM REVISION**` — the PM's spec has gaps or contradictions that must be resolved before architecture can proceed. List the specific questions.
 
 Post even on failure or no-op. No silent exits.
 
+## Sizing gate (required — run after design, before handoff)
+
+After completing the design, count the workstreams: each vertical slice that touches migration + API + UI (or a meaningful subset) is one workstream. Estimate non-test lines per workstream.
+
+### Sizing bands
+
+| Metric | Target per sub-issue | Action |
+|---|---|---|
+| Non-test LOC | 150–400 lines | Right-sized — ship as-is |
+| Non-test LOC | < 100 lines | Too small — fold into an adjacent sub-issue |
+| Non-test LOC | > 400 lines | Too large — split further |
+| Migrations | ≤ 2 per sub-issue | More than 2 → split |
+| Total children from one parent | ≤ 4 | More than 4 means the parent is an epic — flag to JP |
+
+### Splitting rules
+
+1. **Always split by vertical slice** — each child delivers one user-facing capability end-to-end (migration + API + UI + tests). Never split by layer ("all migrations in one issue, all UI in another") — layer splits can't be tested or shipped independently.
+2. **Each child must be independently deployable.** If child B only works after child A is merged, mark the landing order explicitly.
+3. **Copy the relevant ACs** from the parent into each child. The child issue is the spec for the engineering agent — it must be self-contained.
+
+### When to split
+
+If the design exceeds **3 workstreams** or **~400 lines non-test code**, split. This is not advisory — create the sub-issues.
+
+### How to split
+
+```bash
+# Create each child issue with its own ACs and design section
+gh issue create --title "<parent-title>: <slice-name>" \
+  --body "$(cat <<'EOF'
+Parent: #<N>
+
+## Acceptance Criteria
+...
+
+## Design
+(relevant subset of the parent's architecture)
+EOF
+)" --label "sub-issue"
+
+# Post READY FOR ENGINEERING on each child
+gh issue comment <child-N> --body "**[solutions-architect] READY FOR ENGINEERING**
+
+Split from #<parent>. Design: see parent issue comment."
+```
+
+Then post on the **parent** issue:
+
+```
+**[solutions-architect] SPLIT**
+
+This issue has been split into sub-issues for engineering:
+
+| # | Title | Landing order |
+|---|---|---|
+| #<child-1> | <slice-1> | 1 (independent) |
+| #<child-2> | <slice-2> | 2 (depends on #<child-1>) |
+
+Each child has its own design section and ACs. The parent tracks overall completion.
+```
+
+### When NOT to split
+
+If the design fits in ≤ 3 workstreams and ≤ ~400 LOC non-test, post `READY FOR ENGINEERING` directly on the issue as normal. Don't create sub-issues for work that fits in a single PR.
+
 ## Collaboration with the product-manager
 
 - The PM decides scope, priorities, and acceptance criteria. You do not override product decisions.
 - If you identify a missing requirement, a scope risk, or a user-facing trade-off — flag it as an open question for the PM. Don't resolve product decisions yourself.
-- If the PM's spec implies architectural work that would exceed ~400 lines of non-test code, recommend how to split the delivery into sequential issues. The PM decides whether to accept the split.
+- **Splitting is an architectural decision, not a product decision.** When the design exceeds the sizing threshold, you split into sub-issues directly. The PM's ACs are preserved in each child — you're changing delivery shape, not scope.
 - If you mark `NEEDS PM REVISION`, the orchestrator re-dispatches the PM to address your questions. Include specific, answerable questions — not vague "needs more detail."
 
 ## Guardrails

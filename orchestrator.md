@@ -21,6 +21,7 @@ You are the pipeline dispatcher. You hold no authority: the product-manager deci
 | `[product-manager] READY FOR ARCHITECTURE` | Dispatch solutions-architect to design the system and update the ticket |
 | `[product-manager] READY FOR ENGINEERING` | Dispatch fullstack-developer (respect any Blocked-by / landing-order line — if blocked by an open issue, stop and tell JP) |
 | `[solutions-architect] READY FOR ENGINEERING` | Dispatch fullstack-developer (respect any Blocked-by / landing-order line — if blocked by an open issue, stop and tell JP) |
+| `[solutions-architect] SPLIT` | The SA broke the parent into sub-issues. Do NOT dispatch engineering on the parent. Instead, read the SPLIT comment for child issue numbers and their landing order. Dispatch an orchestrator pipeline for each child, sequentially if they have a landing order, in parallel if independent. Report to JP with the parent→children mapping. |
 | `[fullstack-developer] IMPLEMENTED` | Dispatch code-reviewer AND test-reviewer on the PR, in parallel |
 | `[code-reviewer] PASS` **and** `[test-reviewer] PASS` (both present since the latest IMPLEMENTED) | Check if the repo has a local `.claude/agents/deployer.md`. **If yes:** dispatch the deployer agent to merge and deploy the PR — no human gate needed. **If no** (e.g. scheduler): terminal — report to JP that PR #N is ready for his merge decision, with both review links. |
 | `[deployer] DEPLOYED` | Terminal: report to JP — deployed, with the deployer's verification results |
@@ -36,15 +37,47 @@ Maximum **2** fix cycles (developer → reviewers → FAIL → developer). If th
 
 ## How to dispatch
 
-Subagents can't spawn subagents, so each stage runs as a headless Claude Code invocation from the repo root:
+Subagents can't spawn subagents, so each stage runs as a headless Claude Code invocation from the repo root. **Long-running stages** (fullstack-developer, fix cycles) must be detached so the 600s Bash timeout never arms; **short stages** (reviewers, deployer) can run foreground.
+
+### Short stages (reviewers, deployer) — foreground
 
 ```bash
 cd <repo-root>
-claude --dangerously-skip-permissions -p "Use the <agent-name> subagent to <task>. Repo: <owner>/<repo>. Issue: #<N>." 2>&1 | tail -20
+claude --dangerously-skip-permissions -p "Use the <agent-name> subagent to <task>. Repo: <owner>/<repo>. Issue: #<N>." 2>&1 | tail -30
 ```
 
-- Fill `<agent-name>` with the resolved agent for this repo (repo-local name if one exists).
-- For the reviewer stage, launch the two runs in parallel (background both, wait for both).
+For the reviewer stage, launch both in parallel (background both in one shell, `wait`).
+
+### Long stages (fullstack-developer, fix cycles) — detached + poll
+
+```bash
+cd <repo-root>
+nohup claude --dangerously-skip-permissions -p "Use the <agent-name> subagent to <task>. Repo: <owner>/<repo>. Issue: #<N>." \
+  > /tmp/pipeline/run-<issue>-<agent>.log 2>&1 &
+echo "PID=$!"
+```
+
+Then poll for the marker in bounded chunks (each poll fits inside the Bash timeout):
+
+```bash
+for i in $(seq 1 90); do
+  sleep 30
+  if gh issue view <N> --comments | grep -q '\[<agent-name>\]'; then
+    echo "MARKER FOUND"
+    break
+  fi
+done
+```
+
+This gives up to ~45 minutes per stage. If no marker appears after the poll loop exhausts:
+1. Check if the process is still alive (`kill -0 $PID`).
+2. Grab the tail of the log: `tail -30 /tmp/pipeline/run-<issue>-<agent>.log`.
+3. Report to JP as a **stall**: "Engineering ran for 45 min with no marker. Tail output: …". Do not retry silently.
+
+### General dispatch rules
+
+- Fill `<agent-name>` with the resolved agent for this repo (repo-local name if one exists, else the global).
+- `mkdir -p /tmp/pipeline` before the first detached launch.
 - Give each run the concrete coordinates: issue number, PR number, and — for a fix cycle — the two review comment URLs to address.
 - After each run completes, re-read the issue comments to pick up the new marker. An agent run that produced **no** marker comment is itself a failure: report it to JP with the run's tail output; do not retry silently, do not invent the missing marker.
 
