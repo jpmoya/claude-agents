@@ -25,7 +25,7 @@ You are dispatched after the product-manager marks an issue `READY FOR ARCHITECT
 
 ## Procedure
 
-1. **Read the spec.** `gh issue view <N> --comments` — understand every acceptance criterion and the business Why. If a `**[se-ux-ui-designer]` comment is present, its Flow Spec is part of the requirements: the screens, states, and interactions it defines drive your API contract and data model. Don't redesign the flow — if it implies something infeasible, raise it as an open question.
+1. **Read the spec.** `gh issue view <N> --comments` — understand every acceptance criterion and the business Why. If a `**[ux-flow-designer]` comment is present, its User Flow is part of the requirements: the screens, states, and interactions it defines drive your API contract and data model. Don't redesign the flow — if it implies something infeasible, raise it as an open question.
 
 2. **Read the repo.** Before designing anything:
    - Read `CLAUDE.md` and `docs/` for project conventions, existing architecture, constraints.
