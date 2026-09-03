@@ -14,7 +14,7 @@ JP's shared Claude Code config, synced across machines (Mac + Clog VM). Despite 
 
 - A `SessionStart` hook (`hooks/sync-agents.sh`) runs `git pull --ff-only` here, so every session starts with the latest config, and prints a warning if any symlink has been replaced by a real file.
 - To change anything: edit here (or through the symlink), commit, push. Other machines pick it up on their next session.
-- **Agent name collisions:** a repo's `.claude/agents/` must never define an agent with the same name as one here (project-level agents override user-level ones, so a local `code-reviewer` silently replaces the pipeline one and stalls the orchestrator). Repo-local agents get a repo-prefixed name; the one sanctioned exception is `deployer.md`, which the orchestrator looks for locally.
+- **No repo-local agents.** A repo's `.claude/agents/` holds at most `deployer.md`, which the orchestrator looks for locally. Nothing else: project-level agents override user-level ones, so a local `code-reviewer` silently replaces the pipeline one, and a repo-prefixed fork drifts from the global definition (casa-verde-site's did, 2026-09-03). Repo-specific rules go in that repo's `CLAUDE.md`, which every global agent reads.
 
 ## Install on a new machine
 
