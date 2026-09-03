@@ -1,0 +1,133 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash",
+      "Read",
+      "Edit",
+      "Write",
+      "WebFetch",
+      "Glob",
+      "Grep",
+      "NotebookEdit",
+      "WebSearch",
+      "mcp__ide__executeCode",
+      "mcp__plugin_slack_slack__slack_search_public_and_private",
+      "mcp__plugin_slack_slack__slack_search_users",
+      "mcp__plugin_slack_slack__slack_read_channel",
+      "mcp__quickbooks-online__search_customers",
+      "mcp__quickbooks-online__search_invoices",
+      "mcp__claude_ai_Gmail__gmail_get_profile",
+      "mcp__claude_ai_Gmail__gmail_search_messages",
+      "mcp__quickbooks-online__search_items",
+      "mcp__claude_ai_Gmail__gmail_read_message",
+      "mcp__plugin_slack_slack__slack_read_user_profile",
+      "mcp__plugin_slack_slack__slack_read_thread",
+      "mcp__claude_ai_Gmail__gmail_create_draft",
+      "mcp__plugin_slack_slack__slack_search_channels",
+      "mcp__plugin_slack_slack__slack_send_message_draft",
+      "mcp__plugin_slack_slack__slack_send_message"
+    ],
+    "defaultMode": "default"
+  },
+  "skillOverrides": {
+    "agents-sdk": "name-only",
+    "cloudflare": "name-only",
+    "cloudflare-email-service": "name-only",
+    "durable-objects": "name-only",
+    "sandbox-sdk": "name-only",
+    "workers-best-practices": "name-only",
+    "wrangler": "name-only",
+    "integration-nextjs-app-router": "name-only",
+    "integration-nextjs-pages-router": "name-only",
+    "web-perf": "name-only",
+    "portal-changelog": "name-only",
+    "frontend-design": "off",
+    "quality-gate": "name-only",
+    "fullstack-bug-fixing": "name-only"
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "INPUT=$(cat); CONTENT=$(echo \"$INPUT\" | python3 -c \"import sys, json; data = json.load(sys.stdin); ti = data.get('tool_input', {}); print(ti.get('content', '') + ti.get('new_string', ''))\"); if echo \"$CONTENT\" | grep -qE '(sk-[a-zA-Z0-9]{20,}|sk_live_[a-zA-Z0-9]{20,}|AKIA[0-9A-Z]{16}|ghp_[a-zA-Z0-9]{36}|gho_[a-zA-Z0-9]{36}|xoxb-[0-9]|xoxp-[0-9]|-----BEGIN (RSA |EC |DSA )?PRIVATE KEY)'; then echo 'BLOCKED: Potential secret detected in file content' >&2; exit 2; fi; exit 0"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "INPUT=$(cat); CMD=$(echo \"$INPUT\" | python3 -c \"import sys, json; data = json.load(sys.stdin); print(data.get('tool_input', {}).get('command', ''))\"); if echo \"$CMD\" | grep -qEi '(rm\\s+-rf\\s+/[^a-z]|DROP\\s+TABLE|DROP\\s+DATABASE|git\\s+push\\s+--force\\s+.*main|git\\s+push\\s+--force\\s+.*master)'; then echo 'BLOCKED: Dangerous command detected' >&2; exit 2; fi; exit 0"
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/limit-shells.sh"
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/enforce-tests-before-commit.sh"
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/email-send-guard.sh"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/bug-fix-skill-reminder.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "INPUT=$(cat); FILE=$(echo \"$INPUT\" | python3 -c \"import sys, json; data = json.load(sys.stdin); ti = data.get('tool_input', {}); print(ti.get('file_path', ''))\"); if [[ \"$FILE\" =~ \\.(js|jsx|ts|tsx|css|json)$ ]]; then DIR=$(dirname \"$FILE\"); while [ \"$DIR\" != \"/\" ]; do if [ -f \"$DIR/node_modules/.bin/prettier\" ]; then \"$DIR/node_modules/.bin/prettier\" --write \"$FILE\" 2>/dev/null || true; break; fi; DIR=$(dirname \"$DIR\"); done; fi; exit 0"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/sync-agents.sh"
+          }
+        ]
+      }
+    ]
+  },
+  "extraKnownMarketplaces": {
+    "superpowers-marketplace": {
+      "source": {
+        "source": "github",
+        "repo": "obra/superpowers-marketplace"
+      }
+    },
+    "knowledge-work-plugins": {
+      "source": {
+        "source": "github",
+        "repo": "anthropics/knowledge-work-plugins"
+      }
+    }
+  },
+  "effortLevel": "high",
+  "advisorModel": "opus",
+  "skipDangerousModePermissionPrompt": true,
+  "skipWorkflowUsageWarning": true
+}

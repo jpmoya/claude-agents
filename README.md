@@ -1,11 +1,28 @@
 # claude-agents
 
-JP's global Claude Code agent definitions, shared across machines (Mac + Clog VM).
+JP's shared Claude Code config, synced across machines (Mac + Clog VM). Despite the name it now holds everything global, not just agents.
 
-- Live location on each machine: `~/.claude/agents` is a **symlink to this repo's checkout**.
-- A `SessionStart` hook on each machine runs `git pull --ff-only` here, so every Claude session starts with the latest agents.
-- To change an agent: edit here, commit, push. Other machines pick it up on their next session.
-- **Name collisions:** a repo's `.claude/agents/` must never define an agent with the same name as one here (project-level agents override user-level ones with the same name, so a local `code-reviewer` silently replaces the pipeline one and stalls the orchestrator). Repo-local agents get a repo-prefixed name (e.g. `casa-verde-pm`); the one sanctioned exception is `deployer.md`, which the orchestrator looks for locally.
+| Path | Symlinked to | Contents |
+|---|---|---|
+| `agents/` | `~/.claude/agents` | pipeline agent definitions |
+| `hooks/` | `~/.claude/hooks` | hook scripts (all cross-platform; `cap-heavy-commands.py` is VM-only and wired from the VM's local settings if wanted) |
+| `skills/` | `~/.claude/skills` | user skills |
+| `CLAUDE.md` | `~/.claude/CLAUDE.md` | global instructions |
+| `settings.json` | `~/.claude/settings.json` | shared settings: permissions, cross-platform hooks, skillOverrides, marketplaces, effort/advisor |
+
+**Machine-specific settings stay in `~/.claude/settings.local.json`** (not tracked): model, theme, tui, plugin toggles, notification-sound hooks, `outputStyle`, `disabledMcpjsonServers`. Claude Code merges it over `settings.json`. Secrets never go here — `~/.claude/mcp-servers/`, `.mcp.json`, memory and `~/.claude.json` stay local.
+
+- A `SessionStart` hook (`hooks/sync-agents.sh`) runs `git pull --ff-only` here, so every session starts with the latest config, and prints a warning if any symlink has been replaced by a real file.
+- To change anything: edit here (or through the symlink), commit, push. Other machines pick it up on their next session.
+- **Agent name collisions:** a repo's `.claude/agents/` must never define an agent with the same name as one here (project-level agents override user-level ones, so a local `code-reviewer` silently replaces the pipeline one and stalls the orchestrator). Repo-local agents get a repo-prefixed name; the one sanctioned exception is `deployer.md`, which the orchestrator looks for locally.
+
+## Install on a new machine
+
+```bash
+git clone https://github.com/jpmoya/claude-agents.git ~/dev/claude-agents   # VM: ~/claude-agents
+cd ~/.claude && mkdir -p backups/pre-dotfiles && mv agents hooks skills CLAUDE.md settings.json backups/pre-dotfiles/ 2>/dev/null
+R=~/dev/claude-agents; for i in agents hooks skills CLAUDE.md settings.json; do ln -s $R/$i ~/.claude/$i; done
+# then put machine-specific keys in ~/.claude/settings.local.json
+```
 
 Pipeline: product-manager → ux-flow-designer (UI tickets: user flow — screens, states, copy) → ui-ux-designer (UI tickets: mockups of that flow, JP approval gate) ∥ solutions-architect (architecturally significant tickets) → fullstack-developer → code-reviewer + test-reviewer (parallel) → deployer (where the repo has one) or JP merges. `orchestrator` dispatches stages by reading `**[agent] MARKER**` comments on the GitHub issue.
-
