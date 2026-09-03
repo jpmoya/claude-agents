@@ -53,6 +53,10 @@
           {
             "type": "command",
             "command": "INPUT=$(cat); CONTENT=$(echo \"$INPUT\" | python3 -c \"import sys, json; data = json.load(sys.stdin); ti = data.get('tool_input', {}); print(ti.get('content', '') + ti.get('new_string', ''))\"); if echo \"$CONTENT\" | grep -qE '(sk-[a-zA-Z0-9]{20,}|sk_live_[a-zA-Z0-9]{20,}|AKIA[0-9A-Z]{16}|ghp_[a-zA-Z0-9]{36}|gho_[a-zA-Z0-9]{36}|xoxb-[0-9]|xoxp-[0-9]|-----BEGIN (RSA |EC |DSA )?PRIVATE KEY)'; then echo 'BLOCKED: Potential secret detected in file content' >&2; exit 2; fi; exit 0"
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/protect-locked-tests.sh"
           }
         ]
       },
@@ -74,6 +78,10 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/email-send-guard.sh"
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/protect-locked-tests.sh"
           }
         ]
       }
