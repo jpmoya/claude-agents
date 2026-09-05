@@ -115,7 +115,7 @@ Before launching any agent, check how many Claude Code processes are already run
 wait_for_capacity() {
   local MAX_CONCURRENT=4
   for i in $(seq 1 10); do
-    ACTIVE=$(pgrep -f "claude" | wc -l)
+    ACTIVE=$(pgrep -af "claude.*--dangerously-skip-permissions" 2>/dev/null | grep -v grep | wc -l)
     if [ "$ACTIVE" -le "$MAX_CONCURRENT" ]; then
       return 0
     fi
