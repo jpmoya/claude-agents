@@ -16,8 +16,32 @@ if echo "$CMD" | grep -qE -- '--allow-empty'; then
   exit 0
 fi
 
-# Find the working directory — use the cwd from the hook environment
+# Skip during pipeline test-writer stage (tests are intentionally red)
+if [ -n "$PIPELINE_LOCKED_TESTS_FILE" ]; then
+  exit 0
+fi
+
+# Skip commits whose message signals intentionally-red tests (test-writer TDD commits)
+if echo "$CMD" | grep -qE 'test\(#[0-9]+\):'; then
+  exit 0
+fi
+
+# Determine the effective directory: if the command starts with "cd <path> &&",
+# use that path; otherwise fall back to $PWD
 DIR="$PWD"
+CD_TARGET=$(echo "$CMD" | python3 -c "
+import sys, re
+cmd = sys.stdin.read().strip()
+m = re.match(r'cd\s+([\"'\'']*([^\"'\'';&|]+?)[\"'\'']*)\s*&&', cmd)
+if m:
+    import os
+    print(os.path.expanduser(m.group(2).strip()))
+else:
+    print('')
+" 2>/dev/null)
+if [ -n "$CD_TARGET" ] && [ -d "$CD_TARGET" ]; then
+  DIR="$CD_TARGET"
+fi
 
 # Walk up to find package.json with a test script
 FOUND=""
