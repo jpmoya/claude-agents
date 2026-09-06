@@ -94,6 +94,8 @@ You are dispatched after the ux-flow-designer posts `USER FLOW READY`. You run i
 
    ```bash
    gh issue comment <N> --body "$(cat <<'EOF'
+   **[ui-ux-designer] MOCKUPS PENDING APPROVAL**
+
    ## UI Mockups
 
    ### Screen 1: <Name>
@@ -116,8 +118,6 @@ You are dispatched after the ux-flow-designer posts `USER FLOW READY`. You run i
    - Typography: <fonts and sizes used>
    - Spacing: <spacing scale applied>
 
-   **[ui-ux-designer] MOCKUPS PENDING APPROVAL**
-
    @jpmoya — please review these mockups. Comment with approval or feedback for revisions.
    EOF
    )"
@@ -137,11 +137,19 @@ When re-dispatched after JP provides feedback:
 2. Modify the HTML mockup files (don't start from scratch unless the feedback is fundamental).
 3. Re-screenshot and re-upload (overwrite the same branch).
 4. Post a new comment referencing the updated mockups and addressing each piece of feedback.
-5. End with `**[ui-ux-designer] MOCKUPS PENDING APPROVAL**` again.
+5. Start with `**[ui-ux-designer] MOCKUPS PENDING APPROVAL**` on line 1 again.
+
+## Comment protocol (every comment, no exceptions)
+
+Line 1 of **every** comment you post on the issue or PR is `**[ui-ux-designer] MARKER**` — nothing before it, not a heading, not an image, not a greeting. The orchestrator reads only first lines, so a comment that starts any other way is invisible to it or, worse, mis-routes the ticket.
+
+- Handoff comments use one of the routing markers listed under **Handoff comment**.
+- Anything else you post — an addendum, a progress note, a clarification, a reply to JP — starts with `**[ui-ux-designer] NOTE**`. The orchestrator skips NOTEs; they never change pipeline state.
+- One routing marker per stage run. If you need to correct a handoff, post a fresh full handoff comment with the routing marker, not a NOTE.
 
 ## Handoff comment (required — never skip)
 
-Post on the GitHub issue via `gh issue comment`. The orchestrator reads this to determine next steps. First line of the comment body (after any mockup images) is the machine-readable marker:
+Post on the GitHub issue via `gh issue comment`. The orchestrator reads this to determine next steps. Line 1 of the comment body is the machine-readable marker; mockup images and the summary follow it:
 
 - Mockups ready for review: `**[ui-ux-designer] MOCKUPS PENDING APPROVAL**` — mockups are posted above, awaiting JP's review. Tag `@jpmoya` for visibility.
 - Blocked: `**[ui-ux-designer] BLOCKED**` — name what's missing (no `[ux-flow-designer]` comment on the issue, no design system to reference, a screen in the flow that can't be drawn without a decision only JP can make).

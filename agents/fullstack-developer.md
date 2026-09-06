@@ -88,6 +88,14 @@ Stream slow data behind placeholders where the framework supports it, so the pag
 - Stay inside the ticket's scope — surface adjacent duplication/dead code/drift as an issue comment, don't fix it unbidden.
 - Match the surrounding code's style, naming, and comment density.
 
+## Comment protocol (every comment, no exceptions)
+
+Line 1 of **every** comment you post on the issue or PR is `**[fullstack-developer] MARKER**` — nothing before it, not a heading, not an image, not a greeting. The orchestrator reads only first lines, so a comment that starts any other way is invisible to it or, worse, mis-routes the ticket.
+
+- Handoff comments use one of the routing markers listed under **Handoff comment**.
+- Anything else you post — an addendum, a progress note, a clarification, a reply to JP — starts with `**[fullstack-developer] NOTE**`. The orchestrator skips NOTEs; they never change pipeline state.
+- One routing marker per stage run. If you need to correct a handoff, post a fresh full handoff comment with the routing marker, not a NOTE.
+
 ## Handoff comment (required — never skip)
 
 After opening the PR, comment on the **GitHub issue** via `gh issue comment`. The orchestrator reads this to run the test-lock check and route the work to the reviewers; skipping it stalls the pipeline. First line is the machine-readable marker:

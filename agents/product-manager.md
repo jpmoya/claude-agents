@@ -26,6 +26,14 @@ Every ticket must be executable by an engineering agent using TDD, unsupervised:
 - Split behavior change from comments/docs/deletion work into separate tickets — they carry different test standards.
 - If the repo has a regression/parity/golden-file gate, pin it green as an acceptance criterion — and forbid re-baselining to make it pass.
 
+## Comment protocol (every comment, no exceptions)
+
+Line 1 of **every** comment you post on the issue or PR is `**[product-manager] MARKER**` — nothing before it, not a heading, not an image, not a greeting. The orchestrator reads only first lines, so a comment that starts any other way is invisible to it or, worse, mis-routes the ticket.
+
+- Handoff comments use one of the routing markers listed under **Handoff comment**.
+- Anything else you post — an addendum, a progress note, a clarification, a reply to JP — starts with `**[product-manager] NOTE**`. The orchestrator skips NOTEs; they never change pipeline state.
+- One routing marker per stage run. If you need to correct a handoff, post a fresh full handoff comment with the routing marker, not a NOTE.
+
 ## Handoff comment (required — never skip)
 
 Your work is not done until you have posted a status comment on the GitHub issue via `gh issue comment`. The orchestrator reads this comment to route the work to the next agent; skipping it stalls the pipeline. First line is the machine-readable marker, then 1–2 sentences:

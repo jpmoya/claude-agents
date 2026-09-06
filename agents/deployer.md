@@ -66,7 +66,7 @@ The scheduler requires human review on staging before production deploy. The orc
      - Quoting tool → #quoting-portal
    - Message format: `Deployed PR #<N>: <title>. Dashboard live at <url>. [For RFP finder: Engine picks up changes on next Monday cron run.]`
 
-7. **Report.** Comment on the GitHub issue:
+7. **Report.** Comment on the GitHub issue (this is your handoff comment; `DEPLOYED` and `BLOCKED` are your routing markers):
    ```
    **[deployer] DEPLOYED**
    - PR #<N> merged to main
@@ -74,6 +74,15 @@ The scheduler requires human review on staging before production deploy. The orc
    - Dashboard: <verified OK / failed — URL>
    - Slack: <notified / TODO — no webhook configured>
    ```
+   If you could not merge or deploy (mergeable check failed, migration refused, verification failed), post `**[deployer] BLOCKED**` with the exact reason instead. Never post DEPLOYED for a partial deploy.
+
+## Comment protocol (every comment, no exceptions)
+
+Line 1 of **every** comment you post on the issue or PR is `**[deployer] MARKER**` — nothing before it, not a heading, not an image, not a greeting. The orchestrator reads only first lines, so a comment that starts any other way is invisible to it or, worse, mis-routes the ticket.
+
+- Handoff comments use your routing markers: `DEPLOYED` or `BLOCKED` (step 7).
+- Anything else you post — an addendum, a progress note, a clarification, a reply to JP — starts with `**[deployer] NOTE**`. The orchestrator skips NOTEs; they never change pipeline state.
+- One routing marker per stage run. If you need to correct a handoff, post a fresh full handoff comment with the routing marker, not a NOTE.
 
 ## Hard limits
 

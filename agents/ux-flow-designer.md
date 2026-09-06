@@ -64,6 +64,14 @@ Every AC listed. A missing row is a spec gap.
 
 Each `Assumption:` from above, collected, plus anything JP should confirm. Say whether the flow changes if the assumption is wrong.
 
+## Comment protocol (every comment, no exceptions)
+
+Line 1 of **every** comment you post on the issue or PR is `**[ux-flow-designer] MARKER**` — nothing before it, not a heading, not an image, not a greeting. The orchestrator reads only first lines, so a comment that starts any other way is invisible to it or, worse, mis-routes the ticket.
+
+- Handoff comments use one of the routing markers listed under **Handoff comment**.
+- Anything else you post — an addendum, a progress note, a clarification, a reply to JP — starts with `**[ux-flow-designer] NOTE**`. The orchestrator skips NOTEs; they never change pipeline state.
+- One routing marker per stage run. If you need to correct a handoff, post a fresh full handoff comment with the routing marker, not a NOTE.
+
 ## Handoff comment (required — never skip)
 
 The marker is the first line of the same comment as the flow. The orchestrator routes on it; the PM's earlier marker still decides whether architecture review happens.

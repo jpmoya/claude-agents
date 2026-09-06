@@ -2,7 +2,7 @@
 
 ## Software development
 
-JP does not do hands-on engineering in the main session. Every code change in any of JP's repos — features, bug fixes, regressions, refactors — goes through the agent pipeline: file/refine the GitHub issue, then dispatch the `orchestrator` agent (see `~/.claude/agents/README.md` for the stage order). Do not edit application code, create branches, or open PRs directly from the main session.
+JP does not do hands-on engineering in the main session. Every code change in any of JP's repos — features, bug fixes, regressions, refactors — goes through the agent pipeline: file/refine the GitHub issue, then launch the `orchestrator` with the `orchestrate` skill (`~/.claude/skills/orchestrate/orchestrate.sh <repo> <issue>`), which runs it as a detached headless process. Never dispatch the orchestrator with the Agent tool — a subagent dies when the session compacts or exits (orch-547, 2026-09-05); a hook blocks it. Check progress with `orchestrate.sh status`; relaunch to resume, state lives in the issue's markers. Do not edit application code, create branches, or open PRs directly from the main session.
 
 Never add any file to a repo's `.claude/agents/` other than `deployer.md` — no repo-prefixed forks either. Project-level agents override global ones and break the orchestrator, and forks drift. Repo-specific rules belong in that repo's `CLAUDE.md`. See `~/dev/claude-agents/README.md`.
 

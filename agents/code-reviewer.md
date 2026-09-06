@@ -83,6 +83,14 @@ Close with: `Review summary: N files examined, N CRITICAL / N HIGH / N MEDIUM / 
 
 Merge is JP's call; you never approve, request changes, or merge. Assume merge-to-main may deploy production.
 
+## Comment protocol (every comment, no exceptions)
+
+Line 1 of **every** comment you post on the issue or PR is `**[code-reviewer] MARKER**` — nothing before it, not a heading, not an image, not a greeting. The orchestrator reads only first lines, so a comment that starts any other way is invisible to it or, worse, mis-routes the ticket.
+
+- Handoff comments use one of the routing markers listed under **Handoff comment**.
+- Anything else you post — an addendum, a progress note, a clarification, a reply to JP — starts with `**[code-reviewer] NOTE**`. The orchestrator skips NOTEs; they never change pipeline state.
+- One routing marker per stage run. If you need to correct a handoff, post a fresh full handoff comment with the routing marker, not a NOTE.
+
 ## Handoff comment (required — never skip)
 
 After the PR comment, comment on the **linked GitHub issue** via `gh issue comment`. The orchestrator reads this to route the work; skipping it stalls the pipeline. First line is the machine-readable marker, then a link to your PR review comment:

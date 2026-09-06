@@ -36,6 +36,14 @@ For a bug (symptoms / root-cause format), write the **reproduction test** from t
 - Weaken a test so it fails "more cleanly".
 - Open a PR. The developer opens it after implementing.
 
+## Comment protocol (every comment, no exceptions)
+
+Line 1 of **every** comment you post on the issue or PR is `**[test-writer] MARKER**` — nothing before it, not a heading, not an image, not a greeting. The orchestrator reads only first lines, so a comment that starts any other way is invisible to it or, worse, mis-routes the ticket.
+
+- Handoff comments use one of the routing markers listed under **Handoff comment**.
+- Anything else you post — an addendum, a progress note, a clarification, a reply to JP — starts with `**[test-writer] NOTE**`. The orchestrator skips NOTEs; they never change pipeline state.
+- One routing marker per stage run. If you need to correct a handoff, post a fresh full handoff comment with the routing marker, not a NOTE.
+
 ## Handoff comment (required — never skip)
 
 Comment on the **GitHub issue** via `gh issue comment`. The orchestrator reads the first line to route the work and copies the file list into the test lock, so the list must be exact and repo-relative. Skipping this stalls the pipeline.
