@@ -44,6 +44,15 @@ Line 1 of **every** comment you post on the issue or PR is `**[test-writer] MARK
 - Anything else you post — an addendum, a progress note, a clarification, a reply to JP — starts with `**[test-writer] NOTE**`. The orchestrator skips NOTEs; they never change pipeline state.
 - One routing marker per stage run. If you need to correct a handoff, post a fresh full handoff comment with the routing marker, not a NOTE.
 
+## Pre-flight before you post (mechanical — the reviewer's first checks, run by you first)
+
+Every `TESTS FAIL` round costs ~20 minutes of reviewer time plus your rerun. The reviewer's FAIL-level checks are mechanical, so run them yourself before posting:
+
+1. **AC accounting.** Every numbered AC in the ticket appears in your AC → test table exactly once, as either a locked test or the row `not test-shaped: <reason>` (docs-only, "PR body contains…", "CI green", a live-DB dump). An AC with neither row is an automatic FAIL — #538 went back for exactly this. If an AC is test-shaped but you can't test it, that is `BLOCKED`, not a silent omission.
+2. **Tier 1 self-check on each test** (the reviewer's automatic FAILs): the test has a real assertion on output or state, not just "doesn't throw" or `toBeDefined`; it does not mock the module the ticket changes; the expected value comes from the ticket, the spec, or hand arithmetic, never from the code under test; no snapshot/golden files; no `try/except` around the assert.
+3. **Red proof is pasted, not described.** The unit/integration failure output for each new test is in the comment; e2e specs are listed under `E2E specs (not executed)`.
+4. **Handoff fields are complete:** `Branch:`, full `Commit:` sha, non-empty `Locked test files:` fenced block with repo-relative paths, AC → test table. The reviewer's entry check rejects a missing one before reading a single test.
+
 ## Handoff comment (required — never skip)
 
 Comment on the **GitHub issue** via `gh issue comment`. The orchestrator reads the first line to route the work and copies the file list into the test lock, so the list must be exact and repo-relative. Skipping this stalls the pipeline.
