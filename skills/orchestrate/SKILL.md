@@ -15,8 +15,9 @@ The orchestrator must outlive this session. Subagents don't: they run inside the
 
 - `<repo-path>`: the repo's main checkout (e.g. `~/dev/scheduler`, or `~/scheduler` on Clog). The script resolves `owner/repo` with `gh`.
 - Extra instructions are appended to the orchestrator's prompt verbatim — use them for context it can't read from the issue (e.g. "config blocker resolved, retry from test-writer").
-- One orchestrator per issue; the script refuses to launch a second while the first is alive. Parallel issues = parallel launches.
-- It prints the PID and log path. Report those two lines to JP and stop. Do not poll, do not wait, do not tail in a loop.
+- One orchestrator per issue; the script refuses to launch a second while the first is alive.
+- Max 3 concurrent orchestrators (VM has 3.7GB RAM). If all slots are full, the launch is queued automatically and a background poller launches it when a slot opens. `status` shows both running and queued.
+- It prints the PID and log path (or "queued" if at capacity). Report to JP and stop. Do not poll, do not wait, do not tail in a loop.
 
 ## Check on a run
 
