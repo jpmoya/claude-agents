@@ -22,7 +22,11 @@ count_running() {
   echo "$n"
 }
 
-mem_available_mb() { awk '/MemAvailable/ {print int($2/1024)}' /proc/meminfo; }
+mem_available_mb() {
+  if [ -r /proc/meminfo ]; then awk '/MemAvailable/ {print int($2/1024)}' /proc/meminfo
+  else vm_stat 2>/dev/null | awk '/page size of/ {ps=$8} /Pages free|Pages inactive|Pages speculative/ {gsub(/\./,"",$NF); p+=$NF} END {print int(p*ps/1048576)}'
+  fi
+}
 
 has_capacity() {
   [ "$(count_running)" -lt "$MAX_CONCURRENT" ] && [ "$(mem_available_mb)" -ge "$MEM_FLOOR_MB" ]
