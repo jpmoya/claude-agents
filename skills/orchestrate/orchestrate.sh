@@ -47,6 +47,11 @@ case "${1:-}" in
         --jq '[.comments[] | .body | split("\n")[0] | select(test("^\\*\\*\\[[a-z-]+\\] ") and (test("^\\*\\*\\[[a-z-]+\\] NOTE") | not))] | last // "none"') 2>/dev/null || echo "?")
       echo "#$n  $state  repo=$repo  latest marker: $last  log=$PIPE/orch-$n.log"
     done
+    # Surface any unresolved alerts
+    for af in "$PIPE"/orch-*.alert; do
+      [ -e "$af" ] || break
+      echo "!! ALERT: $(cat "$af")"
+    done
     if ls "$QUEUE"/*.json >/dev/null 2>&1; then
       echo "--- queued ---"
       for qf in $(ls -1 "$QUEUE"/*.json 2>/dev/null | sort -t- -k2 -n); do
@@ -92,7 +97,7 @@ case "${1:-}" in
       echo "orchestrator for #$ISSUE already running (pid $(cat "$PIPE/orch-$ISSUE.pid")); use 'stop' first" >&2; exit 1
     fi
     # Clear tombstones and restart state on manual launch
-    rm -f "$PIPE/orch-$ISSUE".{stopped,held,done} "$PIPE/orch-$ISSUE.restarts"
+    rm -f "$PIPE/orch-$ISSUE".{stopped,held,done,alert} "$PIPE/orch-$ISSUE.restarts"
     if ! has_capacity; then
       python3 -c "
 import json, datetime, time
@@ -105,12 +110,13 @@ with open('$QUEUE/orch-$ISSUE.json', 'w') as f:
       exit 0
     fi
     PROMPT="Drive GitHub issue $OWNER_REPO#$ISSUE through the agent pipeline by calling Agent(subagent_type: \"orchestrator\", prompt: \"Drive $OWNER_REPO#$ISSUE through the pipeline. Repo: $REPO. Read the latest marker on the issue and continue from there.\"). Do NOT use orchestrate.sh or the orchestrate skill — you ARE the headless launcher; call Agent() directly. $EXTRA"
+    printf '\n===== [%s] LAUNCH issue=%s reason=manual =====\n' "$(date -u +%FT%TZ)" "$ISSUE" >> "$PIPE/orch-$ISSUE.log"
     cd "$REPO"
     PIPELINE_HEADLESS=1 nohup setsid bash -c '
       echo 300 > /proc/self/oom_score_adj 2>/dev/null
       claude --dangerously-skip-permissions -p "$1"
       echo $? > "$2"
-    ' _ "$PROMPT" "$PIPE/orch-$ISSUE.exit" > "$PIPE/orch-$ISSUE.log" 2>&1 &
+    ' _ "$PROMPT" "$PIPE/orch-$ISSUE.exit" >> "$PIPE/orch-$ISSUE.log" 2>&1 &
     echo $! > "$PIPE/orch-$ISSUE.pid"; echo "$REPO" > "$PIPE/orch-$ISSUE.repo"
     date -u +%FT%TZ > "$PIPE/orch-$ISSUE.start"; printf '%s' "$EXTRA" > "$PIPE/orch-$ISSUE.extra"
     echo "launched orchestrator for $OWNER_REPO#$ISSUE  pid=$!  log=$PIPE/orch-$ISSUE.log"

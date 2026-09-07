@@ -52,9 +52,27 @@ issue_is_closed() {
   [ "$state" = "CLOSED" ]
 }
 
+GRACE_PERIOD_SECS=1200  # 20 min grace before treating BLOCKED as terminal
+
 is_terminal() {
-  local marker=$1
-  [[ "$marker" =~ \]\ DEPLOYED ]] || [[ "$marker" =~ \]\ BLOCKED ]]
+  local marker=$1 issue=${2:-}
+  # DEPLOYED is always terminal
+  [[ "$marker" =~ \]\ DEPLOYED ]] && return 0
+  # BLOCKED gets a grace period — false BLOCKEDs from subagent races resolve within minutes
+  if [[ "$marker" =~ \]\ BLOCKED ]]; then
+    if [ -n "$issue" ] && [ -f "$PIPE/orch-$issue.start" ]; then
+      local start_epoch now_epoch age
+      start_epoch=$(date -d "$(cat "$PIPE/orch-$issue.start")" +%s 2>/dev/null || echo 0)
+      now_epoch=$(date +%s)
+      age=$(( now_epoch - start_epoch ))
+      if [ "$age" -lt "$GRACE_PERIOD_SECS" ]; then
+        slog "[grace] #$issue — BLOCKED marker seen but run is ${age}s old (<${GRACE_PERIOD_SECS}s), waiting"
+        return 1
+      fi
+    fi
+    return 0
+  fi
+  return 1
 }
 
 do_launch() {
@@ -69,12 +87,13 @@ do_launch() {
 
   prompt="Drive GitHub issue $owner_repo#$issue through the agent pipeline by calling Agent(subagent_type: \"orchestrator\", prompt: \"Drive $owner_repo#$issue through the pipeline. Repo: $repo. Read the latest marker on the issue and continue from there. ${preamble}${extra}\"). Do NOT use orchestrate.sh or the orchestrate skill — you ARE the headless launcher; call Agent() directly. $extra"
 
+  printf '\n===== [%s] LAUNCH issue=%s reason=%s restart=%s =====\n' "$(date -u +%FT%TZ)" "$issue" "$reason" "$restart_n" >> "$PIPE/orch-$issue.log"
   cd "$repo"
   PIPELINE_HEADLESS=1 nohup setsid bash -c '
     echo 300 > /proc/self/oom_score_adj 2>/dev/null
     claude --dangerously-skip-permissions -p "$1"
     echo $? > "$2"
-  ' _ "$prompt" "$PIPE/orch-$issue.exit" > "$PIPE/orch-$issue.log" 2>&1 9>&- &
+  ' _ "$prompt" "$PIPE/orch-$issue.exit" >> "$PIPE/orch-$issue.log" 2>&1 9>&- &
 
   echo $! > "$PIPE/orch-$issue.pid"
   echo "$repo" > "$PIPE/orch-$issue.repo"
@@ -111,7 +130,9 @@ EOF
 )") 2>/dev/null
 
   touch "$PIPE/orch-$issue.held"
-  slog "[escalate] #$issue — too many restarts without progress"
+  rm -f "$QUEUE/orch-$issue.json"
+  printf '%s Pipeline #%s held — needs manual relaunch after investigation (%s)\n' "$(date -u +%FT%TZ)" "$issue" "$owner_repo" > "$PIPE/orch-$issue.alert"
+  slog "[escalate] #$issue — too many restarts without progress (queue entry purged)"
 }
 
 # --- Main tick ---
@@ -142,7 +163,7 @@ for f in "$PIPE"/orch-*.pid; do
   fi
 
   marker=$(latest_marker "$repo" "$issue")
-  if is_terminal "$marker"; then
+  if is_terminal "$marker" "$issue"; then
     touch "$PIPE/orch-$issue.done"
     slog "[done] #$issue — terminal marker: $marker"
     continue
@@ -229,6 +250,11 @@ if [ "$launched" -eq 0 ] && has_capacity; then
       rm -f "$qf"
       continue
     fi
+
+    # Skip if tombstoned (held/stopped/done)
+    [ -f "$PIPE/orch-$q_issue.held" ] && { rm -f "$qf"; continue; }
+    [ -f "$PIPE/orch-$q_issue.stopped" ] && { rm -f "$qf"; continue; }
+    [ -f "$PIPE/orch-$q_issue.done" ] && { rm -f "$qf"; continue; }
 
     best_qf="$qf"
     best_issue="$q_issue"
