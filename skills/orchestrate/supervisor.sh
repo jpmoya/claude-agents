@@ -250,6 +250,12 @@ if [ "$launched" -eq 0 ] && has_capacity; then
     [ "$now_epoch" -lt "$not_before" ] && continue
 
     q_issue=$(python3 -c "import json; print(json.load(open('$qf'))['issue'])" 2>/dev/null)
+    # Skip if tombstoned (stopped, held, or done)
+    if [ -f "$PIPE/orch-$q_issue.stopped" ] || [ -f "$PIPE/orch-$q_issue.held" ] || [ -f "$PIPE/orch-$q_issue.done" ]; then
+      rm -f "$qf"
+      slog "[drain-skip] #$q_issue — tombstoned, purging queue entry"
+      continue
+    fi
     # Skip if already running
     if [ -f "$PIPE/orch-$q_issue.pid" ] && kill -0 "$(cat "$PIPE/orch-$q_issue.pid")" 2>/dev/null; then
       rm -f "$qf"
