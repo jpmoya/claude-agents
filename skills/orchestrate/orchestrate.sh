@@ -8,6 +8,7 @@
 #   orchestrate.sh queue                                          show the queue
 set -euo pipefail
 PIPE=/tmp/pipeline
+SETSID=$(command -v setsid >/dev/null 2>&1 && echo setsid || true)   # absent on macOS; nohup + & is enough there
 QUEUE="$PIPE/queue"
 mkdir -p "$PIPE" "$QUEUE"
 MAX_CONCURRENT=3
@@ -116,7 +117,7 @@ with open('$QUEUE/orch-$ISSUE.json', 'w') as f:
     PROMPT="Drive GitHub issue $OWNER_REPO#$ISSUE through the agent pipeline by calling Agent(subagent_type: \"orchestrator\", prompt: \"Drive $OWNER_REPO#$ISSUE through the pipeline. Repo: $REPO. Read the latest marker on the issue and continue from there.\"). Do NOT use orchestrate.sh or the orchestrate skill — you ARE the headless launcher; call Agent() directly. $EXTRA"
     printf '\n===== [%s] LAUNCH issue=%s reason=manual =====\n' "$(date -u +%FT%TZ)" "$ISSUE" >> "$PIPE/orch-$ISSUE.log"
     cd "$REPO"
-    PIPELINE_HEADLESS=1 nohup setsid bash -c '
+    PIPELINE_HEADLESS=1 nohup $SETSID bash -c '
       echo 300 > /proc/self/oom_score_adj 2>/dev/null
       claude --dangerously-skip-permissions -p "$1"
       echo $? > "$2"

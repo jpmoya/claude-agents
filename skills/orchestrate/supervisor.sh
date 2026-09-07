@@ -5,6 +5,7 @@
 set -uo pipefail
 
 PIPE=/tmp/pipeline
+SETSID=$(command -v setsid >/dev/null 2>&1 && echo setsid || true)   # absent on macOS; nohup + & is enough there
 QUEUE="$PIPE/queue"
 LOGDIR="$HOME/logs/pipeline"
 SLOG="$LOGDIR/supervisor.log"
@@ -93,7 +94,7 @@ do_launch() {
 
   printf '\n===== [%s] LAUNCH issue=%s reason=%s restart=%s =====\n' "$(date -u +%FT%TZ)" "$issue" "$reason" "$restart_n" >> "$PIPE/orch-$issue.log"
   cd "$repo"
-  PIPELINE_HEADLESS=1 nohup setsid bash -c '
+  PIPELINE_HEADLESS=1 nohup $SETSID bash -c '
     echo 300 > /proc/self/oom_score_adj 2>/dev/null
     claude --dangerously-skip-permissions -p "$1"
     echo $? > "$2"
