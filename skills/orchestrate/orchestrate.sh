@@ -4,13 +4,14 @@
 #   orchestrate.sh <repo-path> <issue> [extra instructions...]   launch (queues if at max)
 #   orchestrate.sh status [issue]                                 list running/queued orchestrators
 #   orchestrate.sh tail <issue> [lines]                           tail an orchestrator's log
-#   orchestrate.sh stop <issue>                                   kill an orchestrator
+#   orchestrate.sh stop <issue>                                   kill an orchestrator (prevents auto-restart)
 #   orchestrate.sh queue                                          show the queue
 set -euo pipefail
 PIPE=/tmp/pipeline
 QUEUE="$PIPE/queue"
 mkdir -p "$PIPE" "$QUEUE"
 MAX_CONCURRENT=3
+MEM_FLOOR_MB=1200
 
 count_running() {
   local n=0
@@ -21,29 +22,10 @@ count_running() {
   echo "$n"
 }
 
-drain_queue() {
-  for qf in $(ls -1 "$QUEUE"/*.json 2>/dev/null | sort -t- -k2 -n); do
-    [ -e "$qf" ] || break
-    local running
-    running=$(count_running)
-    [ "$running" -ge "$MAX_CONCURRENT" ] && break
-    local q_issue q_repo q_extra
-    q_issue=$(python3 -c "import json,sys; d=json.load(open('$qf')); print(d['issue'])")
-    q_repo=$(python3 -c "import json,sys; d=json.load(open('$qf')); print(d['repo'])")
-    q_extra=$(python3 -c "import json,sys; d=json.load(open('$qf')); print(d.get('extra',''))")
-    if [ -f "$PIPE/orch-$q_issue.pid" ] && kill -0 "$(cat "$PIPE/orch-$q_issue.pid")" 2>/dev/null; then
-      rm -f "$qf"
-      continue
-    fi
-    local q_owner_repo
-    q_owner_repo=$(cd "$q_repo" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo "unknown")
-    local prompt="Drive GitHub issue $q_owner_repo#$q_issue through the agent pipeline by calling Agent(subagent_type: \"orchestrator\", prompt: \"Drive $q_owner_repo#$q_issue through the pipeline. Repo: $q_repo. Read the latest marker on the issue and continue from there.\"). Do NOT use orchestrate.sh or the orchestrate skill — you ARE the headless launcher; call Agent() directly. $q_extra"
-    cd "$q_repo"
-    PIPELINE_HEADLESS=1 nohup claude --dangerously-skip-permissions -p "$prompt" > "$PIPE/orch-$q_issue.log" 2>&1 &
-    echo $! > "$PIPE/orch-$q_issue.pid"; echo "$q_repo" > "$PIPE/orch-$q_issue.repo"; date -u +%FT%TZ > "$PIPE/orch-$q_issue.start"
-    rm -f "$qf"
-    echo "[queue-drain] launched #$q_issue (pid $!) — was queued" >> "$PIPE/queue-drain.log"
-  done
+mem_available_mb() { awk '/MemAvailable/ {print int($2/1024)}' /proc/meminfo; }
+
+has_capacity() {
+  [ "$(count_running)" -lt "$MAX_CONCURRENT" ] && [ "$(mem_available_mb)" -ge "$MEM_FLOOR_MB" ]
 }
 
 case "${1:-}" in
@@ -56,7 +38,11 @@ case "${1:-}" in
       [ -n "$ISSUE" ] && [ "$n" != "$ISSUE" ] && continue
       found=1
       pid=$(cat "$f"); repo=$(cat "$PIPE/orch-$n.repo" 2>/dev/null || echo "?")
-      if kill -0 "$pid" 2>/dev/null; then state="running (pid $pid)"; else state="exited"; fi
+      if kill -0 "$pid" 2>/dev/null; then state="running (pid $pid)"
+      elif [ -f "$PIPE/orch-$n.stopped" ]; then state="stopped (manual)"
+      elif [ -f "$PIPE/orch-$n.held" ]; then state="held (needs JP)"
+      elif [ -f "$PIPE/orch-$n.done" ]; then state="done"
+      else state="exited (will auto-restart)"; fi
       last=$( (cd "$repo" 2>/dev/null && gh issue view "$n" --json comments \
         --jq '[.comments[] | .body | split("\n")[0] | select(test("^\\*\\*\\[[a-z-]+\\] ") and (test("^\\*\\*\\[[a-z-]+\\] NOTE") | not))] | last // "none"') 2>/dev/null || echo "?")
       echo "#$n  $state  repo=$repo  latest marker: $last  log=$PIPE/orch-$n.log"
@@ -67,7 +53,8 @@ case "${1:-}" in
         q_issue=$(python3 -c "import json; d=json.load(open('$qf')); print(d['issue'])")
         q_repo=$(python3 -c "import json; d=json.load(open('$qf')); print(d['repo'])")
         queued_at=$(python3 -c "import json; d=json.load(open('$qf')); print(d.get('queued_at','?'))")
-        echo "#$q_issue  queued since $queued_at  repo=$q_repo"
+        nb=$(python3 -c "import json,time; nb=json.load(open('$qf')).get('not_before',0); d=int(nb-time.time()); print(f'ready' if d<=0 else f'in {d}s')" 2>/dev/null)
+        echo "#$q_issue  queued since $queued_at  $nb  repo=$q_repo"
       done
     fi
     ;;
@@ -75,8 +62,15 @@ case "${1:-}" in
     tail -n "${3:-20}" "$PIPE/orch-$2.log"
     ;;
   stop)
-    pid=$(cat "$PIPE/orch-$2.pid"); kill "$pid" && echo "stopped orchestrator for #$2 (pid $pid)"
-    drain_queue
+    pid=$(cat "$PIPE/orch-$2.pid" 2>/dev/null)
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      kill "$pid" && echo "stopped orchestrator for #$2 (pid $pid)"
+    else
+      echo "orchestrator for #$2 not running"
+    fi
+    touch "$PIPE/orch-$2.stopped"
+    rm -f "$QUEUE/orch-$2.json"
+    echo "wrote tombstone — supervisor will not auto-restart #$2"
     ;;
   queue)
     if ! ls "$QUEUE"/*.json >/dev/null 2>&1; then
@@ -97,27 +91,29 @@ case "${1:-}" in
     if [ -f "$PIPE/orch-$ISSUE.pid" ] && kill -0 "$(cat "$PIPE/orch-$ISSUE.pid")" 2>/dev/null; then
       echo "orchestrator for #$ISSUE already running (pid $(cat "$PIPE/orch-$ISSUE.pid")); use 'stop' first" >&2; exit 1
     fi
-    running=$(count_running)
-    if [ "$running" -ge "$MAX_CONCURRENT" ]; then
+    # Clear tombstones and restart state on manual launch
+    rm -f "$PIPE/orch-$ISSUE".{stopped,held,done} "$PIPE/orch-$ISSUE.restarts"
+    if ! has_capacity; then
       python3 -c "
-import json, datetime
+import json, datetime, time
 with open('$QUEUE/orch-$ISSUE.json', 'w') as f:
-    json.dump({'issue': '$ISSUE', 'repo': '$REPO', 'extra': '''$EXTRA''', 'queued_at': datetime.datetime.utcnow().strftime('%FT%TZ')}, f)
+    json.dump({'issue': '$ISSUE', 'repo': '$REPO', 'extra': '''$EXTRA''', 'reason': 'queued',
+               'queued_at': datetime.datetime.utcnow().strftime('%FT%TZ'), 'not_before': int(time.time())}, f)
 "
-      echo "queued #$ISSUE ($running/$MAX_CONCURRENT slots full) — will auto-launch when a slot opens"
+      echo "queued #$ISSUE ($(count_running)/$MAX_CONCURRENT slots full, $(mem_available_mb)MB avail) — supervisor will auto-launch when a slot opens"
       echo "check: ~/.claude/skills/orchestrate/orchestrate.sh queue"
-      if ! pgrep -f "queue-drain.sh" >/dev/null 2>&1; then
-        nohup bash "$(dirname "$0")/queue-drain.sh" >> "$PIPE/queue-drain.log" 2>&1 &
-        echo "started queue-drain poller (pid $!)"
-      fi
       exit 0
     fi
     PROMPT="Drive GitHub issue $OWNER_REPO#$ISSUE through the agent pipeline by calling Agent(subagent_type: \"orchestrator\", prompt: \"Drive $OWNER_REPO#$ISSUE through the pipeline. Repo: $REPO. Read the latest marker on the issue and continue from there.\"). Do NOT use orchestrate.sh or the orchestrate skill — you ARE the headless launcher; call Agent() directly. $EXTRA"
     cd "$REPO"
-    PIPELINE_HEADLESS=1 nohup claude --dangerously-skip-permissions -p "$PROMPT" > "$PIPE/orch-$ISSUE.log" 2>&1 &
-    echo $! > "$PIPE/orch-$ISSUE.pid"; echo "$REPO" > "$PIPE/orch-$ISSUE.repo"; date -u +%FT%TZ > "$PIPE/orch-$ISSUE.start"
+    PIPELINE_HEADLESS=1 nohup setsid bash -c '
+      echo 300 > /proc/self/oom_score_adj 2>/dev/null
+      claude --dangerously-skip-permissions -p "$1"
+      echo $? > "$2"
+    ' _ "$PROMPT" "$PIPE/orch-$ISSUE.exit" > "$PIPE/orch-$ISSUE.log" 2>&1 &
+    echo $! > "$PIPE/orch-$ISSUE.pid"; echo "$REPO" > "$PIPE/orch-$ISSUE.repo"
+    date -u +%FT%TZ > "$PIPE/orch-$ISSUE.start"; printf '%s' "$EXTRA" > "$PIPE/orch-$ISSUE.extra"
     echo "launched orchestrator for $OWNER_REPO#$ISSUE  pid=$!  log=$PIPE/orch-$ISSUE.log"
     echo "check: ~/.claude/skills/orchestrate/orchestrate.sh status $ISSUE"
-    drain_queue
     ;;
 esac
