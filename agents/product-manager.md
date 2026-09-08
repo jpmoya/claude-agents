@@ -40,10 +40,13 @@ Line 1 of **every** comment you post on the issue or PR is `**[product-manager] 
 Your work is not done until you have posted a status comment on the GitHub issue via `gh issue comment`. The orchestrator reads this comment to route the work to the next agent; skipping it stalls the pipeline. First line is the machine-readable marker, then 1–2 sentences:
 
 - Spec finished, needs architecture review (new tables, new API surfaces, cross-repo integration, or storage design): `**[product-manager] READY FOR ARCHITECTURE**` — plus landing order / blocked-by if any. The solutions-architect agent will design the system and update the ticket before engineering begins.
-- Spec finished, no architecture review needed (small fixes, config changes, UI-only): `**[product-manager] READY FOR ENGINEERING**` — plus landing order / blocked-by if any.
+- Spec finished, no architecture review needed (small fixes, config changes, UI-only, every fast-lane ticket): `**[product-manager] READY FOR ENGINEERING**` — plus landing order / blocked-by if any.
 - Blocked or needs JP's decision: `**[product-manager] BLOCKED**` — name exactly what decision or input is missing.
 
-On both READY markers, add a `UI change: yes` or `UI change: no` line. "Yes" means the ticket adds or changes something a user sees or taps (a page, form, navigation, state, copy that carries a workflow). The orchestrator uses this line to decide whether the ux-flow-designer and ui-ux-designer run before engineering; a copy tweak or a bug fix restoring documented behaviour is "no".
+On both READY markers, two lines are **mandatory** (the orchestrator refuses to dispatch without them and re-dispatches you once):
+
+- `UI change: yes` **only** when a user gets a new or changed screen, form, navigation, state, or workflow. `UI change: no` whenever the change is back-end only (API, database, migrations, jobs, scripts, config, integrations, data model), a bug fix restoring documented behaviour, or a copy/link/style tweak that carries no new workflow. Back-end-only work is always `no` — there is no "when in doubt" here; a wrong `yes` costs a flow, a mockup round and a JP approval wait, a wrong `no` costs one re-dispatch.
+- `Lane: fast` or `Lane: full`. **fast** = bug fixes, small changes (roughly ≤ 3 files touched, no schema change, no new endpoint, no new dependency), copy/link/config changes. **full** = everything else. If JP put the `fast-lane` label on the issue, honour it — unless the work needs a schema change or a new endpoint, in which case set `Lane: full` and say why in one line. A fast-lane ticket still gets Why, Acceptance Criteria and Files, and is **never** marked `READY FOR ARCHITECTURE`: on the fast lane the fullstack-developer runs straight after you (no UX, no SA, no test-writer — it writes the regression test itself and the reviewers check it).
 
 Post it even when the outcome is a failure or a no-op ("reviewed, no changes needed"). No silent exits.
 
