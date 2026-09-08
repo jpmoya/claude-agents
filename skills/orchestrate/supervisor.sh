@@ -74,7 +74,7 @@ issue_is_closed() {
 terminal_kind() {
   local marker=$1 issue=${2:-}
   [[ "$marker" =~ \]\ (DEPLOYED|APPLIED)$ ]] && { echo done; return; }
-  [[ "$marker" =~ \]\ (MOCKUPS\ PENDING\ APPROVAL|AWAITING\ GO)$ ]] && { echo gate; return; }
+  [[ "$marker" =~ \]\ (MOCKUPS\ PENDING\ APPROVAL|AWAITING\ GO|EFFORT\ APPROVAL\ NEEDED)$ ]] && { echo gate; return; }
   if [[ "$marker" =~ \]\ BLOCKED ]]; then
     # BLOCKED gets a grace period — false BLOCKEDs from subagent races resolve within minutes
     if [ -n "$issue" ] && [ -f "$PIPE/orch-$issue.start" ]; then
