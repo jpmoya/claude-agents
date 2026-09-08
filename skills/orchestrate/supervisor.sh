@@ -90,7 +90,7 @@ do_launch() {
     preamble="AUTO-RESTART #$restart_n: a previous orchestrator process exited without reaching a terminal state. Verify branch/PR/comment state with gh before dispatching anything. Never redo a completed stage. "
   fi
 
-  prompt="Drive GitHub issue $owner_repo#$issue through the agent pipeline by calling Agent(subagent_type: \"orchestrator\", prompt: \"Drive $owner_repo#$issue through the pipeline. Repo: $repo. Read the latest marker on the issue and continue from there. ${preamble}${extra}\"). Do NOT use orchestrate.sh or the orchestrate skill — you ARE the headless launcher; call Agent() directly. $extra"
+  prompt="Drive GitHub issue $owner_repo#$issue through the agent pipeline by calling Agent(subagent_type: \"orchestrator\", prompt: \"Drive $owner_repo#$issue through the pipeline. Repo: $repo. Read the latest marker on the issue and continue from there. ${preamble}${extra}\"). Do NOT use orchestrate.sh or the orchestrate skill — you ARE the headless launcher; call Agent() directly. Call Agent() in the FOREGROUND and block on its result — never run_in_background, never a detached process, never a poller: if you return before the agent finishes, this headless session exits and the pipeline stalls (incidents #163 and #165, 2026-09-08). $extra"
 
   printf '\n===== [%s] LAUNCH issue=%s reason=%s restart=%s =====\n' "$(date -u +%FT%TZ)" "$issue" "$reason" "$restart_n" >> "$PIPE/orch-$issue.log"
   cd "$repo"
