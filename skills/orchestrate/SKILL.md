@@ -23,6 +23,7 @@ The orchestrator must outlive this session. Subagents don't: they run inside the
 
 A cron job runs `supervisor.sh` every 2 minutes (install per machine: `crontab -e` → `*/2 * * * * ~/.claude/skills/orchestrate/supervisor.sh`; the Mac was missing it until 2026-09-08, so nothing auto-restarted or drained the queue there). It detects exited orchestrators with non-terminal markers and auto-restarts them with backoff (2min, 5min, 15min, 30min). After 3 restarts without marker progress or 6 total, it escalates by posting a `**[supervisor] NOTE**` on the issue and stops retrying.
 
+- **Per machine.** `/tmp/pipeline` (pids, queue, tombstones) and the supervisor are local to each machine; the only shared state is the issue's markers and labels. Never launch the same issue on both machines. `agent-go` means "not launched anywhere yet": the launcher swaps it for `agent-in-progress`, so the VM's 15-minute dispatch cron (scheduler, rfp-finder, casa-verde-site) cannot pick up an issue the Mac is already driving.
 - `stop` writes a tombstone — the supervisor will not auto-restart a manually stopped orchestrator.
 - A manual `orchestrate.sh <repo> <issue>` clears tombstones and restart state.
 - `status` shows the state: `running`, `exited (will auto-restart)`, `stopped (manual)`, `held (needs JP)`, or `done`.
