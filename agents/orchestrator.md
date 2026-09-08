@@ -89,7 +89,7 @@ Infra-track pre-dispatch validation (mechanical):
 | infra-operator (first) | A `PLAN PASS` dated after the latest `PLAN READY`; every issue on that plan's `Blocked by:` line is closed. |
 | infra-operator (resume) | The go comment resolves (`gh api`), is by the issue author, and is dated after the latest `AWAITING GO`. |
 
-Stage coordinates (`PIPELINE_AGENT=infra-planner` etc.) and the handoff hook apply unchanged. Log infra dispatches to the same run log with the agent name; no other differences. Nothing on this track ever creates a branch or a PR — if a stage does, that is a config error: stop and report.
+`Blocked by:` gates only the operator: the planner and reviewer run while the code dependency is still open, so the runbook is ready the moment the PR lands. Stage coordinates (`PIPELINE_AGENT=infra-planner` etc.) and the handoff hook apply unchanged. Log infra dispatches to the same run log with the agent name; no other differences. Nothing on this track ever creates a branch or a PR — if a stage does, that is a config error: stop and report.
 
 ### UI change detection
 
@@ -162,9 +162,12 @@ Before launching any agent, check how many Claude Code processes are already run
 ```bash
 wait_for_capacity() {
   local MAX_CONCURRENT=8
-  local MY_PID=$$
   for i in $(seq 1 10); do
-    ACTIVE=$(pgrep -af "claude.*--dangerously-skip-permissions" 2>/dev/null | grep -v "^${MY_PID} " | grep -v "pgrep" | wc -l)
+    # Count real claude processes only (comm == claude): the `bash -c` wrappers the launcher and detached dispatches
+    # use carry the same string on their command line and were being counted twice. Subtract 1 for this orchestrator's
+    # own session, which always matches. (Double-count + self-count stalled #580 for 20 min on 2026-09-08.)
+    ACTIVE=$(ps -axo comm=,args= 2>/dev/null | awk '$1=="claude" && /--dangerously-skip-permissions/' | wc -l | tr -d ' ')
+    ACTIVE=$((ACTIVE - 1))
     if [ "$ACTIVE" -le "$MAX_CONCURRENT" ]; then
       return 0
     fi
