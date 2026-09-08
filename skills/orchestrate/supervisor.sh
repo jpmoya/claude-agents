@@ -112,7 +112,7 @@ do_launch() {
 
   printf '\n===== [%s] LAUNCH issue=%s reason=%s restart=%s =====\n' "$(date -u +%FT%TZ)" "$issue" "$reason" "$restart_n" >> "$PIPE/orch-$issue.log"
   cd "$repo"
-  PIPELINE_HEADLESS=1 nohup $SETSID bash -c '
+  PIPELINE_HEADLESS=1 CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 nohup $SETSID bash -c '
     echo 300 > /proc/self/oom_score_adj 2>/dev/null
     claude --dangerously-skip-permissions -p "$1"
     echo $? > "$2"

@@ -128,7 +128,7 @@ with open('$QUEUE/orch-$ISSUE.json', 'w') as f:
     PROMPT="Drive GitHub issue $OWNER_REPO#$ISSUE through the agent pipeline by calling Agent(subagent_type: \"orchestrator\", prompt: \"Drive $OWNER_REPO#$ISSUE through the pipeline. Repo: $REPO. Read the latest marker on the issue and continue from there.\"). Do NOT use orchestrate.sh or the orchestrate skill — you ARE the headless launcher; call Agent() directly. Call Agent() in the FOREGROUND and block on its result — never run_in_background, never a detached process, never a poller: if you return before the agent finishes, this headless session exits and the pipeline stalls (incidents #163 and #165, 2026-09-08). $EXTRA"
     printf '\n===== [%s] LAUNCH issue=%s reason=manual =====\n' "$(date -u +%FT%TZ)" "$ISSUE" >> "$PIPE/orch-$ISSUE.log"
     cd "$REPO"
-    PIPELINE_HEADLESS=1 nohup $SETSID bash -c '
+    PIPELINE_HEADLESS=1 CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 nohup $SETSID bash -c '
       echo 300 > /proc/self/oom_score_adj 2>/dev/null
       claude --dangerously-skip-permissions -p "$1"
       echo $? > "$2"
