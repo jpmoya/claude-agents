@@ -101,6 +101,8 @@ case "${1:-}" in
     if [ -f "$PIPE/orch-$ISSUE.pid" ] && kill -0 "$(cat "$PIPE/orch-$ISSUE.pid")" 2>/dev/null; then
       echo "orchestrator for #$ISSUE already running (pid $(cat "$PIPE/orch-$ISSUE.pid")); use 'stop' first" >&2; exit 1
     fi
+    # Ensure agent-go label so dispatch cron can re-pick-up if this run dies
+    (cd "$REPO" && gh issue edit "$ISSUE" --add-label "agent-go" 2>/dev/null) || true
     # Clear tombstones and restart state on manual launch
     rm -f "$PIPE/orch-$ISSUE".{stopped,held,done,alert} "$PIPE/orch-$ISSUE.restarts"
     if ! has_capacity; then
