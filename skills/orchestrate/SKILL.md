@@ -19,14 +19,23 @@ The orchestrator must outlive this session. Subagents don't: they run inside the
 - Max 3 concurrent orchestrators (VM has 3.7GB RAM, 1200MB memory floor). If all slots are full or memory is low, the launch is queued automatically and the supervisor launches it when capacity is available. `status` shows both running and queued.
 - It prints the PID and log path (or "queued" if at capacity). Report to JP and stop. Do not poll, do not wait, do not tail in a loop.
 
-## Auto-restart (supervisor)
+## Supervisor (one cron tick does everything)
 
-A cron job runs `supervisor.sh` every 2 minutes (install per machine: `crontab -e` → `*/2 * * * * ~/.claude/skills/orchestrate/supervisor.sh`; the Mac was missing it until 2026-09-08, so nothing auto-restarted or drained the queue there). It detects exited orchestrators with non-terminal markers and auto-restarts them with backoff (2min, 5min, 15min, 30min). After 3 restarts without marker progress or 6 total, it escalates by posting a `**[supervisor] NOTE**` on the issue and stops retrying.
+`supervisor.sh` runs every 2 minutes from cron on both machines — VM on even minutes (`*/2`), Mac on odd (`1-59/2`) — logging to `~/logs/pipeline/supervisor.log`. Each tick, in order, at most one launch:
 
-- **Per machine.** `/tmp/pipeline` (pids, queue, tombstones) and the supervisor are local to each machine; the only shared state is the issue's markers and labels. Never launch the same issue on both machines. `agent-go` means "not launched anywhere yet": the launcher swaps it for `agent-in-progress`, so the VM's 15-minute dispatch cron (scheduler, rfp-finder, casa-verde-site) cannot pick up an issue the Mac is already driving.
+1. **Restart** exited orchestrators whose latest marker is not terminal, with backoff (2/5/15/30 min; short-lived exits count as transient with their own longer table). After 3 restarts without marker progress or 6 total it posts a `**[supervisor] NOTE**` on the issue and parks the run (`held`).
+2. **Drain** the local queue when a slot is free.
+3. **Labels:** drop `agent-in-progress` on issues this machine finished (`done`: DEPLOYED / APPLIED / closed), parked (`held`: MOCKUPS PENDING APPROVAL, AWAITING GO, BLOCKED after the 20-min grace, or escalation), or JP stopped.
+4. **Shared dispatch:** if this machine's `DISPATCH_REPOS` is set, list open `agent-go` issues without `agent-in-progress` across those repos and launch the first one it has capacity for — after posting a claim NOTE (`**[supervisor] NOTE** claim: <host> <ts>`), waiting 15 s, and confirming its claim is the earliest in the last 10 minutes. Lost claims are logged and skipped. On a Mac, dispatch runs only on AC power (restarts and drains always run).
+
+Config: shared defaults in `skills/orchestrate/config.sh` (labels, caps, backoff). Per machine, untracked, `~/.claude/pipeline/config.local.sh` sets `DISPATCH_REPOS=("owner/repo:/local/checkout" …)` — VM: casa-verde-site, rfp-finder, scheduler; Mac: those plus quoting tool and Business-Intelligence. Empty list = that machine only runs what is launched on it by hand.
+
+Label rule: `agent-go` = "approved, not launched anywhere yet"; launching anywhere swaps it for `agent-in-progress`; the supervisor removes `agent-in-progress` when the run is done or parked. To run a parked issue again, relaunch by hand or re-add `agent-go`.
+
+- **Per machine.** `/tmp/pipeline` (pids, queue, tombstones) is local; the only shared state is the issue's markers and labels. The launcher refuses an issue that carries `agent-in-progress` and isn't owned here ("running elsewhere?"); `orchestrate.sh --force <repo> <issue>` overrides when the other machine is known dead.
 - `stop` writes a tombstone — the supervisor will not auto-restart a manually stopped orchestrator.
-- A manual `orchestrate.sh <repo> <issue>` clears tombstones and restart state.
-- `status` shows the state: `running`, `exited (will auto-restart)`, `stopped (manual)`, `held (needs JP)`, or `done`.
+- A manual `orchestrate.sh <repo> <issue>` clears tombstones and restart state and supersedes a queued entry.
+- `status` shows the state: `running`, `exited (will auto-restart)`, `stopped (manual)`, `held (needs JP)`, or `done`; `!! ALERT` lines say why something is held.
 
 ## Check on a run
 

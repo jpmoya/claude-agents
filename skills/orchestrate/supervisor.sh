@@ -1,26 +1,17 @@
 #!/bin/bash
-# Stateless supervisor tick. Cron runs this every 2 min under flock.
-# Detects exited non-terminal orchestrators and restarts them with backoff.
-# Also drains the launch queue. One launch per tick max.
+# Stateless supervisor tick — cron runs it every 2 min (VM even minutes, Mac odd minutes). One tick does, in order:
+#   1. restart exited non-terminal local orchestrators with backoff
+#   2. drain the local launch queue
+#   3. label lifecycle: drop agent-in-progress on issues this machine finished or parked
+#   4. shared dispatch: launch one agent-go issue from DISPATCH_REPOS after winning a claim
+# One launch per tick max. All state is local (/tmp/pipeline); the only shared state is the issue's markers and labels.
 set -uo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/config.sh"
 
-PIPE=/tmp/pipeline
 SETSID=$(command -v setsid >/dev/null 2>&1 && echo setsid || true)   # absent on macOS; nohup + & is enough there
-QUEUE="$PIPE/queue"
-LOGDIR="$HOME/logs/pipeline"
 SLOG="$LOGDIR/supervisor.log"
+HOST=$(hostname -s)
 mkdir -p "$PIPE" "$QUEUE" "$LOGDIR"
-
-MAX_CONCURRENT=3
-MEM_FLOOR_MB=1200
-MAX_NO_PROGRESS=3
-MAX_TOTAL=6
-BACKOFF=(120 300 900 1800)
-MIN_RUN_SECS=180          # runs shorter than this are transient (rate limit, OOM, API error)
-MAX_TRANSIENT_TOTAL=20    # transient failures get many more retries
-TRANSIENT_BACKOFF=(300 600 1200 1800 3600)  # 5m, 10m, 20m, 30m, 60m
-
-export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:$PATH"
 
 slog() { printf '[%s] %s\n' "$(date -u +%FT%TZ)" "$*" >> "$SLOG"; }
 
@@ -37,6 +28,10 @@ else
   fi
   trap 'rmdir "$LOCKDIR" 2>/dev/null' EXIT
 fi
+
+to_epoch() {  # ISO-8601 UTC → epoch; portable (macOS date has no -d)
+  python3 -c "import sys,datetime; print(int(datetime.datetime.strptime(sys.argv[1],'%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=datetime.timezone.utc).timestamp()))" "$1" 2>/dev/null || echo 0
+}
 
 count_running() {
   local n=0
@@ -57,6 +52,11 @@ has_capacity() {
   [ "$(count_running)" -lt "$MAX_CONCURRENT" ] && [ "$(mem_available_mb)" -ge "$MEM_FLOOR_MB" ]
 }
 
+power_ok() {  # Mac: dispatch new work only on AC power (a sleeping laptop strands claimed issues). Linux: always.
+  [ "$(uname)" = "Darwin" ] || return 0
+  pmset -g batt 2>/dev/null | grep -q "AC Power"
+}
+
 latest_marker() {
   local repo=$1 issue=$2
   (cd "$repo" 2>/dev/null && gh issue view "$issue" --json comments \
@@ -70,27 +70,32 @@ issue_is_closed() {
   [ "$state" = "CLOSED" ]
 }
 
-GRACE_PERIOD_SECS=1200  # 20 min grace before treating BLOCKED as terminal
-
-is_terminal() {
+# terminal_kind <marker> <issue> → prints "done" / "gate" / "" (not terminal)
+terminal_kind() {
   local marker=$1 issue=${2:-}
-  # DEPLOYED is always terminal
-  [[ "$marker" =~ \]\ DEPLOYED ]] && return 0
-  # BLOCKED gets a grace period — false BLOCKEDs from subagent races resolve within minutes
+  [[ "$marker" =~ \]\ (DEPLOYED|APPLIED)$ ]] && { echo done; return; }
+  [[ "$marker" =~ \]\ (MOCKUPS\ PENDING\ APPROVAL|AWAITING\ GO)$ ]] && { echo gate; return; }
   if [[ "$marker" =~ \]\ BLOCKED ]]; then
+    # BLOCKED gets a grace period — false BLOCKEDs from subagent races resolve within minutes
     if [ -n "$issue" ] && [ -f "$PIPE/orch-$issue.start" ]; then
-      local start_epoch now_epoch age
-      start_epoch=$(date -d "$(cat "$PIPE/orch-$issue.start")" +%s 2>/dev/null || echo 0)
-      now_epoch=$(date +%s)
-      age=$(( now_epoch - start_epoch ))
+      local age=$(( $(date +%s) - $(to_epoch "$(cat "$PIPE/orch-$issue.start")") ))
       if [ "$age" -lt "$GRACE_PERIOD_SECS" ]; then
         slog "[grace] #$issue — BLOCKED marker seen but run is ${age}s old (<${GRACE_PERIOD_SECS}s), waiting"
-        return 1
+        echo ""; return
       fi
     fi
-    return 0
+    echo gate; return
   fi
-  return 1
+  echo ""
+}
+
+clear_in_progress() {  # idempotent; one gh call per issue, remembered in a marker file
+  local repo=$1 issue=$2 why=$3
+  [ -f "$PIPE/orch-$issue.label-cleared" ] && return 0
+  if (cd "$repo" 2>/dev/null && gh issue edit "$issue" --remove-label "$LABEL_IN_PROGRESS" >/dev/null 2>&1); then
+    touch "$PIPE/orch-$issue.label-cleared"
+    slog "[label] #$issue — removed $LABEL_IN_PROGRESS ($why)"
+  fi
 }
 
 do_launch() {
@@ -116,13 +121,14 @@ do_launch() {
   echo $! > "$PIPE/orch-$issue.pid"
   echo "$repo" > "$PIPE/orch-$issue.repo"
   date -u +%FT%TZ > "$PIPE/orch-$issue.start"
+  rm -f "$PIPE/orch-$issue.label-cleared"
 
   slog "[launch] #$issue pid=$! reason=$reason restart=$restart_n mem=$(mem_available_mb)MB running=$(count_running)/$MAX_CONCURRENT"
 }
 
 escalate() {
   local repo=$1 issue=$2 restarts_file=$3
-  local owner_repo history_text exit_code
+  local owner_repo history_text
 
   owner_repo=$(cd "$repo" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo "unknown")
   history_text=$(python3 -c "
@@ -134,7 +140,7 @@ try:
 except: pass
 " 2>/dev/null)
 
-  (cd "$repo" && gh issue comment "$issue" --body "$(cat <<EOF
+  (cd "$repo" && gh issue comment "$issue" --body "$(cat <<EOC
 **[supervisor] NOTE**
 
 This orchestrator has been auto-restarted multiple times without making progress. Pausing automatic restarts — manual intervention needed.
@@ -144,7 +150,7 @@ This orchestrator has been auto-restarted multiple times without making progress
 $history_text
 
 Relaunch manually with \`orchestrate.sh $repo $issue\` after investigating.
-EOF
+EOC
 )") 2>/dev/null
 
   touch "$PIPE/orch-$issue.held"
@@ -181,11 +187,19 @@ for f in "$PIPE"/orch-*.pid; do
   fi
 
   marker=$(latest_marker "$repo" "$issue")
-  if is_terminal "$marker" "$issue"; then
-    touch "$PIPE/orch-$issue.done"
-    slog "[done] #$issue — terminal marker: $marker"
-    continue
-  fi
+  case "$(terminal_kind "$marker" "$issue")" in
+    done)
+      touch "$PIPE/orch-$issue.done"
+      slog "[done] #$issue — terminal marker: $marker"
+      continue ;;
+    gate)
+      # Human gate (mockups, infra go, BLOCKED): park it; JP relaunches (or re-adds agent-go) after acting
+      touch "$PIPE/orch-$issue.held"
+      rm -f "$QUEUE/orch-$issue.json"
+      printf '%s Pipeline #%s waiting on JP — %s; relaunch (or re-add %s) after acting\n' "$(date -u +%FT%TZ)" "$issue" "$marker" "$LABEL_GO" > "$PIPE/orch-$issue.alert"
+      slog "[held] #$issue — waiting on JP: $marker"
+      continue ;;
+  esac
 
   # Non-terminal exit — potential restart
   [ "$launched" -ge 1 ] && continue  # one launch per tick
@@ -197,9 +211,7 @@ for f in "$PIPE"/orch-*.pid; do
   # Detect transient exit: if the run was short-lived, it's likely a rate limit or OOM, not a real stall
   run_duration=0
   if [ -f "$PIPE/orch-$issue.start" ]; then
-    start_epoch=$(date -d "$(cat "$PIPE/orch-$issue.start")" +%s 2>/dev/null || echo 0)
-    now_epoch=$(date +%s)
-    run_duration=$(( now_epoch - start_epoch ))
+    run_duration=$(( $(date +%s) - $(to_epoch "$(cat "$PIPE/orch-$issue.start")") ))
   fi
   transient=false
   [ "$run_duration" -lt "$MIN_RUN_SECS" ] && transient=true
@@ -238,33 +250,6 @@ for f in "$PIPE"/orch-*.pid; do
     fi
   fi
 
-  if $should_escalate; then
-    python3 -c "
-import json, datetime
-try: d = json.load(open('$restarts_file'))
-except: d = {'count':0,'total':0,'transient_count':0,'last_marker':'','history':[]}
-d['history'].append({'ts':'$(date -u +%FT%TZ)','exit':'$exit_code','marker':'''$marker''','transient':$($transient && echo true || echo false),'run_secs':$run_duration})
-d['count']=$count; d['total']=$total; d['transient_count']=$transient_count; d['last_marker']='''$marker'''
-json.dump(d, open('$restarts_file','w'))
-" 2>/dev/null
-    escalate "$repo" "$issue" "$restarts_file"
-    continue
-  fi
-
-  # Calculate backoff — transient exits use longer backoff
-  if $transient; then
-    idx=$((transient_count - 1))
-    [ "$idx" -ge "${#TRANSIENT_BACKOFF[@]}" ] && idx=$(( ${#TRANSIENT_BACKOFF[@]} - 1 ))
-    not_before=$(( $(date +%s) + ${TRANSIENT_BACKOFF[$idx]} ))
-    backoff_val=${TRANSIENT_BACKOFF[$idx]}
-  else
-    idx=$((count - 1))
-    [ "$idx" -ge "${#BACKOFF[@]}" ] && idx=$(( ${#BACKOFF[@]} - 1 ))
-    not_before=$(( $(date +%s) + ${BACKOFF[$idx]} ))
-    backoff_val=${BACKOFF[$idx]}
-  fi
-
-  # Update restart state
   python3 -c "
 import json
 try: d = json.load(open('$restarts_file'))
@@ -273,6 +258,23 @@ d['history'].append({'ts':'$(date -u +%FT%TZ)','exit':'$exit_code','marker':'''$
 d['count']=$count; d['total']=$total; d['transient_count']=$transient_count; d['last_marker']='''$marker'''
 json.dump(d, open('$restarts_file','w'))
 " 2>/dev/null
+
+  if $should_escalate; then
+    escalate "$repo" "$issue" "$restarts_file"
+    continue
+  fi
+
+  # Calculate backoff — transient exits use longer backoff
+  if $transient; then
+    idx=$((transient_count - 1))
+    [ "$idx" -ge "${#TRANSIENT_BACKOFF[@]}" ] && idx=$(( ${#TRANSIENT_BACKOFF[@]} - 1 ))
+    backoff_val=${TRANSIENT_BACKOFF[$idx]}
+  else
+    idx=$((count - 1))
+    [ "$idx" -ge "${#BACKOFF[@]}" ] && idx=$(( ${#BACKOFF[@]} - 1 ))
+    backoff_val=${BACKOFF[$idx]}
+  fi
+  not_before=$(( $(date +%s) + backoff_val ))
 
   # Enqueue with backoff
   python3 -c "
@@ -307,11 +309,6 @@ if [ "$launched" -eq 0 ] && has_capacity; then
       continue
     fi
 
-    # Skip if tombstoned (held/stopped/done)
-    [ -f "$PIPE/orch-$q_issue.held" ] && { rm -f "$qf"; continue; }
-    [ -f "$PIPE/orch-$q_issue.stopped" ] && { rm -f "$qf"; continue; }
-    [ -f "$PIPE/orch-$q_issue.done" ] && { rm -f "$qf"; continue; }
-
     best_qf="$qf"
     best_issue="$q_issue"
     break  # take first eligible
@@ -332,5 +329,58 @@ if [ "$launched" -eq 0 ] && has_capacity; then
   fi
 fi
 
-# Close lock (fd 9 closed on exit anyway, but be explicit)
-exec 9>&-
+# 3. Label lifecycle — agent-in-progress means "an orchestrator owns this somewhere"; drop it once this machine
+#    finished (done), parked (held: gate or escalation), or JP stopped it. Alive/restarting runs keep it.
+for f in "$PIPE"/orch-*.pid; do
+  [ -e "$f" ] || break
+  issue=$(basename "$f" .pid); issue=${issue#orch-}
+  repo=$(cat "$PIPE/orch-$issue.repo" 2>/dev/null || echo "")
+  [ -z "$repo" ] && continue
+  kill -0 "$(cat "$f")" 2>/dev/null && continue
+  if   [ -f "$PIPE/orch-$issue.done" ];    then clear_in_progress "$repo" "$issue" done
+  elif [ -f "$PIPE/orch-$issue.held" ];    then clear_in_progress "$repo" "$issue" held
+  elif [ -f "$PIPE/orch-$issue.stopped" ]; then clear_in_progress "$repo" "$issue" stopped
+  fi
+done
+
+# 4. Shared dispatch — one agent-go issue per tick, claimed before launch so two machines never take the same one
+if [ "$launched" -eq 0 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
+  if ! power_ok; then
+    slog "[dispatch] skipped — on battery power"
+  elif ! has_capacity; then
+    :  # nothing to log every 2 min; status shows the running set
+  else
+    now_epoch=$(date +%s)
+    cutoff=$(python3 -c "import datetime; print((datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(seconds=$CLAIM_WINDOW_SECS)).strftime('%Y-%m-%dT%H:%M:%SZ'))")
+    for entry in "${DISPATCH_REPOS[@]}"; do
+      [ "$launched" -ge 1 ] && break
+      owner_repo="${entry%%:*}"; local_path="${entry#*:}"; local_path="${local_path/#\~/$HOME}"
+      if [ ! -d "$local_path/.git" ]; then slog "[dispatch] $owner_repo — no local checkout at $local_path, skipping"; continue; fi
+      candidates=$(gh issue list --repo "$owner_repo" --state open --label "$LABEL_GO" --limit 50 --json number,labels \
+        --jq ".[] | select([.labels[].name] | index(\"$LABEL_IN_PROGRESS\") | not) | .number" 2>/dev/null) || continue
+      for num in $candidates; do
+        # local state: alive or queued here → not a candidate
+        if [ -f "$PIPE/orch-$num.pid" ] && kill -0 "$(cat "$PIPE/orch-$num.pid")" 2>/dev/null; then continue; fi
+        [ -f "$QUEUE/orch-$num.json" ] && continue
+
+        ts=$(date -u +%FT%TZ)
+        (cd "$local_path" && gh issue comment "$num" --body "**[supervisor] NOTE** claim: $HOST $ts" >/dev/null 2>&1) || { slog "[dispatch] $owner_repo#$num — claim comment failed"; continue; }
+        sleep "$CLAIM_SETTLE_SECS"
+        winner=$(cd "$local_path" && gh issue view "$num" --json comments \
+          --jq "[.comments[] | select(.body | startswith(\"**[supervisor] NOTE** claim: \")) | select(.createdAt > \"$cutoff\")] | sort_by(.createdAt) | first | .body" 2>/dev/null | awk '{print $4}')
+        if [ "$winner" != "$HOST" ]; then
+          slog "[dispatch] $owner_repo#$num — lost claim to ${winner:-?}"
+          continue
+        fi
+        # Won: a re-dispatch is JP's explicit "go again", so clear local tombstones like a manual launch does.
+        rm -f "$PIPE/orch-$num".{stopped,held,done,alert,label-cleared} "$PIPE/orch-$num.restarts"
+        out=$("$(dirname "${BASH_SOURCE[0]}")/orchestrate.sh" --force "$local_path" "$num" 2>&1 | tail -1)
+        slog "[dispatch] $owner_repo#$num — claimed by $HOST, $out"
+        launched=1
+        break
+      done
+    done
+  fi
+fi
+
+exec 9>&- 2>/dev/null

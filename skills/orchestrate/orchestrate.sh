@@ -6,13 +6,14 @@
 #   orchestrate.sh tail <issue> [lines]                           tail an orchestrator's log
 #   orchestrate.sh stop <issue>                                   kill an orchestrator (prevents auto-restart)
 #   orchestrate.sh queue                                          show the queue
+#   orchestrate.sh --force <repo-path> <issue>                   launch even if agent-in-progress is set (other machine died)
 set -euo pipefail
-PIPE=/tmp/pipeline
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/config.sh"
 SETSID=$(command -v setsid >/dev/null 2>&1 && echo setsid || true)   # absent on macOS; nohup + & is enough there
-QUEUE="$PIPE/queue"
 mkdir -p "$PIPE" "$QUEUE"
-MAX_CONCURRENT=3
-MEM_FLOOR_MB=1200
+FORCE=0; args=()
+for a in "$@"; do [ "$a" = "--force" ] && FORCE=1 || args+=("$a"); done
+set -- "${args[@]}"
 
 count_running() {
   local n=0
@@ -101,13 +102,18 @@ case "${1:-}" in
     if [ -f "$PIPE/orch-$ISSUE.pid" ] && kill -0 "$(cat "$PIPE/orch-$ISSUE.pid")" 2>/dev/null; then
       echo "orchestrator for #$ISSUE already running (pid $(cat "$PIPE/orch-$ISSUE.pid")); use 'stop' first" >&2; exit 1
     fi
-    # Launching consumes agent-go: the VM's dispatch cron (~/.claude/pipeline/dispatch.sh) launches every open
-    # agent-go issue it can see, with only *its own* /tmp/pipeline as the running-check — so an issue launched on
-    # the Mac that still carries agent-go would get a second orchestrator on the VM within 15 min. Restarts after
-    # a crash are the local supervisor's job, not the label's. (2026-09-08)
-    (cd "$REPO" && gh issue edit "$ISSUE" --add-label "agent-in-progress" --remove-label "agent-go" 2>/dev/null) || true
+    # Cross-machine guard: agent-in-progress on an issue this machine does not own (never launched here, or launched
+    # here but already released via .label-cleared) means another machine is driving it.
+    if [ "$FORCE" -eq 0 ] && { [ ! -f "$PIPE/orch-$ISSUE.repo" ] || [ -f "$PIPE/orch-$ISSUE.label-cleared" ]; } \
+       && (cd "$REPO" && gh issue view "$ISSUE" --json labels --jq '[.labels[].name] | index("'"$LABEL_IN_PROGRESS"'") != null' 2>/dev/null | grep -q true); then
+      echo "#$ISSUE carries $LABEL_IN_PROGRESS but nothing is running here — running elsewhere? check the other machine's status, or --force" >&2; exit 1
+    fi
+    rm -f "$QUEUE/orch-$ISSUE.json"   # a manual launch supersedes a queued one; never both
+    # Launching consumes agent-go (the shared-dispatch pool) and claims the issue for this machine. Crash restarts are
+    # the local supervisor's job, not the label's; the supervisor drops agent-in-progress when the run is done or parked.
+    (cd "$REPO" && gh issue edit "$ISSUE" --add-label "$LABEL_IN_PROGRESS" --remove-label "$LABEL_GO" 2>/dev/null) || true
     # Clear tombstones and restart state on manual launch
-    rm -f "$PIPE/orch-$ISSUE".{stopped,held,done,alert} "$PIPE/orch-$ISSUE.restarts"
+    rm -f "$PIPE/orch-$ISSUE".{stopped,held,done,alert,label-cleared} "$PIPE/orch-$ISSUE.restarts"
     if ! has_capacity; then
       python3 -c "
 import json, datetime, time
