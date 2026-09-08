@@ -168,5 +168,6 @@
   "effortLevel": "high",
   "advisorModel": "opus",
   "skipDangerousModePermissionPrompt": true,
-  "skipWorkflowUsageWarning": true
+  "skipWorkflowUsageWarning": true,
+  "model": "opus[1m]"
 }

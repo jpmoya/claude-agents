@@ -25,8 +25,18 @@ export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:$PATH"
 slog() { printf '[%s] %s\n' "$(date -u +%FT%TZ)" "$*" >> "$SLOG"; }
 
 # Acquire lock — exit if previous tick still running
-exec 9>"$PIPE/supervisor.lock"
-flock -n 9 || exit 0
+if command -v flock >/dev/null 2>&1; then
+  exec 9>"$PIPE/supervisor.lock"
+  flock -n 9 || exit 0
+else
+  # macOS has no flock: mkdir is atomic; a lock older than 10 min is a dead tick, reclaim it
+  LOCKDIR="$PIPE/supervisor.lockdir"
+  if ! mkdir "$LOCKDIR" 2>/dev/null; then
+    if [ -n "$(find "$LOCKDIR" -maxdepth 0 -mmin +10 2>/dev/null)" ]; then rmdir "$LOCKDIR" 2>/dev/null; mkdir "$LOCKDIR" 2>/dev/null || exit 0
+    else exit 0; fi
+  fi
+  trap 'rmdir "$LOCKDIR" 2>/dev/null' EXIT
+fi
 
 count_running() {
   local n=0
