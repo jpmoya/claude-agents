@@ -16,6 +16,9 @@ MEM_FLOOR_MB=1200
 MAX_NO_PROGRESS=3
 MAX_TOTAL=6
 BACKOFF=(120 300 900 1800)
+MIN_RUN_SECS=180          # runs shorter than this are transient (rate limit, OOM, API error)
+MAX_TRANSIENT_TOTAL=20    # transient failures get many more retries
+TRANSIENT_BACKOFF=(300 600 1200 1800 3600)  # 5m, 10m, 20m, 30m, 60m
 
 export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:$PATH"
 
@@ -181,13 +184,24 @@ for f in "$PIPE"/orch-*.pid; do
   exit_code=$(cat "$PIPE/orch-$issue.exit" 2>/dev/null || echo "?")
   extra=$(cat "$PIPE/orch-$issue.extra" 2>/dev/null || echo "")
 
+  # Detect transient exit: if the run was short-lived, it's likely a rate limit or OOM, not a real stall
+  run_duration=0
+  if [ -f "$PIPE/orch-$issue.start" ]; then
+    start_epoch=$(date -d "$(cat "$PIPE/orch-$issue.start")" +%s 2>/dev/null || echo 0)
+    now_epoch=$(date +%s)
+    run_duration=$(( now_epoch - start_epoch ))
+  fi
+  transient=false
+  [ "$run_duration" -lt "$MIN_RUN_SECS" ] && transient=true
+
   # Load or init restart state
   if [ -f "$restarts_file" ]; then
     count=$(python3 -c "import json; print(json.load(open('$restarts_file')).get('count',0))" 2>/dev/null || echo 0)
     total=$(python3 -c "import json; print(json.load(open('$restarts_file')).get('total',0))" 2>/dev/null || echo 0)
+    transient_count=$(python3 -c "import json; print(json.load(open('$restarts_file')).get('transient_count',0))" 2>/dev/null || echo 0)
     last_marker=$(python3 -c "import json; print(json.load(open('$restarts_file')).get('last_marker',''))" 2>/dev/null || echo "")
   else
-    count=0; total=0; last_marker=""
+    count=0; total=0; transient_count=0; last_marker=""
   fi
 
   # Check if marker progressed (reset no-progress counter)
@@ -196,36 +210,57 @@ for f in "$PIPE"/orch-*.pid; do
     slog "[progress] #$issue marker advanced: $last_marker -> $marker"
   fi
 
-  count=$((count + 1))
   total=$((total + 1))
+  if $transient; then
+    transient_count=$((transient_count + 1))
+    slog "[transient] #$issue ran ${run_duration}s (<${MIN_RUN_SECS}s) — treating as transient (${transient_count}/${MAX_TRANSIENT_TOTAL})"
+  else
+    count=$((count + 1))
+  fi
 
-  # Check caps
-  if [ "$count" -ge "$MAX_NO_PROGRESS" ] || [ "$total" -ge "$MAX_TOTAL" ]; then
-    # Update history before escalating
+  # Check caps — transient exits have a much higher ceiling
+  should_escalate=false
+  if $transient; then
+    [ "$transient_count" -ge "$MAX_TRANSIENT_TOTAL" ] && should_escalate=true
+  else
+    if [ "$count" -ge "$MAX_NO_PROGRESS" ] || [ "$total" -ge "$MAX_TOTAL" ]; then
+      should_escalate=true
+    fi
+  fi
+
+  if $should_escalate; then
     python3 -c "
 import json, datetime
 try: d = json.load(open('$restarts_file'))
-except: d = {'count':0,'total':0,'last_marker':'','history':[]}
-d['history'].append({'ts':'$(date -u +%FT%TZ)','exit':'$exit_code','marker':'''$marker'''})
-d['count']=$count; d['total']=$total; d['last_marker']='''$marker'''
+except: d = {'count':0,'total':0,'transient_count':0,'last_marker':'','history':[]}
+d['history'].append({'ts':'$(date -u +%FT%TZ)','exit':'$exit_code','marker':'''$marker''','transient':$($transient && echo true || echo false),'run_secs':$run_duration})
+d['count']=$count; d['total']=$total; d['transient_count']=$transient_count; d['last_marker']='''$marker'''
 json.dump(d, open('$restarts_file','w'))
 " 2>/dev/null
     escalate "$repo" "$issue" "$restarts_file"
     continue
   fi
 
-  # Calculate backoff
-  idx=$((count - 1))
-  [ "$idx" -ge "${#BACKOFF[@]}" ] && idx=$(( ${#BACKOFF[@]} - 1 ))
-  not_before=$(( $(date +%s) + ${BACKOFF[$idx]} ))
+  # Calculate backoff — transient exits use longer backoff
+  if $transient; then
+    idx=$((transient_count - 1))
+    [ "$idx" -ge "${#TRANSIENT_BACKOFF[@]}" ] && idx=$(( ${#TRANSIENT_BACKOFF[@]} - 1 ))
+    not_before=$(( $(date +%s) + ${TRANSIENT_BACKOFF[$idx]} ))
+    backoff_val=${TRANSIENT_BACKOFF[$idx]}
+  else
+    idx=$((count - 1))
+    [ "$idx" -ge "${#BACKOFF[@]}" ] && idx=$(( ${#BACKOFF[@]} - 1 ))
+    not_before=$(( $(date +%s) + ${BACKOFF[$idx]} ))
+    backoff_val=${BACKOFF[$idx]}
+  fi
 
   # Update restart state
   python3 -c "
 import json
 try: d = json.load(open('$restarts_file'))
-except: d = {'count':0,'total':0,'last_marker':'','history':[]}
-d['history'].append({'ts':'$(date -u +%FT%TZ)','exit':'$exit_code','marker':'''$marker'''})
-d['count']=$count; d['total']=$total; d['last_marker']='''$marker'''
+except: d = {'count':0,'total':0,'transient_count':0,'last_marker':'','history':[]}
+d['history'].append({'ts':'$(date -u +%FT%TZ)','exit':'$exit_code','marker':'''$marker''','transient':$($transient && echo true || echo false),'run_secs':$run_duration})
+d['count']=$count; d['total']=$total; d['transient_count']=$transient_count; d['last_marker']='''$marker'''
 json.dump(d, open('$restarts_file','w'))
 " 2>/dev/null
 
@@ -235,7 +270,7 @@ import json
 json.dump({'issue':'$issue','repo':'$repo','extra':'''$extra''','reason':'auto-restart','queued_at':'$(date -u +%FT%TZ)','not_before':$not_before}, open('$QUEUE/orch-$issue.json','w'))
 " 2>/dev/null
 
-  slog "[queue-restart] #$issue exit=$exit_code marker='$marker' count=$count/$MAX_NO_PROGRESS total=$total/$MAX_TOTAL backoff=${BACKOFF[$idx]}s"
+  slog "[queue-restart] #$issue exit=$exit_code marker='$marker' transient=$transient run=${run_duration}s count=$count/$MAX_NO_PROGRESS transient=$transient_count/$MAX_TRANSIENT_TOTAL total=$total backoff=${backoff_val}s"
 done
 
 # 2. Drain queue (one item per tick)
