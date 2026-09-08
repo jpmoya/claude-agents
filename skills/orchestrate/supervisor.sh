@@ -254,13 +254,19 @@ for f in "$PIPE"/orch-*.pid; do
 import json
 try: d = json.load(open('$restarts_file'))
 except: d = {'count':0,'total':0,'transient_count':0,'last_marker':'','history':[]}
-d['history'].append({'ts':'$(date -u +%FT%TZ)','exit':'$exit_code','marker':'''$marker''','transient':$($transient && echo true || echo false),'run_secs':$run_duration})
+d['history'].append({'ts':'$(date -u +%FT%TZ)','exit':'$exit_code','marker':'''$marker''','transient':$($transient && echo True || echo False),'run_secs':$run_duration})
 d['count']=$count; d['total']=$total; d['transient_count']=$transient_count; d['last_marker']='''$marker'''
 json.dump(d, open('$restarts_file','w'))
 " 2>/dev/null
 
   if $should_escalate; then
     escalate "$repo" "$issue" "$restarts_file"
+    continue
+  fi
+
+  # Already queued — don't overwrite its not_before
+  if [ -f "$QUEUE/orch-$issue.json" ]; then
+    slog "[queue-wait] #$issue — already queued, skipping re-enqueue"
     continue
   fi
 
