@@ -136,12 +136,13 @@ Before launching any agent, check how many Claude Code processes are already run
 ```bash
 wait_for_capacity() {
   local MAX_CONCURRENT=8
+  local MY_PID=$$
   for i in $(seq 1 10); do
-    ACTIVE=$(pgrep -ax "claude.*--dangerously-skip-permissions" 2>/dev/null | wc -l)
+    ACTIVE=$(pgrep -af "claude.*--dangerously-skip-permissions" 2>/dev/null | grep -v "^${MY_PID} " | grep -v "pgrep" | wc -l)
     if [ "$ACTIVE" -le "$MAX_CONCURRENT" ]; then
       return 0
     fi
-    echo "Concurrency gate: $ACTIVE claude processes running (max $MAX_CONCURRENT). Waiting 60s... (attempt $i/10)"
+    echo "Concurrency gate: $ACTIVE other claude processes running (max $MAX_CONCURRENT). Waiting 60s... (attempt $i/10)"
     sleep 60
   done
   echo "Concurrency gate: still over capacity after 10 attempts. Aborting dispatch."
