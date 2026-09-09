@@ -120,7 +120,7 @@ do_launch() {
 
   echo $! > "$PIPE/orch-$issue.pid"
   echo "$repo" > "$PIPE/orch-$issue.repo"
-  date -u +%FT%TZ > "$PIPE/orch-$issue.start"
+  [ -f "$PIPE/orch-$issue.start" ] || date -u +%FT%TZ > "$PIPE/orch-$issue.start"
   rm -f "$PIPE/orch-$issue.label-cleared"
 
   slog "[launch] #$issue pid=$! reason=$reason restart=$restart_n mem=$(mem_available_mb)MB running=$(count_running)/$MAX_CONCURRENT"

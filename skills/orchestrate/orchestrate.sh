@@ -113,7 +113,7 @@ case "${1:-}" in
     # the local supervisor's job, not the label's; the supervisor drops agent-in-progress when the run is done or parked.
     (cd "$REPO" && gh issue edit "$ISSUE" --add-label "$LABEL_IN_PROGRESS" --remove-label "$LABEL_GO" 2>/dev/null) || true
     # Clear tombstones and restart state on manual launch
-    rm -f "$PIPE/orch-$ISSUE".{stopped,held,done,alert,label-cleared} "$PIPE/orch-$ISSUE.restarts"
+    rm -f "$PIPE/orch-$ISSUE".{stopped,held,done,alert,label-cleared,start} "$PIPE/orch-$ISSUE.restarts"
     if ! has_capacity; then
       python3 -c "
 import json, datetime, time
