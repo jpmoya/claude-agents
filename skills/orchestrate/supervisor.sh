@@ -89,6 +89,24 @@ terminal_kind() {
   echo ""
 }
 
+notify_engineering() {  # post a pipeline event to #engineering; requires SLACK_BOT_TOKEN + SLACK_ENGINEERING_CHANNEL
+  local issue=$1 emoji=$2 reason=$3 owner_repo=$4
+  [ -z "${SLACK_BOT_TOKEN:-}" ] || [ -z "${SLACK_ENGINEERING_CHANNEL:-}" ] && return 0
+  local link="https://github.com/$owner_repo/issues/$issue"
+  local msg="$emoji <$link|#$issue> — $reason"
+  local payload
+  payload=$(jq -n --arg ch "$SLACK_ENGINEERING_CHANNEL" --arg txt "$msg" \
+    '{channel: $ch, text: $txt, unfurl_links: false}')
+  local resp
+  resp=$(curl -s --max-time 10 -X POST -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+    -H "Content-Type: application/json" -d "$payload" https://slack.com/api/chat.postMessage 2>/dev/null) || true
+  if echo "$resp" | python3 -c "import json,sys; sys.exit(0 if json.load(sys.stdin).get('ok') else 1)" 2>/dev/null; then
+    slog "[slack] #$issue — posted to engineering"
+  else
+    slog "[slack] #$issue — post failed: $(echo "$resp" | python3 -c "import json,sys; print(json.load(sys.stdin).get('error','unknown'))" 2>/dev/null || echo 'curl error')"
+  fi
+}
+
 clear_in_progress() {  # idempotent; one gh call per issue, remembered in a marker file
   local repo=$1 issue=$2 why=$3
   [ -f "$PIPE/orch-$issue.label-cleared" ] && return 0
@@ -157,6 +175,7 @@ EOC
   rm -f "$QUEUE/orch-$issue.json"
   printf '%s Pipeline #%s held — needs manual relaunch after investigation (%s)\n' "$(date -u +%FT%TZ)" "$issue" "$owner_repo" > "$PIPE/orch-$issue.alert"
   slog "[escalate] #$issue — too many restarts without progress (queue entry purged)"
+  notify_engineering "$issue" ":rotating_light:" "Stalled — restarted multiple times without progress. Needs investigation." "$owner_repo"
 }
 
 # --- Main tick ---
@@ -191,6 +210,7 @@ for f in "$PIPE"/orch-*.pid; do
     done)
       touch "$PIPE/orch-$issue.done"
       slog "[done] #$issue — terminal marker: $marker"
+      notify_engineering "$issue" ":white_check_mark:" "Deployed" "$(cd "$repo" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo "unknown")"
       continue ;;
     gate)
       # Human gate (mockups, infra go, BLOCKED): park it; JP relaunches (or re-adds agent-go) after acting
@@ -198,6 +218,10 @@ for f in "$PIPE"/orch-*.pid; do
       rm -f "$QUEUE/orch-$issue.json"
       printf '%s Pipeline #%s waiting on JP — %s; relaunch (or re-add %s) after acting\n' "$(date -u +%FT%TZ)" "$issue" "$marker" "$LABEL_GO" > "$PIPE/orch-$issue.alert"
       slog "[held] #$issue — waiting on JP: $marker"
+      local gate_reason
+      gate_reason=$(echo "$marker" | sed 's/\*\*\[[^]]*\]\*\* *//; s/^ *//; s/ *$//')
+      [ -z "$gate_reason" ] && gate_reason="$marker"
+      notify_engineering "$issue" ":hand:" "Waiting on you — $gate_reason" "$(cd "$repo" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo "unknown")"
       continue ;;
   esac
 
@@ -386,6 +410,72 @@ if [ "$launched" -eq 0 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
         break
       done
     done
+  fi
+fi
+
+# 5. Slack reply bridge — poll #engineering for @openclaw mentions, post responses as GitHub issue comments
+if [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "${SLACK_ENGINEERING_CHANNEL:-}" ]; then
+  OPENCLAW_USER_ID="U0BU2D1F1S5"
+  SLACK_CURSOR_FILE="$PIPE/slack-cursor.ts"
+  oldest="0"
+  [ -f "$SLACK_CURSOR_FILE" ] && oldest=$(cat "$SLACK_CURSOR_FILE")
+
+  slack_resp=$(curl -s --max-time 10 -G \
+    -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+    --data-urlencode "channel=$SLACK_ENGINEERING_CHANNEL" \
+    --data-urlencode "oldest=$oldest" \
+    --data-urlencode "limit=20" \
+    https://slack.com/api/conversations.history 2>/dev/null) || slack_resp=""
+
+  if echo "$slack_resp" | python3 -c "import json,sys; sys.exit(0 if json.load(sys.stdin).get('ok') else 1)" 2>/dev/null; then
+    echo "$slack_resp" | python3 -c "
+import json, re, subprocess, sys
+
+resp = json.load(sys.stdin)
+messages = resp.get('messages', [])
+oldest = float(sys.argv[1])
+cursor_file = sys.argv[2]
+bot_uid = sys.argv[3]
+max_ts = oldest
+
+for msg in messages:
+    ts = float(msg.get('ts', '0'))
+    if ts > max_ts:
+        max_ts = ts
+    text = msg.get('text', '')
+    m = re.match(r'.*?<@' + bot_uid + r'>\s+#(\d+)\s+(.+)', text, re.DOTALL)
+    if not m:
+        continue
+    issue = m.group(1)
+    response = m.group(2).strip()
+    if not response:
+        continue
+    repo_file = '/tmp/pipeline/orch-' + issue + '.repo'
+    try:
+        repo = open(repo_file).read().strip()
+    except FileNotFoundError:
+        continue
+    try:
+        owner_repo = subprocess.check_output(
+            ['gh', 'repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner'],
+            cwd=repo, text=True, timeout=10
+        ).strip()
+    except Exception:
+        continue
+    body = '**[direction]** ' + response
+    try:
+        subprocess.run(
+            ['gh', 'issue', 'comment', issue, '--repo', owner_repo, '--body', body],
+            cwd=repo, check=True, capture_output=True, text=True, timeout=15
+        )
+        print(f'posted #{issue}: {response[:80]}', file=sys.stderr)
+    except Exception as e:
+        print(f'failed #{issue}: {e}', file=sys.stderr)
+
+if max_ts > oldest:
+    with open(cursor_file, 'w') as f:
+        f.write(str(max_ts + 0.000001))
+" "$oldest" "$SLACK_CURSOR_FILE" "$OPENCLAW_USER_ID" 2>&1 | while read -r line; do slog "[slack-bridge] $line"; done
   fi
 fi
 
