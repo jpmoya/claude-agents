@@ -413,70 +413,7 @@ if [ "$launched" -eq 0 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
   fi
 fi
 
-# 5. Slack reply bridge — poll #engineering for @openclaw mentions, post responses as GitHub issue comments
-if [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "${SLACK_ENGINEERING_CHANNEL:-}" ]; then
-  OPENCLAW_USER_ID="U0BU2D1F1S5"
-  SLACK_CURSOR_FILE="$PIPE/slack-cursor.ts"
-  oldest="0"
-  [ -f "$SLACK_CURSOR_FILE" ] && oldest=$(cat "$SLACK_CURSOR_FILE")
-
-  slack_resp=$(curl -s --max-time 10 -G \
-    -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
-    --data-urlencode "channel=$SLACK_ENGINEERING_CHANNEL" \
-    --data-urlencode "oldest=$oldest" \
-    --data-urlencode "limit=20" \
-    https://slack.com/api/conversations.history 2>/dev/null) || slack_resp=""
-
-  if echo "$slack_resp" | python3 -c "import json,sys; sys.exit(0 if json.load(sys.stdin).get('ok') else 1)" 2>/dev/null; then
-    echo "$slack_resp" | python3 -c "
-import json, re, subprocess, sys
-
-resp = json.load(sys.stdin)
-messages = resp.get('messages', [])
-oldest = float(sys.argv[1])
-cursor_file = sys.argv[2]
-bot_uid = sys.argv[3]
-max_ts = oldest
-
-for msg in messages:
-    ts = float(msg.get('ts', '0'))
-    if ts > max_ts:
-        max_ts = ts
-    text = msg.get('text', '')
-    m = re.match(r'.*?<@' + bot_uid + r'>\s+#(\d+)\s+(.+)', text, re.DOTALL)
-    if not m:
-        continue
-    issue = m.group(1)
-    response = m.group(2).strip()
-    if not response:
-        continue
-    repo_file = '/tmp/pipeline/orch-' + issue + '.repo'
-    try:
-        repo = open(repo_file).read().strip()
-    except FileNotFoundError:
-        continue
-    try:
-        owner_repo = subprocess.check_output(
-            ['gh', 'repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner'],
-            cwd=repo, text=True, timeout=10
-        ).strip()
-    except Exception:
-        continue
-    body = '**[direction]** ' + response
-    try:
-        subprocess.run(
-            ['gh', 'issue', 'comment', issue, '--repo', owner_repo, '--body', body],
-            cwd=repo, check=True, capture_output=True, text=True, timeout=15
-        )
-        print(f'posted #{issue}: {response[:80]}', file=sys.stderr)
-    except Exception as e:
-        print(f'failed #{issue}: {e}', file=sys.stderr)
-
-if max_ts > oldest:
-    with open(cursor_file, 'w') as f:
-        f.write(str(max_ts + 0.000001))
-" "$oldest" "$SLACK_CURSOR_FILE" "$OPENCLAW_USER_ID" 2>&1 | while read -r line; do slog "[slack-bridge] $line"; done
-  fi
-fi
+# 5. Slack reply bridge — DISABLED: now handled by openclaw's native Slack event routing
+#    (agent "pipeline-bridge" in ~/.openclaw/agents/, binding in openclaw.json)
 
 exec 9>&- 2>/dev/null
