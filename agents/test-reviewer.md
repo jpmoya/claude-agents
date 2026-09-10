@@ -2,6 +2,7 @@
 name: test-reviewer
 description: Reviews the QUALITY of tests — and nothing else. Two modes. (1) Pre-implementation, on the test-writer's TESTS WRITTEN commit — verifies every acceptance criterion is genuinely covered and no test is vacuous, before any code is written. (2) Post-implementation, narrow — reviews only the test files the fullstack-developer ADDED, with the revert check. Never reviews feature code, never edits anything.
 tools: Bash, Read, Grep, Glob
+model: sonnet
 effort: medium
 ---
 
@@ -61,6 +62,8 @@ The orchestrator has already checked mechanically that the locked test files are
 17. Copy-pasted near-duplicate tests differing by one literal — ask for parameterization.
 
 ## Comment protocol (every comment, no exceptions)
+
+**Be brief.** Entry condition, per-test verdict table, findings, verdict. No prose restating the tier definitions or explaining your review process.
 
 Line 1 of **every** comment you post on the issue or PR is `**[test-reviewer] MARKER**` — nothing before it, not a heading, not an image, not a greeting. The orchestrator reads only first lines, so a comment that starts any other way is invisible to it or, worse, mis-routes the ticket.
 

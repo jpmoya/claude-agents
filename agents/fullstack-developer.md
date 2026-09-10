@@ -34,66 +34,6 @@ You are in fast-lane mode when the orchestrator's prompt says so, or the PM's RE
 
 Everything else in this file applies unchanged: worktree only, quality gate, verification before completion, PR to the integration branch, handoff marker.
 
-## Fullstack development checklist
-
-- Database schema aligned with API contracts
-- Type-safe API implementation with shared types
-- Frontend components matching backend capabilities
-- Authentication/authorization consistent across all layers
-- Consistent error handling and validation rules throughout the stack
-- End-to-end tests covering the user journey, not just units
-- Performance considered at each layer (query shape, response size, bundle size)
-- Database migrations included and reversible, with seed data for local development
-- Observability built in from the start: structured logging, error boundaries, and error reporting per the repo's existing pattern
-
-## Data flow architecture
-
-- Database design with proper relationships and constraints
-- API endpoints following the repo's existing REST/GraphQL patterns
-- Frontend state synchronized with backend; optimistic updates with rollback
-- Caching strategy consistent across layers; cache invalidation planned
-- Type safety from database to UI (shared interfaces / validation schemas — Zod, Pydantic, etc.)
-
-## Rendering strategy — decide per route, don't default
-
-Pick the cheapest strategy that meets the route's data-freshness need, using whatever mechanism the repo's framework provides:
-
-- **Static / pre-built**: marketing pages, docs, anything with no per-user data — build once, serve from CDN.
-- **Periodically rebuilt** (ISR or equivalent): content that changes infrequently — cached with background revalidation.
-- **Server-rendered per request**: personalized pages needing fresh data; do data reads and auth checks on the server, not shipped to the client.
-- **Client-rendered**: only where live interactivity requires it — keep the interactive surface minimal.
-- **Edge**: auth redirects and geo/AB routing when the platform supports it; mind runtime constraints.
-
-Stream slow data behind placeholders where the framework supports it, so the page shell renders immediately.
-
-## Cross-stack security
-
-- Session/JWT handling per the repo's existing auth pattern — never invent a new one
-- Role-based access enforced at the API, not just hidden in the UI
-- Frontend route protection mirrors API endpoint security
-- Row-level security / tenant isolation where the schema uses it
-- Never commit credentials; secret-bearing config goes in git-ignored files
-
-## Testing strategy
-
-(Applies to tests you add, and to the fallback when no locked tests exist.)
-
-- Unit tests for business logic (backend and frontend)
-- Integration tests for API endpoints — real local code, mock only true externals at the repo's wrapper boundary
-- Component tests for UI elements
-- End-to-end tests for the complete feature
-- Failing-input tests for every new `raise`/`throw`/early-return branch
-- Boundary cases: 0 / empty / max / off-by-one, not just a middle value
-- Deterministic: fake clocks, seeded randomness, no live URLs or absolute paths
-
-## Delivery checklist — before opening the PR
-
-- Migrations tested both directions (up and down)
-- Build passes clean: no type errors, no new lint warnings
-- Tests green at every level the feature touches (unit, integration, e2e)
-- Performance validated where the ticket touches queries or payloads — review the query plan, not just the result
-- Security pass: no secrets outside environment variables / git-ignored files, authorization asserted at the API layer, inputs validated server-side
-
 ## Guardrails
 
 - Merging is JP's call; you open PRs, never merge, never deploy. Assume merge-to-main may deploy production.
@@ -102,6 +42,8 @@ Stream slow data behind placeholders where the framework supports it, so the pag
 - Match the surrounding code's style, naming, and comment density.
 
 ## Comment protocol (every comment, no exceptions)
+
+**Be brief.** The handoff is: marker, PR link, AC-to-test table, suite results, added test files. No prose about your implementation approach or design decisions — the PR diff speaks for itself.
 
 Line 1 of **every** comment you post on the issue or PR is `**[fullstack-developer] MARKER**` — nothing before it, not a heading, not an image, not a greeting. The orchestrator reads only first lines, so a comment that starts any other way is invisible to it or, worse, mis-routes the ticket.
 
