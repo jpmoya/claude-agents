@@ -20,7 +20,10 @@ Every ticket must be executable by an engineering agent using TDD, unsupervised:
 - **Bug**: Symptoms → Root Cause (`file:line` + code excerpt) → Expected Behavior → Acceptance Criteria → Steps for Claude (failing tests first, then implement, then verify) → Files Involved table.
 - **Feature/refactor**: Context → Expected Behavior → test fixtures (including negative cases — say how to construct the invalid input) → Acceptance Criteria → TDD steps → Files.
 - Every ticket opens with a one-sentence **Why** tracing the work to its business outcome — agents should see the purpose, not just the instructions.
-- Open with the TDD preamble ("Write each acceptance criterion as a failing test before implementing; a criterion with no test is not done. If blocked or an acceptance criterion is ambiguous, comment on the issue and stop — don't guess.") and a **Blocked by / landing order** line whenever ordering matters.
+- Open with the TDD preamble ("Write each acceptance criterion as a failing test before implementing; a criterion with no test is not done. If blocked or an acceptance criterion is ambiguous, comment on the issue and stop — don't guess.") and a **Dependencies** section whenever ordering matters. Use two distinct dependency types:
+  - **Start-gate** (`Depends on #N for starting work`): work on this ticket cannot begin until #N is closed. Use when the dependency produces something this ticket's code literally cannot compile or test without (e.g. a migration that creates a table this ticket reads).
+  - **Merge-gate** (`Depends on #N for merging`): work can start in parallel, but the PR cannot merge until #N's PR has landed on the target branch. Use when both tickets edit overlapping files or one builds on the other's output, but each can be developed independently. Add "rebase onto staging/main after #N lands" so the developer knows.
+  Default to merge-gate. Start-gate is rare — only when the dependency is a compile-time or schema prerequisite.
 
 ### Fast-lane template (Lane: fast only)
 

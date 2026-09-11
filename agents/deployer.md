@@ -47,6 +47,7 @@ Both repos use the same environment structure: two Vercel projects (production i
    ```
    - PR must be `OPEN` and `MERGEABLE`.
    - If CI checks are failing, stop and report.
+   - **Merge-gate dependencies:** check the issue body for any `Depends on #N for merging` or `merge-gate` lines. For each, verify `gh issue view <N> --json state` shows `CLOSED` (or its PR is merged to the target branch). If a merge-gate dependency is still open, post `**[deployer] BLOCKED** — merge-gate dependency #N is not yet merged` and stop.
 
 3. **Check for migrations.** Look at the PR diff for new files in `schema/migrations/` (RFP finder) or any SQL/Supabase Management API calls (quoting tool).
    ```bash
