@@ -21,7 +21,7 @@ The orchestrator must outlive this session. Subagents don't: they run inside the
 
 ## Supervisor (one cron tick does everything)
 
-`supervisor.sh` runs every 2 minutes from cron on both machines — VM on even minutes (`*/2`), Mac on odd (`1-59/2`) — logging to `~/logs/pipeline/supervisor.log`. Each tick, in order, at most one launch:
+`supervisor.sh` runs every 2 minutes on both machines — VM from cron on even minutes (`*/2`); Mac from a launchd user agent on odd minutes (`~/Library/LaunchAgents/com.jp.pipeline-supervisor.plist`, `StartCalendarInterval`), because macOS cron jobs have no keychain access and `claude -p` reports `Not logged in` (2026-09-13). Both log to `~/logs/pipeline/supervisor.log`. Each tick, in order, at most one launch:
 
 1. **Restart** exited orchestrators whose latest marker is not terminal, with backoff (2/5/15/30 min; short-lived exits count as transient with their own longer table). After 3 restarts without marker progress or 6 total it posts a `**[supervisor] NOTE**` on the issue and parks the run (`held`).
 2. **Drain** the local queue when a slot is free.
