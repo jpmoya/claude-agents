@@ -134,7 +134,8 @@ with open('$QUEUE/orch-$ISSUE.json', 'w') as f:
       echo $? > "$2"
     ' _ "$PROMPT" "$PIPE/orch-$ISSUE.exit" >> "$PIPE/orch-$ISSUE.log" 2>&1 &
     echo $! > "$PIPE/orch-$ISSUE.pid"; echo "$REPO" > "$PIPE/orch-$ISSUE.repo"
-    date -u +%FT%TZ > "$PIPE/orch-$ISSUE.start"; printf '%s' "$EXTRA" > "$PIPE/orch-$ISSUE.extra"
+    date -u +%FT%TZ > "$PIPE/orch-$ISSUE.start"; date -u +%FT%TZ > "$PIPE/orch-$ISSUE.launched-at"
+    printf '%s' "$EXTRA" > "$PIPE/orch-$ISSUE.extra"
     echo "launched orchestrator for $OWNER_REPO#$ISSUE  pid=$!  log=$PIPE/orch-$ISSUE.log"
     echo "check: ~/.claude/skills/orchestrate/orchestrate.sh status $ISSUE"
     ;;

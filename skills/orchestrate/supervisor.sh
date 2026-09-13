@@ -2,8 +2,9 @@
 # Stateless supervisor tick — cron runs it every 2 min (VM even minutes, Mac odd minutes). One tick does, in order:
 #   1. restart exited non-terminal local orchestrators with backoff
 #   2. drain the local launch queue
-#   3. label lifecycle: drop agent-in-progress on issues this machine finished or parked
-#   4. shared dispatch: launch one agent-go issue from DISPATCH_REPOS after winning a claim
+#   3. label lifecycle: drop agent-in-progress on issues this machine finished, parked, or abandoned
+#   4. label reconciliation: clear orphaned agent-in-progress labels (no local pid, no queue, stale marker)
+#   5. shared dispatch: launch one agent-go issue from DISPATCH_REPOS after winning a claim
 # One launch per tick max. All state is local (/tmp/pipeline); the only shared state is the issue's markers and labels.
 set -uo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/config.sh"
@@ -139,6 +140,7 @@ do_launch() {
   echo $! > "$PIPE/orch-$issue.pid"
   echo "$repo" > "$PIPE/orch-$issue.repo"
   [ -f "$PIPE/orch-$issue.start" ] || date -u +%FT%TZ > "$PIPE/orch-$issue.start"
+  date -u +%FT%TZ > "$PIPE/orch-$issue.launched-at"
   rm -f "$PIPE/orch-$issue.label-cleared"
 
   slog "[launch] #$issue pid=$! reason=$reason restart=$restart_n mem=$(mem_available_mb)MB running=$(count_running)/$MAX_CONCURRENT"
@@ -218,7 +220,6 @@ for f in "$PIPE"/orch-*.pid; do
       rm -f "$QUEUE/orch-$issue.json"
       printf '%s Pipeline #%s waiting on JP — %s; relaunch (or re-add %s) after acting\n' "$(date -u +%FT%TZ)" "$issue" "$marker" "$LABEL_GO" > "$PIPE/orch-$issue.alert"
       slog "[held] #$issue — waiting on JP: $marker"
-      local gate_reason
       gate_reason=$(echo "$marker" | sed 's/\*\*\[[^]]*\]\*\* *//; s/^ *//; s/ *$//')
       [ -z "$gate_reason" ] && gate_reason="$marker"
       notify_engineering "$issue" ":hand:" "Waiting on you — $gate_reason" "$(cd "$repo" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo "unknown")"
@@ -232,9 +233,12 @@ for f in "$PIPE"/orch-*.pid; do
   exit_code=$(cat "$PIPE/orch-$issue.exit" 2>/dev/null || echo "?")
   extra=$(cat "$PIPE/orch-$issue.extra" 2>/dev/null || echo "")
 
-  # Detect transient exit: if the run was short-lived, it's likely a rate limit or OOM, not a real stall
+  # Detect transient exit: use per-launch timestamp (.launched-at), not the original .start
+  # .start is preserved across restarts (used by BLOCKED grace window); .launched-at tracks this launch only
   run_duration=0
-  if [ -f "$PIPE/orch-$issue.start" ]; then
+  if [ -f "$PIPE/orch-$issue.launched-at" ]; then
+    run_duration=$(( $(date +%s) - $(to_epoch "$(cat "$PIPE/orch-$issue.launched-at")") ))
+  elif [ -f "$PIPE/orch-$issue.start" ]; then
     run_duration=$(( $(date +%s) - $(to_epoch "$(cat "$PIPE/orch-$issue.start")") ))
   fi
   transient=false
@@ -360,7 +364,7 @@ if [ "$launched" -eq 0 ] && has_capacity; then
 fi
 
 # 3. Label lifecycle — agent-in-progress means "an orchestrator owns this somewhere"; drop it once this machine
-#    finished (done), parked (held: gate or escalation), or JP stopped it. Alive/restarting runs keep it.
+#    finished (done), parked (held: gate or escalation), stopped, or dead with no pending relaunch.
 for f in "$PIPE"/orch-*.pid; do
   [ -e "$f" ] || break
   issue=$(basename "$f" .pid); issue=${issue#orch-}
@@ -370,10 +374,39 @@ for f in "$PIPE"/orch-*.pid; do
   if   [ -f "$PIPE/orch-$issue.done" ];    then clear_in_progress "$repo" "$issue" done
   elif [ -f "$PIPE/orch-$issue.held" ];    then clear_in_progress "$repo" "$issue" held
   elif [ -f "$PIPE/orch-$issue.stopped" ]; then clear_in_progress "$repo" "$issue" stopped
+  elif [ ! -f "$QUEUE/orch-$issue.json" ]; then
+    clear_in_progress "$repo" "$issue" "dead-no-queue"
+    slog "[label] #$issue — process dead, no queue entry, cleared orphaned label"
   fi
 done
 
-# 4. Shared dispatch — one agent-go issue per tick, claimed before launch so two machines never take the same one
+# 4. Label reconciliation — catch orphaned agent-in-progress labels that have no local state at all
+#    (e.g. /tmp was cleared, or a run from another machine died). Only clear if no marker movement for 30+ min.
+STALE_LABEL_SECS=1800
+if [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
+  for entry in "${DISPATCH_REPOS[@]}"; do
+    owner_repo="${entry%%:*}"; local_path="${entry#*:}"; local_path="${local_path/#\~/$HOME}"
+    [ -d "$local_path/.git" ] || continue
+    orphans=$(gh issue list --repo "$owner_repo" --state open --label "$LABEL_IN_PROGRESS" --limit 50 --json number --jq '.[].number' 2>/dev/null) || continue
+    for num in $orphans; do
+      # Skip if we have a live process or queue entry
+      if [ -f "$PIPE/orch-$num.pid" ] && kill -0 "$(cat "$PIPE/orch-$num.pid" 2>/dev/null)" 2>/dev/null; then continue; fi
+      [ -f "$QUEUE/orch-$num.json" ] && continue
+      # Check marker staleness — only clear if no movement for STALE_LABEL_SECS
+      last_comment_age=$(cd "$local_path" && gh issue view "$num" --json comments \
+        --jq '[.comments[-1].createdAt // empty] | if length > 0 then .[0] else "" end' 2>/dev/null)
+      if [ -n "$last_comment_age" ]; then
+        comment_epoch=$(to_epoch "$last_comment_age")
+        age=$(( $(date +%s) - comment_epoch ))
+        [ "$age" -lt "$STALE_LABEL_SECS" ] && continue
+      fi
+      (cd "$local_path" && gh issue edit "$num" --remove-label "$LABEL_IN_PROGRESS" >/dev/null 2>&1) && \
+        slog "[reconcile] $owner_repo#$num — cleared orphaned $LABEL_IN_PROGRESS (no local state, marker stale ${age:-?}s)"
+    done
+  done
+fi
+
+# 5 (was 4). Shared dispatch — one agent-go issue per tick, claimed before launch so two machines never take the same one
 if [ "$launched" -eq 0 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
   if ! power_ok; then
     slog "[dispatch] skipped — on battery power"
@@ -413,7 +446,7 @@ if [ "$launched" -eq 0 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
   fi
 fi
 
-# 5. Slack reply bridge — DISABLED: now handled by openclaw's native Slack event routing
+# 6. Slack reply bridge — DISABLED: now handled by openclaw's native Slack event routing
 #    (agent "pipeline-bridge" in ~/.openclaw/agents/, binding in openclaw.json)
 
 exec 9>&- 2>/dev/null
