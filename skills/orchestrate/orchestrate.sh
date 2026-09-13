@@ -75,6 +75,10 @@ case "${1:-}" in
   stop)
     pid=$(cat "$PIPE/orch-$2.pid" 2>/dev/null)
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      # $pid is the nohup'd bash wrapper; SIGTERM does not reach its claude child,
+      # which kept driving #611 for 14 min after a stop (2026-09-13). Kill the
+      # child too. Stage processes the orchestrator launched are left alone.
+      pkill -TERM -P "$pid" 2>/dev/null
       kill "$pid" && echo "stopped orchestrator for #$2 (pid $pid)"
     else
       echo "orchestrator for #$2 not running"
