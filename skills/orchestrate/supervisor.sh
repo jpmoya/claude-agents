@@ -74,6 +74,7 @@ issue_is_closed() {
 # terminal_kind <marker> <issue> → prints "done" / "gate" / "" (not terminal)
 terminal_kind() {
   local marker=$1 issue=${2:-}
+  marker=${marker%%\*\*}   # markers are "**[agent] MARKER**": strip the trailing bold so the $-anchors below match
   [[ "$marker" =~ \]\ (DEPLOYED|APPLIED)$ ]] && { echo done; return; }
   [[ "$marker" =~ \]\ (MOCKUPS\ PENDING\ APPROVAL|AWAITING\ GO|EFFORT\ APPROVAL\ NEEDED)$ ]] && { echo gate; return; }
   if [[ "$marker" =~ \]\ BLOCKED ]]; then
