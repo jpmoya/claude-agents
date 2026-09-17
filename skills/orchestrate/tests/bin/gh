@@ -1,10 +1,12 @@
 #!/bin/bash
 # Fake `gh` for the AC14 golden test. Deterministic, no network, no real repo/issue leaked.
-# `orchestrate.sh status` shells out to `gh issue view <n> --json comments --jq ...` per run to
-# fetch the latest marker; this stub always reports "no marker" so the golden capture and the
-# golden comparison are byte-identical regardless of network or a real GitHub account.
+# `orchestrate.sh status` shells out to `gh issue view <n> --json state,comments --jq ...` per run
+# to fetch the issue's open/closed state (so a closed issue never reports "held (needs JP)" after
+# someone finishes it by hand outside the pipeline -- #151/#183, 2026-09-18) and the latest marker;
+# this stub always reports an open issue with no marker so the golden capture and the golden
+# comparison are byte-identical regardless of network or a real GitHub account.
 if [ "$1" = "issue" ] && [ "$2" = "view" ]; then
-  echo "none"
+  echo '{"state":"OPEN","last":"none"}'
   exit 0
 fi
 echo "fake gh: unexpected invocation: $*" >&2

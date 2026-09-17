@@ -61,8 +61,15 @@ case "${1:-}" in
           done)       state="done" ;;
           *)          state="exited (will auto-restart)" ;;
         esac
-        last=$( (cd "$repo" 2>/dev/null && gh issue view "$n" --json comments \
-          --jq "[.comments[] | .body | split(\"\n\")[0] | select(test($(marker_re | jq -Rs .)))] | last // \"none\"") 2>/dev/null || echo "?")
+        gh_out=$( (cd "$repo" 2>/dev/null && gh issue view "$n" --json state,comments \
+          --jq "{state, last: ([.comments[] | .body | split(\"\n\")[0] | select(test($(marker_re | jq -Rs .)))] | last // \"none\")}") 2>/dev/null)
+        gh_state=$(printf '%s' "$gh_out" | python3 -c "import json,sys; print(json.load(sys.stdin).get('state','?'))" 2>/dev/null || echo "?")
+        last=$(printf '%s' "$gh_out" | python3 -c "import json,sys; print(json.load(sys.stdin).get('last','?'))" 2>/dev/null || echo "?")
+        # Local files (pid/held/done) never learn that an issue was closed directly on GitHub
+        # (JP finishing it by hand, bypassing the deployer stage) — without this override a
+        # closed, fully-done issue keeps reporting "held (needs JP)" indefinitely (#216 session,
+        # 2026-09-18: #151 and #183 were reported as still needing JP days after being closed).
+        [ "$gh_state" = "CLOSED" ] && state="done (issue closed)"
         echo "#$n  $state  repo=$repo  latest marker: $last  log=$PIPE/orch-$n.log"
       done <<< "$(derive_runs)"
     fi
