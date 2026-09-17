@@ -25,10 +25,13 @@ test_ac18_config_example_documents_both_keys_with_placeholders() {
   token_hit=$(grep -c 'STATUS_PUSH_TOKEN' "$RS_AC18/config.local.example.sh" 2>/dev/null)
   assert_ne "$url_hit" "0" "AC18: config.local.example.sh must document STATUS_PUSH_URL" || return 1
   assert_ne "$token_hit" "0" "AC18: config.local.example.sh must document STATUS_PUSH_TOKEN" || return 1
-  # Placeholder alias entries only — this repo is public (AC5/AC17); "project-a"-shaped alias,
-  # never a real client/repo name.
-  real_leak=$(grep -nE 'Benjis-Plants|benjis-quoting-tool|Business-Intelligence|casa-verde-site|Benjis_rfp_finder' "$RS_AC18/config.local.example.sh" 2>/dev/null | grep -i 'STATUS_REPO_ALIASES' || true)
-  assert_eq "$real_leak" "" "AC18: STATUS_REPO_ALIASES example entries must use placeholder names (e.g. project-a), never a real client/repo" || return 1
+  # Placeholder entries only — this repo is public (AC5/AC17); "project-a"/"project-1"-shaped
+  # placeholders, never a real client/repo name. Whole-file check (not scoped to one key) so it
+  # covers STATUS_REPO_ALIASES and DISPATCH_REPOS (issue #9) alike — DISPATCH_REPOS entries live
+  # on their own lines below the "DISPATCH_REPOS=(" line, so a check scoped to that substring
+  # would miss them.
+  real_leak=$(grep -nE 'Benjis-Plants|benjis-quoting-tool|Business-Intelligence|casa-verde-site|Benjis_rfp_finder' "$RS_AC18/config.local.example.sh" 2>/dev/null || true)
+  assert_eq "$real_leak" "" "AC18: config.local.example.sh must never carry a real client/repo name (STATUS_REPO_ALIASES and DISPATCH_REPOS included — placeholders only)" || return 1
 }
 
 test_ac18_skill_md_documents_both_keys_and_alias_mechanism() {
