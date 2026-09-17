@@ -74,6 +74,23 @@ describe('GET / — server-rendered HTML page', () => {
     expect(html).not.toContain(plantedPath);
     expect(html).not.toContain(plantedLogLine);
   });
+
+  it('a "sessions" field planted alongside a valid payload never surfaces in the HTML (AC4)', async () => {
+    const plantedSessionTitle = 'planted interactive session title';
+    const env = makeEnv();
+    await worker.fetch(
+      beatRequest({
+        token: TOKEN_MAC,
+        body: validPayload({ sessions: [{ id: 'sess-1', title: plantedSessionTitle }] }),
+      }),
+      env,
+      {}
+    );
+
+    const res = await worker.fetch(getRequest('/'), env, {});
+    const html = await res.text();
+    expect(html).not.toContain(plantedSessionTitle);
+  });
 });
 
 describe('GET /robots.txt', () => {

@@ -87,7 +87,12 @@ describe('GET /status.json — storage read budget: exactly two get() calls per 
 });
 
 describe('Staleness is computed from received_at only, never sent_at (clock-skew defense)', () => {
-  it('a host with a fresh sent_at but an ancient received_at is NOT reported live', async () => {
+  // /status.json's frozen shape (routes table) exposes the raw host record but no derived
+  // "live/stale/offline" badge field, so this only proves the round-trip: received_at (the
+  // field staleness must be computed from) is stored and returned verbatim, distinct from
+  // sent_at. The actual badge-computation half of this invariant is asserted directly against
+  // renderPage() in render.test.js, since only the HTML side exposes a badge.
+  it('received_at (not sent_at) is what is stored and returned, even when sent_at is "fresher"', async () => {
     const kv = createMockKV({
       'host:mac': seededRecord({
         sent_at: '2026-09-17T18:00:00Z', // "fresh" by the host's own clock
@@ -97,10 +102,9 @@ describe('Staleness is computed from received_at only, never sent_at (clock-skew
     const env = makeEnv({ STATUS: kv });
     const res = await worker.fetch(getRequest('/status.json'), env, {});
     const json = await res.json();
-    // The record must be present but must not be treated as live given how ancient
-    // received_at is relative to any plausible "now" the mock KV/env supplies.
     expect(json.hosts.mac).not.toBeNull();
     expect(json.hosts.mac.received_at).toBe('2020-01-01T00:00:00Z');
+    expect(json.hosts.mac.sent_at).toBe('2026-09-17T18:00:00Z');
   });
 });
 
@@ -130,5 +134,26 @@ describe('AC4 leak test (status.json half) — planted strings never reach the J
     expect(bodyText).not.toContain(plantedTitle);
     expect(bodyText).not.toContain(plantedPath);
     expect(bodyText).not.toContain(plantedLogLine);
+  });
+
+  it('a "sessions" field planted alongside a valid payload never surfaces in /status.json (AC4)', async () => {
+    const plantedSessionTitle = 'planted interactive session title';
+    const env = makeEnv();
+    const beatRes = await worker.fetch(
+      beatRequest({
+        token: TOKEN_MAC,
+        body: validPayload({
+          sessions: [{ id: 'sess-1', title: plantedSessionTitle }],
+        }),
+      }),
+      env,
+      {}
+    );
+    expect(beatRes.status).toBe(204);
+
+    const statusRes = await worker.fetch(getRequest('/status.json'), env, {});
+    const bodyText = await statusRes.text();
+    expect(bodyText).not.toContain('sessions');
+    expect(bodyText).not.toContain(plantedSessionTitle);
   });
 });

@@ -5,3 +5,4 @@ skills/synced/
 
 # status-page Worker (issue #11) — dev-only, no wrangler login in this environment
 status-page/node_modules/
+status-page/package-lock.json

@@ -119,3 +119,26 @@ describe('AC4 leak test (render half) — planted strings never reach the HTML t
     expect(html).not.toContain('[ERROR] worker crashed');
   });
 });
+
+describe('Staleness badge is computed from received_at only, never sent_at (clock-skew defense)', () => {
+  // The badge copy itself ("live"/"stale"/"offline") is only named as a vocabulary in #11 / #4
+  // §5, not specified verbatim anywhere — so this asserts case-insensitively that "offline"
+  // appears, rather than inventing exact copy. now (epoch 0) minus received_at is far beyond
+  // offlineSecs even though sent_at (by the host's own clock) is "fresh" relative to now.
+  it('a host with a fresh sent_at but a received_at older than offlineSecs renders as offline', () => {
+    const hosts = {
+      mac: {
+        v: 1,
+        sent_at: '1970-01-01T00:00:00Z', // fresh relative to `now` below (epoch 0)
+        received_at: '1969-01-01T00:00:00Z', // ~1 year before `now` — far past offlineSecs
+        supervisor_last_tick: '1970-01-01T00:00:00Z',
+        capacity: { running: 0, max: 3, queued: 0 },
+        runs: [],
+      },
+      vm: null,
+    };
+    const now = 0; // 1970-01-01T00:00:00Z, matches sent_at exactly
+    const html = renderPage(hosts, thresholds, now);
+    expect(html).toMatch(/offline/i);
+  });
+});
