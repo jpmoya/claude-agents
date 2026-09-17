@@ -5,7 +5,10 @@
 # AC3     — `<issue> -` with no local orch-<issue>.repo file: exit 0, stdout is exactly one line
 #           asking which repo, zero `gh` calls.
 # AC4     — `<issue> -` with a local orch-<issue>.repo fixture: resolves owner/repo from that
-#           checkout and proceeds through AC6-9 exactly as `<issue> owner/repo` would.
+#           checkout and proceeds through AC6-9 exactly as `<issue> owner/repo` would. The
+#           checkout's fixture repo is given an owner/repo that appears in no fake-gh config file
+#           (only in the checkout's real git remote), so the test is falsifiable: an implementation
+#           that doesn't actually read the checkout can't coincidentally produce the right value.
 # AC5     — `<issue> owner/repo` where `gh repo view --repo owner/repo` fails: exit 0, stdout says
 #           the repo couldn't be found, zero `gh issue` calls.
 # AC6-9   — resolved repo + CLOSED / agent-in-progress / agent-go / neither: idempotent no-op for
@@ -130,28 +133,38 @@ test_ac3_dash_no_repo_file_asks_which_repo() {
 # ---------------------------------------------------------------------------
 
 test_ac4_dash_with_repo_fixture_matches_explicit_repo_outcome() {
-  local pipe home1 ghdir1 home2 ghdir2 repo_checkout owner_repo
-  local out_explicit out_dash edits1 edits2 edit_line1 edit_line2
-  owner_repo="example-owner/project-a"
+  local pipe home1 ghdir1 home2 ghdir2 repo_checkout
+  local owner_repo_explicit owner_repo_checkout
+  local out_dash edits1 edits2 edit_line1 edit_line2
+  # Deliberately distinct owner/repo values, and — critically — owner_repo_checkout appears in NO
+  # fake-gh config file, only in the checkout's real git remote (via fixture_repo). This is what
+  # makes the test falsifiable: an implementation that never reads $PIPE/orch-401.repo and instead
+  # calls e.g. `gh repo view --json nameWithOwner` unconditionally would get ghdir2's canned
+  # default ("unknown/unknown", since gh-name-with-owner is never written for ghdir2's repo-view
+  # form) or path1's value — never "project-b" — and this test would correctly fail. Only a script
+  # that actually parses the checkout's own git remote can produce "project-b" here.
+  owner_repo_explicit="example-owner/project-a"
+  owner_repo_checkout="example-owner/project-b"
   pipe=$(new_pipe)
-  repo_checkout="$pipe/repo-project-a"
-  fixture_repo "$repo_checkout" "$owner_repo"
+  repo_checkout="$pipe/repo-project-b"
+  fixture_repo "$repo_checkout" "$owner_repo_checkout"
   echo "$repo_checkout" > "$pipe/orch-401.repo"
 
-  # Path 1: explicit owner/repo arg.
+  # Path 1: explicit owner/repo arg. Same $pipe (so orch-401.repo is present here too) — proves an
+  # explicit arg wins over the local .repo file rather than the .repo file being consulted first.
   read -r home1 ghdir1 <<< "$(new_gh_home)"
-  echo "$owner_repo" > "$ghdir1/gh-name-with-owner"
+  echo "$owner_repo_explicit" > "$ghdir1/gh-name-with-owner"
   echo "OPEN" > "$ghdir1/gh-issue-state"
   echo "[]" > "$ghdir1/gh-issue-labels-json"
-  run_dispatch "$pipe" "$home1" "$ghdir1" 401 "$owner_repo"
-  out_explicit=$OUT
+  run_dispatch "$pipe" "$home1" "$ghdir1" 401 "$owner_repo_explicit"
   edits1=$(gh_call_count "$ghdir1" "issue edit")
   edit_line1=$(grep "issue edit" "$ghdir1/gh-calls.log" 2>/dev/null | head -1)
 
-  # Path 2: "-" resolved from the local checkout fixture. Same fake-gh responses so any resolution
-  # mechanism (git remote parse, `gh repo view --json nameWithOwner`, ...) yields the same repo.
+  # Path 2: "-" resolved from the local checkout fixture. gh-name-with-owner is deliberately left
+  # unset here (fake's default "unknown/unknown") for the reachability/labels calls — only the
+  # checkout's real git remote carries "project-b". The reachability call's --repo arg is expected
+  # to be owner_repo_checkout regardless of what the fake would otherwise report.
   read -r home2 ghdir2 <<< "$(new_gh_home)"
-  echo "$owner_repo" > "$ghdir2/gh-name-with-owner"
   echo "OPEN" > "$ghdir2/gh-issue-state"
   echo "[]" > "$ghdir2/gh-issue-labels-json"
   run_dispatch "$pipe" "$home2" "$ghdir2" 401 "-"
@@ -161,11 +174,17 @@ test_ac4_dash_with_repo_fixture_matches_explicit_repo_outcome() {
 
   rm -rf "$pipe" "$home1" "$home2"
 
-  assert_single_line "$out_dash" "AC4/AC10: the '-'-resolved reply is exactly one line too" || return 1
-  assert_eq "$out_dash" "$out_explicit" "AC4: '-' resolved via the local checkout must produce the same reply as the explicit owner/repo" || return 1
+  # AC4: "-" resolution must proceed through AC6-9's outcome exactly as an explicit owner/repo
+  # would — checked here against the AC9 (neither label, OPEN) branch: single line, mentions
+  # "queued" and "dispatcher" (not a copy-pasted-string comparison against path 1, which now
+  # legitimately targets a different repo and could legitimately embed it in the reply).
+  assert_single_line "$out_dash" "AC4/AC10: the '-'-resolved reply is exactly one line" || return 1
+  assert_contains "$out_dash" "queued" "AC4: '-'-resolved reply says it's queued, same outcome as AC9" || return 1
+  assert_contains "$out_dash" "dispatcher" "AC4: '-'-resolved reply mentions the shared dispatcher, same outcome as AC9" || return 1
   assert_eq "$edits1" "1" "AC4: explicit-repo path must make exactly one edit call (AC9 baseline)" || return 1
   assert_eq "$edits2" "1" "AC4: '-'-resolved path must make exactly one edit call, same as the explicit-repo path" || return 1
-  assert_contains "$edit_line2" "--repo $owner_repo" "AC4: the '-'-resolved edit call must target the owner/repo actually derived from the checkout, not a placeholder/garbage value" || return 1
+  assert_contains "$edit_line1" "--repo $owner_repo_explicit" "AC4: explicit-repo path's edit call must target the explicit arg, not the local .repo file" || return 1
+  assert_contains "$edit_line2" "--repo $owner_repo_checkout" "AC4: the '-'-resolved edit call must target the owner/repo actually derived from the checkout ($owner_repo_checkout), not a placeholder/garbage/other-path value" || return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -262,6 +281,12 @@ test_ac11_prompt_md_exists_and_has_required_content() {
   assert_contains "$body" "never guess or retry" "AC11: must forbid guessing or retrying" || return 1
   assert_contains "$body" "#<digits>" "AC11: must document the issue-number extraction rule (first #<digits>)" || return 1
   assert_contains "$body" "<owner>/<repo>" "AC11: must document the optional owner/repo token extraction rule" || return 1
+  # AC11's fourth content clause: an instruction that pipeline-bridge-dispatch.sh is the *only*
+  # command the agent may execute in response to a mention (no freeform gh/git/shell). No exact
+  # copy is given for this clause either, so tolerate reasonable rewordings around "only" +
+  # "command" (e.g. "the only command you may run") rather than pinning adjacent substrings.
+  echo "$body" | grep -Eqi "only[^.]*command" || { fail "AC11: must instruct that pipeline-bridge-dispatch.sh is the only command the agent may execute in response to a mention"; return 1; }
+  assert_contains "$body" "freeform" "AC11: must forbid freeform gh/git/shell composed by the agent" || return 1
 }
 
 # ---------------------------------------------------------------------------
