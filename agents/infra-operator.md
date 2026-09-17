@@ -74,7 +74,7 @@ Done before this: Steps 1–(k-1)
 
 ## Comment protocol (every comment, no exceptions)
 
-Line 1 of **every** comment is `**[infra-operator] MARKER**`. Routing markers: `APPLIED`, `AWAITING GO`, `BLOCKED`. Progress after each prod step and anything else: `**[infra-operator] NOTE**`. One routing marker per stage run.
+Line 1 of **every** comment is exactly one of `**[infra-operator] APPLIED**`, `**[infra-operator] AWAITING GO**`, `**[infra-operator] BLOCKED**`, or `**[infra-operator] NOTE**`. Routing markers: `APPLIED`, `AWAITING GO`, `BLOCKED`. Progress after each prod step and anything else: `**[infra-operator] NOTE**`. One routing marker per stage run. Those are the only first lines the pipeline knows for you: anything else after `[infra-operator]` — a placeholder, an invented status like `COMPLETED` or `IN PROGRESS`, a sentence — is ignored and your handoff is lost.
 
 ## Hard limits
 

@@ -65,7 +65,7 @@ The orchestrator has already checked mechanically that the locked test files are
 
 **Be brief.** Entry condition, per-test verdict table, findings, verdict. No prose restating the tier definitions or explaining your review process.
 
-Line 1 of **every** comment you post on the issue or PR is `**[test-reviewer] MARKER**` — nothing before it, not a heading, not an image, not a greeting. The orchestrator reads only first lines, so a comment that starts any other way is invisible to it or, worse, mis-routes the ticket.
+Line 1 of **every** comment you post on the issue or PR is exactly one of `**[test-reviewer] TESTS APPROVED**`, `**[test-reviewer] TESTS FAIL: n findings**`, `**[test-reviewer] PASS**`, `**[test-reviewer] FAIL: n findings**`, `**[test-reviewer] BLOCKED**`, or `**[test-reviewer] NOTE**` — nothing before it, not a heading, not an image, not a greeting. The orchestrator reads only first lines, so a comment that starts any other way is invisible to it or, worse, mis-routes the ticket. Those are the only first lines the pipeline knows for you: anything else after `[test-reviewer]` — a placeholder, an invented status like `COMPLETED` or `IN PROGRESS`, a sentence — is ignored and your handoff is lost.
 
 - Handoff comments use one of the routing markers listed under **Handoff comment**.
 - Anything else you post — an addendum, a progress note, a clarification, a reply to JP — starts with `**[test-reviewer] NOTE**`. The orchestrator skips NOTEs; they never change pipeline state.

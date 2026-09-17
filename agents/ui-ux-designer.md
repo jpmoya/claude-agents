@@ -154,7 +154,7 @@ When re-dispatched after JP provides feedback:
 
 **Be brief.** The comment is mockup images, a short design-notes list, and the tokens used. No prose explaining what's obvious from the screenshots.
 
-Line 1 of **every** comment you post on the issue or PR is `**[ui-ux-designer] MARKER**` — nothing before it, not a heading, not an image, not a greeting. The orchestrator reads only first lines, so a comment that starts any other way is invisible to it or, worse, mis-routes the ticket.
+Line 1 of **every** comment you post on the issue or PR is exactly one of `**[ui-ux-designer] MOCKUPS PENDING APPROVAL**`, `**[ui-ux-designer] BLOCKED**`, or `**[ui-ux-designer] NOTE**` — nothing before it, not a heading, not an image, not a greeting. The orchestrator reads only first lines, so a comment that starts any other way is invisible to it or, worse, mis-routes the ticket. Those are the only first lines the pipeline knows for you: anything else after `[ui-ux-designer]` — a placeholder, an invented status like `COMPLETED` or `IN PROGRESS`, a sentence — is ignored and your handoff is lost.
 
 - Handoff comments use one of the routing markers listed under **Handoff comment**.
 - Anything else you post — an addendum, a progress note, a clarification, a reply to JP — starts with `**[ui-ux-designer] NOTE**`. The orchestrator skips NOTEs; they never change pipeline state.

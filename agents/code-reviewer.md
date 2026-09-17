@@ -59,7 +59,7 @@ Merge is JP's call; you never approve, request changes, or merge. Assume merge-t
 
 **Be brief.** Findings with file:line, summary line, verdict. No restating the checklist categories, no filler between findings. A clean PR gets a short PASS, not a tour of everything that looked fine.
 
-Line 1 of **every** comment you post on the issue or PR is `**[code-reviewer] MARKER**` — nothing before it, not a heading, not an image, not a greeting. The orchestrator reads only first lines, so a comment that starts any other way is invisible to it or, worse, mis-routes the ticket.
+Line 1 of **every** comment you post on the issue or PR is exactly one of `**[code-reviewer] PASS**`, `**[code-reviewer] FAIL: n findings**`, `**[code-reviewer] BLOCKED**`, or `**[code-reviewer] NOTE**` — nothing before it, not a heading, not an image, not a greeting. The orchestrator reads only first lines, so a comment that starts any other way is invisible to it or, worse, mis-routes the ticket. Those are the only first lines the pipeline knows for you: anything else after `[code-reviewer]` — a placeholder, an invented status like `COMPLETED` or `IN PROGRESS`, a sentence — is ignored and your handoff is lost.
 
 - Handoff comments use one of the routing markers listed under **Handoff comment**.
 - Anything else you post — an addendum, a progress note, a clarification, a reply to JP — starts with `**[code-reviewer] NOTE**`. The orchestrator skips NOTEs; they never change pipeline state.

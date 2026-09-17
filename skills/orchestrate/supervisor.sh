@@ -7,7 +7,10 @@
 #   5. shared dispatch: launch one agent-go issue from DISPATCH_REPOS after winning a claim
 # One launch per tick max. All state is local (/tmp/pipeline); the only shared state is the issue's markers and labels.
 set -uo pipefail
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/config.sh"
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+source "$HERE/config.sh"
+# routing-marker vocabulary (marker_re), shared with the handoff hook and the orchestrator
+source "$HERE/../../hooks/pipeline-markers.sh" 2>/dev/null || source "$HOME/.claude/hooks/pipeline-markers.sh"
 
 SETSID=$(command -v setsid >/dev/null 2>&1 && echo setsid || true)   # absent on macOS; nohup + & is enough there
 SLOG="$LOGDIR/supervisor.log"
@@ -58,10 +61,10 @@ power_ok() {  # Mac: dispatch new work only on AC power (a sleeping laptop stran
   pmset -g batt 2>/dev/null | grep -q "AC Power"
 }
 
-latest_marker() {
+latest_marker() {  # newest first line that is a real routing marker; NOTEs and off-vocabulary lines ("**[deployer] MARKER** PASS") are inert
   local repo=$1 issue=$2
   (cd "$repo" 2>/dev/null && gh issue view "$issue" --json comments \
-    --jq '[.comments[] | .body | split("\n")[0] | select(test("^\\*\\*\\[[a-z-]+\\] ") and (test("^\\*\\*\\[[a-z-]+\\] NOTE") | not))] | last // "none"') 2>/dev/null || echo "?"
+    --jq "[.comments[] | .body | split(\"\n\")[0] | select(test($(marker_re | jq -Rs .)))] | last // \"none\"") 2>/dev/null || echo "?"
 }
 
 issue_is_closed() {
@@ -74,7 +77,7 @@ issue_is_closed() {
 # terminal_kind <marker> <issue> → prints "done" / "gate" / "" (not terminal)
 terminal_kind() {
   local marker=$1 issue=${2:-}
-  marker=${marker%%\*\*}   # markers are "**[agent] MARKER**": strip the trailing bold so the $-anchors below match
+  marker=${marker%%\*\*}   # markers are bold ("**[deployer] DEPLOYED**"): strip the trailing bold so the $-anchors below match
   [[ "$marker" =~ \]\ (DEPLOYED|APPLIED)$ ]] && { echo done; return; }
   [[ "$marker" =~ \]\ (MOCKUPS\ PENDING\ APPROVAL|AWAITING\ GO|EFFORT\ APPROVAL\ NEEDED)$ ]] && { echo gate; return; }
   if [[ "$marker" =~ \]\ BLOCKED ]]; then
