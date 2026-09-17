@@ -9,6 +9,8 @@
 set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source "$HERE/config.sh"
+# shared run-state derivation + report_status_async (issue #10)
+source "$HERE/run-state.sh"
 # routing-marker vocabulary (marker_re), shared with the handoff hook and the orchestrator
 source "$HERE/../../hooks/pipeline-markers.sh" 2>/dev/null || source "$HOME/.claude/hooks/pipeline-markers.sh"
 
@@ -18,6 +20,11 @@ HOST=$(hostname -s)
 mkdir -p "$PIPE" "$QUEUE" "$LOGDIR"
 
 slog() { printf '[%s] %s\n' "$(date -u +%FT%TZ)" "$*" >> "$SLOG"; }
+
+# Event push: every tick, deliberately outside the single-flight lock below — this is the
+# keep-alive + safety net (design #10 §4.4), so it must still fire even on a tick that skips
+# because a previous one is still running.
+report_status_async "tick"
 
 # Acquire lock — exit if previous tick still running
 if command -v flock >/dev/null 2>&1; then
@@ -182,6 +189,7 @@ EOC
   rm -f "$QUEUE/orch-$issue.json"
   printf '%s Pipeline #%s held — needs manual relaunch after investigation (%s)\n' "$(date -u +%FT%TZ)" "$issue" "$owner_repo" > "$PIPE/orch-$issue.alert"
   slog "[escalate] #$issue — too many restarts without progress (queue entry purged)"
+  report_status_async "escalate"   # event push: run held (design #10 §4.4)
   notify_engineering "$issue" ":rotating_light:" "Stalled — restarted multiple times without progress. Needs investigation." "$owner_repo"
 }
 
@@ -225,6 +233,7 @@ for f in "$PIPE"/orch-*.pid; do
       rm -f "$QUEUE/orch-$issue.json"
       printf '%s Pipeline #%s waiting on JP — %s; relaunch (or re-add %s) after acting\n' "$(date -u +%FT%TZ)" "$issue" "$marker" "$LABEL_GO" > "$PIPE/orch-$issue.alert"
       slog "[held] #$issue — waiting on JP: $marker"
+      report_status_async "held"   # event push: run held/gate (design #10 §4.4)
       gate_reason=$(echo "$marker" | sed 's/\*\*\[[^]]*\]\*\* *//; s/^ *//; s/ *$//')
       [ -z "$gate_reason" ] && gate_reason="$marker"
       notify_engineering "$issue" ":hand:" "Waiting on you — $gate_reason" "$(cd "$repo" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo "unknown")"
@@ -322,6 +331,7 @@ json.dump({'issue':'$issue','repo':'$repo','extra':'''$extra''','reason':'auto-r
 " 2>/dev/null
 
   slog "[queue-restart] #$issue exit=$exit_code marker='$marker' transient=$transient run=${run_duration}s count=$count/$MAX_NO_PROGRESS transient=$transient_count/$MAX_TRANSIENT_TOTAL total=$total backoff=${backoff_val}s"
+  report_status_async "queue-restart"   # event push: run exited -> requeued (design #10 §4.4)
 done
 
 # 2. Drain queue (one item per tick)
