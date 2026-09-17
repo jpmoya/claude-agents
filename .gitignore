@@ -1,1 +1,4 @@
 .DS_Store
+
+# machine-local cache of app-synced skills
+skills/synced/

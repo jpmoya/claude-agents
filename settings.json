@@ -169,5 +169,5 @@
   "advisorModel": "opus",
   "skipDangerousModePermissionPrompt": true,
   "skipWorkflowUsageWarning": true,
-  "model": "opus[1m]"
+  "model": "sonnet"
 }
