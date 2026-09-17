@@ -60,6 +60,12 @@ The supervisor handles this automatically now. If you need to force-restart imme
 
 Stops the orchestrator and writes a tombstone preventing auto-restart. A stage it already launched (e.g. fullstack-developer) keeps running and will still post its marker; relaunch afterwards to pick it up.
 
+## Status board (issue #10)
+
+Each host pushes a heartbeat (running/queued/held/restarting runs, capacity, last activity) to a shared status page whenever `skills/orchestrate/report-status.sh` decides something changed or the keep-alive interval elapsed. It is a silent no-op — no network call at all — until `~/.claude/pipeline/config.local.sh` sets both `STATUS_PUSH_URL` (the deployed status-page Worker's `/beat` endpoint) and `STATUS_PUSH_TOKEN` (this host's bearer secret); both come from the companion infra issue once it deploys. Never invoked directly by a call site — `orchestrate.sh`, `supervisor.sh` and `hooks/report-status-hook.sh` all go through `report_status_async` (`skills/orchestrate/run-state.sh`), which backgrounds it, redirects its output to `~/logs/pipeline/report-status.log`, and can't propagate a failure back to the caller.
+
+Repo names never leave the host verbatim: `STATUS_REPO_ALIASES=("owner/repo:alias" …)` in `config.local.sh` maps each dispatched repo to a short published alias; a repo absent from the map publishes as `"other"`. See `config.local.example.sh` for the placeholder form.
+
 ## Rules
 
 - Never `Agent(subagent_type: orchestrator)`, from any session. The `block-orchestrator-agent.sh` hook rejects it with no exemption; the script starts the orchestrator as the main agent of its own process (`claude --agent orchestrator -p`), so nothing needs that call.

@@ -38,6 +38,10 @@ fi
 source "$REPO_DIR/skills/orchestrate/config.sh"
 for e in "${DISPATCH_REPOS[@]}"; do [ -d "${e#*:}" ] || todo "checkout missing for ${e%%:*} at ${e#*:} — clone it or remove the entry from config.local.sh"; done
 if [ "$SCAN" = 1 ] && [ -z "${SLACK_WEBHOOK_URL:-}" ]; then todo "SCAN enabled but SLACK_WEBHOOK_URL unset in config.local.sh (scan still labels, just no Slack post)"; fi
+# Status board (issue #10): a silent no-op on both hosts until the companion infra issue deploys
+# the Worker and hands back these two values.
+[ -z "${STATUS_PUSH_URL:-}" ] && todo "set STATUS_PUSH_URL in config.local.sh (the deployed status-page Worker URL) to enable the status board push — reporter stays a silent no-op until then"
+[ -z "${STATUS_PUSH_TOKEN:-}" ] && todo "set STATUS_PUSH_TOKEN in config.local.sh (this host's bearer secret) to enable the status board push — reporter stays a silent no-op until then"
 
 echo "3. repo trust (headless runs ignore permissions.allow in untrusted checkouts)"
 python3 - "$HOME/.claude.json" "${DISPATCH_REPOS[@]}" <<'PY'

@@ -17,3 +17,13 @@ DISPATCH_REPOS=(
 # Hourly backlog scan (labels new issues agent-proposed, posts a Slack digest). Exactly ONE machine should run it.
 # SCAN_BACKLOG=1
 # SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."   # secret — this file only, never the repo
+
+# Status board (issue #10): the reporter (skills/orchestrate/report-status.sh) is a silent no-op
+# until BOTH are set — leave them commented out on a machine that isn't reporting yet. Set by the
+# companion infra issue once the status-page Worker + KV are deployed.
+# STATUS_PUSH_URL="https://<worker>.<account>.workers.dev/beat"   # the deployed Worker's /beat endpoint
+# STATUS_PUSH_TOKEN="..."                                         # secret — this file only, never the repo
+
+# Repo alias map for the status board (issue #10): "owner/repo:published-alias" — a repo absent
+# from this list publishes as "other". Placeholder entries only; this repo is public.
+# STATUS_REPO_ALIASES=("example-owner/project-a:project-a" "example-owner/project-b:project-b")

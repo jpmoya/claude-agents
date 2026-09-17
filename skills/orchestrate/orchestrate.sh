@@ -10,6 +10,8 @@
 set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source "$HERE/config.sh"
+# shared run-state derivation (used by `status` below) + report_status_async (issue #10)
+source "$HERE/run-state.sh"
 # routing-marker vocabulary (marker_re), shared with the supervisor, the handoff hook and the orchestrator
 source "$HERE/../../hooks/pipeline-markers.sh" 2>/dev/null || source "$HOME/.claude/hooks/pipeline-markers.sh"
 SETSID=$(command -v setsid >/dev/null 2>&1 && echo setsid || true)   # absent on macOS; nohup + & is enough there
@@ -40,22 +42,54 @@ has_capacity() {
 case "${1:-}" in
   status)
     ISSUE="${2:-}"
-    found=0
-    for f in "$PIPE"/orch-*.pid; do
-      [ -e "$f" ] || { [ $found -eq 0 ] && echo "no orchestrators recorded"; break; }
-      n=$(basename "$f" .pid); n=${n#orch-}
-      [ -n "$ISSUE" ] && [ "$n" != "$ISSUE" ] && continue
-      found=1
-      pid=$(cat "$f"); repo=$(cat "$PIPE/orch-$n.repo" 2>/dev/null || echo "?")
-      if kill -0 "$pid" 2>/dev/null; then state="running (pid $pid)"
-      elif [ -f "$PIPE/orch-$n.stopped" ]; then state="stopped (manual)"
-      elif [ -f "$PIPE/orch-$n.held" ]; then state="held (needs JP)"
-      elif [ -f "$PIPE/orch-$n.done" ]; then state="done"
-      else state="exited (will auto-restart)"; fi
-      last=$( (cd "$repo" 2>/dev/null && gh issue view "$n" --json comments \
-        --jq "[.comments[] | .body | split(\"\n\")[0] | select(test($(marker_re | jq -Rs .)))] | last // \"none\"") 2>/dev/null || echo "?")
-      echo "#$n  $state  repo=$repo  latest marker: $last  log=$PIPE/orch-$n.log"
-    done
+    # State derivation is shared with the reporter (run-state.sh's derive_runs) — issue #10 AC14:
+    # only this derivation moved; every echo/printf format string, the found=1-after-issue-filter
+    # behaviour ("no orchestrators recorded" fires only when the orch-*.pid glob itself is empty,
+    # never on a filter that matches nothing), the per-run gh marker fetch, and the runs -> alerts
+    # -> queued ordering below are unchanged.
+    if ! ls "$PIPE"/orch-*.pid >/dev/null 2>&1; then
+      echo "no orchestrators recorded"
+    else
+      while IFS=$'\t' read -r n repo state_code pid started last_activity restarts stage; do
+        [ -n "$n" ] || continue
+        [ "$state_code" = "queued" ] && continue   # queued entries are the section below, unchanged
+        [ -n "$ISSUE" ] && [ "$n" != "$ISSUE" ] && continue
+        case "$state_code" in
+          running)    state="running (pid $pid)" ;;
+          stopped)    state="stopped (manual)" ;;
+          held)       state="held (needs JP)" ;;
+          done)       state="done" ;;
+          *)          state="exited (will auto-restart)" ;;
+        esac
+        last=$( (cd "$repo" 2>/dev/null && gh issue view "$n" --json comments \
+          --jq "[.comments[] | .body | split(\"\n\")[0] | select(test($(marker_re | jq -Rs .)))] | last // \"none\"") 2>/dev/null || echo "?")
+        echo "#$n  $state  repo=$repo  latest marker: $last  log=$PIPE/orch-$n.log"
+      done <<< "$(derive_runs)"
+    fi
+    # Reporter health (design #10 §4.2): >=3 consecutive push failures earn one extra line so a
+    # broken reporter (bad token, typo'd URL) doesn't render identically to a genuinely dead host.
+    # No effect unless that state exists — absent here, so the golden stays byte-identical (AC14).
+    if [ -f "$PIPE/status-push.state" ]; then
+      push_health=$(python3 -c "
+import json
+try:
+    d = json.load(open('$PIPE/status-push.state'))
+except Exception:
+    d = {}
+fails = d.get('fails', 0)
+if isinstance(fails, int) and fails >= 3:
+    print('%s|%s' % (d.get('last_status', '?'), d.get('last_attempt_epoch', 0)))
+" 2>/dev/null)
+      if [ -n "$push_health" ]; then
+        code=${push_health%%|*}; epoch=${push_health##*|}
+        ts=$(python3 -c "
+import datetime
+try: print(datetime.datetime.fromtimestamp(int('$epoch'), tz=datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))
+except Exception: print('?')
+" 2>/dev/null)
+        echo "!! status push failing: HTTP $code since $ts"
+      fi
+    fi
     # Surface any unresolved alerts
     for af in "$PIPE"/orch-*.alert; do
       [ -e "$af" ] || break
@@ -88,6 +122,7 @@ case "${1:-}" in
     fi
     touch "$PIPE/orch-$2.stopped"
     rm -f "$QUEUE/orch-$2.json"
+    report_status_async "stop"   # event push: run stopped (design #10 §4.4)
     echo "wrote tombstone — supervisor will not auto-restart #$2"
     ;;
   queue)
@@ -146,6 +181,7 @@ with open('$QUEUE/orch-$ISSUE.json', 'w') as f:
     echo $! > "$PIPE/orch-$ISSUE.pid"; echo "$REPO" > "$PIPE/orch-$ISSUE.repo"
     date -u +%FT%TZ > "$PIPE/orch-$ISSUE.start"; date -u +%FT%TZ > "$PIPE/orch-$ISSUE.launched-at"
     printf '%s' "$EXTRA" > "$PIPE/orch-$ISSUE.extra"
+    report_status_async "launch"   # event push: run launched (design #10 §4.4)
     echo "launched orchestrator for $OWNER_REPO#$ISSUE  pid=$!  log=$PIPE/orch-$ISSUE.log"
     echo "check: ~/.claude/skills/orchestrate/orchestrate.sh status $ISSUE"
     ;;
