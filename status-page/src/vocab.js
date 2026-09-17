@@ -68,8 +68,9 @@ export const KEEPALIVE_SECS = 600;
  * Derives { staleSecs, offlineSecs } from a keep-alive interval, per AC13:
  *   staleSecs   = round(2.5 * keepaliveSecs) to the nearest minute, expressed in seconds
  *   offlineSecs = 3 * staleSecs
- * STUB — no arithmetic here yet. Throws until implemented by the fullstack-developer.
  */
 export function computeThresholds(keepaliveSecs) {
-  throw new Error('NotImplemented');
+  const staleSecs = Math.round((2.5 * keepaliveSecs) / 60) * 60;
+  const offlineSecs = 3 * staleSecs;
+  return { staleSecs, offlineSecs };
 }
