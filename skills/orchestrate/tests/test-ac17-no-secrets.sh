@@ -7,7 +7,7 @@
 #       a real regression gate the moment the developer's implementation lands.
 #   (b) the reporter must log its push decision (per design: "log the decision and HTTP status
 #       only... never echo the command or the token") without ever writing a real token into its
-#       log file — paired with a positive requirement (the log file must exist and be non-empty)
+#       log file — paired with a positive requirement (the captured log body must be non-empty)
 #       so a no-op stub that logs nothing can't pass by never having anything to grep.
 #
 # The developer's PR-level re-verification (running this same gitleaks check in CI against the
@@ -60,8 +60,10 @@ EOF
   log_body=$(cat "$log_file" 2>/dev/null || echo "")
   rm -rf "$pipe" "$home"
 
-  assert_file_exists "$log_file" "AC17: the reporter must write a decision/status log — a no-op stub that never logs would make the token check vacuous" || return 1
-  assert_ne "$log_body" "" "AC17: the log entry for this event must be non-empty" || return 1
+  # log_body is "" both when the file is missing and when it exists but is empty, so this one
+  # assertion also serves as the positive non-vacuous guard: a no-op stub that never logs
+  # anything can't pass by having nothing to grep.
+  assert_ne "$log_body" "" "AC17: the reporter must write a non-empty decision/status log entry for this event — a no-op stub that never logs would make the token check vacuous" || return 1
   assert_not_contains "$log_body" "$fake_token" "AC17: STATUS_PUSH_TOKEN must never appear in report-status.log" || return 1
 }
 
