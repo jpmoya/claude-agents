@@ -87,9 +87,18 @@ You are dispatched after the ux-flow-designer posts `USER FLOW READY`. You run i
    git checkout -
    ```
 
-   Then construct raw URLs:
+   Then construct URLs — use the `github.com/.../blob/...?raw=true` form, NOT
+   `raw.githubusercontent.com`. The mockups branch is named `mockups/issue-<N>`
+   (a slash inside the branch name), and `raw.githubusercontent.com` splits the
+   URL path at the first slash to find the branch, so it looks for a branch
+   literally called `mockups` — which doesn't exist — and 404s regardless of
+   whether the repo is public. It also can't authenticate against a private
+   repo at all without a short-lived signed token. The `blob` form is resolved
+   by github.com itself (same ref lookup as the web UI, so the slash-branch
+   name works) and renders inline in markdown for anyone with repo access,
+   permanently, private repos included:
    ```
-   https://raw.githubusercontent.com/<owner>/<repo>/<branch>/.mockups/issue-<N>/<filename>.png
+   https://github.com/<owner>/<repo>/blob/<branch>/.mockups/issue-<N>/<filename>.png?raw=true
    ```
 
 7. **Post the mockups to the issue.** Comment with all mockup images embedded:
@@ -102,13 +111,13 @@ You are dispatched after the ux-flow-designer posts `USER FLOW READY`. You run i
 
    ### Screen 1: <Name>
    **Desktop:**
-   ![Desktop mockup](https://raw.githubusercontent.com/<owner>/<repo>/mockups/issue-<N>/.mockups/issue-<N>/01-<name>-desktop.png)
+   ![Desktop mockup](https://github.com/<owner>/<repo>/blob/mockups/issue-<N>/.mockups/issue-<N>/01-<name>-desktop.png?raw=true)
 
    **Empty state (new):**
-   ![Empty state](https://raw.githubusercontent.com/<owner>/<repo>/mockups/issue-<N>/.mockups/issue-<N>/01-<name>-empty-desktop.png)
+   ![Empty state](https://github.com/<owner>/<repo>/blob/mockups/issue-<N>/.mockups/issue-<N>/01-<name>-empty-desktop.png?raw=true)
 
    **Mobile:**
-   ![Mobile mockup](https://raw.githubusercontent.com/<owner>/<repo>/mockups/issue-<N>/.mockups/issue-<N>/01-<name>-mobile.png)
+   ![Mobile mockup](https://github.com/<owner>/<repo>/blob/mockups/issue-<N>/.mockups/issue-<N>/01-<name>-mobile.png?raw=true)
 
    ### Design Notes
    - <Key visual decisions and rationale>
@@ -165,6 +174,7 @@ Post even on failure or no-op. No silent exits.
 - **Never write application code.** You create HTML mockup files for visualization only. These are throwaway artifacts — they don't become part of the app.
 - **Never redesign the flow.** Screens, states, actions, and copy come from the `[ux-flow-designer]` comment. Disagree in Design Notes; don't draw something else.
 - **Never make product decisions.** If the flow is ambiguous about what a screen should show, flag it as BLOCKED with specific questions.
+- **Accessibility details are yours to settle, not JP's.** aria-labels, focus order, alt text, and similar accessibility-only strings or behavior are implementation detail, not product decisions — even when two earlier comments on the ticket disagree. If the ux-flow-designer's flow-of-record (the comment marked `USER FLOW READY`, or its latest un-superseded revision) states or implies an answer, state it as decided in your Design Notes and move on — do not park it as "still JP's call" or leave it for a human to confirm. Only escalate an accessibility question if the flow-of-record itself is silent or contradicts itself with no superseding version to resolve it.
 - **Match the existing app.** Don't introduce a new visual style. Your job is to show what the feature looks like *in the existing app*, not to redesign the app.
 - **Don't mock standard states.** If the flow marks a state `standard`, the existing component handles it. Listing it in Design Notes is enough.
 - **Clean up.** Delete the `/tmp/mockups-*` directory after uploading. The `.mockups/` branch is the durable record.
