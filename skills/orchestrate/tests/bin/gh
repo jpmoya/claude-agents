@@ -1,0 +1,11 @@
+#!/bin/bash
+# Fake `gh` for the AC14 golden test. Deterministic, no network, no real repo/issue leaked.
+# `orchestrate.sh status` shells out to `gh issue view <n> --json comments --jq ...` per run to
+# fetch the latest marker; this stub always reports "no marker" so the golden capture and the
+# golden comparison are byte-identical regardless of network or a real GitHub account.
+if [ "$1" = "issue" ] && [ "$2" = "view" ]; then
+  echo "none"
+  exit 0
+fi
+echo "fake gh: unexpected invocation: $*" >&2
+exit 1

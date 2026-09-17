@@ -2,9 +2,9 @@
 # Shared pipeline defaults, sourced by orchestrate.sh and supervisor.sh.
 # Per-machine overrides (DISPATCH_REPOS, caps) go in ~/.claude/pipeline/config.local.sh — untracked, no secrets here.
 
-PIPE=/tmp/pipeline
-QUEUE="$PIPE/queue"
-LOGDIR="$HOME/logs/pipeline"
+PIPE="${PIPE:-/tmp/pipeline}"
+QUEUE="${QUEUE:-$PIPE/queue}"
+LOGDIR="${LOGDIR:-$HOME/logs/pipeline}"
 
 LABEL_PROPOSED="agent-proposed"     # hourly scan (VM) marks new issues
 LABEL_GO="agent-go"                 # JP: launch this anywhere — consumed at launch
