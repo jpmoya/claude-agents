@@ -8,7 +8,10 @@
 #   orchestrate.sh queue                                          show the queue
 #   orchestrate.sh --force <repo-path> <issue>                   launch even if agent-in-progress is set (other machine died)
 set -euo pipefail
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/config.sh"
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+source "$HERE/config.sh"
+# routing-marker vocabulary (marker_re), shared with the supervisor, the handoff hook and the orchestrator
+source "$HERE/../../hooks/pipeline-markers.sh" 2>/dev/null || source "$HOME/.claude/hooks/pipeline-markers.sh"
 SETSID=$(command -v setsid >/dev/null 2>&1 && echo setsid || true)   # absent on macOS; nohup + & is enough there
 mkdir -p "$PIPE" "$QUEUE"
 FORCE=0; args=()
@@ -50,7 +53,7 @@ case "${1:-}" in
       elif [ -f "$PIPE/orch-$n.done" ]; then state="done"
       else state="exited (will auto-restart)"; fi
       last=$( (cd "$repo" 2>/dev/null && gh issue view "$n" --json comments \
-        --jq '[.comments[] | .body | split("\n")[0] | select(test("^\\*\\*\\[[a-z-]+\\] ") and (test("^\\*\\*\\[[a-z-]+\\] NOTE") | not))] | last // "none"') 2>/dev/null || echo "?")
+        --jq "[.comments[] | .body | split(\"\n\")[0] | select(test($(marker_re | jq -Rs .)))] | last // \"none\"") 2>/dev/null || echo "?")
       echo "#$n  $state  repo=$repo  latest marker: $last  log=$PIPE/orch-$n.log"
     done
     # Surface any unresolved alerts
