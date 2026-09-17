@@ -45,6 +45,34 @@ export function validPayload(overrides = {}) {
   };
 }
 
+const encoder = new TextEncoder();
+
+/**
+ * Builds a valid v1 heartbeat payload serialised to exactly `targetBytes` UTF-8 bytes (measured
+ * with TextEncoder, not JS string length), via an unknown top-level `padding` field. That field
+ * is dropped by sanitise-by-reconstruction (validate.js), so a case accepted at exactly the cap
+ * also proves the size gate reads the raw request body, not the sanitised value. Padding is
+ * ASCII, so string length and UTF-8 byte length coincide.
+ */
+export function sizedBeatBody(targetBytes, overrides = {}) {
+  const base = JSON.stringify(validPayload({ ...overrides, padding: '' }));
+  const baseBytes = encoder.encode(base).length;
+  const deficit = targetBytes - baseBytes;
+  if (deficit < 0) {
+    throw new Error(
+      `sizedBeatBody: targetBytes ${targetBytes} is smaller than the unpadded payload (${baseBytes} bytes)`
+    );
+  }
+  const padded = JSON.stringify(validPayload({ ...overrides, padding: 'x'.repeat(deficit) }));
+  const actualBytes = encoder.encode(padded).length;
+  if (actualBytes !== targetBytes) {
+    throw new Error(
+      `sizedBeatBody: size calculation error, got ${actualBytes} bytes, wanted ${targetBytes}`
+    );
+  }
+  return padded;
+}
+
 export function beatRequest({
   body,
   token = TOKEN_MAC,

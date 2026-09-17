@@ -88,20 +88,21 @@ describe('validateBeatPayload — capacity.{running,max,queued} (clamped/dropped
     expect(result.value.capacity).toEqual({ running: 0, max: 99, queued: 5 });
   });
 
-  it('clamps capacity.running above 99 to 99', () => {
-    const result = validateBeatPayload(
-      validPayload({ capacity: { running: 500, max: 99, queued: 0 } })
-    );
+  // Parameterized across all three capacity fields (test-reviewer finding 3, first round: only
+  // `running` was exercised for clamping; `max` and `queued` share the same "integer 0-99,
+  // clamped" rule per the validation table and must be proven independently, not assumed.
+  it.each(['running', 'max', 'queued'])('clamps capacity.%s above 99 to 99', (field) => {
+    const base = { running: 1, max: 3, queued: 0 };
+    const result = validateBeatPayload(validPayload({ capacity: { ...base, [field]: 500 } }));
     expect(result.ok).toBe(true);
-    expect(result.value.capacity.running).toBe(99);
+    expect(result.value.capacity[field]).toBe(99);
   });
 
-  it('clamps a negative capacity value to 0', () => {
-    const result = validateBeatPayload(
-      validPayload({ capacity: { running: -5, max: 3, queued: 0 } })
-    );
+  it.each(['running', 'max', 'queued'])('clamps a negative capacity.%s to 0', (field) => {
+    const base = { running: 1, max: 3, queued: 0 };
+    const result = validateBeatPayload(validPayload({ capacity: { ...base, [field]: -5 } }));
     expect(result.ok).toBe(true);
-    expect(result.value.capacity.running).toBe(0);
+    expect(result.value.capacity[field]).toBe(0);
   });
 });
 
@@ -118,6 +119,17 @@ describe('validateBeatPayload — runs array length (boundary: 20 ok, 21 rejecte
     const result = validateBeatPayload(validPayload({ runs }));
     expect(result.ok).toBe(false);
     expect(result.reason).toBe('too-many-runs');
+  });
+
+  // test-reviewer finding 3, first round: the "array" half of "runs | array, length <= 20 | 400"
+  // was never exercised, only the length half. Not pinning `result.reason` here: the stub's
+  // JSDoc union (src/validate.js) freezes only 'bad-json'|'bad-version'|'too-many-runs', and
+  // nothing in the ticket or design names a fourth reason string for a non-array `runs` — that
+  // would be inventing a value with no source. `ok: false` is the observable outcome the
+  // validation table actually specifies.
+  it('rejects a non-array runs value (violates the "array" part of the rule)', () => {
+    const result = validateBeatPayload(validPayload({ runs: 'not-an-array' }));
+    expect(result.ok).toBe(false);
   });
 });
 

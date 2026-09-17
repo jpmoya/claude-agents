@@ -8,10 +8,17 @@ import { esc, renderPage, PAGE_REFRESH_SECS } from '../src/render.js';
 const thresholds = { staleSecs: 1500, offlineSecs: 4500 };
 
 describe('esc() — HTML-escapes even though inputs are already enum-validated (defence in depth)', () => {
-  it('escapes <, >, &, ", \'', () => {
-    expect(esc('<script>alert("xss")&\'</script>')).toBe(
-      '&lt;script&gt;alert(&quot;xss&quot;)&amp;&#39;&lt;/script&gt;'
+  it('escapes <, >, &, "', () => {
+    expect(esc('<script>alert("xss")&</script>')).toBe(
+      '&lt;script&gt;alert(&quot;xss&quot;)&amp;&lt;/script&gt;'
     );
+  });
+
+  // test-reviewer finding 4, first round: pinning the single quote to the exact numeric entity
+  // &#39; over-specified an encoding the ticket never names (&#x27; and &apos; are equally valid
+  // HTML). Assert only that it becomes *some* valid escaped form, not raw.
+  it('escapes a single quote to a valid HTML entity (exact encoding unspecified)', () => {
+    expect(esc("it's")).toMatch(/^it(&#39;|&#x27;|&apos;)s$/);
   });
 
   it('handles null and undefined without throwing, returns empty string', () => {
@@ -121,10 +128,26 @@ describe('AC4 leak test (render half) — planted strings never reach the HTML t
 });
 
 describe('Staleness badge is computed from received_at only, never sent_at (clock-skew defense)', () => {
-  // The badge copy itself ("live"/"stale"/"offline") is only named as a vocabulary in #11 / #4
-  // §5, not specified verbatim anywhere — so this asserts case-insensitively that "offline"
-  // appears, rather than inventing exact copy. now (epoch 0) minus received_at is far beyond
-  // offlineSecs even though sent_at (by the host's own clock) is "fresh" relative to now.
+  // test-reviewer finding 1, first round (Tier 1 FAIL, empirically verified with a mutant): the
+  // badge copy itself ("live"/"stale"/"offline") is only named as a vocabulary in #11 / #4 §5,
+  // never specified verbatim, so these assert case-insensitive word matches rather than exact
+  // copy or an invented data-* markup contract (none exists in the design). But matching
+  // /offline/i against the *whole document* is satisfied by the inline <style> block alone (a
+  // `.badge.offline{}` CSS rule is virtually guaranteed given the live/stale/offline
+  // vocabulary), so the style block is stripped first, and a negative control (fresh
+  // received_at, must render "live" and must NOT match "offline") closes the mutant the
+  // test-reviewer demonstrated: an always-"live" renderer that ships `.badge.offline{}` CSS now
+  // fails the negative control's "not /offline/i" half AND fails the positive case, because
+  // stripping the style leaves nothing else in the document to match "offline" against.
+  //
+  // Assumption (flagging per advisor guidance, not silently baking in): the page has no legend
+  // listing all three badge words together — §5 enumerates per-host content as "badge,
+  // last-seen, capacity, then the run list," no legend. If the developer's implementation needs
+  // one, that's a TEST DEFECT to raise against this test, not a silent workaround.
+  function stripStyle(html) {
+    return html.replace(/<style[\s\S]*?<\/style>/gi, '');
+  }
+
   it('a host with a fresh sent_at but a received_at older than offlineSecs renders as offline', () => {
     const hosts = {
       mac: {
@@ -138,7 +161,26 @@ describe('Staleness badge is computed from received_at only, never sent_at (cloc
       vm: null,
     };
     const now = 0; // 1970-01-01T00:00:00Z, matches sent_at exactly
-    const html = renderPage(hosts, thresholds, now);
-    expect(html).toMatch(/offline/i);
+    const body = stripStyle(renderPage(hosts, thresholds, now));
+    expect(body).toMatch(/offline/i);
+    expect(body).not.toMatch(/\blive\b/i);
+  });
+
+  it('a host with a fresh received_at renders as live, not offline (negative control)', () => {
+    const hosts = {
+      mac: {
+        v: 1,
+        sent_at: '1970-01-01T00:00:00Z',
+        received_at: '1970-01-01T00:00:00Z', // fresh: equals `now`, well within staleSecs
+        supervisor_last_tick: '1970-01-01T00:00:00Z',
+        capacity: { running: 0, max: 3, queued: 0 },
+        runs: [],
+      },
+      vm: null,
+    };
+    const now = 0;
+    const body = stripStyle(renderPage(hosts, thresholds, now));
+    expect(body).toMatch(/\blive\b/i);
+    expect(body).not.toMatch(/offline/i);
   });
 });

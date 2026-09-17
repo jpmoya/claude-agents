@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import worker, { __resetRateLimiter } from '../src/index.js';
 import { createMockKV } from './mock-kv.js';
-import { makeEnv, validPayload, beatRequest, TOKEN_MAC, TOKEN_VM } from './fixtures.js';
+import { makeEnv, validPayload, beatRequest, sizedBeatBody, TOKEN_MAC, TOKEN_VM } from './fixtures.js';
 
 beforeEach(() => {
   __resetRateLimiter();
@@ -119,33 +119,28 @@ describe('AC4 — malformed / oversized requests', () => {
     expect(res.status).toBe(400);
   });
 
-  it('accepts a body just under 16KB', async () => {
+  // The 16 KB cap is exercised at the real edge (16383/16384/16385 bytes, measured with
+  // TextEncoder in sizedBeatBody, not an arbitrarily-small/large pair) per test-reviewer
+  // finding 2 on the first round. "Over 16 KB" per the routes table means the cap itself
+  // (16384) succeeds and one byte past it is rejected.
+  it('accepts a body of exactly 16383 bytes (one under the 16 KB cap)', async () => {
     const env = makeEnv();
-    // Pad with a valid-length repo alias won't get us to 16KB alone; pad via extra runs up to
-    // the 20-run cap, sized so total stays under 16384 bytes.
-    const runs = Array.from({ length: 20 }, (_, i) => ({
-      repo: 'project-a',
-      issue: i + 1,
-      state: 'running',
-      stage: 'test-writer',
-      marker: 'TESTS WRITTEN',
-      started_at: '2026-09-17T18:00:00Z',
-      last_activity_at: '2026-09-17T18:00:00Z',
-      restarts: 0,
-    }));
-    const body = JSON.stringify(validPayload({ runs }));
-    expect(body.length).toBeLessThan(16384);
+    const body = sizedBeatBody(16383);
     const res = await worker.fetch(beatRequest({ body, token: TOKEN_MAC }), env, {});
     expect(res.status).toBe(204);
   });
 
-  it('returns 413 for a body over 16KB', async () => {
+  it('accepts a body of exactly 16384 bytes (the cap itself, not yet "over")', async () => {
     const env = makeEnv();
-    // A single oversized field pushes the raw body over 16384 bytes; the Worker must reject
-    // before (or regardless of) JSON-parsing it.
-    const oversizedBody = JSON.stringify(validPayload()).slice(0, -1) + ',"padding":"' + 'x'.repeat(17000) + '"}';
-    expect(oversizedBody.length).toBeGreaterThan(16384);
-    const res = await worker.fetch(beatRequest({ body: oversizedBody, token: TOKEN_MAC }), env, {});
+    const body = sizedBeatBody(16384);
+    const res = await worker.fetch(beatRequest({ body, token: TOKEN_MAC }), env, {});
+    expect(res.status).toBe(204);
+  });
+
+  it('returns 413 for a body of exactly 16385 bytes (one byte over the 16 KB cap)', async () => {
+    const env = makeEnv();
+    const body = sizedBeatBody(16385);
+    const res = await worker.fetch(beatRequest({ body, token: TOKEN_MAC }), env, {});
     expect(res.status).toBe(413);
     expect(env.STATUS._calls().put).toBe(0);
   });
