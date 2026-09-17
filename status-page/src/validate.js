@@ -29,8 +29,8 @@ function isIntInRange(value, min, max) {
   return typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max;
 }
 
-/** Sanitises a single capacity field: integer 0-99, clamped; non-numeric -> 0. */
-function sanitiseCapacityField(value) {
+/** Clamps an integer 0-99 field (capacity.*, runs[].restarts); non-numeric -> 0. */
+function clampCount(value) {
   const clamped = clampInt(value, 0, 99);
   return clamped === null ? 0 : clamped;
 }
@@ -66,7 +66,7 @@ function sanitiseRun(rawRun) {
     state: rawRun.state,
     stage: sanitiseStage(rawRun.stage),
     marker: sanitiseMarker(rawRun.marker),
-    restarts: sanitiseCapacityField(rawRun.restarts),
+    restarts: clampCount(rawRun.restarts),
   };
 
   if (isIsoTimestamp(rawRun.started_at)) run.started_at = rawRun.started_at;
@@ -105,9 +105,9 @@ export function validateBeatPayload(parsedBody) {
 
   const rawCapacity = isPlainObject(parsedBody.capacity) ? parsedBody.capacity : {};
   value.capacity = {
-    running: sanitiseCapacityField(rawCapacity.running),
-    max: sanitiseCapacityField(rawCapacity.max),
-    queued: sanitiseCapacityField(rawCapacity.queued),
+    running: clampCount(rawCapacity.running),
+    max: clampCount(rawCapacity.max),
+    queued: clampCount(rawCapacity.queued),
   };
 
   value.runs = parsedBody.runs.map(sanitiseRun).filter((run) => run !== null);

@@ -76,13 +76,21 @@ function extractBearerToken(request) {
   return match ? match[1] : null;
 }
 
+/** True if `secret` is a real configured value, not a missing/blank binding. */
+function isConfiguredSecret(secret) {
+  return typeof secret === 'string' && secret.length > 0;
+}
+
 async function handleBeat(request, env) {
   const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
   if (isRateLimited(ip)) return noindexResponse(null, { status: 429 });
 
   const token = extractBearerToken(request);
-  const okMac = constantTimeEqual(token || '', env.TOKEN_MAC || '');
-  const okVm = constantTimeEqual(token || '', env.TOKEN_VM || '');
+  // Both compares always run (no early exit against either secret) — but an unconfigured
+  // secret (missing `wrangler secret put`) never matches, even against an empty/missing
+  // token, so a deploy that forgot to set TOKEN_MAC/TOKEN_VM fails closed, not open.
+  const okMac = isConfiguredSecret(env.TOKEN_MAC) && constantTimeEqual(token ?? '', env.TOKEN_MAC);
+  const okVm = isConfiguredSecret(env.TOKEN_VM) && constantTimeEqual(token ?? '', env.TOKEN_VM);
   let host = null;
   if (okMac) host = 'mac';
   else if (okVm) host = 'vm';
