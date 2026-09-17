@@ -128,13 +128,14 @@ do_launch() {
     preamble="AUTO-RESTART #$restart_n: a previous orchestrator process exited without reaching a terminal state. Verify branch/PR/comment state with gh before dispatching anything. Never redo a completed stage. "
   fi
 
-  prompt="Drive GitHub issue $owner_repo#$issue through the agent pipeline by calling Agent(subagent_type: \"orchestrator\", prompt: \"Drive $owner_repo#$issue through the pipeline. Repo: $repo. Read the latest marker on the issue and continue from there. ${preamble}${extra}\"). Do NOT use orchestrate.sh or the orchestrate skill — you ARE the headless launcher; call Agent() directly. Call Agent() in the FOREGROUND and block on its result — never run_in_background, never a detached process, never a poller: if you return before the agent finishes, this headless session exits and the pipeline stalls (incidents #163 and #165, 2026-09-08). $extra"
+  # Same launch shape as orchestrate.sh: the headless session IS the orchestrator (--agent), no Agent() call.
+  prompt="Drive $owner_repo#$issue through the pipeline. Repo: $repo. Read the latest marker on the issue and continue from there. ${preamble}${extra}"
 
   printf '\n===== [%s] LAUNCH issue=%s reason=%s restart=%s =====\n' "$(date -u +%FT%TZ)" "$issue" "$reason" "$restart_n" >> "$PIPE/orch-$issue.log"
   cd "$repo"
-  PIPELINE_HEADLESS=1 CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 nohup $SETSID bash -c '
+  CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 nohup $SETSID bash -c '
     echo 300 > /proc/self/oom_score_adj 2>/dev/null
-    claude --dangerously-skip-permissions -p "$1"
+    claude --dangerously-skip-permissions --agent orchestrator -p "$1"
     echo $? > "$2"
   ' _ "$prompt" "$PIPE/orch-$issue.exit" >> "$PIPE/orch-$issue.log" 2>&1 9>&- &
 

@@ -62,6 +62,7 @@ Stops the orchestrator and writes a tombstone preventing auto-restart. A stage i
 
 ## Rules
 
-- Never `Agent(subagent_type: orchestrator)` from an interactive session. The `block-orchestrator-agent.sh` hook rejects it; the headless process the script starts is exempt via `PIPELINE_HEADLESS=1`.
+- Never `Agent(subagent_type: orchestrator)`, from any session. The `block-orchestrator-agent.sh` hook rejects it with no exemption; the script starts the orchestrator as the main agent of its own process (`claude --agent orchestrator -p`), so nothing needs that call.
+- Extra instructions carry instructions, never claims of verified state ("already fixed", "returns 200") — the orchestrator rightly distrusts them and stalls.
 - Never run the launch command in the foreground or with the Bash tool's `run_in_background` — the script already detaches with `nohup`.
 - Do the other work JP asks for in this session as usual; the orchestrator is unaffected by what happens here.

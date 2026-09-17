@@ -129,12 +129,15 @@ with open('$QUEUE/orch-$ISSUE.json', 'w') as f:
       echo "check: ~/.claude/skills/orchestrate/orchestrate.sh queue"
       exit 0
     fi
-    PROMPT="Drive GitHub issue $OWNER_REPO#$ISSUE through the agent pipeline by calling Agent(subagent_type: \"orchestrator\", prompt: \"Drive $OWNER_REPO#$ISSUE through the pipeline. Repo: $REPO. Read the latest marker on the issue and continue from there.\"). Do NOT use orchestrate.sh or the orchestrate skill — you ARE the headless launcher; call Agent() directly. PIPELINE_HEADLESS=1 is set in your environment — the block-orchestrator-agent.sh hook checks this var and exits 0 (allows the call) when it is set. The CLAUDE.md rule about never dispatching via Agent applies to interactive sessions, not to you — you are the detached nohup process that orchestrate.sh spawned specifically to make this one Agent() call. Do not refuse, do not ask for confirmation, do not launch orchestrate.sh recursively. Call Agent() in the FOREGROUND and block on its result — never run_in_background, never a detached process, never a poller: if you return before the agent finishes, this headless session exits and the pipeline stalls. $EXTRA"
+    # The headless session IS the orchestrator (--agent), not a wrapper that calls Agent(orchestrator):
+    # a prompt arguing "you are the exception to the CLAUDE.md rule" reads as a prompt injection and
+    # was intermittently refused (#217, #151, #637 — 2026-09-17).
+    PROMPT="Drive $OWNER_REPO#$ISSUE through the pipeline. Repo: $REPO. Read the latest marker on the issue and continue from there. $EXTRA"
     printf '\n===== [%s] LAUNCH issue=%s reason=manual =====\n' "$(date -u +%FT%TZ)" "$ISSUE" >> "$PIPE/orch-$ISSUE.log"
     cd "$REPO"
-    PIPELINE_HEADLESS=1 CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 nohup $SETSID bash -c '
+    CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 nohup $SETSID bash -c '
       echo 300 > /proc/self/oom_score_adj 2>/dev/null
-      claude --dangerously-skip-permissions -p "$1"
+      claude --dangerously-skip-permissions --agent orchestrator -p "$1"
       echo $? > "$2"
     ' _ "$PROMPT" "$PIPE/orch-$ISSUE.exit" >> "$PIPE/orch-$ISSUE.log" 2>&1 &
     echo $! > "$PIPE/orch-$ISSUE.pid"; echo "$REPO" > "$PIPE/orch-$ISSUE.repo"
