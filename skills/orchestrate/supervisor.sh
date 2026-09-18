@@ -101,6 +101,11 @@ terminal_kind() {
   echo ""
 }
 
+slack_thread_for() {  # STUB (#15, test-writer placeholder — the developer replaces this body)
+  echo "NotImplemented: slack_thread_for" >&2
+  return 1
+}
+
 notify_engineering() {  # post a pipeline event to #engineering; requires SLACK_BOT_TOKEN + SLACK_ENGINEERING_CHANNEL
   local issue=$1 emoji=$2 reason=$3 owner_repo=$4
   [ -z "${SLACK_BOT_TOKEN:-}" ] || [ -z "${SLACK_ENGINEERING_CHANNEL:-}" ] && return 0

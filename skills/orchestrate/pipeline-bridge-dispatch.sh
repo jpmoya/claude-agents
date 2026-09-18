@@ -30,7 +30,10 @@ usage() {
   echo "usage: pipeline-bridge-dispatch.sh <issue> <repo-or-dash>" >&2
 }
 
-if [ "$#" -ne 2 ]; then
+# STUB (#15, test-writer placeholder — the developer replaces this): the interface is becoming
+# <issue> <repo-or-dash> <channel> <ts> with all four required; this range check only lets the
+# 4-arg form reach the existing logic so the pre-existing tests keep passing.
+if [ "$#" -lt 2 ] || [ "$#" -gt 4 ]; then
   usage
   exit 1
 fi

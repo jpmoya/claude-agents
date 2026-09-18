@@ -51,7 +51,7 @@ test_issue_view_failure_never_claims_queued_or_closed() {
   ghdir="$home/.local/bin"
   mk_view_failing_gh "$ghdir"
   local out rc
-  out=$(PATH="$ghdir:$PATH" PIPE="$pipe" QUEUE="$pipe/queue" HOME="$home" "$SCRIPT_PBDE" 1001 "example-owner/project-a" 2>/dev/null)
+  out=$(PATH="$ghdir:$PATH" PIPE="$pipe" QUEUE="$pipe/queue" HOME="$home" "$SCRIPT_PBDE" 1001 "example-owner/project-a" "C0PBDTEST" "1700000000.000100" 2>/dev/null)
   rc=$?
   local edit_calls
   edit_calls=$(gh_call_count "$ghdir" "issue edit")
@@ -73,7 +73,7 @@ test_issue_edit_failure_never_claims_queued() {
   echo "[]" > "$ghdir/gh-issue-labels-json"
   echo 1 > "$ghdir/gh-issue-edit-rc"
   local out rc
-  out=$(PATH="$ghdir:$PATH" PIPE="$pipe" QUEUE="$pipe/queue" HOME="$home" "$SCRIPT_PBDE" 1002 "example-owner/project-a" 2>/dev/null)
+  out=$(PATH="$ghdir:$PATH" PIPE="$pipe" QUEUE="$pipe/queue" HOME="$home" "$SCRIPT_PBDE" 1002 "example-owner/project-a" "C0PBDTEST" "1700000000.000100" 2>/dev/null)
   rc=$?
   local edit_calls
   edit_calls=$(gh_call_count "$ghdir" "issue edit")
