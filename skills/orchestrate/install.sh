@@ -42,6 +42,8 @@ if [ "$SCAN" = 1 ] && [ -z "${SLACK_WEBHOOK_URL:-}" ]; then todo "SCAN enabled b
 # the Worker and hands back these two values.
 [ -z "${STATUS_PUSH_URL:-}" ] && todo "set STATUS_PUSH_URL in config.local.sh (the deployed status-page Worker URL) to enable the status board push — reporter stays a silent no-op until then"
 [ -z "${STATUS_PUSH_TOKEN:-}" ] && todo "set STATUS_PUSH_TOKEN in config.local.sh (this host's bearer secret) to enable the status board push — reporter stays a silent no-op until then"
+[ -z "${SLACK_BOT_TOKEN:-}" ] && todo "set SLACK_BOT_TOKEN in config.local.sh (bot token) to enable #engineering notifications — notify_engineering() stays a silent no-op until this and SLACK_ENGINEERING_CHANNEL are both set"
+[ -z "${SLACK_ENGINEERING_CHANNEL:-}" ] && todo "set SLACK_ENGINEERING_CHANNEL in config.local.sh (channel ID) to enable #engineering notifications — notify_engineering() stays a silent no-op until this and SLACK_BOT_TOKEN are both set"
 
 echo "3. repo trust (headless runs ignore permissions.allow in untrusted checkouts)"
 python3 - "$HOME/.claude.json" "${DISPATCH_REPOS[@]}" <<'PY'

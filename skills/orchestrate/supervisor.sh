@@ -9,12 +9,13 @@
 set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source "$HERE/config.sh"
+# shared launcher helpers: SETSID probe, capacity checks, marker jq expression (issue #8)
+source "$HERE/pipeline-lib.sh"
 # shared run-state derivation + report_status_async (issue #10)
 source "$HERE/run-state.sh"
 # routing-marker vocabulary (marker_re), shared with the handoff hook and the orchestrator
 source "$HERE/../../hooks/pipeline-markers.sh" 2>/dev/null || source "$HOME/.claude/hooks/pipeline-markers.sh"
 
-SETSID=$(command -v setsid >/dev/null 2>&1 && echo setsid || true)   # absent on macOS; nohup + & is enough there
 SLOG="$LOGDIR/supervisor.log"
 HOST=$(hostname -s)
 mkdir -p "$PIPE" "$QUEUE" "$LOGDIR"
@@ -44,25 +45,6 @@ to_epoch() {  # ISO-8601 UTC → epoch; portable (macOS date has no -d)
   python3 -c "import sys,datetime; print(int(datetime.datetime.strptime(sys.argv[1],'%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=datetime.timezone.utc).timestamp()))" "$1" 2>/dev/null || echo 0
 }
 
-count_running() {
-  local n=0
-  for f in "$PIPE"/orch-*.pid; do
-    [ -e "$f" ] || break
-    kill -0 "$(cat "$f")" 2>/dev/null && n=$((n + 1))
-  done
-  echo "$n"
-}
-
-mem_available_mb() {
-  if [ -r /proc/meminfo ]; then awk '/MemAvailable/ {print int($2/1024)}' /proc/meminfo
-  else vm_stat 2>/dev/null | awk '/page size of/ {ps=$8} /Pages free|Pages inactive|Pages speculative/ {gsub(/\./,"",$NF); p+=$NF} END {print int(p*ps/1048576)}'
-  fi
-}
-
-has_capacity() {
-  [ "$(count_running)" -lt "$MAX_CONCURRENT" ] && [ "$(mem_available_mb)" -ge "$MEM_FLOOR_MB" ]
-}
-
 power_ok() {  # Mac: dispatch new work only on AC power (a sleeping laptop strands claimed issues). Linux: always.
   [ "$(uname)" = "Darwin" ] || return 0
   pmset -g batt 2>/dev/null | grep -q "AC Power"
@@ -71,7 +53,7 @@ power_ok() {  # Mac: dispatch new work only on AC power (a sleeping laptop stran
 latest_marker() {  # newest first line that is a real routing marker; NOTEs and off-vocabulary lines ("**[deployer] MARKER** PASS") are inert
   local repo=$1 issue=$2
   (cd "$repo" 2>/dev/null && gh issue view "$issue" --json comments \
-    --jq "[.comments[] | .body | split(\"\n\")[0] | select(test($(marker_re | jq -Rs .)))] | last // \"none\"") 2>/dev/null || echo "?"
+    --jq "$(marker_last_jq)") 2>/dev/null || echo "?"
 }
 
 issue_is_closed() {
