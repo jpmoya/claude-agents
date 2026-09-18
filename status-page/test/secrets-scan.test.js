@@ -66,13 +66,32 @@ describe('AC17 — no token or secret value appears in status-page/', () => {
     expect(offenders).toEqual([]);
   });
 
-  it('wrangler.jsonc does not embed a KV namespace id that looks like a real (non-placeholder) id', () => {
+  // Amended for #16 (PM ruling on the #16 TEST DEFECT): a Cloudflare KV namespace id is an opaque
+  // identifier, not a credential, so `kv_namespaces[].id` may be a real 32-char lowercase hex id.
+  // Any OTHER 32-char lowercase hex string in wrangler.jsonc (a token pasted into `vars`, an
+  // account id, etc.) is still flagged. Whether a real id is present is #16's AC1, not this scan's.
+  it('wrangler.jsonc contains no 32-char hex value outside kv_namespaces[].id', () => {
     const wranglerPath = join(STATUS_PAGE_DIR, 'wrangler.jsonc');
     const text = readFileSync(wranglerPath, 'utf-8');
-    // Cloudflare resource ids are 32-char lowercase hex. A committed real one would leak infra
-    // details; the design requires "a clearly-marked placeholder namespace id".
-    const hexIdPattern = /"id"\s*:\s*"([0-9a-f]{32})"/g;
-    const offenders = [...text.matchAll(hexIdPattern)];
+    // Strip // comments (string-aware) and trailing commas so the JSONC parses as JSON.
+    const json = text
+      .replace(/"(?:[^"\\]|\\.)*"|\/\/[^\n]*/g, (m) => (m.startsWith('//') ? '' : m))
+      .replace(/"(?:[^"\\]|\\.)*"|,(\s*[}\]])/g, (m, tail) => (tail !== undefined ? tail : m));
+    const config = JSON.parse(json);
+
+    const hex32 = /^[0-9a-f]{32}$/;
+    const offenders = [];
+    const visit = (node, path) => {
+      if (typeof node === 'string') {
+        const isKvId = /^kv_namespaces\[\d+\]\.id$/.test(path);
+        if (hex32.test(node) && !isKvId) offenders.push(`${path} = ${node}`);
+      } else if (Array.isArray(node)) {
+        node.forEach((v, i) => visit(v, `${path}[${i}]`));
+      } else if (node && typeof node === 'object') {
+        for (const [k, v] of Object.entries(node)) visit(v, path ? `${path}.${k}` : k);
+      }
+    };
+    visit(config, '');
     expect(offenders).toEqual([]);
   });
 });

@@ -1,5 +1,5 @@
 // Config, not provisioning — no `wrangler` command is run as part of this issue (#11).
-// The infra issue creates the KV namespace, fills in the placeholder id below, and runs
+// The infra issue (#12) created the STATUS KV namespace; its id is committed below. Infra still runs
 // `wrangler secret put TOKEN_MAC` / `TOKEN_VM`. See README.md for the full hand-off contract.
 {
   "$schema": "node_modules/wrangler/config-schema.json",
@@ -10,8 +10,7 @@
   "kv_namespaces": [
     {
       "binding": "STATUS",
-      // PLACEHOLDER — the infra issue creates the real `STATUS` KV namespace and fills this in.
-      "id": "REPLACE_WITH_REAL_STATUS_KV_NAMESPACE_ID"
+      "id": "251e3cc206b14ea7a78b3bb17f8ea1e3"
     }
   ]
 }
