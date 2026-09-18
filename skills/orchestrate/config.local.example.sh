@@ -3,12 +3,13 @@
 
 # Repos this machine may dispatch from the shared `agent-go` pool, as "owner/repo:local-checkout".
 # Leave empty on a machine that should only run what you launch by hand.
+# Placeholder entries only — this repo is public. Replace with your own repos after install.
 DISPATCH_REPOS=(
-  "Benjis-Plants/scheduler:$HOME/dev/scheduler"
-  "Benjis-Plants/benjis-quoting-tool:$HOME/dev/benjis-quoting-tool"
-  "Benjis-Plants/Business-Intelligence:$HOME/dev/Business-Intelligence"
-  "jpmoya/casa-verde-site:$HOME/dev/casa-verde-site"
-  "jpmoya/Benjis_rfp_finder:$HOME/dev/Benjis_rfp_finder"
+  "example-owner/project-1:$HOME/dev/project-1"
+  "example-owner/project-2:$HOME/dev/project-2"
+  "example-owner/project-3:$HOME/dev/project-3"
+  "example-owner/project-4:$HOME/dev/project-4"
+  "example-owner/project-5:$HOME/dev/project-5"
 )
 
 # Concurrent orchestrators this machine runs (default 3 in config.sh).
