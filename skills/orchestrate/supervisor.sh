@@ -461,7 +461,11 @@ if [ "$launched" -eq 0 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
   fi
 fi
 
-# 6. Slack reply bridge — DISABLED: now handled by openclaw's native Slack event routing
-#    (agent "pipeline-bridge" in ~/.openclaw/agents/, binding in openclaw.json)
+# 6. Slack reply bridge — handled by openclaw's native Slack event routing (agent "pipeline-bridge"
+#    in ~/.openclaw/agents/, binding in openclaw.json for #engineering, requireMention: true), not
+#    by this supervisor tick. The relay's own logic is two tracked files in this repo:
+#    skills/orchestrate/pipeline-bridge-dispatch.sh (deterministic resolve + agent-go dispatch) and
+#    skills/orchestrate/pipeline-bridge-prompt.md (the relay's instructions — manually installed to
+#    ~/.openclaw/agents/pipeline-bridge/agent/IDENTITY.md, outside this repo; see README.md).
 
 exec 9>&- 2>/dev/null

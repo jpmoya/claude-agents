@@ -122,3 +122,96 @@ cleanup_running() {
   for p in $RUNNING_PIDS; do kill "$p" 2>/dev/null; done
   RUNNING_PIDS=""
 }
+
+# mk_fake_gh <dir> — installs an executable fake `gh` at <dir>/gh. Every invocation is logged as
+# one line (raw "$*") to <dir>/gh-calls.log, so a test can assert "zero calls made" or "exactly one
+# call" against it (gh_calls / gh_call_count below). Responses are mechanism-agnostic (any --json
+# field list, any --jq expression — piped through the real `jq` this repo already depends on)
+# rather than pinned to one caller's exact flags, since pipeline-bridge-dispatch.sh doesn't exist
+# yet and this fixture must not presuppose its exact argv shape. Behavior is configured by writing
+# into <dir> BEFORE invoking the script under test (all optional; defaults below):
+#   <dir>/gh-repo-view-rc       exit code for `gh repo view --repo <owner/repo>` (default 0)
+#   <dir>/gh-name-with-owner    value for the resolved owner/repo, used both as the `repo view`
+#                               response body and for `gh repo view --json nameWithOwner ...` (the
+#                               "resolve owner/repo from a local checkout" form) (default "unknown/unknown")
+#   <dir>/gh-issue-state        value of .state for `gh issue view ...` (default "OPEN")
+#   <dir>/gh-issue-labels-json  JSON array for .labels, e.g. '[{"name":"agent-go"}]' (default "[]")
+#   <dir>/gh-issue-edit-rc      exit code for `gh issue edit ...` (default 0)
+# Install target is deliberately the caller's choice of <dir> (not fixed here) — callers must use
+# an isolated HOME's .local/bin (see new_home) so config.sh's PATH prepend can't let a real `gh`
+# installed on this machine win the lookup ahead of the fake (claude-agents#7).
+mk_fake_gh() {
+  local dir=$1
+  mkdir -p "$dir"
+  : > "$dir/gh-calls.log"
+  cat > "$dir/gh" <<'GH_EOF'
+#!/bin/bash
+HERE=$(cd "$(dirname "$0")" && pwd)
+printf '%s\n' "$*" >> "$HERE/gh-calls.log"
+
+# jq_expr_of <args...> — prints the argument right after a literal --jq, if any.
+jq_expr_of() {
+  local prev=""
+  for a in "$@"; do
+    if [ "$prev" = "--jq" ]; then printf '%s' "$a"; return 0; fi
+    prev=$a
+  done
+}
+
+emit() {  # emit <json> <args...> — apply --jq if present, else print the raw json
+  local json=$1; shift
+  local expr
+  expr=$(jq_expr_of "$@")
+  if [ -n "$expr" ]; then
+    printf '%s' "$json" | jq -r "$expr"
+  else
+    printf '%s\n' "$json"
+  fi
+}
+
+case "$*" in
+  *"repo view"*"--repo "*)
+    rc=$(cat "$HERE/gh-repo-view-rc" 2>/dev/null || echo 0)
+    [ "$rc" -eq 0 ] || exit "$rc"
+    owner_repo=$(cat "$HERE/gh-name-with-owner" 2>/dev/null || echo "unknown/unknown")
+    emit "{\"nameWithOwner\":\"$owner_repo\"}" "$@"
+    exit 0
+    ;;
+  *"repo view"*"nameWithOwner"*)
+    owner_repo=$(cat "$HERE/gh-name-with-owner" 2>/dev/null || echo "unknown/unknown")
+    emit "{\"nameWithOwner\":\"$owner_repo\"}" "$@"
+    exit 0
+    ;;
+  *"issue view"*)
+    state=$(cat "$HERE/gh-issue-state" 2>/dev/null || echo "OPEN")
+    labels=$(cat "$HERE/gh-issue-labels-json" 2>/dev/null || echo "[]")
+    json=$(jq -n --arg state "$state" --argjson labels "$labels" '{state:$state, labels:$labels}')
+    emit "$json" "$@"
+    exit 0
+    ;;
+  *"issue edit"*)
+    rc=$(cat "$HERE/gh-issue-edit-rc" 2>/dev/null || echo 0)
+    exit "$rc"
+    ;;
+  *)
+    echo "fake gh: unexpected invocation: $*" >&2
+    exit 1
+    ;;
+esac
+GH_EOF
+  chmod +x "$dir/gh"
+}
+
+# gh_calls <dir> — full call log (one raw "$*" per invocation), for assert_contains/assert_eq.
+gh_calls() { cat "$1/gh-calls.log" 2>/dev/null; }
+
+# gh_call_count <dir> <grep-pattern> — number of logged invocations whose line matches <pattern>
+# (basic grep, case-sensitive); pass "" to count every invocation.
+gh_call_count() {
+  local dir=$1 pattern=$2
+  if [ -z "$pattern" ]; then
+    wc -l < "$dir/gh-calls.log" 2>/dev/null | tr -d ' '
+  else
+    grep -c -- "$pattern" "$dir/gh-calls.log" 2>/dev/null | tr -d ' '
+  fi
+}
