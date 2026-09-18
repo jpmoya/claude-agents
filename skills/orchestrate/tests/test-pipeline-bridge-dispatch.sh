@@ -42,7 +42,7 @@ README_MD="$HERE_PBD/../../../README.md"
 # stderr vs stdout by the ticket, so AC2 only asserts exit code + call count, not stream).
 run_dispatch() {
   local pipe=$1 home=$2 ghdir=$3 issue=$4 repo=$5
-  OUT=$(PATH="$ghdir:$PATH" PIPE="$pipe" QUEUE="$pipe/queue" HOME="$home" "$SCRIPT" "$issue" "$repo" 2>/tmp/pbd-stderr.$$)
+  OUT=$(PATH="$ghdir:$PATH" PIPE="$pipe" QUEUE="$pipe/queue" HOME="$home" "$SCRIPT" "$issue" "$repo" "C0PBDTEST" "1700000000.000100" 2>/tmp/pbd-stderr.$$)
   RC=$?
   ERR=$(cat /tmp/pbd-stderr.$$ 2>/dev/null)
   rm -f /tmp/pbd-stderr.$$
@@ -345,3 +345,276 @@ run_test test_ac11_prompt_md_exists_and_has_required_content
 run_test test_ac12_supervisor_comment_updated
 run_test test_ac13_readme_documents_manual_install_step
 run_test test_ac14_pipeline_bridge_dispatch_no_forbidden_syntax
+
+# ===========================================================================
+# Issue #15 — slack-thread NOTE + the two new required args (<channel> <ts>)
+#
+# AC1     — closed / already-running / already-queued / newly-queued each post exactly one
+#           `gh issue comment` whose body's FIRST line is
+#           `**[pipeline-bridge] NOTE** slack-thread: <channel>:<ts>` (extra lines are allowed).
+# AC2     — "repo not found" and "which repo?" post no comment.
+# AC6     — pipeline-bridge-prompt.md documents extracting chat_id/message_id and always passing
+#           them as args 3/4.
+# AC7     — (dispatch-script half) portability, already enforced by test_ac14_* above; the
+#           supervisor.sh half lives in test-notify-engineering-thread.sh.
+# Expected Behavior 1 — the script now takes FOUR required positional args.
+#
+# The two args added to run_dispatch's argv and to test-pipeline-bridge-dispatch-error-handling.sh's
+# two invocations are the only edits made to the #7 tests; no #7 assertion was touched.
+#
+# Fake gh: mk_fake_gh (tests/lib/fixture.sh) has no `issue comment` branch, so pbdt_gh_home wraps it:
+# `issue comment` is intercepted (body captured to <ghdir>/comments/<n>.body, a URL printed on
+# stdout like the real gh does so a leak into the script's own stdout is caught by the
+# exactly-one-line assertion) and every other call is delegated unchanged to the base fake.
+# ===========================================================================
+
+PBDT_CHANNEL="C0123ABCD"
+PBDT_TS="1726690000.000200"
+PBDT_NOTE="**[pipeline-bridge] NOTE** slack-thread: $PBDT_CHANNEL:$PBDT_TS"
+PBDT_ROOT=$(cd "$HERE_PBD/../../.." && pwd)
+
+# pbdt_gh_home — like new_gh_home, but the fake gh also understands `gh issue comment`. Prints "<home> <ghdir>".
+pbdt_gh_home() {
+  local home ghdir
+  home=$(new_home)
+  ghdir="$home/.local/bin"
+  mk_fake_gh "$ghdir"
+  mv "$ghdir/gh" "$ghdir/gh-base"
+  cat > "$ghdir/gh" <<'GH_EOF'
+#!/bin/bash
+HERE=$(cd "$(dirname "$0")" && pwd)
+if [ "$1" = "issue" ] && [ "$2" = "comment" ]; then
+  printf '%s\n' "$*" | tr '\n' ' ' >> "$HERE/gh-calls.log"; echo >> "$HERE/gh-calls.log"
+  body="" prev=""
+  for a in "$@"; do
+    case "$prev" in
+      --body|-b) body=$a ;;
+      --body-file|-F) if [ "$a" = "-" ]; then body=$(cat); else body=$(cat "$a"); fi ;;
+    esac
+    case "$a" in --body=*) body=${a#--body=} ;; esac
+    prev=$a
+  done
+  mkdir -p "$HERE/comments"
+  n=$(ls "$HERE/comments" | wc -l | tr -d ' ')
+  printf '%s' "$body" > "$HERE/comments/$((n + 1)).body"
+  echo "https://github.com/example-owner/project-a/issues/$3#issuecomment-1"
+  exit "$(cat "$HERE/gh-comment-rc" 2>/dev/null || echo 0)"
+fi
+exec "$HERE/gh-base" "$@"
+GH_EOF
+  chmod +x "$ghdir/gh"
+  echo "$home" "$ghdir"
+}
+
+# pbdt_run <ghdir> <home> <pipe> <issue> <repo-or-dash> [<channel> <ts>] — runs the script with the
+# given args (channel/ts omitted -> fewer args, for the arity tests); sets PBDT_RC, PBDT_OUT.
+pbdt_run() {
+  local ghdir=$1 home=$2 pipe=$3; shift 3
+  PBDT_OUT=$(PATH="$ghdir:$PATH" PIPE="$pipe" QUEUE="$pipe/queue" HOME="$home" "$SCRIPT" "$@" 2>/dev/null)
+  PBDT_RC=$?
+}
+
+# pbdt_capture <ghdir> — sets PBDT_COMMENTS (number of captured comments), PBDT_COMMENT_1 (first
+# comment's full body), PBDT_COMMENT_1_FIRST (its first line), PBDT_COMMENT_CALLS (log lines of
+# comment calls), PBDT_TOTAL_CALLS, PBDT_EDITS.
+pbdt_capture() {
+  local ghdir=$1
+  PBDT_COMMENTS=$(ls "$ghdir/comments" 2>/dev/null | wc -l | tr -d ' ')
+  PBDT_COMMENT_1=$(cat "$ghdir/comments/1.body" 2>/dev/null)
+  PBDT_COMMENT_1_FIRST=$(printf '%s\n' "$PBDT_COMMENT_1" | head -1)
+  PBDT_COMMENT_CALLS=$(grep '^issue comment' "$ghdir/gh-calls.log" 2>/dev/null)
+  PBDT_TOTAL_CALLS=$(gh_call_count "$ghdir" "")
+  PBDT_EDITS=$(gh_call_count "$ghdir" "issue edit")
+}
+
+# pbdt_scenario <issue> <state> <labels-json> [<repo-arg>] — one run against example-owner/project-a
+# with PBDT_CHANNEL/PBDT_TS; leaves PBDT_* captured (see pbdt_run / pbdt_capture) and cleans up.
+pbdt_scenario() {
+  local issue=$1 state=$2 labels=$3 repo=${4:-example-owner/project-a}
+  local pipe home ghdir
+  pipe=$(new_pipe); read -r home ghdir <<< "$(pbdt_gh_home)"
+  echo "$state" > "$ghdir/gh-issue-state"
+  echo "$labels" > "$ghdir/gh-issue-labels-json"
+  pbdt_run "$ghdir" "$home" "$pipe" "$issue" "$repo" "$PBDT_CHANNEL" "$PBDT_TS"
+  pbdt_capture "$ghdir"
+  rm -rf "$pipe" "$home"
+}
+
+# pbdt_assert_one_note <issue> <label> — AC1's shared assertions after a pbdt_scenario run.
+pbdt_assert_one_note() {
+  local issue=$1 label=$2
+  assert_exit0 "$PBDT_RC" "$label: exits 0" || return 1
+  assert_single_line "$PBDT_OUT" "$label: stdout stays exactly one line (the gh comment call must not leak into it)" || return 1
+  assert_eq "$PBDT_COMMENTS" "1" "$label: exactly one gh issue comment call" || return 1
+  assert_eq "$PBDT_COMMENT_1_FIRST" "$PBDT_NOTE" "$label: comment body's first line" || return 1
+  assert_contains "$PBDT_COMMENT_CALLS" "--repo example-owner/project-a" "$label: the comment targets the resolved repo" || return 1
+  assert_contains "$PBDT_COMMENT_CALLS" " $issue " "$label: the comment targets issue $issue" || return 1
+}
+
+# ---------------------------------------------------------------------------
+# AC1 — each real-issue outcome posts exactly one NOTE
+# ---------------------------------------------------------------------------
+
+test_t15_ac1_newly_queued_posts_one_thread_note() {
+  pbdt_scenario 1501 "OPEN" "[]"
+  pbdt_assert_one_note 1501 "AC1 newly-queued" || return 1
+  assert_eq "$PBDT_EDITS" "1" "AC1 newly-queued: the agent-go label is still added exactly once (#7 AC9 unchanged)" || return 1
+  assert_contains "$PBDT_OUT" "queued" "AC1 newly-queued: the Slack reply still says queued" || return 1
+}
+
+test_t15_ac1_note_is_inert_to_routing_markers() {
+  # Expected Behavior 2: NOTE is deliberately outside hooks/pipeline-markers.sh's vocabulary.
+  pbdt_scenario 1502 "OPEN" "[]"
+  local re verdict
+  re=$(. "$PBDT_ROOT/hooks/pipeline-markers.sh" && marker_re)
+  assert_ne "$PBDT_COMMENT_1_FIRST" "" "AC1: a NOTE must have been posted for this inertness check to mean anything" || return 1
+  verdict=$(jq -n --arg l "$PBDT_COMMENT_1_FIRST" --arg re "$re" '$l | test($re)')
+  assert_eq "$verdict" "false" "AC1: the posted first line must NOT be a routing marker per marker_re" || return 1
+}
+
+test_t15_ac1_already_running_posts_one_thread_note() {
+  pbdt_scenario 1503 "OPEN" '[{"name":"agent-in-progress"}]'
+  pbdt_assert_one_note 1503 "AC1 already-running" || return 1
+  assert_eq "$PBDT_EDITS" "0" "AC1 already-running: still no relabel" || return 1
+  assert_contains "$PBDT_OUT" "already running" "AC1 already-running: the Slack reply is unchanged" || return 1
+}
+
+test_t15_ac1_already_queued_posts_one_thread_note() {
+  pbdt_scenario 1504 "OPEN" '[{"name":"agent-go"}]'
+  pbdt_assert_one_note 1504 "AC1 already-queued" || return 1
+  assert_eq "$PBDT_EDITS" "0" "AC1 already-queued: still no relabel" || return 1
+  assert_contains "$PBDT_OUT" "already queued" "AC1 already-queued: the Slack reply is unchanged" || return 1
+}
+
+test_t15_ac1_closed_posts_one_thread_note() {
+  # AC1 / Expected Behavior 2 list "closed" among the outcomes that record the thread.
+  # (The ticket's "Test fixtures" bullet says CLOSED posts no comment — that contradicts AC1 and
+  # Expected Behavior 2; the ACs are followed. See the handoff.)
+  pbdt_scenario 1505 "CLOSED" "[]"
+  pbdt_assert_one_note 1505 "AC1 closed" || return 1
+  assert_contains "$PBDT_OUT" "already closed" "AC1 closed: the Slack reply is unchanged" || return 1
+}
+
+test_t15_ac1_note_uses_the_channel_and_ts_args_verbatim() {
+  # A second, different channel/ts pair, so an implementation that hard-codes or re-derives the
+  # values cannot pass. Re-threading: a later mention from another thread records its own NOTE.
+  local pipe home ghdir
+  pipe=$(new_pipe); read -r home ghdir <<< "$(pbdt_gh_home)"
+  echo "OPEN" > "$ghdir/gh-issue-state"; echo '[{"name":"agent-go"}]' > "$ghdir/gh-issue-labels-json"
+  pbdt_run "$ghdir" "$home" "$pipe" 1506 "example-owner/project-a" "C9ZZZ9ZZZ" "1800000000.999999"
+  pbdt_capture "$ghdir"
+  rm -rf "$pipe" "$home"
+  assert_eq "$PBDT_COMMENTS" "1" "AC1: exactly one comment" || return 1
+  assert_eq "$PBDT_COMMENT_1_FIRST" "**[pipeline-bridge] NOTE** slack-thread: C9ZZZ9ZZZ:1800000000.999999" "AC1: first line carries the args it was given" || return 1
+}
+
+test_t15_ac1_dash_resolved_repo_gets_the_note_on_the_resolved_repo() {
+  # Same falsifiable setup as #7's AC4: the checkout's remote (project-b) appears in no fake-gh
+  # config, so the NOTE can only land on project-b if the script really resolved it.
+  local pipe home ghdir repo_checkout
+  pipe=$(new_pipe); read -r home ghdir <<< "$(pbdt_gh_home)"
+  repo_checkout="$pipe/repo-project-b"
+  fixture_repo "$repo_checkout" "example-owner/project-b"
+  echo "$repo_checkout" > "$pipe/orch-1507.repo"
+  echo "OPEN" > "$ghdir/gh-issue-state"; echo "[]" > "$ghdir/gh-issue-labels-json"
+  pbdt_run "$ghdir" "$home" "$pipe" 1507 "-" "$PBDT_CHANNEL" "$PBDT_TS"
+  pbdt_capture "$ghdir"
+  rm -rf "$pipe" "$home"
+  assert_exit0 "$PBDT_RC" "AC1 dash: exits 0" || return 1
+  assert_single_line "$PBDT_OUT" "AC1 dash: stdout stays exactly one line" || return 1
+  assert_eq "$PBDT_COMMENTS" "1" "AC1 dash: exactly one comment" || return 1
+  assert_eq "$PBDT_COMMENT_1_FIRST" "$PBDT_NOTE" "AC1 dash: first line" || return 1
+  assert_contains "$PBDT_COMMENT_CALLS" "--repo example-owner/project-b" "AC1 dash: the NOTE goes to the repo resolved from the checkout" || return 1
+}
+
+# ---------------------------------------------------------------------------
+# AC2 — no comment for "repo not found" / "which repo?". Each test first runs a positive control
+# (a newly-queued run that MUST record a NOTE) so it cannot pass vacuously against a script that
+# never posts any comment.
+# ---------------------------------------------------------------------------
+
+test_t15_ac2_repo_not_found_posts_no_comment() {
+  pbdt_scenario 1601 "OPEN" "[]"
+  assert_eq "$PBDT_COMMENTS" "1" "AC2 control: a newly-queued run must post its NOTE (else this test proves nothing)" || return 1
+
+  local pipe home ghdir
+  pipe=$(new_pipe); read -r home ghdir <<< "$(pbdt_gh_home)"
+  echo 1 > "$ghdir/gh-repo-view-rc"
+  pbdt_run "$ghdir" "$home" "$pipe" 1602 "example-owner/project-a" "$PBDT_CHANNEL" "$PBDT_TS"
+  pbdt_capture "$ghdir"
+  rm -rf "$pipe" "$home"
+  assert_exit0 "$PBDT_RC" "AC2 repo-not-found: exits 0" || return 1
+  assert_contains "$PBDT_OUT" "couldn't be found" "AC2 repo-not-found: reply unchanged" || return 1
+  assert_eq "$PBDT_COMMENTS" "0" "AC2 repo-not-found: no comment body captured" || return 1
+  assert_eq "$PBDT_COMMENT_CALLS" "" "AC2 repo-not-found: no gh issue comment call at all" || return 1
+}
+
+test_t15_ac2_which_repo_posts_no_comment() {
+  pbdt_scenario 1603 "OPEN" "[]"
+  assert_eq "$PBDT_COMMENTS" "1" "AC2 control: a newly-queued run must post its NOTE (else this test proves nothing)" || return 1
+
+  local pipe home ghdir
+  pipe=$(new_pipe); read -r home ghdir <<< "$(pbdt_gh_home)"
+  pbdt_run "$ghdir" "$home" "$pipe" 1604 "-" "$PBDT_CHANNEL" "$PBDT_TS"
+  pbdt_capture "$ghdir"
+  rm -rf "$pipe" "$home"
+  assert_exit0 "$PBDT_RC" "AC2 which-repo: exits 0" || return 1
+  assert_contains "$PBDT_OUT" "repo" "AC2 which-repo: reply still asks which repo" || return 1
+  assert_eq "$PBDT_TOTAL_CALLS" "0" "AC2 which-repo: zero gh calls of any kind (so no comment either)" || return 1
+}
+
+# ---------------------------------------------------------------------------
+# Expected Behavior 1 — channel and ts are REQUIRED positional args (2- and 3-arg forms rejected,
+# before any gh call, like #7's other usage errors).
+# ---------------------------------------------------------------------------
+
+test_t15_args_two_arg_form_is_rejected() {
+  local pipe home ghdir
+  pipe=$(new_pipe); read -r home ghdir <<< "$(pbdt_gh_home)"
+  echo "OPEN" > "$ghdir/gh-issue-state"; echo "[]" > "$ghdir/gh-issue-labels-json"
+  pbdt_run "$ghdir" "$home" "$pipe" 1701 "example-owner/project-a"
+  pbdt_capture "$ghdir"
+  rm -rf "$pipe" "$home"
+  assert_ne "$PBDT_RC" "0" "Expected Behavior 1: <issue> <repo> alone (no channel/ts) must not exit 0" || return 1
+  assert_eq "$PBDT_TOTAL_CALLS" "0" "Expected Behavior 1: rejected before any gh call" || return 1
+}
+
+test_t15_args_three_arg_form_is_rejected() {
+  local pipe home ghdir
+  pipe=$(new_pipe); read -r home ghdir <<< "$(pbdt_gh_home)"
+  echo "OPEN" > "$ghdir/gh-issue-state"; echo "[]" > "$ghdir/gh-issue-labels-json"
+  pbdt_run "$ghdir" "$home" "$pipe" 1702 "example-owner/project-a" "$PBDT_CHANNEL"
+  pbdt_capture "$ghdir"
+  rm -rf "$pipe" "$home"
+  assert_ne "$PBDT_RC" "0" "Expected Behavior 1: <issue> <repo> <channel> without ts must not exit 0" || return 1
+  assert_eq "$PBDT_TOTAL_CALLS" "0" "Expected Behavior 1: rejected before any gh call" || return 1
+}
+
+# ---------------------------------------------------------------------------
+# AC6 — pipeline-bridge-prompt.md: chat_id / message_id extraction, always passed as args 3/4
+# ---------------------------------------------------------------------------
+
+test_t15_ac6_prompt_documents_chat_id_and_message_id_as_args_3_and_4() {
+  local body
+  body=$(cat "$PROMPT_MD" 2>/dev/null)
+  assert_contains "$body" "chat_id" "AC6: must name the chat_id metadata field" || return 1
+  assert_contains "$body" "message_id" "AC6: must name the message_id metadata field" || return 1
+  assert_contains "$body" "channel:" "AC6: must mention the channel: prefix (which is stripped from chat_id)" || return 1
+  assert_contains "$body" "<repo-or-dash> <channel> <ts>" "AC6: the command's usage line must show all four args (<issue> <repo-or-dash> <channel> <ts>)" || return 1
+  echo "$body" | grep -Eqi 'always' || { fail "AC6: must say the two values are ALWAYS passed"; return 1; }
+  echo "$body" | grep -Eqi '(arg(ument)?s?[[:space:]]*(3|three)|third)' || { fail "AC6: must say chat_id/message_id are passed as args 3 and 4"; return 1; }
+  assert_not_contains "$body" "those two arguments" "AC6: the stale '... with those two arguments' instruction must be gone" || return 1
+}
+
+run_test test_t15_ac1_newly_queued_posts_one_thread_note
+run_test test_t15_ac1_note_is_inert_to_routing_markers
+run_test test_t15_ac1_already_running_posts_one_thread_note
+run_test test_t15_ac1_already_queued_posts_one_thread_note
+run_test test_t15_ac1_closed_posts_one_thread_note
+run_test test_t15_ac1_note_uses_the_channel_and_ts_args_verbatim
+run_test test_t15_ac1_dash_resolved_repo_gets_the_note_on_the_resolved_repo
+run_test test_t15_ac2_repo_not_found_posts_no_comment
+run_test test_t15_ac2_which_repo_posts_no_comment
+run_test test_t15_args_two_arg_form_is_rejected
+run_test test_t15_args_three_arg_form_is_rejected
+run_test test_t15_ac6_prompt_documents_chat_id_and_message_id_as_args_3_and_4
