@@ -145,6 +145,8 @@ except Exception: print('?')
     (cd "$REPO" && gh issue edit "$ISSUE" --add-label "$LABEL_IN_PROGRESS" --remove-label "$LABEL_GO" 2>/dev/null) || true
     # Clear tombstones and restart state on manual launch
     rm -f "$PIPE/orch-$ISSUE".{stopped,held,done,alert,label-cleared,start} "$PIPE/orch-$ISSUE.restarts"
+    # Persist on both the launch and queued paths: supervisor.sh rebuilds the queue JSON from this file.
+    printf '%s' "$EXTRA" > "$PIPE/orch-$ISSUE.extra"
     if ! has_capacity; then
       python3 -c "
 import json, datetime, time
@@ -169,7 +171,6 @@ with open('$QUEUE/orch-$ISSUE.json', 'w') as f:
     ' _ "$PROMPT" "$PIPE/orch-$ISSUE.exit" >> "$PIPE/orch-$ISSUE.log" 2>&1 &
     echo $! > "$PIPE/orch-$ISSUE.pid"; echo "$REPO" > "$PIPE/orch-$ISSUE.repo"
     date -u +%FT%TZ > "$PIPE/orch-$ISSUE.start"; date -u +%FT%TZ > "$PIPE/orch-$ISSUE.launched-at"
-    printf '%s' "$EXTRA" > "$PIPE/orch-$ISSUE.extra"
     report_status_async "launch"   # event push: run launched (design #10 §4.4)
     echo "launched orchestrator for $OWNER_REPO#$ISSUE  pid=$!  log=$PIPE/orch-$ISSUE.log"
     echo "check: ~/.claude/skills/orchestrate/orchestrate.sh status $ISSUE"
