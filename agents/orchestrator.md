@@ -184,10 +184,10 @@ Before launching any agent, check how many Claude Code processes are already run
 wait_for_capacity() {
   local MAX_CONCURRENT=8
   for i in $(seq 1 10); do
-    # Count real claude processes only (comm == claude): the `bash -c` wrappers the launcher and detached dispatches
+    # Count real claude processes only (comm is `claude`, or a path ending in /claude as on macOS): the `bash -c` wrappers the launcher and detached dispatches
     # use carry the same string on their command line and were being counted twice. Subtract 1 for this orchestrator's
     # own session, which always matches. (Double-count + self-count stalled #580 for 20 min on 2026-09-08.)
-    ACTIVE=$(ps -axo comm=,args= 2>/dev/null | awk '$1=="claude" && /--dangerously-skip-permissions/' | wc -l | tr -d ' ')
+    ACTIVE=$(ps -axo comm=,args= 2>/dev/null | awk '$1 ~ /(^|\/)claude$/ && /--dangerously-skip-permissions/' | wc -l | tr -d ' ')
     ACTIVE=$((ACTIVE - 1))
     if [ "$ACTIVE" -le "$MAX_CONCURRENT" ]; then
       return 0
