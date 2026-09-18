@@ -19,6 +19,10 @@ DISPATCH_REPOS=(
 # SCAN_BACKLOG=1
 # SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."   # secret — this file only, never the repo
 
+# Engineering notifications: supervisor.sh notify_engineering() is a silent no-op until BOTH are set.
+# SLACK_BOT_TOKEN="..."               # secret (bot token) — this file only, never the repo
+# SLACK_ENGINEERING_CHANNEL="C0123456789"   # placeholder channel ID
+
 # Status board (issue #10): the reporter (skills/orchestrate/report-status.sh) is a silent no-op
 # until BOTH are set — leave them commented out on a machine that isn't reporting yet. Set by the
 # companion infra issue once the status-page Worker + KV are deployed.

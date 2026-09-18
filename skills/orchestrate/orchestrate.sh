@@ -10,34 +10,16 @@
 set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source "$HERE/config.sh"
+# shared launcher helpers: SETSID probe, capacity checks, marker jq expression (issue #8)
+source "$HERE/pipeline-lib.sh"
 # shared run-state derivation (used by `status` below) + report_status_async (issue #10)
 source "$HERE/run-state.sh"
 # routing-marker vocabulary (marker_re), shared with the supervisor, the handoff hook and the orchestrator
 source "$HERE/../../hooks/pipeline-markers.sh" 2>/dev/null || source "$HOME/.claude/hooks/pipeline-markers.sh"
-SETSID=$(command -v setsid >/dev/null 2>&1 && echo setsid || true)   # absent on macOS; nohup + & is enough there
 mkdir -p "$PIPE" "$QUEUE"
 FORCE=0; args=()
 for a in "$@"; do [ "$a" = "--force" ] && FORCE=1 || args+=("$a"); done
 set -- "${args[@]}"
-
-count_running() {
-  local n=0
-  for f in "$PIPE"/orch-*.pid; do
-    [ -e "$f" ] || break
-    kill -0 "$(cat "$f")" 2>/dev/null && n=$((n + 1))
-  done
-  echo "$n"
-}
-
-mem_available_mb() {
-  if [ -r /proc/meminfo ]; then awk '/MemAvailable/ {print int($2/1024)}' /proc/meminfo
-  else vm_stat 2>/dev/null | awk '/page size of/ {ps=$8} /Pages free|Pages inactive|Pages speculative/ {gsub(/\./,"",$NF); p+=$NF} END {print int(p*ps/1048576)}'
-  fi
-}
-
-has_capacity() {
-  [ "$(count_running)" -lt "$MAX_CONCURRENT" ] && [ "$(mem_available_mb)" -ge "$MEM_FLOOR_MB" ]
-}
 
 case "${1:-}" in
   status)
@@ -62,7 +44,7 @@ case "${1:-}" in
           *)          state="exited (will auto-restart)" ;;
         esac
         gh_out=$( (cd "$repo" 2>/dev/null && gh issue view "$n" --json state,comments \
-          --jq "{state, last: ([.comments[] | .body | split(\"\n\")[0] | select(test($(marker_re | jq -Rs .)))] | last // \"none\")}") 2>/dev/null)
+          --jq "{state, last: ($(marker_last_jq))}") 2>/dev/null)
         gh_state=$(printf '%s' "$gh_out" | python3 -c "import json,sys; print(json.load(sys.stdin).get('state','?'))" 2>/dev/null || echo "?")
         last=$(printf '%s' "$gh_out" | python3 -c "import json,sys; print(json.load(sys.stdin).get('last','?'))" 2>/dev/null || echo "?")
         # Local files (pid/held/done) never learn that an issue was closed directly on GitHub
