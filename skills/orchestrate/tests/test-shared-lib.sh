@@ -203,7 +203,7 @@ GH_EOF
 sl_sup_call() {
   local d=$1 snippet=$2 fns
   fns=$(awk '/^latest_marker\(\) \{/,/^\}/; /^issue_is_closed\(\) \{/,/^\}/' "$RS_SL/supervisor.sh")
-  ( PATH="$d/bin:/usr/bin:/bin"
+  ( PATH="$d/bin:$PATH"
     . "$LIB_SL" 2>/dev/null; . "$MARKERS_SL"
     eval "$fns"
     eval "$snippet" )
@@ -256,46 +256,81 @@ issue view" "AC3: issue_is_closed makes exactly one gh call per invocation (2 in
 # AC2/AC3 — orchestrate.sh status: still ONE combined `gh issue view --json state,comments` per
 # run, with --jq built from marker_last_jq. Stub gh lives in an isolated HOME's .local/bin (which
 # config.sh puts first on PATH), so no real gh can shadow it; tests/bin/gh is not touched.
+# The stub applies the --jq argument with REAL jq to a per-issue reply file (like gh does), so the
+# composed `{state, last: (...)}` expression is actually evaluated, not just string-matched.
 # ---------------------------------------------------------------------------
 
-test_sl_status_one_gh_issue_view_per_run_using_shared_expression() {
-  local pipe home repo_a repo_b expr out ncalls nview d i
-  pipe=$(new_pipe); home=$(new_home)
-  repo_a=$(mktemp -d "${TMPDIR:-/tmp}/orch-test-repo.XXXXXX"); repo_b=$(mktemp -d "${TMPDIR:-/tmp}/orch-test-repo.XXXXXX")
-  d="$home/.local/bin"; mkdir -p "$d"
-  cat > "$d/gh" <<'GH_EOF'
+# sl_status_setup — builds a 2-run fixture (#101 OPEN, #102 CLOSED) and runs `orchestrate.sh status`
+# once. Sets SL_PIPE SL_HOME SL_REPO_A SL_REPO_B SL_D (stub dir) SL_OUT (combined stdout+stderr).
+# Reply files (gh-json shape): #101 = a real marker followed by a NOTE; #102 = CLOSED, no comments.
+sl_status_setup() {
+  SL_PIPE=$(new_pipe); SL_HOME=$(new_home)
+  SL_REPO_A=$(mktemp -d "${TMPDIR:-/tmp}/orch-test-repo.XXXXXX"); SL_REPO_B=$(mktemp -d "${TMPDIR:-/tmp}/orch-test-repo.XXXXXX")
+  SL_D="$SL_HOME/.local/bin"; mkdir -p "$SL_D"
+  cat > "$SL_D/gh" <<'GH_EOF'
 #!/bin/bash
 D=$(cd "$(dirname "$0")" && pwd)
 echo "$1 $2" >> "$D/calls.log"
 n=$(wc -l < "$D/calls.log" | tr -d ' ')
-prev=""
+prev=""; expr=""
 for a in "$@"; do
-  [ "$prev" = "--jq" ] && printf '%s' "$a" > "$D/jq-$n.txt"
+  [ "$prev" = "--jq" ] && { expr=$a; printf '%s' "$a" > "$D/jq-$n.txt"; }
   [ "$prev" = "--json" ] && printf '%s' "$a" > "$D/json-$n.txt"
   prev=$a
 done
-if [ "$1" = "issue" ] && [ "$2" = "view" ]; then echo '{"state":"OPEN","last":"none"}'; exit 0; fi
+if [ "$1" = "issue" ] && [ "$2" = "view" ] && [ -f "$D/reply-$3.json" ]; then
+  if [ -n "$expr" ]; then jq -c "$expr" < "$D/reply-$3.json"; else cat "$D/reply-$3.json"; fi
+  exit $?
+fi
 echo "stub gh: unexpected invocation: $*" >&2; exit 1
 GH_EOF
-  chmod +x "$d/gh"; : > "$d/calls.log"
-  mk_running "$pipe" 101 "$repo_a"
-  mk_running "$pipe" 102 "$repo_b"
-  expr=$(sl_marker_expr)
-  out=$( HOME="$home" PATH="$d:/usr/bin:/bin" PIPE="$pipe" QUEUE="$pipe/queue" "$RS_SL/orchestrate.sh" status 2>&1 )
-  ncalls=$(wc -l < "$d/calls.log" | tr -d ' ')
-  nview=$(grep -c '^issue view$' "$d/calls.log" || true)
+  chmod +x "$SL_D/gh"; : > "$SL_D/calls.log"
+  printf '%s' '{"state":"OPEN","comments":[{"body":"**[test-writer] TESTS WRITTEN**\nx"},{"body":"**[supervisor] NOTE**\ny"}]}' > "$SL_D/reply-101.json"
+  printf '%s' '{"state":"CLOSED","comments":[]}' > "$SL_D/reply-102.json"
+  mk_running "$SL_PIPE" 101 "$SL_REPO_A"
+  mk_running "$SL_PIPE" 102 "$SL_REPO_B"
+  SL_OUT=$( HOME="$SL_HOME" PATH="$SL_D:$PATH" PIPE="$SL_PIPE" QUEUE="$SL_PIPE/queue" "$RS_SL/orchestrate.sh" status 2>&1 )
   cleanup_running
-  assert_ne "$expr" "" "AC2: marker_last_jq must print an expression" || { rm -rf "$pipe" "$home" "$repo_a" "$repo_b"; return 1; }
-  assert_eq "$ncalls" "2" "AC3: status over 2 runs makes exactly 2 gh calls in total" || { rm -rf "$pipe" "$home" "$repo_a" "$repo_b"; return 1; }
-  assert_eq "$nview" "2" "AC3: both are 'gh issue view' (one per run)" || { rm -rf "$pipe" "$home" "$repo_a" "$repo_b"; return 1; }
+}
+
+sl_status_cleanup() { rm -rf "$SL_PIPE" "$SL_HOME" "$SL_REPO_A" "$SL_REPO_B"; }
+
+# Call shape: exactly one `gh issue view --json state,comments` per run, --jq from marker_last_jq.
+test_sl_status_one_gh_issue_view_per_run_using_shared_expression() {
+  local expr ncalls nview i
+  sl_status_setup
+  expr=$(sl_marker_expr)
+  ncalls=$(wc -l < "$SL_D/calls.log" | tr -d ' ')
+  nview=$(grep -c '^issue view$' "$SL_D/calls.log" || true)
+  assert_ne "$expr" "" "AC2: marker_last_jq must print an expression" || { sl_status_cleanup; return 1; }
+  assert_eq "$ncalls" "2" "AC3: status over 2 runs makes exactly 2 gh calls in total" || { sl_status_cleanup; return 1; }
+  assert_eq "$nview" "2" "AC3: both are 'gh issue view' (one per run)" || { sl_status_cleanup; return 1; }
   for i in 1 2; do
-    assert_eq "$(cat "$d/json-$i.txt" 2>/dev/null)" "state,comments" "AC3: call $i keeps the single combined --json state,comments" || { rm -rf "$pipe" "$home" "$repo_a" "$repo_b"; return 1; }
-    assert_contains "$(cat "$d/jq-$i.txt" 2>/dev/null)" "$expr" "AC2: call $i's --jq must contain marker_last_jq's output" || { rm -rf "$pipe" "$home" "$repo_a" "$repo_b"; return 1; }
-    assert_contains "$(cat "$d/jq-$i.txt" 2>/dev/null)" "state" "AC3: call $i's --jq still selects the issue state alongside the marker" || { rm -rf "$pipe" "$home" "$repo_a" "$repo_b"; return 1; }
+    assert_eq "$(cat "$SL_D/json-$i.txt" 2>/dev/null)" "state,comments" "AC3: call $i keeps the single combined --json state,comments" || { sl_status_cleanup; return 1; }
+    assert_contains "$(cat "$SL_D/jq-$i.txt" 2>/dev/null)" "$expr" "AC2: call $i's --jq must contain marker_last_jq's output" || { sl_status_cleanup; return 1; }
   done
-  assert_contains "$out" "#101  running" "AC3: status still prints run 101" || { rm -rf "$pipe" "$home" "$repo_a" "$repo_b"; return 1; }
-  assert_contains "$out" "latest marker: none" "AC3: status still shows the marker returned by gh" || { rm -rf "$pipe" "$home" "$repo_a" "$repo_b"; return 1; }
-  rm -rf "$pipe" "$home" "$repo_a" "$repo_b"
+  sl_status_cleanup
+}
+
+# Printed output: the composed --jq is evaluated by real jq. A real marker followed by a NOTE shows
+# the real marker (NOTE inert); a CLOSED issue overrides the local state. Expected strings: ticket
+# fixture (marker beats later NOTE) and the existing status format `latest marker: <first line>`.
+test_sl_status_prints_latest_real_marker_from_evaluated_jq() {
+  local line
+  sl_status_setup
+  line=$(printf '%s\n' "$SL_OUT" | grep '^#101 ' || true)
+  sl_status_cleanup
+  assert_contains "$line" "#101  running" "AC3: status still prints run 101 as running (issue OPEN)" || return 1
+  assert_contains "$line" "latest marker: **[test-writer] TESTS WRITTEN**  log=" "AC2/AC3: status shows the newest real marker, not the later NOTE, from the evaluated --jq" || return 1
+}
+
+test_sl_status_closed_issue_overrides_local_state() {
+  local line
+  sl_status_setup
+  line=$(printf '%s\n' "$SL_OUT" | grep '^#102 ' || true)
+  sl_status_cleanup
+  assert_contains "$line" "#102  done (issue closed)" "AC3: status still reports a CLOSED issue as done (issue closed), from the evaluated --jq's state field" || return 1
+  assert_contains "$line" "latest marker: none  log=" "AC3: a CLOSED issue with no comments shows latest marker: none" || return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -394,6 +429,8 @@ run_test test_sl_supervisor_latest_marker_one_gh_call_with_shared_expression
 run_test test_sl_supervisor_latest_marker_gh_failure_prints_question_mark
 run_test test_sl_supervisor_issue_is_closed_one_gh_call_each
 run_test test_sl_status_one_gh_issue_view_per_run_using_shared_expression
+run_test test_sl_status_prints_latest_real_marker_from_evaluated_jq
+run_test test_sl_status_closed_issue_overrides_local_state
 run_test test_sl_example_config_documents_both_slack_keys_as_commented_placeholders
 run_test test_sl_example_config_notes_notify_engineering_is_silent_noop
 run_test test_sl_example_config_slack_keys_sit_next_to_the_webhook_key
