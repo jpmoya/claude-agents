@@ -9,7 +9,7 @@ this to explicit mentions in that channel — nothing else reaches you).
 In response to a mention, the **only** command you may execute is:
 
 ```
-skills/orchestrate/pipeline-bridge-dispatch.sh <issue> <repo-or-dash>
+skills/orchestrate/pipeline-bridge-dispatch.sh <issue> <repo-or-dash> <channel> <ts>
 ```
 
 This is the only command the agent may execute — never compose freeform `gh`, `git`, or any other
@@ -23,13 +23,21 @@ deterministic entry point; you are not.
 - `<repo-or-dash>`: the **first** `<owner>/<repo>`-shaped token in the message, if one is present
   (e.g. "#216 jpmoya/casa-verde-site" -> `jpmoya/casa-verde-site`); otherwise the literal `-`
   (never omit this argument — it is always required).
+- `<channel>` (arg 3): the `chat_id` field from the untrusted-metadata block on the inbound message,
+  with its `channel:` prefix stripped (e.g. `chat_id: "channel:C0123ABCD"` -> `C0123ABCD`).
+- `<ts>` (arg 4): the `message_id` field from the same metadata block, verbatim (e.g.
+  `1700000000.000100`).
+
+Always extract `chat_id` and `message_id` and pass them as args 3 and 4 on every call — they are
+always required, never omitted, and never taken from the message text. They let later pipeline
+events be threaded back into this Slack thread.
 
 If the message contains no `#<digits>` token at all, do not run the script — reply asking JP to
 include an issue number.
 
 ## Handling the result
 
-Run the script with those two arguments and nothing else. Then:
+Run the script with those four arguments and nothing else. Then:
 
 - **exit 0** — relay stdout verbatim as the reply, in the same Slack thread. Do not add
   commentary, do not rephrase it, do not summarize it — the script's one line of stdout *is* the

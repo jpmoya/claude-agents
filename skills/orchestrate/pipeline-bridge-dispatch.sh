@@ -1,11 +1,12 @@
 #!/bin/bash
 # Deterministic resolve + dispatch for a Slack @mention relay (issue #7).
 #
-# Usage: pipeline-bridge-dispatch.sh <issue> <repo-or-dash>
+# Usage: pipeline-bridge-dispatch.sh <issue> <repo-or-dash> <channel> <ts>
 #   <issue>          must match ^[0-9]+$ — validated before any `gh` call.
 #   <repo-or-dash>   explicit "owner/repo", or literal "-" to resolve from this machine's local
-#                     $PIPE/orch-<issue>.repo checkout. Required, never omittable, so a later
-#                     ticket can append more positional args without changing this one's meaning.
+#                     $PIPE/orch-<issue>.repo checkout. Required, never omittable.
+#   <channel>        Slack channel id of the mention (chat_id with its "channel:" prefix stripped).
+#   <ts>             Slack thread ts of the mention (message_id). Both are required.
 #
 # Resolution order (Expected Behavior #1):
 #   1. explicit owner/repo arg, if reachable via `gh repo view --repo`.
@@ -19,6 +20,12 @@
 # agent-go` call (never call orchestrate.sh directly — the shared claim/dispatch protocol in
 # supervisor.sh §5 is what actually launches it).
 #
+# Every outcome tied to a real issue in a real repo (closed / already running / already queued /
+# newly queued) also posts one `gh issue comment` whose first line is
+# "**[pipeline-bridge] NOTE** slack-thread: <channel>:<ts>" — supervisor.sh's slack_thread_for reads
+# it to thread later pipeline events into this Slack thread. NOTE is outside pipeline-markers.sh's
+# vocabulary, so it is inert to routing. "repo not found" / "which repo?" post nothing.
+#
 # On any exit 0, stdout is exactly one line — the verbatim Slack reply. The caller (the
 # pipeline-bridge relay agent) composes nothing itself; see pipeline-bridge-prompt.md.
 
@@ -27,19 +34,18 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source "$HERE/config.sh"
 
 usage() {
-  echo "usage: pipeline-bridge-dispatch.sh <issue> <repo-or-dash>" >&2
+  echo "usage: pipeline-bridge-dispatch.sh <issue> <repo-or-dash> <channel> <ts>" >&2
 }
 
-# STUB (#15, test-writer placeholder — the developer replaces this): the interface is becoming
-# <issue> <repo-or-dash> <channel> <ts> with all four required; this range check only lets the
-# 4-arg form reach the existing logic so the pre-existing tests keep passing.
-if [ "$#" -lt 2 ] || [ "$#" -gt 4 ]; then
+if [ "$#" -ne 4 ]; then
   usage
   exit 1
 fi
 
 ISSUE=$1
 REPO_ARG=$2
+SLACK_CHANNEL=$3
+SLACK_TS=$4
 
 case "$ISSUE" in
   ''|*[!0-9]*)
@@ -95,17 +101,29 @@ STATE=$(printf '%s' "$ISSUE_JSON" | jq -r '.state // empty' 2>/dev/null)
 HAS_IN_PROGRESS=$(printf '%s' "$ISSUE_JSON" | jq -r --arg l "$LABEL_IN_PROGRESS" '([.labels[].name] | index($l)) != null' 2>/dev/null)
 HAS_GO=$(printf '%s' "$ISSUE_JSON" | jq -r --arg l "$LABEL_GO" '([.labels[].name] | index($l)) != null' 2>/dev/null)
 
+# post_thread_note — records the Slack thread on the issue (see header). Best-effort: a failed
+# comment must not turn a correct status reply into a failure, and its stdout must not leak into
+# the one-line reply.
+post_thread_note() {
+  gh issue comment "$ISSUE" --repo "$OWNER_REPO" \
+    --body "**[pipeline-bridge] NOTE** slack-thread: $SLACK_CHANNEL:$SLACK_TS" >/dev/null 2>&1 \
+    || echo "warning: couldn't record the Slack thread on #$ISSUE ($OWNER_REPO)" >&2
+}
+
 if [ "$STATE" = "CLOSED" ]; then
+  post_thread_note
   echo "#$ISSUE ($OWNER_REPO) is already closed — nothing to do"
   exit 0
 fi
 
 if [ "$HAS_IN_PROGRESS" = "true" ]; then
+  post_thread_note
   echo "#$ISSUE ($OWNER_REPO) is already running ($LABEL_IN_PROGRESS) — nothing to do"
   exit 0
 fi
 
 if [ "$HAS_GO" = "true" ]; then
+  post_thread_note
   echo "#$ISSUE ($OWNER_REPO) is already queued ($LABEL_GO already set) — nothing to do"
   exit 0
 fi
@@ -116,5 +134,6 @@ if ! gh issue edit --repo "$OWNER_REPO" "$ISSUE" --add-label "$LABEL_GO" >/dev/n
   echo "couldn't add $LABEL_GO to #$ISSUE ($OWNER_REPO) — check permissions and try by hand" >&2
   exit 1
 fi
+post_thread_note
 echo "#$ISSUE ($OWNER_REPO) queued — added $LABEL_GO, the shared dispatcher will pick it up"
 exit 0

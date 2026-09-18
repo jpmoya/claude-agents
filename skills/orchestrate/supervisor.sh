@@ -101,9 +101,19 @@ terminal_kind() {
   echo ""
 }
 
-slack_thread_for() {  # STUB (#15, test-writer placeholder — the developer replaces this body)
-  echo "NotImplemented: slack_thread_for" >&2
-  return 1
+slack_thread_for() {  # <owner/repo> <issue> → "<channel> <ts>" from the last "**[pipeline-bridge] NOTE** slack-thread: <channel>:<ts>" comment, only if <channel> is $SLACK_ENGINEERING_CHANNEL; else nothing
+  local owner_repo=$1 issue=$2 prefix line ch ts
+  prefix='**[pipeline-bridge] NOTE** slack-thread: '
+  line=$(gh issue view "$issue" --repo "$owner_repo" --json comments \
+    --jq '[.comments[] | .body | split("\n")[0] | select(startswith("**[pipeline-bridge] NOTE** slack-thread: "))] | last // empty' 2>/dev/null) || return 0
+  line=${line%$'\r'}
+  [ -n "$line" ] || return 0
+  line=${line#"$prefix"}
+  ch=${line%%:*}
+  ts=${line#*:}
+  [ -n "$ch" ] && [ -n "$ts" ] && [ "$ch" != "$line" ] || return 0
+  [ "$ch" = "${SLACK_ENGINEERING_CHANNEL:-}" ] || return 0
+  printf '%s %s\n' "$ch" "$ts"
 }
 
 notify_engineering() {  # post a pipeline event to #engineering; requires SLACK_BOT_TOKEN + SLACK_ENGINEERING_CHANNEL
@@ -111,9 +121,16 @@ notify_engineering() {  # post a pipeline event to #engineering; requires SLACK_
   [ -z "${SLACK_BOT_TOKEN:-}" ] || [ -z "${SLACK_ENGINEERING_CHANNEL:-}" ] && return 0
   local link="https://github.com/$owner_repo/issues/$issue"
   local msg="$emoji <$link|#$issue> — $reason"
-  local payload
-  payload=$(jq -n --arg ch "$SLACK_ENGINEERING_CHANNEL" --arg txt "$msg" \
-    '{channel: $ch, text: $txt, unfurl_links: false}')
+  local payload thread thread_ts
+  thread=$(slack_thread_for "$owner_repo" "$issue" 2>/dev/null) || thread=""
+  thread_ts=${thread#* }
+  if [ -n "$thread" ]; then
+    payload=$(jq -n --arg ch "$SLACK_ENGINEERING_CHANNEL" --arg txt "$msg" --arg ts "$thread_ts" \
+      '{channel: $ch, text: $txt, unfurl_links: false, thread_ts: $ts}')
+  else
+    payload=$(jq -n --arg ch "$SLACK_ENGINEERING_CHANNEL" --arg txt "$msg" \
+      '{channel: $ch, text: $txt, unfurl_links: false}')
+  fi
   local resp
   resp=$(curl -s --max-time 10 -X POST -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
     -H "Content-Type: application/json" -d "$payload" https://slack.com/api/chat.postMessage 2>/dev/null) || true
