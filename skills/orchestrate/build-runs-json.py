@@ -102,6 +102,12 @@ def iso(epoch_str):
 # state_code -> payload state. stopped/done are never emitted (AC2) -- simply not in this map.
 STATE_MAP = {"running": "running", "restarting": "restarting", "held": "held", "queued": "queued"}
 
+# Sort priority when the run list is longer than the 20-slot cap below: currently-active work
+# must never be bumped off the page by an older held/queued run just because its issue number
+# glob-sorts earlier (derive_runs() walks orch-*.pid in filename order, which is a lexicographic
+# string sort of the issue number, not numeric or recency order).
+STATE_PRIORITY = {"running": 0, "restarting": 1, "held": 2, "queued": 3}
+
 runs = []
 for raw in sys.stdin:
     line = raw.rstrip("\n")
@@ -125,6 +131,9 @@ for raw in sys.stdin:
         "restarts": int(restarts) if str(restarts).lstrip("-").isdigit() else 0,
     }
     run = {k: v for k, v in run.items() if v is not None}
-    runs.append(run)
+    activity_epoch = int(last_activity_epoch) if last_activity_epoch.strip().isdigit() else -1
+    sort_key = (STATE_PRIORITY[state_code], -activity_epoch)
+    runs.append((sort_key, run))
 
-print(json.dumps(runs[:20]))
+runs.sort(key=lambda pair: pair[0])
+print(json.dumps([run for _, run in runs[:20]]))
