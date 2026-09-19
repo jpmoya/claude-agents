@@ -242,6 +242,7 @@ Then poll for a **new** marker in bounded chunks (each poll fits inside the Bash
 . ~/.claude/hooks/pipeline-markers.sh
 count() { gh issue view "$1" --json comments --jq "[.comments[] | select(.body | split(\"\n\")[0] | test($(marker_re "$2" | jq -Rs .)))] | length"; }   # same count the handoff hook uses
 BEFORE=$(count <N> <agent-name>)
+NAG0=$(stat -f %m /tmp/pipeline/<N>-<agent-name>-nags.txt 2>/dev/null || echo none)   # nag-file mtime baseline for the cap-hit check
 # one Bash call = one chunk of up to 36 × 15s (9 min); repeat chunks until the stage cap below is reached
 for i in $(seq 1 36); do
   sleep 15
@@ -256,7 +257,7 @@ done
 When the wait ends without a marker:
 
 1. **Process exited** → go straight to the handoff recovery below (once), then the no-marker report. No further waiting.
-2. **Cap hit, process alive** → `tail -3 /tmp/pipeline/run-<issue>-<agent>.log` (reporting only — the log is buffered until exit, so its mtime says nothing about liveness), then `stat` the nag file `/tmp/pipeline/<N>-<agent>-nags.txt` (the `PIPELINE_ISSUE`/`PIPELINE_AGENT` coordinates exported at launch): if it exists and its mtime moved since the previous poll, the stage is completing turns — extend **once** by the same cap. If it did not move (or is absent), or the extension also expires: `kill $PID; sleep 10; kill -9 $PID 2>/dev/null`, log the dispatch with `"outcome":"stall"` and `"nag_mtime":"<epoch-or-none>"` (the nag-file mtime that justified the kill), then run the handoff recovery (once).
+2. **Cap hit, process alive** → `tail -3 /tmp/pipeline/run-<issue>-<agent>.log` (reporting only — the log is buffered until exit, so its mtime says nothing about liveness), then `stat` the nag file `/tmp/pipeline/<N>-<agent>-nags.txt` (the `PIPELINE_ISSUE`/`PIPELINE_AGENT` coordinates exported at launch): if it exists and its mtime differs from `NAG0` (captured at the poll's start; refresh it after an extension), the stage is completing turns — extend **once** by the same cap. If it did not move (or is absent), or the extension also expires: `kill $PID; sleep 10; kill -9 $PID 2>/dev/null`, log the dispatch with `"outcome":"stall"` and `"nag_mtime":"<epoch-or-none>"` (the nag-file mtime that justified the kill), then run the handoff recovery (once).
 
 Why the caps are tight: on 2026-09-06, 6 of 35 dispatches ended no-marker after 10–45 min of waiting each, and the old 45-minute loop waited that long even for processes that had already died. Since 2026-09-08 the launchers lift the 600s background-task ceiling that used to kill headless sessions mid-stage, so a live process is a working process and a silent one is a stuck one — the nag file's mtime tells them apart.
 

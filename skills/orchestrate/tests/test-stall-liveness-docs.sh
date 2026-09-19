@@ -30,3 +30,7 @@ test_sl_ac3_stall_record_carries_nag_mtime() {
   printf '%s\n' "$br" | grep -qF 'none' || { fail "AC3: nag_mtime may be none"; return 1; }
   assert_eq 0 0 "AC3 ok"
 }
+
+run_test test_sl_ac1_no_log_mtime_discriminator
+run_test test_sl_ac2_nag_file_is_discriminator
+run_test test_sl_ac3_stall_record_carries_nag_mtime
