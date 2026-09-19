@@ -111,7 +111,7 @@ test_ir_ac3_adjudicator_body() {
     '**Is a change needed?**' \
     '**Judge the fix.**' \
     '**Verdict card.**' \
-    '**Record.**' || return 1
+    '**Record and file.**' || return 1
   for s in '3 occurrences across ≥2 issues within 14 days' \
            'no pipeline code change' \
            'at most add the missing log line' \
@@ -121,14 +121,11 @@ test_ir_ac3_adjudicator_body() {
            'gh search issues' 'in:body,comments' '--owner jpmoya --owner Benjis-Plants'; do
     ir_has "$ADJ_IR" "$s" || return 1
   done
-  if grep -qF -- 'gh issue create' "$ADJ_IR"; then
-    fail "adjudicator: must not contain [gh issue create]"; return 1
-  fi
   n=$(grep -oF 'at 1 occurrence' "$ADJ_IR" | wc -l | tr -d ' ')
   [ "$n" -ge 2 ] || { fail "adjudicator: [at 1 occurrence] found $n times, expected >= 2"; return 1; }
   limits=$(ir_hard_limits "$ADJ_IR")
   [ -n "$limits" ] || { fail "adjudicator: no '## Hard limits' section"; return 1; }
-  for s in 'only write' 'tee' 'scratch' 'redirect' 'final message'; do
+  for s in 'only mutating commands' 'tee' 'scratch' 'redirect' 'final message'; do
     assert_contains "$limits" "$s" "adjudicator hard limits" || return 1
   done
   assert_not_contains "$limits" 'never post on the incident' "adjudicator hard limits" || return 1
@@ -151,13 +148,14 @@ CHANGE?      NO | YES — <class>
 FIX          <the minimal fix; net new mechanisms: n>
 NOT THE FIX  <the proposed/obvious patch and why it is a symptom patch>   (omit if none)
 IF IT WORKS  <a log signature that must stop appearing>
+DO NOW       <host/config/falsifier actions as imperative "DO: <exact instruction>" or "DON'T" lines, or "none">
 CARD
 )
   body=$(cat "$ADJ_IR")
-  # Newline-anchored on both sides: the 12 lines must be whole lines, consecutive, in order.
+  # Newline-anchored on both sides: the 13 lines must be whole lines, consecutive, in order.
   case "$nl$body$nl" in
     *"$nl$card$nl"*) return 0 ;;
-    *) fail "adjudicator: the 12-line verdict card template is not present as one byte-for-byte block"; return 1 ;;
+    *) fail "adjudicator: the 13-line verdict card template is not present as one byte-for-byte block"; return 1 ;;
   esac
 }
 
@@ -173,7 +171,7 @@ test_ir_ac6_claude_md_paragraph() {
   section=$(ir_claude_md_section)
   [ -n "$section" ] || { fail "CLAUDE.md: '## Software development' section not found"; return 1; }
   for s in 'pipeline-diagnostician' 'pipeline-adjudicator' 'verdict card' 'fresh context' \
-           'only after JP says yes' 'the orchestrator ban does not apply'; do
+           'DO NOW' 'the orchestrator ban does not apply'; do
     assert_contains "$section" "$s" "CLAUDE.md Software development section" || return 1
   done
 }
