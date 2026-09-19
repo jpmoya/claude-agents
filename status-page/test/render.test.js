@@ -231,7 +231,7 @@ function hostsWith(runs, hostOverrides = {}) {
 
 /** Inner HTML of every <th> in document order. */
 function headerCells(html) {
-  return [...html.matchAll(/<th[^>]*>([\s\S]*?)<\/th>/g)].map((m) => m[1].trim());
+  return [...html.matchAll(/<th(?:\s[^>]*)?>([\s\S]*?)<\/th>/g)].map((m) => m[1].trim());
 }
 
 /** Inner HTML of every <td> of every <tbody> row: string[][]. */
