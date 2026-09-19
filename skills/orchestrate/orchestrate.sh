@@ -165,6 +165,7 @@ with open('$QUEUE/orch-$ISSUE.json', 'w') as f:
 "
       echo "queued #$ISSUE ($(count_running)/$MAX_CONCURRENT slots full, $(mem_available_mb)MB avail) — supervisor will auto-launch when a slot opens"
       echo "check: ~/.claude/skills/orchestrate/orchestrate.sh queue"
+      rm -f "$PIPE/orch-$ISSUE.pid"   # queued, not running: a stale dead pid makes the supervisor read this as a run that just ended (#22)
       exit 0
     fi
     # The headless session IS the orchestrator (--agent), not a wrapper that calls Agent(orchestrator):

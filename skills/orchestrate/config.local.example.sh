@@ -18,6 +18,8 @@ DISPATCH_REPOS=(
 # Hourly backlog scan (labels new issues agent-proposed, posts a Slack digest). Exactly ONE machine should run it.
 # SCAN_BACKLOG=1
 # SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."   # secret — this file only, never the repo
+# Extra repos the scan covers on top of DISPATCH_REPOS — scanned here, never dispatched from this machine.
+# SCAN_ONLY_REPOS=("example-owner/project-6")
 
 # Engineering notifications: supervisor.sh notify_engineering() is a silent no-op until BOTH are set.
 # SLACK_BOT_TOKEN="..."               # secret (bot token) — this file only, never the repo

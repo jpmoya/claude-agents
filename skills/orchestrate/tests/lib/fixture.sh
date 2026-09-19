@@ -139,6 +139,9 @@ cleanup_running() {
 #   <dir>/gh-issue-edit-rc      exit code for `gh issue edit ...` (default 0)
 #   <dir>/gh-issue-title        value of .title for `gh issue view <n> --json title ...` (default "Fixture title")
 #   <dir>/gh-issue-title-rc     exit code for `gh issue view <n> --json title ...` (default 0; the failing-fetch case)
+#   <dir>/gh-issue-latest-marker  first line of the issue's only comment, for `gh issue view ... --json comments`
+#                               (default: file absent -> no .comments key at all, as before)
+# `gh issue comment ...` is logged like every other call and exits 0.
 # Install target is deliberately the caller's choice of <dir> (not fixed here) — callers must use
 # an isolated HOME's .local/bin (see new_home) so config.sh's PATH prepend can't let a real `gh`
 # installed on this machine win the lookup ahead of the fake (claude-agents#7).
@@ -172,6 +175,9 @@ emit() {  # emit <json> <args...> — apply --jq if present, else print the raw 
 }
 
 case "$*" in
+  "issue comment"*)
+    exit 0
+    ;;
   *"repo view"*"--repo "*)
     rc=$(cat "$HERE/gh-repo-view-rc" 2>/dev/null || echo 0)
     [ "$rc" -eq 0 ] || exit "$rc"
@@ -196,6 +202,10 @@ case "$*" in
     state=$(cat "$HERE/gh-issue-state" 2>/dev/null || echo "OPEN")
     labels=$(cat "$HERE/gh-issue-labels-json" 2>/dev/null || echo "[]")
     json=$(jq -n --arg state "$state" --argjson labels "$labels" '{state:$state, labels:$labels}')
+    if [ -f "$HERE/gh-issue-latest-marker" ]; then
+      json=$(printf '%s' "$json" | jq --arg body "$(cat "$HERE/gh-issue-latest-marker")" \
+        '. + {comments: [{body: $body, createdAt: "2026-01-01T00:00:00Z"}]}')
+    fi
     emit "$json" "$@"
     exit 0
     ;;
