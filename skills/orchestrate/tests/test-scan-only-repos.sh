@@ -162,17 +162,22 @@ test_so_example_config_has_commented_placeholder_under_scan_backlog_block() {
 }
 
 test_so_skill_md_and_readme_describe_dispatch_eligibility_and_scan_coverage_separately() {
-  local f txt
+  local f flat
   for f in "$RS_SO/SKILL.md" "$RS_SO/../../README.md"; do
     so_has "$f" "SCAN_ONLY_REPOS" || return 1
     so_has_i "$f" "dispatch eligibility" || return 1
     so_has_i "$f" "scan coverage" || return 1
-    so_has "$f" "Business-Intelligence" || return 1
+    flat=$(tr '\n' ' ' < "$f")
+    # BI is named in a sentence that says it is in neither the scan nor any automatic queue.
+    # ([^.]* keeps it to one sentence: SKILL.md today lists BI in the Mac's *dispatch* list, which is not this claim.)
+    printf '%s\n' "$flat" | grep -qiE 'Business-Intelligence[^.]*(neither|not in|nor )|(neither|nor )[^.]*Business-Intelligence' \
+      || { fail "$(basename "$f"): no sentence saying Business-Intelligence is in neither the scan nor any automatic queue"; return 1; }
+    # the quoting-tool split: scanned on the VM, dispatched only from the Mac (line breaks flattened)
+    printf '%s\n' "$flat" | grep -qiE 'quoting tool[^.]*scan[^.]*vm|scan[^.]*quoting tool[^.]*vm' \
+      || { fail "$(basename "$f"): no statement that the quoting tool is scanned on the VM"; return 1; }
+    printf '%s\n' "$flat" | grep -qiE 'quoting tool[^.]*only[^.]*mac|only[^.]*mac[^.]*quoting tool|mac only[^.]*quoting tool' \
+      || { fail "$(basename "$f"): no statement that the quoting tool is dispatched only from the Mac"; return 1; }
   done
-  # the SKILL.md Config line no longer states scan coverage as part of the dispatch list:
-  # SCAN_ONLY_REPOS and DISPATCH_REPOS both appear, and the quoting-tool split (scanned on VM, dispatched from Mac) is stated
-  txt=$(grep -i 'quoting tool' "$RS_SO/SKILL.md" | grep -i 'scan' | grep -i 'mac' || true)
-  assert_ne "$txt" "" "R2: SKILL.md has a line saying the quoting tool is scanned (on the VM) and dispatched only from the Mac" || return 1
 }
 
 run_test test_so_5a_scan_only_repo_is_listed_and_labelled_alongside_dispatch_repo

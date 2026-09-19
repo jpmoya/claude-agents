@@ -34,7 +34,7 @@ test_fu_ac1_claude_md_forbids_general_purpose_ticket_writing() {
 test_fu_ac1_pm_states_blocking_vs_non_blocking_question_rule() {
   fu_has "$PM_FU" 'Open questions for JP' || return 1
   fu_has_i "$PM_FU" 'non-blocking' || return 1
-  fu_has_i "$PM_FU" 'stated default|default' || return 1
+  fu_has_i "$PM_FU" 'stated default' || return 1
   fu_has "$PM_FU" 'JP-only' || return 1
   # the four JP-only categories, verbatim from the ticket
   fu_has_i "$PM_FU" 'spending money' || return 1
