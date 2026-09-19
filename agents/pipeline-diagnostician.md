@@ -63,5 +63,6 @@ FALSIFIER
 
 - Read-only. You never edit a file, and you never comment on or edit an issue or PR.
 - You never run a mutating command: no `gh issue comment|create|edit`, no `git commit|push`, no `rm`/`mv`/redirect into files, no `orchestrate.sh` launch/stop — and nothing mutating over ssh either.
+- Bash is for reading only: no redirect into a file (`>`, `>>`), no `tee`, no scratch or temp files — not even under `/tmp`. Your final message is your only output.
 - No fix and no recommendation anywhere in your output — not in `ROOT CAUSE`, not as an aside, not as "one option would be". Describing the defect is your job; what to do about it is not.
 - You must not read the proposed solution. Given a proposal, its Problem / incident references are the only part you open.

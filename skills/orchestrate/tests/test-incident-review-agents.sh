@@ -3,6 +3,9 @@
 # the ordered method lead-ins, the decision rules, the byte-for-byte verdict card, and the doc
 # paragraphs that tell a session when to run them. One guard case proves they stay out of the
 # pipeline's routing files (they are on-demand agents, not stages).
+# Issue #32: the verdict record lives on the GitHub tickets themselves (proposal issue, incident
+# issue, or the fix ticket's body) — there is no separate log issue, and both agents use Bash for
+# reading only.
 # Nothing here touches the network, gh, ssh or /tmp/pipeline: every case reads tracked files only.
 
 HERE_IR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -93,7 +96,8 @@ test_ir_ac2_diagnostician_body() {
   done
   limits=$(ir_hard_limits "$DIAG_IR")
   [ -n "$limits" ] || { fail "diagnostician: no '## Hard limits' section"; return 1; }
-  for s in 'no fix' 'no recommendation' 'must not read'; do
+  for s in 'no fix' 'no recommendation' 'must not read' \
+           'tee' 'scratch' 'redirect' 'final message'; do
     assert_contains "$limits" "$s" "diagnostician hard limits" || return 1
   done
 }
@@ -107,21 +111,27 @@ test_ir_ac3_adjudicator_body() {
     '**Is a change needed?**' \
     '**Judge the fix.**' \
     '**Verdict card.**' \
-    '**Ledger.**' || return 1
+    '**Record.**' || return 1
   for s in '3 occurrences across ≥2 issues within 14 days' \
            'no pipeline code change' \
            'at most add the missing log line' \
            'Complexity budget: net new mechanisms per fix = 0' \
-           'merge or delete one' 'symptom patch' 'Pipeline incident ledger' \
+           'merge or delete one' 'symptom patch' \
            '**[pipeline-adjudicator] NOTE** <signature> — <CHANGE? value>' \
-           'agent-go'; do
+           'gh search issues' 'in:body,comments' '--owner jpmoya --owner Benjis-Plants'; do
     ir_has "$ADJ_IR" "$s" || return 1
   done
+  if grep -qF -- 'gh issue create' "$ADJ_IR"; then
+    fail "adjudicator: must not contain [gh issue create]"; return 1
+  fi
   n=$(grep -oF 'at 1 occurrence' "$ADJ_IR" | wc -l | tr -d ' ')
   [ "$n" -ge 2 ] || { fail "adjudicator: [at 1 occurrence] found $n times, expected >= 2"; return 1; }
   limits=$(ir_hard_limits "$ADJ_IR")
   [ -n "$limits" ] || { fail "adjudicator: no '## Hard limits' section"; return 1; }
-  assert_contains "$limits" 'only write' "adjudicator hard limits" || return 1
+  for s in 'only write' 'tee' 'scratch' 'redirect' 'final message'; do
+    assert_contains "$limits" "$s" "adjudicator hard limits" || return 1
+  done
+  assert_not_contains "$limits" 'never post on the incident' "adjudicator hard limits" || return 1
 }
 
 test_ir_ac4_verdict_card_byte_for_byte() {
@@ -171,8 +181,12 @@ test_ir_ac6_claude_md_paragraph() {
 test_ir_ac7_readmes() {
   local s
   for s in '**Incident review' 'pipeline-diagnostician' 'pipeline-adjudicator' \
-           'Pipeline incident ledger' 'CHANGE? NO' 'IF IT WORKS' 'rubber-stamping'; do
+           '[pipeline-adjudicator] NOTE' 'verdict-card issue bodies' \
+           'CHANGE? NO' 'IF IT WORKS' 'rubber-stamping'; do
     ir_has "$ROOT_IR/README.md" "$s" || return 1
+  done
+  for s in 'proposal issue' "incident's own issue" 'CHANGE? NO'; do
+    ir_has "$ROOT_IR/agents/README.md" "$s" || return 1
   done
   for s in '| pipeline-diagnostician | opus | high |' '| pipeline-adjudicator | opus | medium |'; do
     ir_has "$ROOT_IR/agents/README.md" "$s" || return 1
@@ -181,7 +195,14 @@ test_ir_ac7_readmes() {
     || { fail "agents/README.md: missing heading [## Incident review (on demand, not a stage)]"; return 1; }
 }
 
-echo "-- incident review agents (issue #27)"
+# Issue #32 AC1. The needle is built from two fragments so this file does not match itself.
+test_ir_no_separate_log_issue() {
+  local needle="incident led""ger" hits
+  hits=$(cd "$ROOT_IR" && grep -rniF -- "$needle" agents/ README.md CLAUDE.md skills/)
+  assert_eq "$hits" "" "[$needle] still mentioned" || return 1
+}
+
+echo "-- incident review agents (issues #27, #32)"
 run_test test_ir_ac1_frontmatter
 run_test test_ir_ac2_diagnostician_body
 run_test test_ir_ac3_adjudicator_body
@@ -189,3 +210,4 @@ run_test test_ir_ac4_verdict_card_byte_for_byte
 run_test test_ir_ac5_not_wired_into_pipeline
 run_test test_ir_ac6_claude_md_paragraph
 run_test test_ir_ac7_readmes
+run_test test_ir_no_separate_log_issue
