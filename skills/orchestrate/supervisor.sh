@@ -63,7 +63,7 @@ issue_is_closed() {
   [ "$state" = "CLOSED" ]
 }
 
-# terminal_kind <marker> <issue> → prints "done" / "gate" / "" (not terminal)
+# terminal_kind <marker> <issue> → prints "done" / "gate" / "grace" (BLOCKED inside the grace window: wait) / "" (not terminal)
 terminal_kind() {
   local marker=$1 issue=${2:-}
   marker=${marker%%\*\*}   # markers are bold ("**[deployer] DEPLOYED**"): strip the trailing bold so the $-anchors below match
@@ -75,7 +75,7 @@ terminal_kind() {
       local age=$(( $(date +%s) - $(to_epoch "$(cat "$PIPE/orch-$issue.start")") ))
       if [ "$age" -lt "$GRACE_PERIOD_SECS" ]; then
         slog "[grace] #$issue — BLOCKED marker seen but run is ${age}s old (<${GRACE_PERIOD_SECS}s), waiting"
-        echo ""; return
+        echo grace; return
       fi
     fi
     echo gate; return
@@ -242,7 +242,14 @@ for f in "$PIPE"/orch-*.pid; do
       [ -z "$gate_reason" ] && gate_reason="$marker"
       notify_engineering "$issue" ":hand:" "Waiting on you — $gate_reason" "$(cd "$repo" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo "unknown")"
       continue ;;
+    grace) continue ;;
   esac
+
+  # Already queued — nothing ended this tick: don't count it, don't overwrite its not_before
+  if [ -f "$QUEUE/orch-$issue.json" ]; then
+    slog "[queue-wait] #$issue — already queued, skipping re-enqueue"
+    continue
+  fi
 
   # Non-terminal exit — potential restart
   [ "$launched" -ge 1 ] && continue  # one launch per tick
@@ -307,12 +314,6 @@ json.dump(d, open('$restarts_file','w'))
 
   if $should_escalate; then
     escalate "$repo" "$issue" "$restarts_file"
-    continue
-  fi
-
-  # Already queued — don't overwrite its not_before
-  if [ -f "$QUEUE/orch-$issue.json" ]; then
-    slog "[queue-wait] #$issue — already queued, skipping re-enqueue"
     continue
   fi
 
