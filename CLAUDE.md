@@ -1,5 +1,9 @@
 # Cross-project conventions
 
+## Communication style
+
+Be concise. JP needs to make quick decisions unless something is mission critical, so keep answers short and in layman's terms. Don't ask JP technical questions — decide from evidence and defaults, and flag only what truly needs his call.
+
 ## Software development
 
 JP does not do hands-on engineering in the main session. Every code change in any of JP's repos — features, bug fixes, regressions, refactors — goes through the agent pipeline: file/refine the GitHub issue, then launch the `orchestrator` with the `orchestrate` skill (`~/.claude/skills/orchestrate/orchestrate.sh <repo> <issue>`), which runs it as a detached headless process. Never dispatch the orchestrator with the Agent tool — a subagent dies when the session compacts or exits (orch-547, 2026-09-05); `block-orchestrator-agent.sh` blocks it in every session, no exceptions. The launcher runs the orchestrator directly as the main agent of its headless process (`claude --agent orchestrator -p`), so no Agent call is involved. The orchestrator dispatches pipeline stages (test-writer, fullstack-developer, etc.) as separate `claude --agent <stage> -p` processes from Bash. Check progress with `orchestrate.sh status`; relaunch to resume, state lives in the issue's markers. Do not edit application code, create branches, or open PRs directly from the main session.
