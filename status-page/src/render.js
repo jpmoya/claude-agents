@@ -5,6 +5,8 @@
 // passes through esc() even though the payload is already enum-validated (defence in depth,
 // tested directly per skills/quality-gate/SKILL.md).
 
+import { isIssueUrl } from './validate.js';
+
 // Auto-refresh interval in seconds. Must stay <= 30 (AC15). Grepped directly by tests.
 export const PAGE_REFRESH_SECS = 20;
 
@@ -31,12 +33,30 @@ export function esc(value) {
   });
 }
 
+// en-US + formatToParts, never .format() or en-GB: en-GB renders September as "Sept" and
+// .format() punctuation varies with the ICU version (issue #29).
+const CET_FORMAT = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'Europe/Madrid',
+  weekday: 'short',
+  day: 'numeric',
+  month: 'short',
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23',
+});
+
 /**
- * STUB (issue #29) — the developer replaces this. Contract: ISO UTC string -> "Sat 19 Sep, 14:05"
- * in Europe/Madrid (see the ticket's design decision 6); non-string / unparseable -> ''.
+ * ISO UTC string -> "Sat 19 Sep, 14:05" in Europe/Madrid (CET/CEST switches automatically).
+ * Non-string, unparseable or missing input -> '' (never "Invalid Date").
+ * @param {unknown} iso
  */
-export function formatCet(_iso) {
-  throw new Error('NotImplemented');
+export function formatCet(iso) {
+  if (typeof iso !== 'string') return '';
+  const ms = Date.parse(iso);
+  if (Number.isNaN(ms)) return '';
+  const parts = {};
+  for (const part of CET_FORMAT.formatToParts(new Date(ms))) parts[part.type] = part.value;
+  return `${parts.weekday} ${parts.day} ${parts.month}, ${parts.hour}:${parts.minute}`;
 }
 
 /** Derives the live/stale/offline badge from `received_at` only (never `sent_at`). */
@@ -49,15 +69,24 @@ function computeBadge(receivedAt, thresholds, nowEpochSecs) {
   return 'live';
 }
 
+/**
+ * Ticket cell: title linked to the issue when `url` passes isIssueUrl (re-checked here — never
+ * trust that the stored value was validated), plain-text title otherwise, empty without a title.
+ */
+function renderTicketCell(run) {
+  if (typeof run.title !== 'string' || run.title === '') return '';
+  if (!isIssueUrl(run.url)) return esc(run.title);
+  return `<a href="${esc(run.url)}" target="_blank" rel="noopener noreferrer">${esc(run.title)}</a>`;
+}
+
 function renderRunRow(run) {
   return `<tr>
-    <td>${esc(run.repo)}</td>
     <td>#${esc(run.issue)}</td>
+    <td>${renderTicketCell(run)}</td>
     <td>${esc(run.state)}</td>
     <td>${esc(run.stage)}</td>
     <td>${esc(run.marker)}</td>
-    <td>${esc(run.started_at)}</td>
-    <td>${esc(run.last_activity_at)}</td>
+    <td>${esc(formatCet(run.last_activity_at))}</td>
     <td>${esc(run.restarts)}</td>
   </tr>`;
 }
@@ -78,15 +107,15 @@ function renderHostSection(key, host, thresholds, nowEpochSecs) {
   const runs = Array.isArray(host.runs) ? host.runs : [];
   const runRows = runs.length
     ? runs.map(renderRunRow).join('')
-    : '<tr><td colspan="8">no active runs</td></tr>';
+    : '<tr><td colspan="7">no active runs</td></tr>';
 
   return `<section class="host">
     <h2>${esc(label)} <span class="badge ${esc(badge)}">${esc(badge)}</span></h2>
-    <p class="last-seen">Last seen: ${esc(host.received_at)}</p>
+    <p class="last-seen">Last seen: ${esc(formatCet(host.received_at))}</p>
     <p class="capacity">Capacity: running ${esc(capacity.running)} / max ${esc(capacity.max)} (queued ${esc(capacity.queued)})</p>
     <table>
       <thead>
-        <tr><th>Repo</th><th>Issue</th><th>State</th><th>Stage</th><th>Marker</th><th>Started</th><th>Last activity</th><th>Restarts</th></tr>
+        <tr><th>Issue</th><th>Ticket</th><th>State</th><th>Stage</th><th>Marker</th><th>Last activity</th><th>Restarts</th></tr>
       </thead>
       <tbody>${runRows}</tbody>
     </table>

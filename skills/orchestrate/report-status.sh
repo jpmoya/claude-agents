@@ -41,6 +41,9 @@ mkdir -p "$PIPE" "$QUEUE" 2>/dev/null
 # ---- repo alias (AC5): git -C <repo_path> config --get remote.origin.url (local, no network)
 # -> owner/repo -> STATUS_REPO_ALIASES ("owner/repo:alias", a plain indexed array — see AC11) ->
 # unmapped -> "other".
+# ---- ticket title (#29): the builder reads $PIPE/orch-<issue>.title (written at launch by
+# orchestrate.sh / supervisor.sh) and emits runs[].title + runs[].url. Local file only — a beat
+# never makes a network call for a title; no file means neither field.
 _rs_aliases_arg() {
   local e out=""
   for e in "${STATUS_REPO_ALIASES[@]:-}"; do
@@ -53,7 +56,7 @@ _rs_aliases_arg() {
 # The runs[] builder is a standalone file, not an inline heredoc: a heredoc attached to `python3 -`
 # consumes the script's own stdin, leaving nothing for derive_runs()'s TSV to be piped through.
 _rs_build_runs_json() {  # reads derive_runs()'s TSV on stdin, prints the v1 "runs" JSON array
-  python3 "$RS_HERE/build-runs-json.py" "$(_rs_aliases_arg)" "$HOME/.claude/pipeline/runs.jsonl"
+  python3 "$RS_HERE/build-runs-json.py" "$(_rs_aliases_arg)" "$HOME/.claude/pipeline/runs.jsonl" "$PIPE"
 }
 
 _rs_supervisor_last_tick() {  # mtime of the supervisor's own log, else "now" (no supervisor has run yet)
