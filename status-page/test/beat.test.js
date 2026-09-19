@@ -6,6 +6,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import worker, { __resetRateLimiter } from '../src/index.js';
 import { createMockKV } from './mock-kv.js';
 import { makeEnv, validPayload, beatRequest, sizedBeatBody, TOKEN_MAC, TOKEN_VM } from './fixtures.js';
+import { validRun, getRequest } from './fixtures.js'; // issue #29
 
 beforeEach(() => {
   __resetRateLimiter();
@@ -187,5 +188,80 @@ describe('AC3/AC4 — storage shape: stored value is the validated payload plus 
     const stored = JSON.parse(env.STATUS._dump()['host:mac']);
     expect(stored).toHaveProperty('received_at');
     expect(typeof stored.received_at).toBe('string');
+  });
+});
+
+// ---- Issue #29: optional runs[].title / runs[].url through POST /beat -------------------------
+
+describe('#29 — POST /beat with the optional ticket fields', () => {
+  const GOOD_URL = 'https://github.com/example-owner/project-a/issues/42';
+
+  async function beat(env, runOverrides) {
+    const res = await worker.fetch(
+      beatRequest({ body: validPayload({ runs: [validRun(runOverrides)] }), token: TOKEN_MAC }),
+      env,
+      {}
+    );
+    return res;
+  }
+  const storedRun = (env) => JSON.parse(env.STATUS._dump()['host:mac']).runs[0];
+
+  it('a run with a valid title + url returns 204 and both are stored', async () => {
+    const env = makeEnv();
+    const res = await beat(env, { title: 'Fix login redirect', url: GOOD_URL });
+    expect(res.status).toBe(204);
+    expect(storedRun(env).title).toBe('Fix login redirect');
+    expect(storedRun(env).url).toBe(GOOD_URL);
+  });
+
+  it('a legacy run (neither field) returns 204, stores neither key, and the page renders an empty Ticket cell', async () => {
+    const env = makeEnv();
+    const res = await beat(env, {});
+    expect(res.status).toBe(204);
+    const stored = storedRun(env);
+    expect(stored).not.toHaveProperty('title');
+    expect(stored).not.toHaveProperty('url');
+
+    const home = await worker.fetch(getRequest('/'), env, {});
+    const html = await home.text();
+    const tbody = html.match(/<tbody>([\s\S]*?)<\/tbody>/)[1];
+    const cells = [...tbody.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((m) => m[1].trim());
+    expect(cells).toHaveLength(7); // the new 7-column layout
+    expect(cells[1]).toBe(''); // Ticket
+    expect(html).not.toContain('href');
+  });
+
+  it('a bad url is dropped (204, run kept, title kept, no url stored)', async () => {
+    const env = makeEnv();
+    const res = await beat(env, { title: 'Fix login redirect', url: 'javascript:alert(1)' });
+    expect(res.status).toBe(204);
+    expect(storedRun(env).title).toBe('Fix login redirect'); // control: the title survived
+    expect(storedRun(env)).not.toHaveProperty('url');
+  });
+
+  it('a non-string title is dropped (204, run kept, no title stored, valid url still stored)', async () => {
+    const env = makeEnv();
+    const res = await beat(env, { title: 123, url: GOOD_URL });
+    expect(res.status).toBe(204);
+    expect(storedRun(env).url).toBe(GOOD_URL); // control: url survived
+    expect(storedRun(env)).not.toHaveProperty('title');
+    expect(storedRun(env).issue).toBe(42);
+  });
+
+  it('a 200-char title is accepted (204) and stored as 140 chars', async () => {
+    const env = makeEnv();
+    const res = await beat(env, { title: 'a'.repeat(200), url: GOOD_URL });
+    expect(res.status).toBe(204);
+    expect(storedRun(env).title).toHaveLength(140);
+  });
+
+  it('GET / after a titled beat shows the title as a link to the issue', async () => {
+    const env = makeEnv();
+    await beat(env, { title: 'Fix login redirect', url: GOOD_URL });
+    const home = await worker.fetch(getRequest('/'), env, {});
+    const html = await home.text();
+    expect(html).toContain(
+      `<a href="${GOOD_URL}" target="_blank" rel="noopener noreferrer">Fix login redirect</a>`
+    );
   });
 });

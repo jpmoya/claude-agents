@@ -11,6 +11,14 @@ const ISO_8601_Z = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 const REPO_ALIAS = /^[a-z0-9][a-z0-9-]{0,23}$/;
 const MAX_RUNS = 20;
 
+/**
+ * STUB (issue #29) — the developer replaces this. Contract: true iff `value` is a string matching
+ * ^https://github\.com/[\w.-]+/[\w.-]+/issues/\d+$ ; render.js also calls it.
+ */
+export function isIssueUrl(_value) {
+  throw new Error('NotImplemented');
+}
+
 function isPlainObject(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

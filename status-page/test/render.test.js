@@ -4,6 +4,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { esc, renderPage, PAGE_REFRESH_SECS } from '../src/render.js';
+import { formatCet } from '../src/render.js'; // issue #29
 
 const thresholds = { staleSecs: 1500, offlineSecs: 4500 };
 
@@ -182,5 +183,212 @@ describe('Staleness badge is computed from received_at only, never sent_at (cloc
     const body = stripStyle(renderPage(hosts, thresholds, now));
     expect(body).toMatch(/\blive\b/i);
     expect(body).not.toMatch(/offline/i);
+  });
+});
+
+// ---- Issue #29: 7-column table, CET timestamps, clickable ticket title ------------------------
+// Expected strings are hand-written from the ticket (weekday/month names checked against a
+// calendar: 2026-09-19 Sat, 2026-12-01 Tue, 2026-09-20 Sun, 2026-03-29 Sun, 2026-10-25 Sun).
+
+const GOOD_URL = 'https://github.com/example-owner/project-a/issues/42';
+const BAD_URLS = [
+  'javascript:alert(1)',
+  'https://evil.example/example-owner/project-a/issues/42',
+  'http://github.com/example-owner/project-a/issues/42',
+  'https://github.com/example-owner/project-a/issues/42?x=1',
+  'https://github.com/example-owner/project-a/pull/42',
+  'https://github.com/example-owner/project-a/issues/42" onclick="x',
+  42,
+];
+
+function runFixture(overrides = {}) {
+  return {
+    repo: 'zz-alias',
+    issue: 42,
+    state: 'running',
+    stage: 'test-writer',
+    marker: 'TESTS WRITTEN',
+    started_at: '2026-01-02T03:04:05Z',
+    last_activity_at: '2026-09-19T12:05:33Z',
+    restarts: 0,
+    ...overrides,
+  };
+}
+
+function hostsWith(runs, hostOverrides = {}) {
+  return {
+    mac: {
+      v: 1,
+      received_at: '2026-09-19T12:05:33Z',
+      supervisor_last_tick: '2026-09-19T12:05:00Z',
+      capacity: { running: 1, max: 3, queued: 0 },
+      runs,
+      ...hostOverrides,
+    },
+    vm: null,
+  };
+}
+
+/** Inner HTML of every <th> in document order. */
+function headerCells(html) {
+  return [...html.matchAll(/<th[^>]*>([\s\S]*?)<\/th>/g)].map((m) => m[1].trim());
+}
+
+/** Inner HTML of every <td> of every <tbody> row: string[][]. */
+function bodyRows(html) {
+  const tbody = (html.match(/<tbody>([\s\S]*?)<\/tbody>/) || [null, ''])[1];
+  return [...tbody.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/g)].map((row) =>
+    [...row[1].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((c) => c[1].trim())
+  );
+}
+
+const render = (hosts) => renderPage(hosts, thresholds, Date.parse('2026-09-19T12:06:00Z') / 1000);
+
+describe('formatCet (#29 AC2/AC3)', () => {
+  it.each([
+    ['2026-09-19T12:05:33Z', 'Sat 19 Sep, 14:05'], // CEST = UTC+2; "Sep" not "Sept"
+    ['2026-12-01T12:05:33Z', 'Tue 1 Dec, 13:05'], // CET = UTC+1; day is not zero-padded
+    ['2026-09-19T22:00:00Z', 'Sun 20 Sep, 00:00'], // rolls over midnight; h23, never "24:00"
+  ])('%s -> %s', (iso, expected) => {
+    expect(formatCet(iso)).toBe(expected);
+  });
+
+  it.each([
+    ['2026-03-29T00:59:59Z', 'Sun 29 Mar, 01:59'], // last second of CET (DST starts 01:00 UTC)
+    ['2026-03-29T01:00:00Z', 'Sun 29 Mar, 03:00'], // first second of CEST: 02:xx is skipped
+    ['2026-10-25T00:59:59Z', 'Sun 25 Oct, 02:59'], // last second of CEST (DST ends 01:00 UTC)
+    ['2026-10-25T01:00:00Z', 'Sun 25 Oct, 02:00'], // first second of CET: clock went back an hour
+  ])('switches CET/CEST automatically: %s -> %s', (iso, expected) => {
+    expect(formatCet(iso)).toBe(expected);
+  });
+
+  it.each([
+    ['undefined', undefined],
+    ['empty string', ''],
+    ['unparseable', 'not-a-date'],
+    ['null', null],
+    ['number', 1758283533000],
+    ['object', {}],
+  ])('returns "" for %s (never "Invalid Date")', (_label, value) => {
+    expect(formatCet(value)).toBe('');
+  });
+});
+
+describe('renderPage — 7-column table (#29 AC1)', () => {
+  it('header cells are exactly Issue, Ticket, State, Stage, Marker, Last activity, Restarts, in order', () => {
+    const html = render(hostsWith([runFixture()]));
+    expect(headerCells(html)).toEqual(['Issue', 'Ticket', 'State', 'Stage', 'Marker', 'Last activity', 'Restarts']);
+  });
+
+  it('has no Repo or Started header', () => {
+    const html = render(hostsWith([runFixture()]));
+    expect(html).not.toContain('<th>Repo</th>');
+    expect(html).not.toContain('<th>Started</th>');
+  });
+
+  it('does not render the run\'s repo alias or started_at anywhere in the HTML', () => {
+    const html = render(hostsWith([runFixture()]));
+    expect(html).not.toContain('zz-alias');
+    expect(html).not.toContain('2026-01-02'); // raw started_at
+    expect(html).not.toContain('Fri 2 Jan'); // ...or its CET-formatted form
+    expect(bodyRows(html)[0]).toHaveLength(7); // and each body row really has 7 cells
+  });
+
+  it('the no-runs row spans 7 columns', () => {
+    const html = render(hostsWith([]));
+    expect(html).toContain('colspan="7"');
+    expect(html).not.toContain('colspan="8"');
+  });
+});
+
+describe('renderPage — CET timestamps (#29 AC2/AC3)', () => {
+  it('Last activity and host Last seen read "Sat 19 Sep, 14:05"; no seconds, no ISO string', () => {
+    const html = render(hostsWith([runFixture({ last_activity_at: '2026-09-19T12:05:33Z' })]));
+    expect(html).toMatch(/Last seen[^<]*Sat 19 Sep, 14:05/);
+    const cells = bodyRows(html)[0];
+    expect(cells[5]).toBe('Sat 19 Sep, 14:05'); // Last activity is the 6th of 7 cells
+    expect(html).not.toContain(':33');
+    expect(html).not.toContain('2026-09-19T');
+  });
+
+  it('missing, empty and unparseable timestamps render empty; "Invalid Date" never appears', () => {
+    const runs = [
+      runFixture({ issue: 1, last_activity_at: undefined }),
+      runFixture({ issue: 2, last_activity_at: '' }),
+      runFixture({ issue: 3, last_activity_at: 'garbage' }),
+    ];
+    const html = render(hostsWith(runs, { received_at: 'not-a-date' }));
+    expect(html).not.toContain('Invalid Date');
+    const rows = bodyRows(html);
+    expect(rows).toHaveLength(3);
+    for (const cells of rows) expect(cells[5]).toBe(''); // Last activity
+    const lastSeen = html.match(/Last seen([^<]*)</);
+    expect(lastSeen).not.toBeNull();
+    expect(lastSeen[1].replace(/[:\s]/g, '')).toBe(''); // label kept, value empty
+  });
+});
+
+describe('renderPage — Ticket cell (#29 AC4/AC5/AC6)', () => {
+  it('title + valid url renders an <a> with target=_blank and rel=noopener noreferrer wrapping the title', () => {
+    const html = render(hostsWith([runFixture({ title: 'Fix login redirect', url: GOOD_URL })]));
+    const anchor = `<a href="${GOOD_URL}" target="_blank" rel="noopener noreferrer">Fix login redirect</a>`;
+    expect(html).toContain(anchor);
+    expect(bodyRows(html)[0][1]).toBe(anchor); // Ticket is the 2nd cell
+  });
+
+  it('the XSS title renders HTML-escaped inside the link and the page still has no <script', () => {
+    const html = render(
+      hostsWith([runFixture({ title: '<script>alert(1)</script> & "quotes"', url: GOOD_URL })])
+    );
+    expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt; &amp; &quot;quotes&quot;');
+    expect(html).not.toMatch(/<script/i);
+  });
+
+  it('the XSS title is escaped in the plain-text (no url) form too', () => {
+    const html = render(hostsWith([runFixture({ title: '<script>alert(1)</script> & "quotes"' })]));
+    expect(bodyRows(html)[0][1]).toBe('&lt;script&gt;alert(1)&lt;/script&gt; &amp; &quot;quotes&quot;');
+    expect(html).not.toMatch(/<script/i);
+  });
+
+  it.each(BAD_URLS.map((u) => [String(u), u]))(
+    'bad url %s handed straight to renderPage: title as plain text, no href anywhere',
+    (_label, url) => {
+      const html = render(hostsWith([runFixture({ title: 'Fix login redirect', url })]));
+      expect(bodyRows(html)[0][1]).toBe('Fix login redirect'); // control: the title is rendered, as text
+      expect(html).not.toContain('href');
+      expect(html).not.toContain('onclick=');
+    }
+  );
+
+  it('title with a missing url renders as plain text with no <a>', () => {
+    const html = render(hostsWith([runFixture({ title: 'Fix login redirect' })]));
+    expect(bodyRows(html)[0][1]).toBe('Fix login redirect');
+    expect(html).not.toContain('<a ');
+    expect(html).not.toContain('href');
+  });
+
+  it('a url with no title renders an empty Ticket cell and no href, even for a valid url', () => {
+    const rows = bodyRows(render(hostsWith([runFixture({ issue: 41, title: 'Control title', url: GOOD_URL }), runFixture({ url: GOOD_URL })])));
+    expect(rows[0][1]).toContain('Control title'); // control: titles render at all
+    expect(rows[1][1]).toBe('');
+    expect(rows[1].join('')).not.toContain('href');
+  });
+
+  it('a legacy run (no title, no url) renders an empty Ticket cell (beside a titled run)', () => {
+    const rows = bodyRows(render(hostsWith([runFixture({ issue: 41, title: 'Control title' }), runFixture()])));
+    expect(rows[0][1]).toBe('Control title'); // control: titles render at all
+    expect(rows[1][1]).toBe('');
+  });
+
+  it('the ticket link is navigation, not a loaded resource: every href sits on an <a>; no src/link/@import', () => {
+    const html = render(hostsWith([runFixture({ title: 'Fix login redirect', url: GOOD_URL })]));
+    const hrefs = [...html.matchAll(/href\s*=/gi)].length;
+    const anchors = [...html.matchAll(/<a href=/g)].length;
+    expect(anchors).toBe(1); // control: the link is there
+    expect(hrefs).toBe(anchors);
+    expect(html).not.toMatch(/\ssrc\s*=/i);
+    expect(html).not.toMatch(/<link\b/i);
+    expect(html).not.toMatch(/@import/i);
+    expect(html).not.toMatch(/<script/i);
   });
 });

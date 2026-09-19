@@ -4,6 +4,8 @@
 
 import { describe, it, expect } from 'vitest';
 import { validateBeatPayload } from '../src/validate.js';
+import { isIssueUrl } from '../src/validate.js'; // issue #29
+import { readFileSync } from 'node:fs';
 import { validPayload, validRun } from './fixtures.js';
 
 describe('validateBeatPayload — v field', () => {
@@ -305,5 +307,150 @@ describe('AC4 — leak test: fake issue title, file path, and log line planted i
     expect(result.value.runs[0].repo).toBe('other');
     expect(result.value.runs[0].stage).toBe('other');
     expect(result.value.runs[0].marker).toBe('other');
+  });
+});
+
+// ---- Issue #29: optional runs[].title / runs[].url (additive v1) -------------------------------
+// Expected values come from the ticket's design decision 5 and its "Test fixtures" list.
+
+const GOOD_URL = 'https://github.com/example-owner/project-a/issues/42';
+const BAD_URLS = [
+  ['javascript: scheme', 'javascript:alert(1)'],
+  ['foreign host', 'https://evil.example/example-owner/project-a/issues/42'],
+  ['http not https', 'http://github.com/example-owner/project-a/issues/42'],
+  ['query string', 'https://github.com/example-owner/project-a/issues/42?x=1'],
+  ['pull, not issue', 'https://github.com/example-owner/project-a/pull/42'],
+  ['attribute-breakout', 'https://github.com/example-owner/project-a/issues/42" onclick="x'],
+  ['non-string number', 42],
+];
+
+function keptRun(runOverrides) {
+  const result = validateBeatPayload(validPayload({ runs: [validRun(runOverrides)] }));
+  expect(result.ok).toBe(true);
+  expect(result.value.runs).toHaveLength(1); // the run is never dropped because of title/url
+  return result.value.runs[0];
+}
+
+describe('isIssueUrl — strict https://github.com/<owner>/<repo>/issues/<n> check (#29 design 5)', () => {
+  it.each([
+    ['plain', GOOD_URL],
+    ['dots, hyphens, underscores in owner/repo', 'https://github.com/a.b-c/d_e.f/issues/1'],
+    ['large issue number', 'https://github.com/o/r/issues/999999'],
+  ])('accepts %s', (_label, url) => {
+    expect(isIssueUrl(url)).toBe(true);
+  });
+
+  it.each(BAD_URLS)('rejects %s', (_label, url) => {
+    expect(isIssueUrl(url)).toBe(false);
+  });
+
+  it.each([
+    ['null', null],
+    ['undefined', undefined],
+    ['empty string', ''],
+    ['object', {}],
+    ['trailing newline', `${GOOD_URL}\n`],
+    ['no issue number', 'https://github.com/o/r/issues/'],
+    ['non-numeric issue', 'https://github.com/o/r/issues/abc'],
+    ['extra path segment', 'https://github.com/o/r/issues/42/extra'],
+  ])('rejects %s', (_label, url) => {
+    expect(isIssueUrl(url)).toBe(false);
+  });
+});
+
+describe('validateBeatPayload — runs[].url (#29 AC5)', () => {
+  it('keeps a valid issue url', () => {
+    expect(keptRun({ url: GOOD_URL }).url).toBe(GOOD_URL);
+  });
+
+  it.each(BAD_URLS)('drops a bad url (%s) but keeps the run and its title', (_label, url) => {
+    const run = keptRun({ title: 'Fix login redirect', url });
+    expect(run).not.toHaveProperty('url');
+    expect(run.title).toBe('Fix login redirect');
+  });
+
+  it('keeps a valid url even when there is no title (fields are independent)', () => {
+    const run = keptRun({ url: GOOD_URL });
+    expect(run.url).toBe(GOOD_URL);
+    expect(run).not.toHaveProperty('title');
+  });
+});
+
+describe('validateBeatPayload — runs[].title (#29 AC6)', () => {
+  it('keeps a valid title and url together', () => {
+    const run = keptRun({ title: 'Fix login redirect', url: GOOD_URL });
+    expect(run.title).toBe('Fix login redirect');
+    expect(run.url).toBe(GOOD_URL);
+  });
+
+  it.each([
+    ['number', 123],
+    ['null', null],
+    ['object', {}],
+    ['array', ['x']],
+    ['empty string', ''],
+    ['whitespace only', '   '],
+    ['control chars only', '\u0000\u0007\u001f\u007f'],
+  ])('omits a %s title, keeps the run (and its independently valid url)', (_label, title) => {
+    // The valid url is a positive control: it proves title/url handling exists at all, so the
+    // omission below is a real sanitisation decision rather than "the field is never emitted".
+    const run = keptRun({ title, url: GOOD_URL });
+    expect(run.url).toBe(GOOD_URL);
+    expect(run).not.toHaveProperty('title');
+  });
+
+  it('caps a 200-char title at exactly 140 characters', () => {
+    expect(keptRun({ title: 'a'.repeat(200) }).title).toBe('a'.repeat(140));
+  });
+
+  it.each([
+    [139, 139],
+    [140, 140], // the cap itself is not "over"
+    [141, 140],
+  ])('boundary: a %i-char title comes out %i chars', (inLen, outLen) => {
+    expect(keptRun({ title: 'a'.repeat(inLen) }).title).toHaveLength(outLen);
+  });
+
+  it('caps by code point, not UTF-16 unit (141 emoji -> 140 emoji, none split)', () => {
+    const out = keptRun({ title: '😀'.repeat(141) }).title;
+    expect(Array.from(out)).toHaveLength(140);
+    expect(out).toBe('😀'.repeat(140));
+  });
+
+  it('collapses newlines and tabs to single spaces: "line1\\nline2\\ttab" -> "line1 line2 tab"', () => {
+    expect(keptRun({ title: 'line1\nline2\ttab' }).title).toBe('line1 line2 tab');
+  });
+
+  it('collapses a run of whitespace/control chars to one space and trims the ends', () => {
+    expect(keptRun({ title: '  \u0007spaced \r\n \u0000\u0001 out  ' }).title).toBe('spaced out');
+  });
+
+  it('does not strip markup — escaping is the renderer\'s job, the string is kept as text', () => {
+    const t = '<script>alert(1)</script> & "quotes"';
+    expect(keptRun({ title: t }).title).toBe(t);
+  });
+});
+
+describe('validateBeatPayload — legacy runs without title/url (#29 AC7)', () => {
+  it('a run with neither field validates and stores neither key (a titled run beside it is unaffected)', () => {
+    const result = validateBeatPayload(
+      validPayload({ runs: [validRun(), validRun({ issue: 43, title: 'Fix login redirect', url: GOOD_URL })] })
+    );
+    expect(result.ok).toBe(true);
+    const [legacy, titled] = result.value.runs;
+    expect(titled.title).toBe('Fix login redirect'); // control: the feature exists
+    expect(legacy).not.toHaveProperty('title');
+    expect(legacy).not.toHaveProperty('url');
+    // the existing field set is unchanged
+    expect(legacy.repo).toBe('project-a');
+    expect(legacy.issue).toBe(42);
+  });
+});
+
+describe('validate.js header documents the single free-text exception (#29 design 5)', () => {
+  it('the header comment (before the first import) names runs[].title as the one documented exception', () => {
+    const src = readFileSync(new URL('../src/validate.js', import.meta.url), 'utf8');
+    const header = src.slice(0, src.indexOf('import '));
+    expect(header).toContain('runs[].title');
   });
 });

@@ -31,6 +31,14 @@ export function esc(value) {
   });
 }
 
+/**
+ * STUB (issue #29) — the developer replaces this. Contract: ISO UTC string -> "Sat 19 Sep, 14:05"
+ * in Europe/Madrid (see the ticket's design decision 6); non-string / unparseable -> ''.
+ */
+export function formatCet(_iso) {
+  throw new Error('NotImplemented');
+}
+
 /** Derives the live/stale/offline badge from `received_at` only (never `sent_at`). */
 function computeBadge(receivedAt, thresholds, nowEpochSecs) {
   const receivedAtMs = typeof receivedAt === 'string' ? Date.parse(receivedAt) : NaN;
