@@ -157,3 +157,51 @@ describe('AC4 leak test (status.json half) — planted strings never reach the J
     expect(bodyText).not.toContain(plantedSessionTitle);
   });
 });
+
+// ---- Issue #29 AC8: /status.json is untouched apart from passing the two new fields through ----
+
+describe('#29 AC8 — /status.json keeps raw ISO timestamps and repo, passes title/url through', () => {
+  const GOOD_URL = 'https://github.com/example-owner/project-a/issues/42';
+
+  it('a beat carrying title+url comes back with both, plus repo and raw ISO UTC started_at/last_activity_at/received_at', async () => {
+    const env = makeEnv();
+    const beatRes = await worker.fetch(
+      beatRequest({
+        token: TOKEN_MAC,
+        body: validPayload({
+          runs: [
+            validRun({
+              title: 'Fix login redirect',
+              url: GOOD_URL,
+              started_at: '2026-09-19T12:05:33Z',
+              last_activity_at: '2026-09-19T12:05:33Z',
+            }),
+          ],
+        }),
+      }),
+      env,
+      {}
+    );
+    expect(beatRes.status).toBe(204);
+
+    const res = await worker.fetch(getRequest('/status.json'), env, {});
+    const mac = (await res.json()).hosts.mac;
+    const run = mac.runs[0];
+    expect(run.title).toBe('Fix login redirect');
+    expect(run.url).toBe(GOOD_URL);
+    expect(run.repo).toBe('project-a'); // still stored and returned
+    expect(run.started_at).toBe('2026-09-19T12:05:33Z'); // raw ISO UTC, not CET-formatted
+    expect(run.last_activity_at).toBe('2026-09-19T12:05:33Z');
+    expect(mac.received_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/);
+  });
+
+  it('a legacy run round-trips through a beat with neither title nor url in /status.json', async () => {
+    const env = makeEnv();
+    await worker.fetch(beatRequest({ token: TOKEN_MAC, body: validPayload({ runs: [validRun(), validRun({ issue: 43, title: 'Control', url: GOOD_URL })] }) }), env, {});
+    const res = await worker.fetch(getRequest('/status.json'), env, {});
+    const [legacy, titled] = (await res.json()).hosts.mac.runs;
+    expect(titled.title).toBe('Control'); // control: the fields exist end to end
+    expect(legacy).not.toHaveProperty('title');
+    expect(legacy).not.toHaveProperty('url');
+  });
+});

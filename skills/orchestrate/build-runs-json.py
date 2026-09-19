@@ -3,9 +3,11 @@
 # restarts, stage) on stdin into the v1 payload's "runs" JSON array. Called by report-status.sh —
 # a standalone file (not a heredoc) so stdin stays free to carry the TSV data.
 #
-# Usage: build-runs-json.py <aliases-arg> <runs-jsonl-path>
+# Usage: build-runs-json.py <aliases-arg> <runs-jsonl-path> [<pipe-dir>]
 #   <aliases-arg>: STATUS_REPO_ALIASES entries ("owner/repo:alias"), one per line
 #   <runs-jsonl-path>: ~/.claude/pipeline/runs.jsonl, for the last dispatch marker per repo+issue
+#   <pipe-dir>: $PIPE, for the per-run orch-<issue>.title file written at launch (issue #29).
+#               Local files only -- this script never makes a network call.
 import sys
 import json
 import subprocess
@@ -13,6 +15,9 @@ import os
 import datetime
 
 aliases_raw, runs_jsonl = sys.argv[1], sys.argv[2]
+pipe_dir = sys.argv[3] if len(sys.argv) > 3 else ""
+
+TITLE_MAX_CHARS = 140
 
 aliases = {}
 for line in aliases_raw.splitlines():
@@ -87,6 +92,17 @@ def marker_for(owner_repo, issue):  # last dispatch event's marker_after for thi
     return marker
 
 
+def title_for(issue):  # first line of <pipe-dir>/orch-<issue>.title, stripped + capped; else ""
+    if not pipe_dir:
+        return ""
+    try:
+        with open(os.path.join(pipe_dir, "orch-%s.title" % issue), encoding="utf-8", errors="replace") as f:
+            first_line = f.readline(4096)
+    except OSError:
+        return ""
+    return first_line.strip()[:TITLE_MAX_CHARS]
+
+
 def iso(epoch_str):
     epoch_str = (epoch_str or "").strip()
     if not epoch_str:
@@ -131,6 +147,13 @@ for raw in sys.stdin:
         "restarts": int(restarts) if str(restarts).lstrip("-").isdigit() else 0,
     }
     run = {k: v for k, v in run.items() if v is not None}
+    # Published on the public page by JP's decision (#29): the title, and the issue URL -- the only
+    # place owner/repo may appear in the payload. No title file -> neither field.
+    title = title_for(issue)
+    if title:
+        run["title"] = title
+        if owner_repo and issue.isdigit():
+            run["url"] = "https://github.com/%s/issues/%s" % (owner_repo, issue)
     activity_epoch = int(last_activity_epoch) if last_activity_epoch.strip().isdigit() else -1
     sort_key = (STATE_PRIORITY[state_code], -activity_epoch)
     runs.append((sort_key, run))

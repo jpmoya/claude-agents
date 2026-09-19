@@ -134,9 +134,16 @@ clear_in_progress() {  # idempotent; one gh call per issue, remembered in a mark
 
 do_launch() {
   local repo=$1 issue=$2 extra=$3 restart_n=${4:-0} reason=${5:-manual}
-  local owner_repo prompt preamble=""
+  local owner_repo prompt title preamble=""
 
   owner_repo=$(cd "$repo" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo "unknown")
+
+  # Ticket title for the status board (#29): orchestrate.sh normally wrote it at launch and restarts reuse that
+  # file; fetch only when it is missing. A failed or empty fetch leaves no file and never blocks the launch.
+  if [ ! -f "$PIPE/orch-$issue.title" ]; then
+    title=$(cd "$repo" && gh issue view "$issue" --json title --jq .title 2>/dev/null) || title=""
+    [ -n "$title" ] && printf '%s\n' "$title" > "$PIPE/orch-$issue.title"
+  fi
 
   if [ "$restart_n" -gt 0 ]; then
     preamble="AUTO-RESTART #$restart_n: a previous orchestrator process exited without reaching a terminal state. Verify branch/PR/comment state with gh before dispatching anything. Never redo a completed stage. "
