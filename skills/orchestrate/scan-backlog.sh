@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
 # Hourly backlog scan: label unseen open issues `agent-proposed` and post a digest to Slack.
-# Runs only where config.local.sh sets SCAN_BACKLOG=1 (one machine), over that machine's DISPATCH_REPOS.
+# Runs only where config.local.sh sets SCAN_BACKLOG=1 (one machine), over that machine's DISPATCH_REPOS
+# plus SCAN_ONLY_REPOS (scanned here, never dispatched), each repo at most once.
 # Folded into the repo from the VM's ~/.claude/pipeline/scan-backlog.sh on 2026-09-08.
 set -uo pipefail
 source "$(cd "$(dirname "$0")" && pwd)/config.sh"
 [ "${SCAN_BACKLOG:-0}" = "1" ] || { echo "SCAN_BACKLOG not enabled on this machine"; exit 0; }
 
 new_issues=()
-for entry in "${DISPATCH_REPOS[@]}"; do
+seen=" "
+# ${arr[@]+...}: an empty or unset array is an unbound variable under `set -u` on bash 3.2 (macOS).
+for entry in ${DISPATCH_REPOS[@]+"${DISPATCH_REPOS[@]}"} ${SCAN_ONLY_REPOS[@]+"${SCAN_ONLY_REPOS[@]}"}; do
   repo="${entry%%:*}"
+  case "$seen" in *" $repo "*) continue ;; esac
+  seen+="$repo "
   issues=$(gh issue list --repo "$repo" --state open --limit 100 --json number,title,labels \
     --jq '.[] | select(.labels | map(.name) |
       (contains(["'"$LABEL_PROPOSED"'"]) | not) and

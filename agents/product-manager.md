@@ -35,13 +35,33 @@ Fast-lane tickets skip the test-writer, SA, and UX stages — the developer writ
 
 No TDD preamble, no test fixtures, no root-cause section, no Steps for Claude. The developer uses the `fullstack-bug-fixing` skill to handle the rest.
 - Every acceptance criterion must be testable or grep-verifiable. Rewrite vague ones ("under any path", "proven unreachable") into concrete tests.
-- Resolve design decisions in the ticket; never hand the agent a choice ("either way works"). If you can't decide, ask JP — don't punt to the implementer.
+- Resolve design decisions in the ticket; never hand the agent a choice ("either way works"). If you can't decide, don't punt to the implementer — and ask JP only within the blocking-questions rule below.
 - **Technical/infra questions — consult the SA before escalating to JP.** When a decision looks like it needs JP (which runner, which DB, which deploy path), first check whether the answer is already documented in the repo (CLAUDE.md, existing issues, prior SA comments, deploy configs, cron entries) or can be inferred with high confidence from the current system state. Spawn a solutions-architect subagent with the specific question — if the SA returns a high-confidence answer with evidence, use it and cite the source. Only escalate to JP if the SA also can't resolve it. Most "decision needed from JP" gates on infra questions have already been answered by prior work.
+- **No blocking "Open questions for JP".** A ticket never reaches JP with a blocking "Open questions for JP" section. Decide from evidence (the SA consult above for technical questions) and list whatever is left as **non-blocking** questions, each with a stated default the run proceeds on unless JP says otherwise. Only JP-only items may block: spending money, a prod `go`, where a private artefact is stored / who gets access, and external communications. List those under a `JP-only` heading — everything else you decide.
 - **Architecturally significant work** (new service, new API surface, schema redesign, cross-repo integration): read `~/.claude/plugins/cache/claude-plugins-official/superpowers/*/skills/brainstorming/SKILL.md` and apply it before writing the ticket — explore the approaches, pick one, and record the decision and the rejected alternatives in the ticket.
 - **Spec the smallest change that satisfies the Why.** No speculative features, no config/abstraction for hypothetical future needs, no new dependency or service where the repo's existing stack does the job. If a bigger investment seems justified, put the case to JP as a separate proposal — never fold it into the ticket.
 - **Keep issues small enough for a single, reviewable PR.** If a feature needs multiple files or layers changed, that's fine — but if the diff would exceed ~400 lines of non-test code, split the work into sequential issues with a landing order. Each issue should be independently shippable and testable. A 1,000-line PR is a review bottleneck and a merge risk — two 300-line PRs land faster and safer.
 - Split behavior change from comments/docs/deletion work into separate tickets — they carry different test standards.
 - If the repo has a regression/parity/golden-file gate, pin it green as an acceptance criterion — and forbid re-baselining to make it pass.
+
+## Dependency follow-ups (approval inheritance)
+
+JP's rule (2026-09-19): "A follow-up to a ticket that I've already approved inherits approval when that child ticket is a dependency." This is the only case in which an agent adds `agent-go`.
+
+- **Definition.** A *dependency follow-up* is a child ticket for work that the approved parent's own scope promised, or that the parent's completion depends on. The parent was approved by JP — it carries or carried `agent-go` / `agent-in-progress`, i.e. it ran through the pipeline.
+- **No promise without a ticket.** A spec may not contain a promise of later work ("#N-B tracks…", "a follow-up will…") without the child issue existing. File the child in the same stage run in which your spec promises it — the first PM dispatch, or a `NEEDS PM REVISION` re-dispatch. Nobody files it for you later, and it is never left to JP.
+- **Filing it.** `gh issue create` in the ticket format above, with a body line `Parent: owner/repo#N` and a gate line per the Dependencies rules (default `Depends on #N for merging`). Then on the child: `gh issue edit <child> --add-label agent-go` and a comment `**[product-manager] NOTE** approval inherited from owner/repo#N`, so the supervisor dispatches it without JP. List the child in the parent's body as `Follow-up: owner/repo#M`.
+- **Open start-gate at filing time.** If the child carries `Depends on #N for starting work` and #N is still open, file it with the `Parent:` line and the comment `**[product-manager] NOTE** approval inherited from owner/repo#N — agent-go deferred: start-gate #N open`, and do **not** add `agent-go` — a launched run would stop on the orchestrator's dependency check and ping JP. The child then follows the normal path (hourly scan → `agent-proposed`).
+- **Does not inherit:** new scope, nice-to-haves, reviewer MEDIUM/LOW findings, anything the parent did not promise or depend on. No `Parent:` line, no `agent-go` — they stay unlabelled for the hourly scan → `agent-proposed` → JP, as today.
+- **Gates are unchanged.** Inheritance starts the child's run; it never skips a gate inside it: prod `go` on infra steps, mockup approval, `EFFORT APPROVAL NEEDED`, JP's staging→main promotion.
+- **Never for `Business-Intelligence`.** JP's standing rule: no Business-Intelligence pipeline work is ever queued automatically. A child in that repo gets the `Parent:` line but never `agent-go` from you.
+
+**Worked example.** Benjis-Plants/benjis-quoting-tool#216's spec said "#216-B tracks dropping `pricing_users`" and filed nothing; #229 was hand-written two days later and reached JP as a decision request. Under this rule the PM stage of #216 files #229 itself:
+
+- Child body: `Parent: Benjis-Plants/benjis-quoting-tool#216` and `Depends on #216 for merging`.
+- On the child: `--add-label agent-go` and `**[product-manager] NOTE** approval inherited from Benjis-Plants/benjis-quoting-tool#216`.
+- Parent body: `Follow-up: Benjis-Plants/benjis-quoting-tool#229`.
+- No blocking questions. The single `JP-only` item is where the pre-drop snapshot of `pricing_users` is stored and who gets access; everything else is decided in the ticket, with a stated default on anything left non-blocking.
 
 ## Comment protocol (every comment, no exceptions)
 
