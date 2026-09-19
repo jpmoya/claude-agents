@@ -153,6 +153,7 @@ do_launch() {
   prompt="Drive $owner_repo#$issue through the pipeline. Repo: $repo. Read the latest marker on the issue and continue from there. ${preamble}${extra}"
 
   printf '\n===== [%s] LAUNCH issue=%s reason=%s restart=%s =====\n' "$(date -u +%FT%TZ)" "$issue" "$reason" "$restart_n" >> "$PIPE/orch-$issue.log"
+  rm -f "$PIPE/orch-$issue.exit"   # a killed run never writes it; a stale value would be reported as this run's (#38)
   cd "$repo"
   CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 nohup $SETSID bash -c '
     echo 300 > /proc/self/oom_score_adj 2>/dev/null
@@ -280,10 +281,9 @@ for f in "$PIPE"/orch-*.pid; do
   if [ -f "$restarts_file" ]; then
     count=$(python3 -c "import json; print(json.load(open('$restarts_file')).get('count',0))" 2>/dev/null || echo 0)
     total=$(python3 -c "import json; print(json.load(open('$restarts_file')).get('total',0))" 2>/dev/null || echo 0)
-    transient_count=$(python3 -c "import json; print(json.load(open('$restarts_file')).get('transient_count',0))" 2>/dev/null || echo 0)
     last_marker=$(python3 -c "import json; print(json.load(open('$restarts_file')).get('last_marker',''))" 2>/dev/null || echo "")
   else
-    count=0; total=0; transient_count=0; last_marker=""
+    count=0; total=0; last_marker=""
   fi
 
   # Check if marker progressed (reset no-progress counter)
@@ -294,28 +294,23 @@ for f in "$PIPE"/orch-*.pid; do
 
   total=$((total + 1))
   if $transient; then
-    transient_count=$((transient_count + 1))
-    slog "[transient] #$issue ran ${run_duration}s (<${MIN_RUN_SECS}s) — treating as transient (${transient_count}/${MAX_TRANSIENT_TOTAL})"
+    slog "[transient] #$issue ran ${run_duration}s (<${MIN_RUN_SECS}s) — treating as transient"
   else
     count=$((count + 1))
   fi
 
-  # Check caps — transient exits have a much higher ceiling
+  # One ceiling for every exit, fast or slow
   should_escalate=false
-  if $transient; then
-    [ "$transient_count" -ge "$MAX_TRANSIENT_TOTAL" ] && should_escalate=true
-  else
-    if [ "$count" -ge "$MAX_NO_PROGRESS" ] || [ "$total" -ge "$MAX_TOTAL" ]; then
-      should_escalate=true
-    fi
+  if [ "$count" -ge "$MAX_NO_PROGRESS" ] || [ "$total" -ge "$MAX_TOTAL" ]; then
+    should_escalate=true
   fi
 
   python3 -c "
 import json
 try: d = json.load(open('$restarts_file'))
-except: d = {'count':0,'total':0,'transient_count':0,'last_marker':'','history':[]}
+except: d = {'count':0,'total':0,'last_marker':'','history':[]}
 d['history'].append({'ts':'$(date -u +%FT%TZ)','exit':'$exit_code','marker':'''$marker''','transient':$($transient && echo True || echo False),'run_secs':$run_duration})
-d['count']=$count; d['total']=$total; d['transient_count']=$transient_count; d['last_marker']='''$marker'''
+d['count']=$count; d['total']=$total; d['last_marker']='''$marker'''
 json.dump(d, open('$restarts_file','w'))
 " 2>/dev/null
 
@@ -326,7 +321,7 @@ json.dump(d, open('$restarts_file','w'))
 
   # Calculate backoff — transient exits use longer backoff
   if $transient; then
-    idx=$((transient_count - 1))
+    idx=$((total - 1))
     [ "$idx" -ge "${#TRANSIENT_BACKOFF[@]}" ] && idx=$(( ${#TRANSIENT_BACKOFF[@]} - 1 ))
     backoff_val=${TRANSIENT_BACKOFF[$idx]}
   else
@@ -342,7 +337,7 @@ import json
 json.dump({'issue':'$issue','repo':'$repo','extra':'''$extra''','reason':'auto-restart','queued_at':'$(date -u +%FT%TZ)','not_before':$not_before}, open('$QUEUE/orch-$issue.json','w'))
 " 2>/dev/null
 
-  slog "[queue-restart] #$issue exit=$exit_code marker='$marker' transient=$transient run=${run_duration}s count=$count/$MAX_NO_PROGRESS transient=$transient_count/$MAX_TRANSIENT_TOTAL total=$total backoff=${backoff_val}s"
+  slog "[queue-restart] #$issue exit=$exit_code marker='$marker' transient=$transient run=${run_duration}s count=$count/$MAX_NO_PROGRESS total=$total backoff=${backoff_val}s"
   report_status_async "queue-restart"   # event push: run exited -> requeued (design #10 §4.4)
 done
 
