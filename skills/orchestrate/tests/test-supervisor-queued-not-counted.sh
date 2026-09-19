@@ -221,10 +221,11 @@ test_sq_4b_short_run_is_transient_with_longer_backoff() {
   local t0 t1; t0=$(date +%s)
   sq_tick
   t1=$(date +%s)
-  local count transient nb
-  count=$(sq_restarts_field count); transient=$(sq_restarts_field transient_count); nb=$(sq_queue_field not_before)
+  local count total nb
+  count=$(sq_restarts_field count); total=$(sq_restarts_field total); nb=$(sq_queue_field not_before)
   sq_cleanup
-  assert_eq "$transient" "1" "#22/4b: transient_count=1" || return 1
+  # #38: transient_count is gone; what remains is count unchanged, total advanced, TRANSIENT_BACKOFF[0]=300s
+  assert_eq "$total" "1" "#38/4b: total=1" || return 1
   assert_eq "$count" "0" "#22/4b: count=0" || return 1
   assert_le "$((t0 + 280))" "$nb" "#22/4b: not_before >= now+280" || return 1
   assert_le "$nb" "$((t1 + 320))" "#22/4b: not_before <= now+320" || return 1
