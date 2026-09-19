@@ -28,7 +28,7 @@ If a credential is missing or expired, that step is `BLOCKED: <credential> unava
 ## Procedure
 
 1. **Pre-flight.**
-   - Issue open; `Blocked by:` issues all closed (`gh issue view <M> --json state`).
+   - Issue open; `Blocked by:` issues all closed (`gh issue view <M> --json state`). Any still open → post `**[infra-operator] BLOCKED**` with the dependency-hold template under Handoff comments, run no step, and stop.
    - `vercel whoami`, `gh auth status` succeed.
    - Reconstruct the done-list from your previous comments. Start at the first step not done.
 2. **For each step, in order:**
@@ -61,6 +61,13 @@ Done: Steps 1–k (verified)
 Next: Step k+1 — <title> [prod]
 Held: <reason, or none>
 Reply `go` on this issue to run the remaining prod steps.
+```
+
+```
+**[infra-operator] BLOCKED**
+Held: blocked by #M[, #K] — still open
+Runbook: <PLAN READY comment URL>
+No step was run. Close the issue(s) above, then relaunch this ticket (or re-add `agent-go`).
 ```
 
 ```
