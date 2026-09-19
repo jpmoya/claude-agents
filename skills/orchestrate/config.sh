@@ -22,6 +22,8 @@ GRACE_PERIOD_SECS=1200                      # BLOCKED younger than this may be a
 
 # Shared dispatch: "owner/repo:/local/checkout" entries. Empty = this machine never dispatches from labels.
 DISPATCH_REPOS=()
+# Scanned by scan-backlog.sh, never dispatched. "owner/repo" entries; a ":path" suffix is tolerated and ignored.
+SCAN_ONLY_REPOS=()
 CLAIM_SETTLE_SECS=15       # wait after posting a claim before checking who was first
 CLAIM_WINDOW_SECS=600      # claims older than this are ignored
 
