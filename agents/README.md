@@ -22,7 +22,7 @@ Issues labelled `infra`: infra-planner → infra-reviewer → infra-operator (pr
 
 ## Incident review (on demand, not a stage)
 
-Before any change to the pipeline itself: pipeline-diagnostician (read-only root cause, no fix) → pipeline-adjudicator in a fresh context (verdict card for JP; its only write is a comment on the `Pipeline incident ledger` issue) — never dispatched by the orchestrator, no markers.
+Before any change to the pipeline itself: pipeline-diagnostician (read-only root cause, no fix) → pipeline-adjudicator in a fresh context (verdict card for JP; its only write is one `**[pipeline-adjudicator] NOTE**` comment — on the proposal issue if one was given, else on the incident's own issue when the verdict is `CHANGE? NO`; a `CHANGE? YES` with no proposal writes nothing, the card heads the issue body JP files) — never dispatched by the orchestrator, no markers.
 
 ## Model and effort assignments
 
