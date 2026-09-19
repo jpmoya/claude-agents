@@ -20,6 +20,10 @@ Bug fixes and small changes: product-manager → fullstack-developer (writes its
 
 Issues labelled `infra`: infra-planner → infra-reviewer → infra-operator (prod steps gated on JP's `go`).
 
+## Incident review (on demand, not a stage)
+
+Before any change to the pipeline itself: pipeline-diagnostician (read-only root cause, no fix) → pipeline-adjudicator in a fresh context (verdict card for JP; its only write is a comment on the `Pipeline incident ledger` issue) — never dispatched by the orchestrator, no markers.
+
 ## Model and effort assignments
 
 | Agent | Model | Effort |
@@ -38,6 +42,8 @@ Issues labelled `infra`: infra-planner → infra-reviewer → infra-operator (pr
 | infra-reviewer | (default) | (default) |
 | infra-operator | (default) | (default) |
 | design-research | (default) | (default) |
+| pipeline-diagnostician | opus | high |
+| pipeline-adjudicator | opus | medium |
 
 ## Rules
 
