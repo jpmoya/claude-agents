@@ -29,14 +29,22 @@
     ],
     "defaultMode": "default"
   },
+  "model": "claude-fable-5-1[1m]",
   "skillOverrides": {
     "agents-sdk": "name-only",
     "cloudflare": "name-only",
     "cloudflare-email-service": "name-only",
     "durable-objects": "name-only",
     "sandbox-sdk": "name-only",
+    "sandbox-next": "name-only",
+    "sandbox-stable": "name-only",
+    "sandbox-migrate-to-next": "name-only",
     "workers-best-practices": "name-only",
     "wrangler": "name-only",
+    "cloudflare-one": "name-only",
+    "cloudflare-one-migrations": "name-only",
+    "nextjs-on-cloudflare": "name-only",
+    "turnstile-spin": "name-only",
     "integration-nextjs-app-router": "name-only",
     "integration-nextjs-pages-router": "name-only",
     "web-perf": "name-only",
@@ -180,6 +188,5 @@
   "effortLevel": "high",
   "advisorModel": "opus",
   "skipDangerousModePermissionPrompt": true,
-  "skipWorkflowUsageWarning": true,
-  "model": "sonnet"
+  "skipWorkflowUsageWarning": true
 }
