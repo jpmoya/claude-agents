@@ -182,7 +182,7 @@ Before launching any agent, check how many Claude Code processes are already run
 
 ```bash
 wait_for_capacity() {
-  local MAX_CONCURRENT=8
+  local MAX_CONCURRENT=16  # counts every --dangerously-skip-permissions claude on the box (JP interactive sessions + orchestrators + stages), so it must sit well above supervisor MAX_CONCURRENT
   for i in $(seq 1 10); do
     # Count real claude processes only (comm is `claude`, or a path ending in /claude as on macOS): the `bash -c` wrappers the launcher and detached dispatches
     # use carry the same string on their command line and were being counted twice. Subtract 1 for this orchestrator's
