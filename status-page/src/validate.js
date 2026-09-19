@@ -4,12 +4,24 @@
 // (or a `sessions` field) can never survive onto the object that reaches KV. Invariant: no
 // free-text string reaches storage — every string field is an enum or a strict pattern. See
 // issue #11 / #4 §5 for the full field table.
+//
+// Exactly one documented exception (issue #29): `runs[].title` is free text. It is length-capped
+// (140 code points), has control characters and whitespace runs collapsed to one space, and is
+// HTML-escaped at render. `runs[].url` is not an exception — it must match ISSUE_URL below.
 
 import { STAGE_VOCAB, MARKER_VOCAB, STATE_VOCAB } from './vocab.js';
 
 const ISO_8601_Z = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 const REPO_ALIAS = /^[a-z0-9][a-z0-9-]{0,23}$/;
+const ISSUE_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/\d+$/;
+const TITLE_WHITESPACE_OR_CONTROL = /[\u0000-\u001f\u007f\s]+/g;
+const MAX_TITLE_CODE_POINTS = 140;
 const MAX_RUNS = 20;
+
+/** True iff `value` is a string that is exactly a GitHub issue URL. render.js re-checks with it. */
+export function isIssueUrl(value) {
+  return typeof value === 'string' && ISSUE_URL.test(value);
+}
 
 function isPlainObject(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -38,6 +50,17 @@ function clampCount(value) {
 /** Sanitises `runs[].repo`: strict alias pattern, else "other". */
 function sanitiseRepo(value) {
   return typeof value === 'string' && REPO_ALIAS.test(value) ? value : 'other';
+}
+
+/**
+ * Sanitises the optional `runs[].title`: whitespace/control runs -> one space, trimmed, capped at
+ * 140 code points. Non-string or empty result -> null (field omitted, run kept).
+ */
+function sanitiseTitle(value) {
+  if (typeof value !== 'string') return null;
+  const collapsed = value.replace(TITLE_WHITESPACE_OR_CONTROL, ' ').trim();
+  const capped = Array.from(collapsed).slice(0, MAX_TITLE_CODE_POINTS).join('');
+  return capped === '' ? null : capped;
 }
 
 /** Sanitises `runs[].stage`: known agent-roster enum, else "other". */
@@ -71,6 +94,10 @@ function sanitiseRun(rawRun) {
 
   if (isIsoTimestamp(rawRun.started_at)) run.started_at = rawRun.started_at;
   if (isIsoTimestamp(rawRun.last_activity_at)) run.last_activity_at = rawRun.last_activity_at;
+
+  const title = sanitiseTitle(rawRun.title);
+  if (title !== null) run.title = title;
+  if (isIssueUrl(rawRun.url)) run.url = rawRun.url;
 
   return run;
 }

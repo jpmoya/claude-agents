@@ -8,6 +8,22 @@ No `wrangler` command has been run against this directory as part of building or
 Tests run entirely against the exported `fetch` handler with a hand-written mock KV
 (`test/mock-kv.js`) — see `package.json` (vitest only) and `test/*.test.js`.
 
+## What is published (issue #29)
+
+The page is public (no auth, `noindex` only). By JP's decision (2026-09-19) each run's
+**issue title and GitHub issue URL are published**. The runs table is
+`Issue · Ticket · State · Stage · Marker · Last activity · Restarts`, the Ticket cell links the
+title to the issue, and timestamps read like `Sat 19 Sep, 14:05` in Europe/Madrid time
+(`/status.json` keeps the raw ISO UTC strings).
+
+- `runs[].title` is the one free-text field that reaches storage: whitespace/control characters
+  collapsed, capped at 140 code points, HTML-escaped at render.
+- `runs[].url` is kept only if it is exactly `https://github.com/<owner>/<repo>/issues/<n>`;
+  `render.js` re-checks it before emitting an `href`.
+- Both are optional: a host that sends neither still validates and renders an empty Ticket cell.
+- `STATUS_REPO_ALIASES` on the host still populates `runs[].repo` in the payload and
+  `/status.json`, but the alias is no longer shown in the HTML table.
+
 ## Infra hand-off contract (companion `infra` issue's job, not this one's)
 
 1. Create a KV namespace and bind it as `STATUS` in `wrangler.jsonc`, replacing the placeholder

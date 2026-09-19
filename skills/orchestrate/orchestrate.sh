@@ -147,6 +147,15 @@ except Exception: print('?')
     rm -f "$PIPE/orch-$ISSUE".{stopped,held,done,alert,label-cleared,start} "$PIPE/orch-$ISSUE.restarts"
     # Persist on both the launch and queued paths: supervisor.sh rebuilds the queue JSON from this file.
     printf '%s' "$EXTRA" > "$PIPE/orch-$ISSUE.extra"
+    # Ticket title for the status board (#29) — fetched once here, before the capacity check so a queued run has it
+    # too; the status reporter only ever reads the file. A failed or empty fetch leaves no title file and never blocks
+    # the launch.
+    TITLE=$(cd "$REPO" && gh issue view "$ISSUE" --json title --jq .title 2>/dev/null) || TITLE=""
+    if [ -n "$TITLE" ]; then
+      printf '%s\n' "$TITLE" > "$PIPE/orch-$ISSUE.title"
+    else
+      rm -f "$PIPE/orch-$ISSUE.title"
+    fi
     if ! has_capacity; then
       python3 -c "
 import json, datetime, time

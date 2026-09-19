@@ -67,7 +67,9 @@ Stops the orchestrator and writes a tombstone preventing auto-restart. A stage i
 
 Each host pushes a heartbeat (running/queued/held/restarting runs, capacity, last activity) to a shared status page whenever `skills/orchestrate/report-status.sh` decides something changed or the keep-alive interval elapsed. It is a silent no-op — no network call at all — until `~/.claude/pipeline/config.local.sh` sets both `STATUS_PUSH_URL` (the deployed status-page Worker's `/beat` endpoint) and `STATUS_PUSH_TOKEN` (this host's bearer secret); both come from the companion infra issue once it deploys. Never invoked directly by a call site — `orchestrate.sh`, `supervisor.sh` and `hooks/report-status-hook.sh` all go through `report_status_async` (`skills/orchestrate/run-state.sh`), which backgrounds it, redirects its output to `~/logs/pipeline/report-status.log`, and can't propagate a failure back to the caller.
 
-Repo names never leave the host verbatim: `STATUS_REPO_ALIASES=("owner/repo:alias" …)` in `config.local.sh` maps each dispatched repo to a short published alias; a repo absent from the map publishes as `"other"`. See `config.local.example.sh` for the placeholder form.
+The status page is public (no auth, `noindex` only). Since issue #29 each run's **issue title and GitHub issue URL are published** on it (JP's decision, 2026-09-19), so `owner/repo` appears in the payload inside `runs[].url` and nowhere else. `orchestrate.sh` fetches the title once at launch (before the capacity check, so queued runs get one too) into `$PIPE/orch-<issue>.title`; `supervisor.sh` `do_launch` fetches it only if that file is missing. The reporter only reads the file — a beat never makes a network call for a title, and a missing, empty or unreadable file just means the run is sent without `title`/`url` and shows an empty Ticket cell.
+
+`STATUS_REPO_ALIASES=("owner/repo:alias" …)` in `config.local.sh` still populates `runs[].repo` in the payload and `/status.json` — a repo absent from the map publishes as `"other"` — but the alias is no longer shown in the HTML table. See `config.local.example.sh` for the placeholder form.
 
 ## Rules
 

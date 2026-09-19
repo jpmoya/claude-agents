@@ -137,6 +137,8 @@ cleanup_running() {
 #   <dir>/gh-issue-state        value of .state for `gh issue view ...` (default "OPEN")
 #   <dir>/gh-issue-labels-json  JSON array for .labels, e.g. '[{"name":"agent-go"}]' (default "[]")
 #   <dir>/gh-issue-edit-rc      exit code for `gh issue edit ...` (default 0)
+#   <dir>/gh-issue-title        value of .title for `gh issue view <n> --json title ...` (default "Fixture title")
+#   <dir>/gh-issue-title-rc     exit code for `gh issue view <n> --json title ...` (default 0; the failing-fetch case)
 #   <dir>/gh-issue-latest-marker  first line of the issue's only comment, for `gh issue view ... --json comments`
 #                               (default: file absent -> no .comments key at all, as before)
 # `gh issue comment ...` is logged like every other call and exits 0.
@@ -186,6 +188,14 @@ case "$*" in
   *"repo view"*"nameWithOwner"*)
     owner_repo=$(cat "$HERE/gh-name-with-owner" 2>/dev/null || echo "unknown/unknown")
     emit "{\"nameWithOwner\":\"$owner_repo\"}" "$@"
+    exit 0
+    ;;
+  *"issue view"*"--json title"*)
+    rc=$(cat "$HERE/gh-issue-title-rc" 2>/dev/null || echo 0)
+    [ "$rc" -eq 0 ] || exit "$rc"
+    title=$(cat "$HERE/gh-issue-title" 2>/dev/null || echo "Fixture title")
+    json=$(jq -n --arg title "$title" '{title:$title}')
+    emit "$json" "$@"
     exit 0
     ;;
   *"issue view"*)
