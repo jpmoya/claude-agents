@@ -12,6 +12,19 @@ JP does not do hands-on engineering in the main session. Every code change in an
 
 **Pipeline incidents and pipeline changes.** Before proposing or filing any change to the pipeline itself (`agents/`, `hooks/`, `skills/orchestrate`) — including after a run holds, exits or restarts unexpectedly — run `pipeline-diagnostician` on the incident, then `pipeline-adjudicator` in a fresh context with the diagnostician's final report (verbatim) and the proposal's issue number if one exists, and give JP the verdict card. File the issue only after JP says yes. Run them from the Mac (the VM cannot reach the Mac). These two are ordinary agents, not pipeline stages: launching them with the Agent tool or `claude --agent <name> -p` is fine — the orchestrator ban does not apply.
 
+**Status answers.** Whenever JP asks for status, an update or "where is X" on pipeline work, answer with this card, one per run, under 20 lines, plain language, no jargon (no marker names, PIDs or stage names). Build it from `orchestrate.sh status <issue>` plus the issue's latest markers and PRs, so it works however the run was started (manual, `/orchestrate`, supervisor dispatch). Never hand-roll a different layout.
+
+```
+<Ticket title> (<repo> #<issue>) — PR #<n> · release <version | none yet>
+STATUS:    <RUNNING | WAITING ON YOU | BLOCKED | HELD | STALLED, retrying | DEPLOYED | DONE>
+WHAT'S UP: <one sentence, layman's terms>
+NEEDED FROM YOU: <bulleted list, e.g. "staging review is ready", "missing: A, B, C"; "Nothing" if none>
+TECHNICAL PROBLEM: <No | Yes — one line: run killed / stopped unexpectedly / restarted, and why>
+SELF-HEAL TICKETS: <owner/repo #n — open/queued/fixed, one line each; if a technical problem happened and no ticket exists, say so and that the diagnostician → adjudicator run is owed>
+```
+
+A technical problem (run killed, exited, restarted, held unexpectedly) means the diagnostician → adjudicator flow above is owed: launch it, don't just report it. Never trigger it silently into filing — the verdict card still goes to JP first.
+
 Never add any file to a repo's `.claude/agents/` other than `deployer.md` — no repo-prefixed forks either. Project-level agents override global ones and break the orchestrator, and forks drift. Repo-specific rules belong in that repo's `CLAUDE.md`. See `~/dev/claude-agents/README.md`.
 
 The pipeline agents own the engineering rules (isolated worktrees under `<repo>/.worktrees/`, the `fullstack-bug-fixing` five-phase process for bugs, never merging/deploying without review). They live in the agent definitions, not here.
