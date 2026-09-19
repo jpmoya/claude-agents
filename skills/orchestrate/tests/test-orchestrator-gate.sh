@@ -20,14 +20,24 @@ GATE_MATCH='claude claude --dangerously-skip-permissions --agent x -p y'
 
 # gate_run <fixture-file> — runs the extracted wait_for_capacity with stub ps/sleep first on PATH.
 # Prints the function's output; returns its exit code.
+# HOME is a directory inside the mktemp -d holding a copy of the repo's config.sh and no
+# config.local.sh, so results never depend on the host's installed config (#40). Knobs, read from
+# the caller's scope (gate_case passes no arguments through):
+#   GATE_NO_CONFIG=1      — leave config.sh out of the test HOME
+#   GATE_LOCAL_CONFIG=... — write this text to $HOME/.claude/pipeline/config.local.sh
+#   GATE_AFTER=...        — eval'd in the gate's shell after wait_for_capacity returns (its output
+#                           is appended; the gate's exit code is kept)
 gate_run() {
   local fixture=$1 dir out rc
   dir=$(mktemp -d "${TMPDIR:-/tmp}/orch-test-gate.XXXXXX")
+  mkdir -p "$dir/home/.claude/skills/orchestrate" "$dir/home/.claude/pipeline"
+  [ -n "${GATE_NO_CONFIG:-}" ] || cp "$HERE_GATE/../config.sh" "$dir/home/.claude/skills/orchestrate/config.sh"
+  [ -z "${GATE_LOCAL_CONFIG:-}" ] || printf '%s\n' "$GATE_LOCAL_CONFIG" > "$dir/home/.claude/pipeline/config.local.sh"
   sed -n '/^wait_for_capacity() {/,/^}/p' "$ORCH_MD_GATE" > "$dir/gate.sh"
   printf '#!/bin/bash\ncat "%s"\n' "$fixture" > "$dir/ps"
   printf '#!/bin/bash\nexit 0\n' > "$dir/sleep"
   chmod +x "$dir/ps" "$dir/sleep"
-  out=$( ( PATH="$dir:$PATH"; . "$dir/gate.sh"; wait_for_capacity ) 2>&1 ); rc=$?
+  out=$( ( HOME="$dir/home"; PATH="$dir:$PATH"; . "$dir/gate.sh"; wait_for_capacity; rc=$?; eval "${GATE_AFTER:-}"; exit "$rc" ) 2>&1 ); rc=$?
   rm -rf "$dir"
   printf '%s\n' "$out"
   return "$rc"
@@ -89,6 +99,86 @@ test_gate_counts_macos_path_prefixed_comm() {
   [ "$GATE_RC" -ne 0 ] || { fail "10 path-prefixed claude lines (ACTIVE=9): expected non-zero, got 0"; return 1; }
 }
 
+# --- #40: interactive sessions are not counted; ceiling comes from config ---------------------
+
+GATE_INTERACTIVE='claude claude --dangerously-skip-permissions'
+
+gate_fx_8_agent_9_interactive() { gate_rep 8 "$GATE_MATCH"; gate_rep 9 "$GATE_INTERACTIVE"; }
+
+# gate_case_with <no-config> <local-config-text> <fixture-builder-cmd...> — gate_case with the
+# gate_run knobs set for this one call only.
+gate_case_with() {
+  GATE_NO_CONFIG=$1; GATE_LOCAL_CONFIG=$2; shift 2
+  gate_case "$@"
+  GATE_NO_CONFIG=; GATE_LOCAL_CONFIG=
+}
+
+test_gate_ignores_interactive_sessions_mixed() {
+  gate_case gate_fx_8_agent_9_interactive
+  assert_exit0 "$GATE_RC" "8 --agent + 9 interactive (ACTIVE=7)" || return 1
+}
+
+test_gate_ignores_interactive_sessions_only() {
+  gate_case gate_rep 30 "$GATE_INTERACTIVE"
+  assert_exit0 "$GATE_RC" "0 --agent + 30 interactive" || return 1
+}
+
+test_gate_config_declares_max_claude_procs() {
+  local cfg="$HERE_GATE/../config.sh" n after
+  n=$(grep -c '^MAX_CLAUDE_PROCS=8' "$cfg")
+  assert_eq "$n" "1" "config.sh: count of ^MAX_CLAUDE_PROCS=8 lines" || return 1
+  after=$(grep -A1 '^MAX_CONCURRENT=3' "$cfg" | sed -n 2p)
+  assert_contains "$after" "MAX_CLAUDE_PROCS=8" "line directly after MAX_CONCURRENT=3" || return 1
+}
+
+test_gate_example_config_mentions_max_claude_procs() {
+  local after
+  after=$(grep -A1 '^# MAX_CONCURRENT=3' "$HERE_GATE/../config.local.example.sh" | sed -n 2p)
+  assert_eq "$after" "# MAX_CLAUDE_PROCS=8" "example: line directly under # MAX_CONCURRENT=3" || return 1
+}
+
+test_gate_honours_local_override() {
+  gate_case_with "" "MAX_CLAUDE_PROCS=2" gate_rep 3 "$GATE_MATCH"
+  assert_exit0 "$GATE_RC" "override 2, 3 --agent lines (ACTIVE=2)" || return 1
+  gate_case_with "" "MAX_CLAUDE_PROCS=2" gate_rep 4 "$GATE_MATCH"
+  [ "$GATE_RC" -ne 0 ] || { fail "override 2, 4 --agent lines (ACTIVE=3): expected non-zero, got 0"; return 1; }
+}
+
+test_gate_function_has_no_max_concurrent_or_16() {
+  local fn
+  fn=$(sed -n '/^wait_for_capacity() {/,/^}/p' "$ORCH_MD_GATE")
+  [ -n "$fn" ] || { fail "wait_for_capacity not found in agents/orchestrator.md"; return 1; }
+  assert_not_contains "$fn" "MAX_CONCURRENT" "gate must not use the orchestrator-slot variable" || return 1
+  assert_not_contains "$fn" "=16" "gate must not carry a hand-raised ceiling" || return 1
+  assert_contains "$fn" "MAX_CLAUDE_PROCS" "gate reads MAX_CLAUDE_PROCS" || return 1
+}
+
+test_gate_fallback_when_config_missing() {
+  gate_case_with 1 "" gate_rep 9 "$GATE_MATCH"
+  assert_exit0 "$GATE_RC" "no config.sh, 9 lines (ACTIVE=8)" || return 1
+  gate_case_with 1 "" gate_rep 10 "$GATE_MATCH"
+  [ "$GATE_RC" -ne 0 ] || { fail "no config.sh, 10 lines (ACTIVE=9): expected non-zero, got 0"; return 1; }
+}
+
+test_gate_fallback_when_value_garbage() {
+  gate_case_with "" "MAX_CLAUDE_PROCS=abc" gate_rep 9 "$GATE_MATCH"
+  assert_exit0 "$GATE_RC" "MAX_CLAUDE_PROCS=abc, 9 lines (ACTIVE=8)" || return 1
+  gate_case_with "" "MAX_CLAUDE_PROCS=abc" gate_rep 10 "$GATE_MATCH"
+  [ "$GATE_RC" -ne 0 ] || { fail "MAX_CLAUDE_PROCS=abc, 10 lines (ACTIVE=9): expected non-zero, got 0"; return 1; }
+}
+
+test_gate_does_not_leak_config_into_shell() {
+  local out
+  out=$(
+    unset PIPE BACKOFF
+    GATE_AFTER='echo "LEAK:PIPE=${PIPE+set}:BACKOFF=${BACKOFF+set}:"'
+    gate_case gate_rep 3 "$GATE_MATCH"
+    printf '%s\n' "rc=$GATE_RC" "$GATE_OUT"
+  )
+  assert_contains "$out" "rc=0" "3 lines pass" || return 1
+  assert_contains "$out" "LEAK:PIPE=:BACKOFF=:" "PIPE and BACKOFF still unset after the gate" || return 1
+}
+
 echo "-- orchestrator concurrency gate"
 run_test test_gate_extraction_nonempty_and_no_pgrep
 run_test test_gate_blocks_over_capacity
@@ -98,3 +188,12 @@ run_test test_gate_boundary_10_lines_blocks
 run_test test_gate_ignores_bash_wrappers
 run_test test_gate_ignores_claude_without_skip_permissions
 run_test test_gate_counts_macos_path_prefixed_comm
+run_test test_gate_ignores_interactive_sessions_mixed
+run_test test_gate_ignores_interactive_sessions_only
+run_test test_gate_config_declares_max_claude_procs
+run_test test_gate_example_config_mentions_max_claude_procs
+run_test test_gate_honours_local_override
+run_test test_gate_function_has_no_max_concurrent_or_16
+run_test test_gate_fallback_when_config_missing
+run_test test_gate_fallback_when_value_garbage
+run_test test_gate_does_not_leak_config_into_shell
