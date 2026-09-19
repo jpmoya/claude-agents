@@ -29,7 +29,7 @@
     ],
     "defaultMode": "default"
   },
-  "model": "claude-fable-5-1[1m]",
+  "model": "sonnet",
   "skillOverrides": {
     "agents-sdk": "name-only",
     "cloudflare": "name-only",
@@ -186,6 +186,14 @@
     }
   },
   "effortLevel": "high",
+  "modelSettings": {
+    "claude-fable-5-1": {
+      "effortLevel": "medium"
+    },
+    "claude-sonnet-5": {
+      "effortLevel": "medium"
+    }
+  },
   "advisorModel": "opus",
   "skipDangerousModePermissionPrompt": true,
   "skipWorkflowUsageWarning": true
