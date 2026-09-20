@@ -643,7 +643,7 @@ test_sc_ac12_docs_describe_completed_retention_reconcile_and_throttle() {
   assert_contains "$para" "reconcile" "AC12: README Status board paragraph names the reconcile pass" || return 1
   assert_contains "$para" "600" "AC12: README states the 600 s throttle" || return 1
   case "$para" in *"7 day"*|*"7-day"*) ;; *) fail "AC12: README states the 7-day retention"; return 1 ;; esac
-  assert_contains "$para" "10" "AC12: README states the 10-per-host cap" || return 1
+  case "$para" in *"10 per host"*|*"10 newest"*|*"10 most recent"*|*"ten per host"*) ;; *) fail "AC12: README states the 10-per-host cap ('10 per host' / '10 newest')"; return 1 ;; esac
 
   sp="$ROOT_SC/status-page/README.md"
   section=$(awk '/^## What is published/{on=1; next} /^## /{on=0} on{print}' "$sp")
