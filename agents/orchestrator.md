@@ -179,21 +179,30 @@ Maximum **2** fix cycles per phase: pre-implementation (test-writer → test-rev
 
 ## Concurrency gate (before every dispatch)
 
-Before launching any agent, check how many Claude Code processes are already running. Too many concurrent sessions hit the account's API rate limit and cause agents to stall with zero output.
+Before launching any agent, check how many pipeline Claude Code processes (`claude --agent …`: orchestrators and their stages) are already running. Too many concurrent sessions hit the account's API rate limit and cause agents to stall with zero output. JP's interactive sessions are not counted — the pipeline cannot drain them (claude-agents#40). The ceiling is `MAX_CLAUDE_PROCS` in `skills/orchestrate/config.sh` (per-machine override in `~/.claude/pipeline/config.local.sh`).
 
 ```bash
 wait_for_capacity() {
-  local MAX_CONCURRENT=16  # counts every --dangerously-skip-permissions claude on the box (JP interactive sessions + orchestrators + stages), so it must sit well above supervisor MAX_CONCURRENT
+  # Ceiling comes from config.sh (MAX_CLAUDE_PROCS, overridable in config.local.sh), read in a subshell so its other
+  # assignments and PATH export do not leak into this shell. Falls back to 8 when the result is not a positive
+  # integer (file missing, source fails, value unset or garbage).
+  local MAX_CLAUDE_PROCS
+  MAX_CLAUDE_PROCS=$( . "$HOME/.claude/skills/orchestrate/config.sh" >/dev/null 2>&1; printf '%s' "${MAX_CLAUDE_PROCS:-}" )
+  case "$MAX_CLAUDE_PROCS" in ''|*[!0-9]*) MAX_CLAUDE_PROCS=8 ;; esac
+  [ "$MAX_CLAUDE_PROCS" -gt 0 ] || MAX_CLAUDE_PROCS=8
   for i in $(seq 1 10); do
     # Count real claude processes only (comm is `claude`, or a path ending in /claude as on macOS): the `bash -c` wrappers the launcher and detached dispatches
     # use carry the same string on their command line and were being counted twice. Subtract 1 for this orchestrator's
     # own session, which always matches. (Double-count + self-count stalled #580 for 20 min on 2026-09-08.)
-    ACTIVE=$(ps -axo comm=,args= 2>/dev/null | awk '$1 ~ /(^|\/)claude$/ && /--dangerously-skip-permissions/' | wc -l | tr -d ' ')
+    # Only pipeline processes count (`--agent` on the command line): JP's interactive sessions carry the same flag but
+    # the pipeline can neither drain nor influence them, so counting them made the gate unpassable and every run exited
+    # without dispatching (claude-agents#40, 2026-09-19).
+    ACTIVE=$(ps -axo comm=,args= 2>/dev/null | awk '$1 ~ /(^|\/)claude$/ && /--dangerously-skip-permissions/ && /--agent/' | wc -l | tr -d ' ')
     ACTIVE=$((ACTIVE - 1))
-    if [ "$ACTIVE" -le "$MAX_CONCURRENT" ]; then
+    if [ "$ACTIVE" -le "$MAX_CLAUDE_PROCS" ]; then
       return 0
     fi
-    echo "Concurrency gate: $ACTIVE other claude processes running (max $MAX_CONCURRENT). Waiting 60s... (attempt $i/10)"
+    echo "Concurrency gate: $ACTIVE other pipeline claude processes running (max $MAX_CLAUDE_PROCS). Waiting 60s... (attempt $i/10)"
     sleep 60
   done
   echo "Concurrency gate: still over capacity after 10 attempts. Aborting dispatch."
