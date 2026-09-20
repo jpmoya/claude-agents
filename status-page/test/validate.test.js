@@ -454,3 +454,138 @@ describe('validate.js header documents the single free-text exception (#29 desig
     expect(header).toContain('runs[].title');
   });
 });
+
+// ---------------------------------------------------------------------------------------------
+// Issue #51 — completed[] (Expected Behavior 6). Every case pairs its "bad" input with a valid
+// control item in the same array, so a validator that simply ignores `completed` fails each one.
+// ---------------------------------------------------------------------------------------------
+import { validCompleted } from './fixtures.js';
+
+describe('validateBeatPayload — completed[] (issue #51)', () => {
+  const control = () => validCompleted({ issue: 7, title: 'Control ticket', url: 'https://github.com/example-owner/project-a/issues/7' });
+  const completedOf = (items) => {
+    const result = validateBeatPayload(validPayload({ completed: items }));
+    expect(result.ok).toBe(true); // never a 400
+    return result.value.completed;
+  };
+
+  it('keeps a valid item with all six fields', () => {
+    expect(completedOf([validCompleted()])).toEqual([validCompleted()]);
+  });
+
+  it('optional fields may be absent: an item with only repo/issue/closed_at is kept without title/url/marker', () => {
+    const out = completedOf([{ repo: 'project-a', issue: 9, closed_at: '2026-09-17T18:00:00Z' }]);
+    expect(out).toEqual([{ repo: 'project-a', issue: 9, closed_at: '2026-09-17T18:00:00Z' }]);
+  });
+
+  it('drops an item with a missing closed_at (required), keeps the control', () => {
+    const bad = validCompleted({ issue: 8 });
+    delete bad.closed_at;
+    expect(completedOf([bad, control()]).map((c) => c.issue)).toEqual([7]);
+  });
+
+  it.each([
+    ['"yesterday"', 'yesterday'],
+    ['a date without Z', '2026-09-17T18:00:00'],
+    ['an offset instead of Z', '2026-09-17T18:00:00+02:00'],
+    ['a non-string', 1758132000],
+  ])('drops an item whose closed_at is %s', (_label, closedAt) => {
+    expect(completedOf([validCompleted({ issue: 8, closed_at: closedAt }), control()]).map((c) => c.issue)).toEqual([7]);
+  });
+
+  it.each([
+    ['0', 0],
+    ['1000000', 1000000],
+    ['a string', '42'],
+    ['a float', 4.5],
+    ['missing', undefined],
+  ])('drops an item whose issue is %s', (_label, issue) => {
+    expect(completedOf([validCompleted({ issue }), control()]).map((c) => c.issue)).toEqual([7]);
+  });
+
+  it('accepts the issue bounds 1 and 999999', () => {
+    expect(completedOf([validCompleted({ issue: 1 }), validCompleted({ issue: 999999 })]).map((c) => c.issue)).toEqual([1, 999999]);
+  });
+
+  it('drops non-object items', () => {
+    expect(completedOf(['x', null, 5, [], control()]).map((c) => c.issue)).toEqual([7]);
+  });
+
+  it('a url that is not a GitHub issue URL is removed, the item survives', () => {
+    const out = completedOf([validCompleted({ issue: 8, url: 'https://evil.example/x' }), control()]);
+    expect(out.map((c) => c.issue)).toEqual([8, 7]);
+    expect(out[0]).not.toHaveProperty('url');
+    expect(out[1].url).toBe('https://github.com/example-owner/project-a/issues/7');
+  });
+
+  it('title goes through the same sanitiser as runs: control/whitespace runs collapsed, capped at 140 code points', () => {
+    const out = completedOf([
+      validCompleted({ issue: 8, title: 'a\n\t  b' }),
+      validCompleted({ issue: 9, title: 'x'.repeat(141) }),
+      validCompleted({ issue: 10, title: '   ' }),
+    ]);
+    expect(out.map((c) => c.issue)).toEqual([8, 9, 10]);
+    expect(out[0].title).toBe('a b');
+    expect(out[1].title).toBe('x'.repeat(140));
+    expect(out[2]).not.toHaveProperty('title'); // empty after sanitising -> omitted, item kept
+  });
+
+  it('a <script> title is kept as inert text (escaping happens at render), never as markup-bearing extra fields', () => {
+    const out = completedOf([validCompleted({ issue: 8, title: '<script>alert(1)</script>' }), control()]);
+    expect(out.map((c) => c.issue)).toEqual([8, 7]);
+    expect(out[0].title).toBe('<script>alert(1)</script>');
+  });
+
+  it('repo is an alias-or-"other"', () => {
+    const out = completedOf([validCompleted({ issue: 8, repo: 'Bad Repo!/x' }), validCompleted({ issue: 9, repo: 'project-b' })]);
+    expect(out.map((c) => c.repo)).toEqual(['other', 'project-b']);
+  });
+
+  it('marker is enum-or-"other", and stays absent when not sent', () => {
+    const noMarker = validCompleted({ issue: 10 });
+    delete noMarker.marker;
+    const out = completedOf([
+      validCompleted({ issue: 8, marker: 'READY FOR ENGINEERING' }),
+      validCompleted({ issue: 9, marker: 'rm -rf /' }),
+      noMarker,
+    ]);
+    expect(out[0].marker).toBe('READY FOR ENGINEERING');
+    expect(out[1].marker).toBe('other');
+    expect(out[2]).not.toHaveProperty('marker');
+  });
+
+  it('drops unknown keys inside an item and at top level', () => {
+    const result = validateBeatPayload(
+      validPayload({ completed: [{ ...validCompleted(), sessions: [{ id: 'leak' }], extra: 'nope' }], sessions: [{ id: 'leak2' }] })
+    );
+    expect(result.ok).toBe(true);
+    expect(result.value.completed).toEqual([validCompleted()]);
+    expect(result.value).not.toHaveProperty('sessions');
+    expect(JSON.stringify(result.value)).not.toContain('leak');
+  });
+
+  it('more than 10 items -> the first 10 are kept, no rejection', () => {
+    const items = Array.from({ length: 11 }, (_v, i) => validCompleted({ issue: i + 1 }));
+    const out = completedOf(items);
+    expect(out.map((c) => c.issue)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  });
+
+  it('exactly 10 items are all kept', () => {
+    const items = Array.from({ length: 10 }, (_v, i) => validCompleted({ issue: i + 1 }));
+    expect(completedOf(items)).toHaveLength(10);
+  });
+
+  it('a non-array completed becomes [] (present, empty) and is not an error', () => {
+    for (const bad of ['x', 5, { a: 1 }, null]) {
+      const result = validateBeatPayload(validPayload({ completed: bad }));
+      expect(result.ok).toBe(true);
+      expect(result.value.completed).toEqual([]);
+    }
+  });
+
+  it('runs are unaffected by a completed key', () => {
+    const result = validateBeatPayload(validPayload({ completed: [validCompleted()] }));
+    expect(result.value.runs).toHaveLength(1);
+    expect(result.value.completed).toHaveLength(1);
+  });
+});

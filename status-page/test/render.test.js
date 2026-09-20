@@ -392,3 +392,212 @@ describe('renderPage — Ticket cell (#29 AC4/AC5/AC6)', () => {
     expect(html).not.toMatch(/<script/i);
   });
 });
+
+// ---------------------------------------------------------------------------------------------
+// Issue #51 — Completed table (Expected Behavior 7). Expected strings are hand-written; the
+// Europe/Madrid conversion is hand-computed: 2026-09-17T18:00:00Z is a Thursday, CEST = UTC+2,
+// so it reads "Thu 17 Sep, 20:00" (2026-09-19 is a Saturday, per status-page/README.md).
+// ---------------------------------------------------------------------------------------------
+import { validCompleted } from './fixtures.js';
+
+describe('renderPage — Completed table (issue #51)', () => {
+  const NOW_ISO = '2026-09-20T12:00:00Z';
+  const NOW = Date.parse(NOW_ISO) / 1000;
+  const ago = (secs) => new Date(Date.parse(NOW_ISO) - secs * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const DAY = 86400;
+
+  const hostRecord = (overrides = {}) => ({
+    v: 1,
+    received_at: NOW_ISO,
+    supervisor_last_tick: NOW_ISO,
+    capacity: { running: 0, max: 3, queued: 0 },
+    runs: [],
+    ...overrides,
+  });
+  const item = (issue, closedSecsAgo, overrides = {}) =>
+    validCompleted({
+      issue,
+      title: `Ticket ${issue}`,
+      url: `https://github.com/example-owner/project-a/issues/${issue}`,
+      closed_at: ago(closedSecsAgo),
+      ...overrides,
+    });
+  const completedSection = (html) => {
+    const m = html.match(/<section class="completed">[\s\S]*?<\/section>/);
+    return m ? m[0] : '';
+  };
+  const render = (mac, vm) => renderPage({ mac, vm }, thresholds, NOW);
+
+  it('renders <section class="completed"><h2>Completed</h2> with the four columns, after both host sections', () => {
+    const html = render(hostRecord({ completed: [item(42, 3600)] }), hostRecord());
+    const section = completedSection(html);
+    expect(section).toContain('<h2>Completed</h2>');
+    expect(section).toMatch(/<th>Issue<\/th>\s*<th>Ticket<\/th>\s*<th>Closed<\/th>\s*<th>Final marker<\/th>/);
+    expect(html.indexOf('class="completed"')).toBeGreaterThan(html.indexOf('<h2>VM'));
+    expect(html.indexOf('class="completed"')).toBeGreaterThan(html.indexOf('<h2>Mac'));
+  });
+
+  it('a row shows #issue, the linked title, the CET-formatted close time and the final marker', () => {
+    const html = render(
+      hostRecord({ completed: [item(42, 3600, { closed_at: '2026-09-17T18:00:00Z', marker: 'DEPLOYED' })] }),
+      null
+    );
+    // 2026-09-17 is 3 days before NOW: still inside the 7-day window
+    const section = completedSection(html);
+    expect(section).toContain('#42');
+    expect(section).toContain('<a href="https://github.com/example-owner/project-a/issues/42"');
+    expect(section).toContain('>Ticket 42</a>');
+    expect(section).toContain('Thu 17 Sep, 20:00');
+    expect(section).toContain('DEPLOYED');
+  });
+
+  it('a missing marker leaves the Final marker cell empty (no "undefined", no "other")', () => {
+    const noMarker = item(43, 3600);
+    delete noMarker.marker;
+    const section = completedSection(render(hostRecord({ completed: [noMarker] }), null));
+    expect(section).toContain('#43');
+    expect(section).not.toContain('undefined');
+    expect(section).not.toContain('other');
+  });
+
+  it('merges both hosts, sorted by closed_at descending', () => {
+    const html = render(
+      hostRecord({ completed: [item(1, 5 * 3600), item(3, 1 * 3600)] }),
+      hostRecord({ completed: [item(2, 3 * 3600), item(4, 30 * 3600)] })
+    );
+    const section = completedSection(html);
+    const order = [3, 2, 1, 4].map((n) => section.indexOf(`#${n}<`));
+    expect(order.every((i) => i >= 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order); // 3 (1h) < 2 (3h) < 1 (5h) < 4 (30h)
+  });
+
+  it('the same ticket in both hosts renders once, keeping the later closed_at (dedupe on url)', () => {
+    const later = ago(1 * 3600); // 11:00Z -> 13:00 CEST
+    const earlier = ago(2 * 3600); // 10:00Z -> 12:00 CEST
+    const section = completedSection(
+      render(
+        hostRecord({ completed: [item(42, 2 * 3600, { closed_at: earlier })] }),
+        hostRecord({ completed: [item(42, 1 * 3600, { closed_at: later })] })
+      )
+    );
+    expect(section.split('/issues/42"').length - 1).toBe(1);
+    expect(section).toContain('Sun 20 Sep, 13:00'); // 2026-09-20 is a Sunday
+    expect(section).not.toContain('Sun 20 Sep, 12:00');
+  });
+
+  it('with no url on either copy, de-duplicates on repo + issue', () => {
+    const a = item(77, 2 * 3600); delete a.url; delete a.title;
+    const b = item(77, 1 * 3600); delete b.url; delete b.title;
+    const other = item(78, 3600); delete other.url; delete other.title;
+    const section = completedSection(render(hostRecord({ completed: [a, other] }), hostRecord({ completed: [b] })));
+    expect(section.split('#77<').length - 1).toBe(1);
+    expect(section).toContain('#78<');
+  });
+
+  it('omits entries older than 7 days (6d23h shown, 7d1h and 8d hidden)', () => {
+    const section = completedSection(
+      render(
+        hostRecord({
+          completed: [item(61, 6 * DAY + 23 * 3600), item(62, 7 * DAY + 3600), item(63, 8 * DAY)],
+        }),
+        null
+      )
+    );
+    expect(section).toContain('#61<');
+    expect(section).not.toContain('#62<');
+    expect(section).not.toContain('#63<');
+  });
+
+  it('drops an entry whose closed_at is unparseable, keeps the valid one', () => {
+    const section = completedSection(
+      render(hostRecord({ completed: [item(71, 3600, { closed_at: 'yesterday' }), item(72, 3600)] }), null)
+    );
+    expect(section).toContain('#72<');
+    expect(section).not.toContain('#71<');
+  });
+
+  it('shows all 20 when each host sends its 10 newest distinct tickets', () => {
+    const a = Array.from({ length: 10 }, (_v, i) => item(101 + i, (i + 1) * 3600));
+    const b = Array.from({ length: 10 }, (_v, i) => item(201 + i, (i + 1) * 3600 + 60));
+    const section = completedSection(render(hostRecord({ completed: a }), hostRecord({ completed: b })));
+    for (const n of [...a, ...b].map((c) => c.issue)) expect(section).toContain(`#${n}<`);
+  });
+
+  it('empty state: hosts present but no completed -> one row "no completed tickets"', () => {
+    const section = completedSection(render(hostRecord(), hostRecord()));
+    expect(section).toContain('<h2>Completed</h2>');
+    expect(section).toContain('no completed tickets');
+    expect(section.split('no completed tickets').length - 1).toBe(1);
+  });
+
+  it('a payload without a completed key on either host renders the empty state (new Worker, old host)', () => {
+    const mac = hostRecord();
+    const vm = hostRecord();
+    expect('completed' in mac).toBe(false);
+    expect(completedSection(render(mac, vm))).toContain('no completed tickets');
+  });
+
+  it('everything older than 7 days -> the empty state text', () => {
+    const section = completedSection(render(hostRecord({ completed: [item(81, 9 * DAY)] }), null));
+    expect(section).toContain('no completed tickets');
+    expect(section).not.toContain('#81<');
+  });
+
+  it('bothEmpty (no data from either host) renders no Completed section', () => {
+    expect(completedSection(render(hostRecord(), null))).toContain('<h2>Completed</h2>'); // control: any data -> section exists
+    const html = render(null, null);
+    expect(html).toContain('no data from either host yet');
+    expect(html).not.toContain('class="completed"');
+    expect(html).not.toContain('no completed tickets');
+  });
+
+  it('one host never seen, the other has completed -> the Completed table is still rendered', () => {
+    const section = completedSection(render(hostRecord({ completed: [item(91, 3600)] }), null));
+    expect(section).toContain('#91<');
+  });
+
+  it('a <script> title is rendered escaped and no <script tag exists anywhere in the page', () => {
+    const html = render(
+      hostRecord({ completed: [item(92, 3600, { title: '<script>alert(1)</script>' })] }),
+      null
+    );
+    expect(completedSection(html)).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+    expect(html).not.toMatch(/<script/i);
+  });
+
+  it('re-checks href with isIssueUrl: a non-issue url is never emitted as an href (title stays plain text)', () => {
+    const html = render(
+      hostRecord({
+        completed: [
+          item(93, 3600, { url: 'https://evil.example/x' }),
+          item(94, 7200, { url: 'javascript:alert(1)' }),
+        ],
+      }),
+      null
+    );
+    const section = completedSection(html);
+    expect(section).toContain('Ticket 93');
+    expect(section).toContain('Ticket 94');
+    expect(section).not.toContain('evil.example');
+    expect(section).not.toContain('javascript:');
+    expect(section).not.toContain('href=');
+  });
+
+  it('escapes every value: a hostile marker and issue are never emitted as markup', () => {
+    const html = render(
+      hostRecord({ completed: [item(95, 3600, { marker: '"><img src=x onerror=alert(1)>' })] }),
+      null
+    );
+    expect(completedSection(html)).not.toContain('<img');
+    expect(completedSection(html)).toContain('&lt;img');
+  });
+
+  it('the active host tables are unchanged: a run still renders in its host section, not in Completed', () => {
+    const run = { repo: 'project-a', issue: 55, state: 'running', stage: 'test-writer', marker: 'TESTS WRITTEN', restarts: 0, title: 'Active one' };
+    const html = render(hostRecord({ runs: [run], completed: [item(56, 3600)] }), null);
+    const section = completedSection(html);
+    expect(html).toContain('#55');
+    expect(section).not.toContain('#55<');
+    expect(section).toContain('#56<');
+  });
+});

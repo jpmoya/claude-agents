@@ -100,3 +100,16 @@ export function getRequest(path, { ip = '203.0.113.10', method = 'GET' } = {}) {
     headers: { 'CF-Connecting-IP': ip },
   });
 }
+
+/** One valid completed[] item (issue #51), per Expected Behavior 6. */
+export function validCompleted(overrides = {}) {
+  return {
+    repo: 'project-a',
+    issue: 42,
+    title: 'Fix login redirect',
+    url: 'https://github.com/example-owner/project-a/issues/42',
+    closed_at: '2026-09-17T18:00:00Z',
+    marker: 'DEPLOYED',
+    ...overrides,
+  };
+}
