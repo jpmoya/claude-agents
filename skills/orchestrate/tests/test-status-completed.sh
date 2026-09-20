@@ -9,9 +9,10 @@
 #   AC5   a reopened + relaunched ticket returns to runs[] (.closed / .marker cleared)
 #   AC6   builder + reporter stay network-free (no gh call while building the payload)
 #   AC8   payload v stays 1; `completed` is always present ([] when none)
+#   AC9   `orchestrate.sh status` never reports a closed record as "exited (will auto-restart)"
 #   AC12  docs: README.md Status board paragraph + status-page/README.md describe Completed
-#   (AC2, AC7 — the Worker half — live in status-page/test/*.test.js; AC9/AC10 are the existing
-#    suites staying green; AC11 — the one-time reconcile on the VM — is a developer delivery
+#   (AC2, AC7 — the Worker half — live in status-page/test/*.test.js; the rest of AC9 and AC10 are the
+#    existing suites staying green; AC11 — the one-time reconcile on the VM — is a developer delivery
 #    obligation, not something a test can perform.)
 #
 # Placeholder repo names only (public repo). Expected values are hand-written from the ticket.
@@ -134,10 +135,24 @@ EOF
   chmod +x "$SC_ROOT/skills/orchestrate/"*.sh
 }
 
-sc_report_calls() {  # let backgrounded reporters land, then count
-  sleep 1
-  cat "$SC_ROOT/report.calls" 2>/dev/null | wc -l | tr -d ' '
+# sc_wait_lines <file> <min> — line count of <file> once the backgrounded writers have landed: poll
+# (bounded, 5 s) until it has >= <min> lines, then until two reads 0.2 s apart agree, so a later
+# unexpected extra line is still seen. No fixed sleep.
+sc_wait_lines() {
+  local f=$1 min=$2 n=0 prev i=0
+  while [ "$i" -lt 25 ]; do
+    n=$(cat "$f" 2>/dev/null | wc -l | tr -d ' ')
+    [ "$n" -ge "$min" ] && break
+    sleep 0.2; i=$((i + 1))
+  done
+  while :; do
+    prev=$n; sleep 0.2
+    n=$(cat "$f" 2>/dev/null | wc -l | tr -d ' ')
+    [ "$n" = "$prev" ] && break
+  done
+  echo "$n"
 }
+sc_report_calls() { sc_wait_lines "$SC_ROOT/report.calls" "$1"; }   # sc_report_calls <min expected>
 
 # =================================================================================================
 # derive_runs: the new `closed` state code (Expected Behavior 3)
@@ -423,15 +438,15 @@ test_sc_ac4_reconcile_asks_for_one_push_and_only_when_something_changed() {
   mk_held "$SC_PIPE" 225 "$SC_REPO"; sc_title 225; sc_gh_closed 225 "$(sc_iso_ago 120)"
   mk_held "$SC_PIPE" 226 "$SC_REPO"; sc_title 226; sc_gh_marker 226 '**[product-manager] READY FOR ENGINEERING**'
   sc_run "$SC_ROOT/skills/orchestrate/reconcile-status.sh" --force
-  local first; first=$(sc_report_calls)
+  local first; first=$(sc_report_calls 1)
   local rc1=$SC_RC
   # nothing changes on the next pass (same closed files, same marker) -> no further report
   sc_run "$SC_ROOT/skills/orchestrate/reconcile-status.sh" --force
-  local second; second=$(sc_report_calls)
+  local second; second=$(sc_report_calls 1)
   # the marker changes -> one more report
   sc_gh_marker 226 '**[solutions-architect] SPEC RESOLVED**'
   sc_run "$SC_ROOT/skills/orchestrate/reconcile-status.sh" --force
-  local third; third=$(sc_report_calls)
+  local third; third=$(sc_report_calls 2)
   local mfile; mfile=$(cat "$SC_PIPE/orch-226.marker" 2>/dev/null)
   sc_cleanup
   assert_exit0 "$rc1" "AC4: exit 0" || return 1
@@ -464,8 +479,7 @@ EOF
   chmod +x "$SC_ROOT/skills/orchestrate/reconcile-status.sh"
   local elapsed calls
   elapsed=$(sc_tick_mirror)
-  sleep 1
-  calls=$(cat "$SC_ROOT/reconcile.calls" 2>/dev/null | wc -l | tr -d ' ')
+  calls=$(sc_wait_lines "$SC_ROOT/reconcile.calls" 1)
   local rc=$SC_RC
   sc_cleanup
   assert_eq "${calls:-0}" "1" "EB2: supervisor.sh calls reconcile-status.sh exactly once per tick" || return 1
@@ -485,6 +499,35 @@ test_sc_ac4_supervisor_reconcile_call_is_backgrounded_fd9_closed_after_dispatch_
   assert_ne "$ln_dispatch" "" "EB2: dispatch step found (scenario sanity)" || return 1
   [ "$ln_call" -gt "$ln_dispatch" ] || { fail "EB2: reconcile must be called after step 5 (shared dispatch), not inside the launch path earlier"; return 1; }
   [ "$ln_call" -lt "$ln_exit" ] || { fail "EB2: reconcile must be called before the closing 'exec 9>&-'"; return 1; }
+}
+
+# =================================================================================================
+# AC9 — `orchestrate.sh status` keeps printing sensible, non-restarting states for a closed record
+# =================================================================================================
+
+# The `closed` code is new; orchestrate.sh status must not fall into its "exited (will auto-restart)"
+# branch for it. When gh does not say CLOSED (here: OPEN, e.g. the record is momentarily ahead of or
+# behind GitHub), a finished record reads exactly as the old `done` did ("done"); when gh says CLOSED,
+# the existing override applies ("done (issue closed)"). (A gh that exits non-zero aborts `status`
+# under its `set -e` today; that is existing behaviour and out of scope here.)
+test_sc_ac9_orchestrate_status_closed_record_is_not_reported_as_restarting() {
+  sc_env
+  sc_mk_closed_record 401 3600                                  # .closed + .done (as reconcile leaves it), gh says OPEN
+  sc_mk_closed_record 402 3600; rm -f "$SC_PIPE/orch-402.done"  # .closed alone, gh says OPEN
+  sc_mk_closed_record 403 3600; sc_gh_closed 403 "$(sc_iso_ago 3600)"   # gh works and says CLOSED
+  sc_gh_marker 403 '**[deployer] DEPLOYED**'                   # (the fake gh only returns comments when it has some)
+  mk_restarting "$SC_PIPE" 404 "$SC_REPO"                       # control: a genuinely restarting record still says so
+  sc_run "$RS_SC/orchestrate.sh" status
+  local out=$SC_OUT rc=$SC_RC l401 l402 l403 l404
+  l401=$(printf '%s\n' "$out" | grep '^#401 '); l402=$(printf '%s\n' "$out" | grep '^#402 ')
+  l403=$(printf '%s\n' "$out" | grep '^#403 '); l404=$(printf '%s\n' "$out" | grep '^#404 ')
+  sc_cleanup
+  assert_exit0 "$rc" "AC9: status exits 0" || return 1
+  assert_contains "$l404" "#404  exited (will auto-restart)  repo=" "AC9: control — a real restarting record keeps the restart wording" || return 1
+  assert_contains "$l401" "#401  done  repo=" "AC9: closed + done, gh says OPEN -> done" || return 1
+  assert_contains "$l402" "#402  done  repo=" "AC9: closed alone, gh says OPEN -> done" || return 1
+  assert_contains "$l403" "#403  done (issue closed)  repo=" "AC9: closed, gh says CLOSED -> done (issue closed)" || return 1
+  case "$l401$l402$l403" in *"auto-restart"*) fail "AC9: a closed record must never read as 'will auto-restart'"; return 1 ;; esac
 }
 
 # =================================================================================================
@@ -671,6 +714,7 @@ run_test test_sc_ac4_one_gh_issue_view_per_ticket_with_state_closedat_comments
 run_test test_sc_ac4_reconcile_asks_for_one_push_and_only_when_something_changed
 run_test test_sc_ac4_supervisor_tick_calls_reconcile_once_and_is_not_delayed_by_it
 run_test test_sc_ac4_supervisor_reconcile_call_is_backgrounded_fd9_closed_after_dispatch_step
+run_test test_sc_ac9_orchestrate_status_closed_record_is_not_reported_as_restarting
 run_test test_sc_ac5_orchestrate_relaunch_clears_closed_and_marker_and_ticket_returns_to_runs
 run_test test_sc_ac5_supervisor_redispatch_rm_list_also_clears_closed_and_marker
 run_test test_sc_eb5_payload_always_has_completed_array_and_v_stays_1

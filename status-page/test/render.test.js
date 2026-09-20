@@ -229,8 +229,9 @@ function hostsWith(runs, hostOverrides = {}) {
   };
 }
 
-/** Inner HTML of every <th> in document order. */
+/** Inner HTML of every <th> in the host sections, in document order (the #51 Completed section has its own table). */
 function headerCells(html) {
+  html = html.replace(/<section class="completed">[\s\S]*?<\/section>/, '');
   return [...html.matchAll(/<th(?:\s[^>]*)?>([\s\S]*?)<\/th>/g)].map((m) => m[1].trim());
 }
 
@@ -583,7 +584,7 @@ describe('renderPage — Completed table (issue #51)', () => {
     expect(section).not.toContain('href=');
   });
 
-  it('escapes every value: a hostile marker and issue are never emitted as markup', () => {
+  it('escapes a hostile marker: never emitted as markup', () => {
     const html = render(
       hostRecord({ completed: [item(95, 3600, { marker: '"><img src=x onerror=alert(1)>' })] }),
       null

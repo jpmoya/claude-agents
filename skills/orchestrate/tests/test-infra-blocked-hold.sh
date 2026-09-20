@@ -201,6 +201,9 @@ test_ib_ac4_readme_infra_track_says_operator_posts_blocked_on_open_dependency() 
 
 # Characterisation: passes now and must keep passing. Diff is against the merge-base with origin/main
 # so it stays correct after main moves; skipped (with a note) where there is no git history to compare.
+# Issue #51 supersedes part of this: its Expected Behavior 2 requires one edit to supervisor.sh (the
+# reconcile call) and its tests extend tests/lib/fixture.sh, so neither is guarded here any more. The
+# rest of tests/lib is still guarded.
 test_ib_ac5_supervisor_and_test_lib_are_not_edited() {
   local base diff
   base=$(cd "$ROOT_IB" && git merge-base HEAD origin/main 2>/dev/null)
@@ -208,8 +211,8 @@ test_ib_ac5_supervisor_and_test_lib_are_not_edited() {
     printf '    (AC5 skipped: no origin/main merge-base in this checkout)\n' >&2
     return 0
   fi
-  diff=$(cd "$ROOT_IB" && git diff --stat "$base" -- skills/orchestrate/supervisor.sh skills/orchestrate/tests/lib)
-  assert_eq "$diff" "" "AC5: no change to supervisor.sh or tests/lib" || return 1
+  diff=$(cd "$ROOT_IB" && git diff --stat "$base" -- skills/orchestrate/tests/lib ':(exclude)skills/orchestrate/tests/lib/fixture.sh')
+  assert_eq "$diff" "" "AC5: no change to tests/lib (other than fixture.sh, extended by #51)" || return 1
 }
 
 run_test test_ib_ac1a_operator_preflight_posts_blocked_when_dependency_open
