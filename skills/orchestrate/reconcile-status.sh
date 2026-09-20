@@ -1,7 +1,7 @@
 #!/bin/bash
 # Refresh the status board's local truth from GitHub (issue #51). Usage: reconcile-status.sh [--force]
 #
-# For every local record (orch-<n>.pid + orch-<n>.repo) that is open-ish (running / restarting / held)
+# For every local record (orch-<n>.pid + orch-<n>.repo, or a queue-only entry) that is open-ish (running / restarting / held / queued)
 # or finished within the last 48 h (done / stopped), and has no orch-<n>.closed yet, one
 # `gh issue view <n> --json state,closedAt,comments`:
 #   CLOSED -> orch-<n>.closed (line 1 = closedAt), touch .done, drop .held/.stopped/.alert and the queue
@@ -45,10 +45,11 @@ changed=0
 # Snapshot first: the pass edits the very files derive_runs reads.
 records=$(derive_runs)
 while IFS=$'\t' read -r issue repo state pid started last_activity restarts stage; do
-  [ -n "$issue" ] && [ -n "$pid" ] || continue                 # queued-only entries have no pid record
-  [ -f "$PIPE/orch-$issue.repo" ] || continue
+  [ -n "$issue" ] || continue
+  # queued-only entries have no pid/.repo record: their repo comes from the queue JSON (derive_runs)
+  { [ "$state" = "queued" ] && [ -n "$repo" ]; } || [ -f "$PIPE/orch-$issue.repo" ] || continue
   case "$state" in
-    running|restarting|held) ;;
+    running|restarting|held|queued) ;;
     done|stopped)
       [ -n "$last_activity" ] || last_activity=$(_rs_mtime "$PIPE/orch-$issue.pid")
       [ -n "$last_activity" ] && [ $((now - last_activity)) -le "$RECENT_SECS" ] || continue ;;
@@ -78,6 +79,7 @@ while IFS=$'\t' read -r issue repo state pid started last_activity restarts stag
       *) closed_at=$(date -u +%FT%TZ) ;;
     esac
     printf '%s\n' "$closed_at" > "$PIPE/orch-$issue.closed"
+    [ -f "$PIPE/orch-$issue.repo" ] || printf '%s\n' "$repo" > "$PIPE/orch-$issue.repo"   # queued-only: keep the repo for completed[]
     touch "$PIPE/orch-$issue.done"
     rm -f "$PIPE/orch-$issue.held" "$PIPE/orch-$issue.stopped" "$PIPE/orch-$issue.alert" "$QUEUE/orch-$issue.json"
     rc_log "[reconcile] #$issue — issue closed on GitHub ($closed_at), moved to completed"
