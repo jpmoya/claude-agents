@@ -16,7 +16,6 @@ MAX_NO_PROGRESS=3
 MAX_TOTAL=6
 BACKOFF=(120 300 900 1800)
 MIN_RUN_SECS=180                            # shorter runs are transient (rate limit, OOM, API error)
-MAX_TRANSIENT_TOTAL=20
 TRANSIENT_BACKOFF=(300 600 1200 1800 3600)
 GRACE_PERIOD_SECS=1200                      # BLOCKED younger than this may be a subagent race — wait
 
