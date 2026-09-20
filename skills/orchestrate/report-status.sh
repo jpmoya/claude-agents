@@ -59,6 +59,10 @@ _rs_build_runs_json() {  # reads derive_runs()'s TSV on stdin, prints the v1 "ru
   python3 "$RS_HERE/build-runs-json.py" "$(_rs_aliases_arg)" "$HOME/.claude/pipeline/runs.jsonl" "$PIPE"
 }
 
+_rs_build_completed_json() {  # same TSV on stdin, prints the payload's "completed" JSON array (issue #51)
+  python3 "$RS_HERE/build-runs-json.py" "$(_rs_aliases_arg)" "$HOME/.claude/pipeline/runs.jsonl" "$PIPE" completed
+}
+
 _rs_supervisor_last_tick() {  # mtime of the supervisor's own log, else "now" (no supervisor has run yet)
   local log="$LOGDIR/supervisor.log" epoch
   if [ -e "$log" ]; then
@@ -73,12 +77,14 @@ print(datetime.datetime.fromtimestamp(int(sys.argv[1]), tz=datetime.timezone.utc
 }
 
 build_payload() {
-  local runs_tsv running queued runs_json
+  local runs_tsv running queued runs_json completed_json
   runs_tsv=$(derive_runs)
   running=$(printf '%s\n' "$runs_tsv" | awk -F'\t' '$3=="running"{c++} END{print c+0}')
   queued=$(printf '%s\n' "$runs_tsv" | awk -F'\t' '$3=="queued"{c++} END{print c+0}')
   runs_json=$(printf '%s\n' "$runs_tsv" | _rs_build_runs_json)
   [ -n "$runs_json" ] || runs_json='[]'
+  completed_json=$(printf '%s\n' "$runs_tsv" | _rs_build_completed_json)
+  [ -n "$completed_json" ] || completed_json='[]'
   jq -n \
     --arg sent_at "$SENT_AT" \
     --arg tick "$SUPERVISOR_LAST_TICK" \
@@ -86,8 +92,9 @@ build_payload() {
     --argjson max "${MAX_CONCURRENT:-3}" \
     --argjson queued "$queued" \
     --argjson runs "$runs_json" \
+    --argjson completed "$completed_json" \
     '{v: 1, sent_at: $sent_at, supervisor_last_tick: $tick,
-      capacity: {running: $running, max: $max, queued: $queued}, runs: $runs}'
+      capacity: {running: $running, max: $max, queued: $queued}, runs: $runs, completed: $completed}'
 }
 
 SENT_AT=$(python3 -c "import datetime; print(datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))")

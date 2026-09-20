@@ -199,12 +199,27 @@ case "$*" in
     exit 0
     ;;
   *"issue view"*)
-    state=$(cat "$HERE/gh-issue-state" 2>/dev/null || echo "OPEN")
+    # Additive (#51): the per-issue variant <file>-<n> of every gh-issue-* file below wins over the
+    # plain <file> when it exists (n = the number right after "issue view"); gh-issue-view-rc makes
+    # every generic `issue view` fail; gh-issue-closed-at adds .closedAt; gh-issue-comments-json is a
+    # full JSON array for .comments. With none of these files present the behaviour is unchanged.
+    n=$(printf '%s' "$*" | sed -n 's/.*issue view \([0-9][0-9]*\).*/\1/p')
+    pick() { if [ -n "$n" ] && [ -f "$HERE/$1-$n" ]; then printf '%s' "$HERE/$1-$n"; else printf '%s' "$HERE/$1"; fi; }
+    rc=$(cat "$(pick gh-issue-view-rc)" 2>/dev/null || echo 0)
+    [ "$rc" -eq 0 ] || exit "$rc"
+    state=$(cat "$(pick gh-issue-state)" 2>/dev/null || echo "OPEN")
     labels=$(cat "$HERE/gh-issue-labels-json" 2>/dev/null || echo "[]")
     json=$(jq -n --arg state "$state" --argjson labels "$labels" '{state:$state, labels:$labels}')
-    if [ -f "$HERE/gh-issue-latest-marker" ]; then
-      json=$(printf '%s' "$json" | jq --arg body "$(cat "$HERE/gh-issue-latest-marker")" \
+    if [ -f "$(pick gh-issue-closed-at)" ]; then
+      json=$(printf '%s' "$json" | jq --arg c "$(cat "$(pick gh-issue-closed-at)")" '. + {closedAt: $c}')
+    fi
+    if [ -f "$(pick gh-issue-comments-json)" ]; then
+      json=$(printf '%s' "$json" | jq --argjson c "$(cat "$(pick gh-issue-comments-json)")" '. + {comments: $c}')
+    elif [ -f "$(pick gh-issue-latest-marker)" ]; then
+      json=$(printf '%s' "$json" | jq --arg body "$(cat "$(pick gh-issue-latest-marker)")" \
         '. + {comments: [{body: $body, createdAt: "2026-01-01T00:00:00Z"}]}')
+    elif case "$*" in *closedAt*) true ;; *) false ;; esac; then
+      json=$(printf '%s' "$json" | jq '. + {comments: []}')   # like real gh: a requested comments field is always present
     fi
     emit "$json" "$@"
     exit 0

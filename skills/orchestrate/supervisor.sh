@@ -5,6 +5,7 @@
 #   3. label lifecycle: drop agent-in-progress on issues this machine finished, parked, or abandoned
 #   4. label reconciliation: clear orphaned agent-in-progress labels (no local pid, no queue, stale marker)
 #   5. shared dispatch: launch one agent-go issue from DISPATCH_REPOS after winning a claim
+#   7. status reconcile: refresh listed tickets from GitHub (backgrounded, throttled to once per 600 s; issue #51)
 # One launch per tick max. All state is local (/tmp/pipeline); the only shared state is the issue's markers and labels.
 set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -458,7 +459,7 @@ if [ "$launched" -eq 0 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
           continue
         fi
         # Won: a re-dispatch is JP's explicit "go again", so clear local tombstones like a manual launch does.
-        rm -f "$PIPE/orch-$num".{stopped,held,done,alert,label-cleared} "$PIPE/orch-$num.restarts"
+        rm -f "$PIPE/orch-$num".{stopped,held,done,closed,marker,alert,label-cleared} "$PIPE/orch-$num.restarts"
         out=$("$(dirname "${BASH_SOURCE[0]}")/orchestrate.sh" --force "$local_path" "$num" 2>&1 | tail -1)
         slog "[dispatch] $owner_repo#$num — claimed by $HOST, $out"
         launched=1
@@ -474,5 +475,10 @@ fi
 #    skills/orchestrate/pipeline-bridge-dispatch.sh (deterministic resolve + agent-go dispatch) and
 #    skills/orchestrate/pipeline-bridge-prompt.md (the relay's instructions — manually installed to
 #    ~/.openclaw/agents/pipeline-bridge/agent/IDENTITY.md, outside this repo; see README.md).
+
+# 7. Status reconcile (issue #51) — refresh every listed ticket from GitHub (closed -> Completed, latest marker).
+#    Throttled inside the script (600 s/host); backgrounded with fd 9 closed like report_status_async, so a slow
+#    or failing pass never delays or fails the tick.
+( "$HERE/reconcile-status.sh" >/dev/null 2>&1 & ) 9>&- || true
 
 exec 9>&- 2>/dev/null

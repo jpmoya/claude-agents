@@ -12,9 +12,11 @@ RS_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 # derive_runs — prints one tab-separated record per recorded orchestrator:
 #   issue, repo_path, state_code, pid, started_at, last_activity_at, restarts, stage
-# state_code precedence (design table, checked in order): pid alive -> running; else .stopped ->
-# stopped; else .held -> held; else .done -> done; else -> restarting. A queue entry with no
-# orch-<issue>.pid at all is a separate record: state_code=queued, pid empty.
+# state_code precedence (design table, checked in order): pid alive -> running; else .closed ->
+# closed (issue #51: reconcile-status.sh saw the GitHub issue CLOSED; never emitted in runs[], only
+# in the payload's completed[]); else .stopped -> stopped; else .held -> held; else .done -> done; else -> restarting. A queue entry with no
+# orch-<issue>.pid at all is a separate record: state_code=queued, pid empty. A .closed marker with no
+# .pid and no queue entry is a closed record too (a ticket reconciled while queued-only).
 # last_activity_at is an epoch integer (newest mtime among orch-<n>.log / run-<n>-*.log) — the
 # caller (report-status.sh) converts it to ISO-8601Z for the payload. File contents are never read.
 # mtimes are read via python3's os.path.getmtime — no GNU stat/date flags (AC11), portable to
@@ -58,6 +60,8 @@ derive_runs() {
     repo=$(cat "$PIPE/orch-$issue.repo" 2>/dev/null || echo "?")
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
       state_code=running
+    elif [ -f "$PIPE/orch-$issue.closed" ]; then
+      state_code=closed
     elif [ -f "$PIPE/orch-$issue.stopped" ]; then
       state_code=stopped
     elif [ -f "$PIPE/orch-$issue.held" ]; then
@@ -84,6 +88,17 @@ derive_runs() {
     repo=$(python3 -c "import json; print(json.load(open('$f'))['repo'])" 2>/dev/null)
     started=$(python3 -c "import json; print(json.load(open('$f')).get('queued_at',''))" 2>/dev/null)
     printf '%s\t%s\tqueued\t\t%s\t\t0\t\n' "$issue" "$repo" "$started"
+  done
+
+  # A closed ticket that never had a pid record (it was reconciled while queued-only): reconcile-status.sh
+  # leaves orch-<issue>.closed + orch-<issue>.repo, so it still reaches completed[] (issue #51).
+  for f in "$PIPE"/orch-*.closed; do
+    [ -e "$f" ] || break
+    issue=$(basename "$f" .closed); issue=${issue#orch-}
+    [ -e "$PIPE/orch-$issue.pid" ] && continue
+    [ -e "$QUEUE/orch-$issue.json" ] && continue
+    repo=$(cat "$PIPE/orch-$issue.repo" 2>/dev/null || echo "?")
+    printf '%s\t%s\tclosed\t\t\t\t0\t\n' "$issue" "$repo"
   done
 }
 

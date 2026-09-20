@@ -140,11 +140,12 @@ test_fu_ac4_pm_worked_example_216_to_229() {
 
 test_fu_ac6_no_new_hook_daemon_timer_or_state_file_and_single_config_key() {
   local hooks top keys
-  # hand-written baseline of tracked hook files and top-level orchestrate files at main (2026-09-19)
+  # hand-written baseline of tracked hook files and top-level orchestrate files at main (2026-09-19),
+  # plus reconcile-status.sh, which issue #51 (Expected Behavior 2) adds to the orchestrate dir
   hooks=$(ls "$ROOT_FU/hooks" | tr '\n' ' ')
   assert_eq "$hooks" "block-orchestrator-agent.sh bug-fix-skill-reminder.sh cap-heavy-commands.py email-send-guard.sh enforce-tests-before-commit.sh limit-shells.sh pipeline-markers.sh protect-locked-tests.sh report-status-hook.sh require-handoff-marker.sh sync-agents.sh " "AC6: no new hook" || return 1
   top=$(ls "$ROOT_FU/skills/orchestrate" | tr '\n' ' ')
-  assert_eq "$top" "SKILL.md build-runs-json.py config.local.example.sh config.sh install.sh orchestrate.sh pipeline-bridge-dispatch.sh pipeline-bridge-prompt.md pipeline-lib.sh report-status.sh run-state.sh scan-backlog.sh supervisor.sh tests " "AC6: no new daemon/timer/state-file script under skills/orchestrate" || return 1
+  assert_eq "$top" "SKILL.md build-runs-json.py config.local.example.sh config.sh install.sh orchestrate.sh pipeline-bridge-dispatch.sh pipeline-bridge-prompt.md pipeline-lib.sh reconcile-status.sh report-status.sh run-state.sh scan-backlog.sh supervisor.sh tests " "AC6: no new daemon/timer/state-file script under skills/orchestrate" || return 1
   # the one allowed config key exists and defaults to today's behaviour (empty)
   assert_eq "$(grep -c '^SCAN_ONLY_REPOS=()' "$ROOT_FU/skills/orchestrate/config.sh")" "1" "AC6: config.sh carries the single new key, defaulting to empty" || return 1
   # ...and it is the only new key: no other *_REPOS / SCAN_* assignment beyond the baseline

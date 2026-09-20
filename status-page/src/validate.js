@@ -17,6 +17,7 @@ const ISSUE_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/\d+$/;
 const TITLE_WHITESPACE_OR_CONTROL = /[\u0000-\u001f\u007f\s]+/g;
 const MAX_TITLE_CODE_POINTS = 140;
 const MAX_RUNS = 20;
+const MAX_COMPLETED = 10;
 
 /** True iff `value` is a string that is exactly a GitHub issue URL. render.js re-checks with it. */
 export function isIssueUrl(value) {
@@ -103,6 +104,30 @@ function sanitiseRun(rawRun) {
 }
 
 /**
+ * Sanitises one completed[] item (issue #51), same helpers as runs. Returns null to drop the item:
+ * invalid `issue`, or a `closed_at` that is not ISO-8601 Z (required). repo/title/url/marker are
+ * reconstructed; title, url and marker are optional and omitted when absent or invalid.
+ */
+function sanitiseCompleted(rawItem) {
+  if (!isPlainObject(rawItem)) return null;
+  if (!isIntInRange(rawItem.issue, 1, 999999)) return null;
+  if (!isIsoTimestamp(rawItem.closed_at)) return null;
+
+  const item = {
+    repo: sanitiseRepo(rawItem.repo),
+    issue: rawItem.issue,
+    closed_at: rawItem.closed_at,
+  };
+
+  const title = sanitiseTitle(rawItem.title);
+  if (title !== null) item.title = title;
+  if (isIssueUrl(rawItem.url)) item.url = rawItem.url;
+  if (rawItem.marker !== undefined && rawItem.marker !== null) item.marker = sanitiseMarker(rawItem.marker);
+
+  return item;
+}
+
+/**
  * @param {unknown} parsedBody - already-JSON-parsed request body
  * @returns {{ ok: true, value: object } | { ok: false, reason: 'bad-json'|'bad-version'|'too-many-runs' }}
  */
@@ -138,6 +163,11 @@ export function validateBeatPayload(parsedBody) {
   };
 
   value.runs = parsedBody.runs.map(sanitiseRun).filter((run) => run !== null);
+
+  // Optional (issue #51): absent or non-array -> []; never a rejection. First 10 valid items kept.
+  value.completed = Array.isArray(parsedBody.completed)
+    ? parsedBody.completed.map(sanitiseCompleted).filter((item) => item !== null).slice(0, MAX_COMPLETED)
+    : [];
 
   return { ok: true, value };
 }
