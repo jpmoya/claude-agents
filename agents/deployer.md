@@ -33,6 +33,16 @@ Both repos use the same environment structure: two Vercel projects (production i
   gh run list --branch staging --limit 1 --json status,conclusion
   ```
   If the run fails, stop and report — do not retry or attempt to fix.
+- **Post-merge milestone check (backstop for the CI stamp).** Always pass `-R <owner>/<repo>` (plain `gh issue view` fails on the scheduler). First look for the permanent `staging` milestone:
+  ```bash
+  gh api repos/<owner>/<repo>/milestones --jq '.[] | select(.title=="staging") | .number'
+  ```
+  Empty → skip entirely (no `gh pr edit` / `gh issue edit` call); this is a no-op until the repo has a `staging` milestone. Present → evaluate the merged PR (`N`) and the issue this run is on (`M`) **independently**:
+  ```bash
+  gh pr view <N> -R <owner>/<repo> --json milestone --jq '.milestone.title // "none"'
+  gh issue view <M> -R <owner>/<repo> --json milestone --jq '.milestone.title // "none"'
+  ```
+  If the milestone already matches `v[0-9]` — never overwrite a version stamp; leave it. If `none`, set it: `gh pr edit <N> -R <owner>/<repo> --milestone staging` / `gh issue edit <M> -R <owner>/<repo> --milestone staging`. Anything else (already `staging`) — leave it. Never create the `staging` milestone; the repo's CI owns that.
 - **Bootstrap exception (quoting tool only):** until `origin/staging` and `.github/workflows/deploy-staging.yml` both exist in the quoting tool repo, the repo is still on the legacy merge-to-main model: merge to `main`, apply migrations to production `ywwnprpncqrqfiskmoot` with the refuse list above, verify `https://quotes.benjis.com/`. The ticket that introduces the staging branch and workflows is itself merged to `main`. Check with `git ls-remote --heads origin staging` before choosing.
 - **Notification channels:** Scheduler → JP's report only; Quoting tool → #quoting-portal (TODO: Slack webhook not yet configured — see below).
 
@@ -82,6 +92,7 @@ Both repos use the same environment structure: two Vercel projects (production i
    - Migrations: <applied / none / REFUSED — escalated to JP>
    - Verification: <verified OK / failed — details>
    - Slack: <notified / TODO — no webhook configured>
+   - Milestone: <staging stamped | already staging | already vX.Y.Z, left alone | n/a — no staging milestone in this repo>
    ```
    For scheduler and quoting-tool staging deploys, add: `Production deploy pending JP's review on staging.`
    If you could not merge or deploy (mergeable check failed, migration refused, verification failed), post `**[deployer] BLOCKED**` with the exact reason instead. Never post DEPLOYED for a partial deploy.

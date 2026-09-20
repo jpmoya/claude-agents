@@ -24,6 +24,7 @@ Every ticket must be executable by an engineering agent using TDD, unsupervised:
   - **Start-gate** (`Depends on #N for starting work`): work on this ticket cannot begin until #N is closed. Use when the dependency produces something this ticket's code literally cannot compile or test without (e.g. a migration that creates a table this ticket reads).
   - **Merge-gate** (`Depends on #N for merging`): work can start in parallel, but the PR cannot merge until #N's PR has landed on the target branch. Use when both tickets edit overlapping files or one builds on the other's output, but each can be developed independently. Add "rebase onto staging/main after #N lands" so the developer knows.
   Default to merge-gate. Start-gate is rare — only when the dependency is a compile-time or schema prerequisite.
+  - **No milestones.** Tickets never pre-assign a release milestone (`vX.Y.Z` or `staging`) — the version is only known at promotion time, and the deployer/CI stamp it mechanically (see `CLAUDE.md`'s release paragraph). Never pre-assign a release milestone or invent a competing convention.
 
 ### Fast-lane template (Lane: fast only)
 
