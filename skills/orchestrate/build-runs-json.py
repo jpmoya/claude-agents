@@ -3,11 +3,14 @@
 # restarts, stage) on stdin into the v1 payload's "runs" JSON array. Called by report-status.sh —
 # a standalone file (not a heredoc) so stdin stays free to carry the TSV data.
 #
-# Usage: build-runs-json.py <aliases-arg> <runs-jsonl-path> [<pipe-dir>]
+# Usage: build-runs-json.py <aliases-arg> <runs-jsonl-path> [<pipe-dir> [completed]]
 #   <aliases-arg>: STATUS_REPO_ALIASES entries ("owner/repo:alias"), one per line
 #   <runs-jsonl-path>: ~/.claude/pipeline/runs.jsonl, for the last dispatch marker per repo+issue
 #   <pipe-dir>: $PIPE, for the per-run orch-<issue>.title file written at launch (issue #29).
 #               Local files only -- this script never makes a network call.
+#   completed:  emit the payload's "completed" array (issue #51) instead of "runs": the records
+#               reconcile-status.sh marked closed (state_code "closed", orch-<issue>.closed = closedAt),
+#               closed within the last 7 days, newest first, first 10.
 import sys
 import json
 import subprocess
@@ -16,8 +19,11 @@ import datetime
 
 aliases_raw, runs_jsonl = sys.argv[1], sys.argv[2]
 pipe_dir = sys.argv[3] if len(sys.argv) > 3 else ""
+completed_mode = len(sys.argv) > 4 and sys.argv[4] == "completed"
 
 TITLE_MAX_CHARS = 140
+COMPLETED_RETENTION_SECS = 7 * 86400
+COMPLETED_MAX = 10
 
 aliases = {}
 for line in aliases_raw.splitlines():
@@ -59,7 +65,20 @@ def alias_for(repo_path):  # -> (published repo string, owner/repo or "" for the
 _marker_cache = {}
 
 
-def marker_for(owner_repo, issue):  # last dispatch event's marker_after for this repo+issue, else None
+def marker_file_for(issue):  # first line of <pipe-dir>/orch-<issue>.marker (GitHub truth, written by reconcile-status.sh), else ""
+    if not pipe_dir:
+        return ""
+    try:
+        with open(os.path.join(pipe_dir, "orch-%s.marker" % issue), encoding="utf-8", errors="replace") as f:
+            return f.readline(256).strip()
+    except OSError:
+        return ""
+
+
+def marker_for(owner_repo, issue):  # orch-<issue>.marker if present, else last dispatch event's marker_after for this repo+issue, else None
+    from_file = marker_file_for(issue)
+    if from_file:
+        return from_file
     if not owner_repo:
         return None
     key = (owner_repo, str(issue))
@@ -123,6 +142,53 @@ STATE_MAP = {"running": "running", "restarting": "restarting", "held": "held", "
 # glob-sorts earlier (derive_runs() walks orch-*.pid in filename order, which is a lexicographic
 # string sort of the issue number, not numeric or recency order).
 STATE_PRIORITY = {"running": 0, "restarting": 1, "held": 2, "queued": 3}
+
+def closed_at_for(issue):  # first line of <pipe-dir>/orch-<issue>.closed -> (iso string, epoch) or None
+    if not pipe_dir:
+        return None
+    try:
+        with open(os.path.join(pipe_dir, "orch-%s.closed" % issue), encoding="utf-8", errors="replace") as f:
+            text = f.readline(64).strip()
+        epoch = datetime.datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=datetime.timezone.utc).timestamp()
+    except (OSError, ValueError):
+        return None
+    return text, epoch
+
+
+def build_completed(rows):
+    now = datetime.datetime.now(datetime.timezone.utc).timestamp()
+    items = []
+    for line in rows:
+        parts = line.split("\t")
+        while len(parts) < 8:
+            parts.append("")
+        issue, repo_path, state_code = parts[0], parts[1], parts[2]
+        if state_code != "closed":
+            continue
+        closed = closed_at_for(issue)
+        if closed is None or now - closed[1] > COMPLETED_RETENTION_SECS:
+            continue
+        repo_alias, owner_repo = alias_for(repo_path)
+        item = {
+            "repo": repo_alias,
+            "issue": int(issue) if issue.isdigit() else issue,
+            "closed_at": closed[0],
+            "marker": marker_for(owner_repo, issue),
+        }
+        title = title_for(issue)
+        if title:
+            item["title"] = title
+            if owner_repo and issue.isdigit():
+                item["url"] = "https://github.com/%s/issues/%s" % (owner_repo, issue)
+        items.append((closed[1], {k: v for k, v in item.items() if v is not None}))
+    items.sort(key=lambda pair: -pair[0])
+    return [item for _, item in items[:COMPLETED_MAX]]
+
+
+if completed_mode:
+    print(json.dumps(build_completed([l.rstrip("\n") for l in sys.stdin if l.strip()])))
+    sys.exit(0)
 
 runs = []
 for raw in sys.stdin:

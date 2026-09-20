@@ -12,8 +12,9 @@ RS_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 # derive_runs — prints one tab-separated record per recorded orchestrator:
 #   issue, repo_path, state_code, pid, started_at, last_activity_at, restarts, stage
-# state_code precedence (design table, checked in order): pid alive -> running; else .stopped ->
-# stopped; else .held -> held; else .done -> done; else -> restarting. A queue entry with no
+# state_code precedence (design table, checked in order): pid alive -> running; else .closed ->
+# closed (issue #51: reconcile-status.sh saw the GitHub issue CLOSED; never emitted in runs[], only
+# in the payload's completed[]); else .stopped -> stopped; else .held -> held; else .done -> done; else -> restarting. A queue entry with no
 # orch-<issue>.pid at all is a separate record: state_code=queued, pid empty.
 # last_activity_at is an epoch integer (newest mtime among orch-<n>.log / run-<n>-*.log) — the
 # caller (report-status.sh) converts it to ISO-8601Z for the payload. File contents are never read.
@@ -58,6 +59,8 @@ derive_runs() {
     repo=$(cat "$PIPE/orch-$issue.repo" 2>/dev/null || echo "?")
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
       state_code=running
+    elif [ -f "$PIPE/orch-$issue.closed" ]; then
+      state_code=closed
     elif [ -f "$PIPE/orch-$issue.stopped" ]; then
       state_code=stopped
     elif [ -f "$PIPE/orch-$issue.held" ]; then

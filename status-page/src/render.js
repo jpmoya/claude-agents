@@ -12,6 +12,9 @@ export const PAGE_REFRESH_SECS = 20;
 
 const HOST_LABELS = { mac: 'Mac', vm: 'VM' };
 
+// Completed table (issue #51): entries closed longer ago than this are not shown.
+const COMPLETED_RETENTION_SECS = 7 * 86400;
+
 /** @param {unknown} value */
 export function esc(value) {
   if (value === null || value === undefined) return '';
@@ -122,6 +125,49 @@ function renderHostSection(key, host, thresholds, nowEpochSecs) {
   </section>`;
 }
 
+/** Merges both hosts' completed[]: parseable closed_at within 7 days, de-duplicated (url, else repo+issue) keeping the later closed_at, newest first. */
+function mergeCompleted(hosts, nowEpochSecs) {
+  const byKey = new Map();
+  for (const host of [hosts.mac, hosts.vm]) {
+    if (!host || !Array.isArray(host.completed)) continue;
+    for (const item of host.completed) {
+      if (!item || typeof item !== 'object') continue;
+      const closedMs = typeof item.closed_at === 'string' ? Date.parse(item.closed_at) : NaN;
+      if (Number.isNaN(closedMs)) continue;
+      if (nowEpochSecs - closedMs / 1000 > COMPLETED_RETENTION_SECS) continue;
+      const key = isIssueUrl(item.url) ? item.url : `${item.repo}#${item.issue}`;
+      const seen = byKey.get(key);
+      if (!seen || closedMs > seen.closedMs) byKey.set(key, { item, closedMs });
+    }
+  }
+  return [...byKey.values()].sort((a, b) => b.closedMs - a.closedMs).map((entry) => entry.item);
+}
+
+function renderCompletedRow(item) {
+  return `<tr>
+    <td>#${esc(item.issue)}</td>
+    <td>${renderTicketCell(item)}</td>
+    <td>${esc(formatCet(item.closed_at))}</td>
+    <td>${esc(item.marker)}</td>
+  </tr>`;
+}
+
+function renderCompletedSection(hosts, nowEpochSecs) {
+  const items = mergeCompleted(hosts, nowEpochSecs);
+  const rows = items.length
+    ? items.map(renderCompletedRow).join('')
+    : '<tr><td colspan="4">no completed tickets</td></tr>';
+  return `<section class="completed">
+    <h2>Completed</h2>
+    <table>
+      <thead>
+        <tr><th>Issue</th><th>Ticket</th><th>Closed</th><th>Final marker</th></tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </section>`;
+}
+
 /**
  * @param {{ mac: object|null, vm: object|null }} hosts
  * @param {{ staleSecs: number, offlineSecs: number }} thresholds
@@ -133,7 +179,7 @@ export function renderPage(hosts, thresholds, nowEpochSecs) {
 
   const body = bothEmpty
     ? '<p class="empty">no data from either host yet</p>'
-    : `${renderHostSection('mac', hosts.mac, thresholds, nowEpochSecs)}${renderHostSection('vm', hosts.vm, thresholds, nowEpochSecs)}`;
+    : `${renderHostSection('mac', hosts.mac, thresholds, nowEpochSecs)}${renderHostSection('vm', hosts.vm, thresholds, nowEpochSecs)}${renderCompletedSection(hosts, nowEpochSecs)}`;
 
   return `<!doctype html>
 <html lang="en">
@@ -154,7 +200,7 @@ export function renderPage(hosts, thresholds, nowEpochSecs) {
   .badge.nodata { background: #6e7781; color: #ffffff; }
   table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
   th, td { text-align: left; padding: 0.25rem; border-bottom: 1px solid rgba(127, 127, 127, 0.3); }
-  section.host { margin-bottom: 1.5rem; }
+  section.host, section.completed { margin-bottom: 1.5rem; }
   @media (prefers-color-scheme: dark) {
     body { background: #111111; color: #eeeeee; }
     th, td { border-bottom-color: rgba(255, 255, 255, 0.2); }
