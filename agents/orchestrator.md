@@ -82,6 +82,7 @@ Infrastructure and configuration changes — DNS, Vercel domains/env/redirects, 
 | `[infra-operator] AWAITING GO` | **Terminal — human gate.** Report to JP: steps done, next prod step, what is held and why. Stop. |
 | `[infra-operator] AWAITING GO` + JP go comment (issue author, posted after the `AWAITING GO`, first line exactly `go` / `GO` / `**[jp] GO**` — a sentence containing "go" is not a go) | Re-dispatch **infra-operator** with the go comment URL; it resumes from the first step not done. If `AWAITING GO` said `Held: … waiting on PR #M on main`, first check `gh pr view <M> --json state,baseRefName` yourself — still not merged to `main` → do not dispatch, report to JP that the go is premature. |
 | `[infra-operator] APPLIED` | Terminal: report to JP with the operator's step table and its **After the flip** checklist — those items (memories, docs, people to notify) are JP's, not yours. |
+| Resume: `[infra-operator] BLOCKED` whose body has a `Held: blocked by` line | Check every issue named on that line (`gh issue view <M> --json state`). All closed → re-dispatch **infra-operator** (it re-runs pre-flight and starts at the first step). Any still open → terminal: report to JP naming the open issue(s); the marker stays `BLOCKED`, so the supervisor parks it again. |
 | `[infra-planner] BLOCKED` (questions) / `[infra-reviewer] BLOCKED` / `[infra-operator] BLOCKED` | Terminal: report to JP verbatim. The operator's BLOCKED includes which steps ran and whether the rollback held — pass that through unchanged. |
 
 Infra-track pre-dispatch validation (mechanical):
@@ -90,10 +91,10 @@ Infra-track pre-dispatch validation (mechanical):
 |---|---|
 | infra-planner (first) | Issue open, has the `infra` label, has a non-empty body. |
 | infra-reviewer | The latest `PLAN READY` comment contains `Goal:`, `Blast radius:`, `Blocked by:`, a `## Current state` section, and a `## Steps` section with at least one `### Step`. |
-| infra-operator (first) | A `PLAN PASS` dated after the latest `PLAN READY`; every issue on that plan's `Blocked by:` line is closed. |
+| infra-operator (first) | A `PLAN PASS` dated after the latest `PLAN READY`. |
 | infra-operator (resume) | The go comment resolves (`gh api`), is by the issue author, and is dated after the latest `AWAITING GO`. |
 
-`Blocked by:` gates only the operator: the planner and reviewer run while the code dependency is still open, so the runbook is ready the moment the PR lands. Stage coordinates (`PIPELINE_AGENT=infra-planner` etc.) and the handoff hook apply unchanged. Log infra dispatches to the same run log with the agent name; no other differences. Nothing on this track ever creates a branch or a PR — if a stage does, that is a config error: stop and report.
+`Blocked by:` gates only the operator, and the operator enforces it: the orchestrator does not check `Blocked by:` before the first operator dispatch, and the operator posts `[infra-operator] BLOCKED` (with a `Held: blocked by` line) if any listed issue is still open. the planner and reviewer run while the code dependency is still open, so the runbook is ready the moment the PR lands. Stage coordinates (`PIPELINE_AGENT=infra-planner` etc.) and the handoff hook apply unchanged. Log infra dispatches to the same run log with the agent name; no other differences. Nothing on this track ever creates a branch or a PR — if a stage does, that is a config error: stop and report.
 
 ### Opt-in stages: solutions-architect and ux-flow-designer
 
