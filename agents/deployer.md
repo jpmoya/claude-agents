@@ -32,7 +32,7 @@ Both repos use the same environment structure: two Vercel projects (production i
   ```bash
   gh run list --branch staging --limit 1 --json status,conclusion
   ```
-  If the run fails, stop and report — do not retry or attempt to fix.
+  If the run fails, stop and report — do not retry or attempt to fix. If the run is still `in_progress` or `queued` at 3 minutes, stop waiting: post your handoff marker with the run URL and its current status, and stop. Never poll a workflow to completion.
 - **Post-merge milestone check (backstop for the CI stamp).** Always pass `-R <owner>/<repo>` (plain `gh issue view` fails on the scheduler). First look for the permanent `staging` milestone:
   ```bash
   gh api repos/<owner>/<repo>/milestones --jq '.[] | select(.title=="staging") | .number'
