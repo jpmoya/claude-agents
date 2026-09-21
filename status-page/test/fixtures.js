@@ -113,3 +113,45 @@ export function validCompleted(overrides = {}) {
     ...overrides,
   };
 }
+
+// ---- issue #62 builders (placeholder repos only; expected values hand-written from the ticket) ----
+
+/** One valid staging[] item (#62 Expected Behavior: {repo, issue, title?, url?, updated_at?}). */
+export function validStagingItem(overrides = {}) {
+  return {
+    repo: 'project-a',
+    issue: 7,
+    title: 'Staged ticket',
+    url: 'https://github.com/example-owner/project-a/issues/7',
+    updated_at: '2026-09-20T10:00:00Z',
+    ...overrides,
+  };
+}
+
+/** One valid approved[] item — same shape as staging[]. */
+export function validApprovedItem(overrides = {}) {
+  return {
+    repo: 'project-a',
+    issue: 8,
+    title: 'Approved ticket',
+    url: 'https://github.com/example-owner/project-a/issues/8',
+    updated_at: '2026-09-20T11:00:00Z',
+    ...overrides,
+  };
+}
+
+/** A stored KV host record (validated payload + received_at). Keys left undefined are omitted (today's shape). */
+export function hostRecord({ runs = [], completed, staging, approved, received_at = '2026-09-21T12:00:00Z' } = {}) {
+  const rec = {
+    v: 1,
+    sent_at: received_at,
+    received_at,
+    supervisor_last_tick: received_at,
+    capacity: { running: 1, max: 3, queued: 0 },
+    runs,
+  };
+  if (completed !== undefined) rec.completed = completed;
+  if (staging !== undefined) rec.staging = staging;
+  if (approved !== undefined) rec.approved = approved;
+  return rec;
+}

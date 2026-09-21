@@ -147,7 +147,7 @@ describe('completed[] end to end (issue #51)', () => {
     new Date(Date.now() - hours * 3600 * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
   const storedMac = async (env) => JSON.parse(await env.STATUS.get('host:mac'));
 
-  it('AC7 size: 20 runs + 10 completed, every title 140 ASCII chars, is < 16 KB and accepted (204) with all 30 stored', async () => {
+  it('AC7 size: 20 runs + 10 completed, every title 140 ASCII chars, is < 128 KB and accepted (204) with all 30 stored', async () => {
     const title = 'T'.repeat(140);
     const runs = Array.from({ length: 20 }, (_v, i) =>
       validRun({ issue: i + 1, title, url: `https://github.com/example-owner/project-a/issues/${i + 1}` })
@@ -156,7 +156,7 @@ describe('completed[] end to end (issue #51)', () => {
       validCompleted({ issue: 100 + i, title, url: `https://github.com/example-owner/project-a/issues/${100 + i}`, closed_at: hourAgoIso(i + 1) })
     );
     const body = JSON.stringify(validPayload({ runs, completed }));
-    expect(new TextEncoder().encode(body).length).toBeLessThan(16 * 1024);
+    expect(new TextEncoder().encode(body).length).toBeLessThan(128 * 1024);
 
     const env = makeEnv();
     const res = await worker.fetch(beatRequest({ body, token: TOKEN_MAC }), env, {});

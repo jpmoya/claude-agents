@@ -205,3 +205,49 @@ describe('#29 AC8 — /status.json keeps raw ISO timestamps and repo, passes tit
     expect(legacy).not.toHaveProperty('url');
   });
 });
+
+// ---------------------------------------------------------------------------------------------
+// Issue #62 AC9 — old-shape records and new keys through the real Worker.
+// ---------------------------------------------------------------------------------------------
+import { hostRecord, validStagingItem, validApprovedItem } from './fixtures.js';
+
+describe('#62 AC9 — /status.json and / with old and new record shapes', () => {
+  it('an old-shape record (no staging/approved/release) is served unchanged with v:1, and / renders 200 with the new headings', async () => {
+    const rec = hostRecord({ runs: [validRun({ issue: 5, state: 'running', last_activity_at: '2026-09-21T11:00:00Z' })], completed: [] });
+    const env = makeEnv({ STATUS: createMockKV({ 'host:mac': JSON.stringify(rec) }) });
+    const json = await (await worker.fetch(getRequest('/status.json'), env, {})).json();
+    expect(json.v).toBe(1);
+    expect(json.hosts.mac).toEqual(rec);
+    expect(json.hosts.vm).toBeNull();
+    const page = await worker.fetch(getRequest('/'), env, {});
+    expect(page.status).toBe(200);
+    expect(await page.text()).toContain('On staging (awaiting production) (0)');
+  });
+
+  it('a beat with staging/approved is stored on the host record and served by /status.json', async () => {
+    const env = makeEnv();
+    const body = validPayload({ staging: [validStagingItem()], approved: [validApprovedItem()] });
+    expect((await worker.fetch(beatRequest({ body, token: TOKEN_MAC }), env, {})).status).toBe(204);
+    const json = await (await worker.fetch(getRequest('/status.json'), env, {})).json();
+    expect(json.v).toBe(1);
+    expect(json.hosts.mac.staging).toEqual([validStagingItem()]);
+    expect(json.hosts.mac.approved).toEqual([validApprovedItem()]);
+  });
+
+  it('staging:"x" and approved:{} are stored as [] and the beat is still 204', async () => {
+    const env = makeEnv();
+    const res = await worker.fetch(beatRequest({ body: validPayload({ staging: 'x', approved: {} }), token: TOKEN_MAC }), env, {});
+    expect(res.status).toBe(204);
+    const stored = JSON.parse(await env.STATUS.get('host:mac'));
+    expect(stored.staging).toEqual([]);
+    expect(stored.approved).toEqual([]);
+  });
+
+  it('unknown top-level keys still never reach KV', async () => {
+    const env = makeEnv();
+    await worker.fetch(beatRequest({ body: validPayload({ sessions: [1], evil: 'x' }), token: TOKEN_MAC }), env, {});
+    const stored = JSON.parse(await env.STATUS.get('host:mac'));
+    expect(stored).not.toHaveProperty('sessions');
+    expect(stored).not.toHaveProperty('evil');
+  });
+});

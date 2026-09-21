@@ -589,3 +589,133 @@ describe('validateBeatPayload — completed[] (issue #51)', () => {
     expect(result.value.completed).toHaveLength(1);
   });
 });
+
+// ---------------------------------------------------------------------------------------------
+// Issue #62 — staging[] / approved[] / completed[].release / new markers. Expected values are
+// hand-written from the ticket's Expected Behavior and negative fixtures.
+// ---------------------------------------------------------------------------------------------
+import { validStagingItem, validApprovedItem } from './fixtures.js';
+import { MARKER_VOCAB as MARKERS_62 } from '../src/vocab.js';
+
+describe('validateBeatPayload — staging[] / approved[] (#62 AC1)', () => {
+  const run = (extra) => validateBeatPayload(validPayload(extra));
+  const items = (key, list) => {
+    const r = run({ [key]: list });
+    expect(r.ok).toBe(true);
+    return r.value[key];
+  };
+
+  for (const [key, build] of [['staging', validStagingItem], ['approved', validApprovedItem]]) {
+    describe(key, () => {
+      it('keeps a valid item unchanged', () => {
+        expect(items(key, [build()])).toEqual([build()]);
+      });
+
+      it('absent -> [] and accepted', () => {
+        const r = validateBeatPayload(validPayload());
+        expect(r.ok).toBe(true);
+        expect(r.value[key]).toEqual([]);
+      });
+
+      it.each([['a string', 'x'], ['an object', {}], ['null', null], ['a number', 5]])('%s -> [] and accepted, never a rejection', (_n, bad) => {
+        expect(items(key, bad)).toEqual([]);
+      });
+
+      it.each([['issue 0', { issue: 0 }], ['issue "12"', { issue: '12' }], ['issue 1000000', { issue: 1000000 }]])('drops an item with %s, keeps siblings', (_n, bad) => {
+        const out = items(key, [build(bad), build({ issue: 99 })]);
+        expect(out.map((i) => i.issue)).toEqual([99]);
+      });
+
+      it('accepts issue boundaries 1 and 999999', () => {
+        expect(items(key, [build({ issue: 1 }), build({ issue: 999999 })]).map((i) => i.issue)).toEqual([1, 999999]);
+      });
+
+      it('drops a non-object item, keeps siblings', () => {
+        expect(items(key, ['str', 5, null, [], build({ issue: 99 })]).map((i) => i.issue)).toEqual([99]);
+      });
+
+      it('omits a non-ISO updated_at but keeps the item', () => {
+        const out = items(key, [build({ updated_at: 'yesterday' })]);
+        expect(out).toHaveLength(1);
+        expect(out[0]).not.toHaveProperty('updated_at');
+      });
+
+      it('omits a non-issue url (javascript:) but keeps the item and title', () => {
+        const out = items(key, [build({ url: 'javascript:alert(1)' })]);
+        expect(out).toHaveLength(1);
+        expect(out[0]).not.toHaveProperty('url');
+        expect(out[0].title).toBe(build().title);
+      });
+
+      it('drops unknown keys on an item (sanitise by reconstruction)', () => {
+        const out = items(key, [build({ evil: 'x', sessions: [1] })]);
+        expect(out[0]).not.toHaveProperty('evil');
+        expect(out[0]).not.toHaveProperty('sessions');
+      });
+    });
+  }
+
+  it('staging: 61 valid items -> the first 60 kept', () => {
+    const list = Array.from({ length: 61 }, (_v, i) => validStagingItem({ issue: i + 1 }));
+    const out = items('staging', list);
+    expect(out).toHaveLength(60);
+    expect(out[0].issue).toBe(1);
+    expect(out[59].issue).toBe(60);
+  });
+
+  it('staging: exactly 60 valid items -> all 60 kept', () => {
+    expect(items('staging', Array.from({ length: 60 }, (_v, i) => validStagingItem({ issue: i + 1 })))).toHaveLength(60);
+  });
+
+  it('approved: 21 valid items -> the first 20 kept', () => {
+    const list = Array.from({ length: 21 }, (_v, i) => validApprovedItem({ issue: i + 1 }));
+    const out = items('approved', list);
+    expect(out).toHaveLength(20);
+    expect(out[19].issue).toBe(20);
+  });
+
+  it('cap counts VALID items: 5 invalid then 60 valid staging items -> 60 kept', () => {
+    const list = [...Array.from({ length: 5 }, () => validStagingItem({ issue: 0 })), ...Array.from({ length: 60 }, (_v, i) => validStagingItem({ issue: i + 1 }))];
+    expect(items('staging', list)).toHaveLength(60);
+  });
+
+  it('20 runs are still the run cap and 21 still rejects (unchanged)', () => {
+    const r = validateBeatPayload(validPayload({ runs: Array.from({ length: 21 }, (_v, i) => validRun({ issue: i + 1 })) }));
+    expect(r.ok).toBe(false);
+  });
+});
+
+describe('validateBeatPayload — completed[].release (#62 AC1)', () => {
+  const releaseOf = (release) => {
+    const r = validateBeatPayload(validPayload({ completed: [validCompleted({ release })] }));
+    expect(r.ok).toBe(true);
+    expect(r.value.completed).toHaveLength(1);
+    return r.value.completed[0];
+  };
+
+  it.each(['v1.3.0', 'v0.0.1', 'v10.20.30'])('keeps release %s', (rel) => {
+    expect(releaseOf(rel).release).toBe(rel);
+  });
+
+  it.each(['v1.3', '1.3.0', 'v1.3.0<script>', 'v1.3.0\n', ' v1.3.0', 'v1.3.0-rc1', 5, null, {}])('omits release %j but keeps the item', (rel) => {
+    expect(releaseOf(rel)).not.toHaveProperty('release');
+  });
+});
+
+describe('validateBeatPayload — DECISION / JP CONFIRMED markers (#62 AC2)', () => {
+  it.each(['DECISION', 'JP CONFIRMED'])('%s is in MARKER_VOCAB and survives on a run as itself', (m) => {
+    expect(MARKERS_62).toContain(m);
+    const r = validateBeatPayload(validPayload({ runs: [validRun({ marker: m })] }));
+    expect(r.value.runs[0].marker).toBe(m);
+  });
+
+  it('survives on completed[].marker too', () => {
+    const r = validateBeatPayload(validPayload({ completed: [validCompleted({ marker: 'DECISION' })] }));
+    expect(r.value.completed[0].marker).toBe('DECISION');
+  });
+
+  it('an unknown marker still degrades to other (control)', () => {
+    const r = validateBeatPayload(validPayload({ runs: [validRun({ marker: 'DECISIONS' })] }));
+    expect(r.value.runs[0].marker).toBe('other');
+  });
+});
