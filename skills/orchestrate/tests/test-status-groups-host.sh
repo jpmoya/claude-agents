@@ -376,10 +376,12 @@ EOF
 
 test_sg_ac6_open_issue_with_release_milestone_becomes_done_with_release() {
   sg_env
-  mk_held "$SG_PIPE" 401 "$SG_REPO"; touch "$SG_PIPE/orch-401.alert" "$SG_PIPE/orch-401.stopped"
+  mk_held "$SG_PIPE" 401 "$SG_REPO"; touch "$SG_PIPE/orch-401.alert"
   printf 'Title of 401\n' > "$SG_PIPE/orch-401.title"
   echo "v1.3.0" > "$SG_BIN/gh-issue-milestone-401"
   local before; before=$(sg_print)
+  # .stopped outranks .held in derive_runs, so add it only after the held-row control snapshot
+  touch "$SG_PIPE/orch-401.stopped"
   sg_reconcile --force
   local out; out=$(sg_print)
   local age
