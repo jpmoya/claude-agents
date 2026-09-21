@@ -23,8 +23,8 @@ Every agent starts every comment with `**[agent-name] ` and one of its routing m
 ```bash
 . ~/.claude/hooks/pipeline-markers.sh   # marker_re: the routing-marker vocabulary. Shell state does not persist — source it in every Bash call that uses markers/count
 markers() {  # timestamp + first line of every routing-marker comment, oldest first; NOTEs and off-vocabulary lines excluded
-  gh issue view "$1" --json comments \
-    --jq ".comments[] | (.body | split(\"\n\")[0]) as \$l | select(\$l | test($(marker_re | jq -Rs .))) | .createdAt + \" \" + .author.login + \" \" + \$l"
+  gh api "repos/{owner}/{repo}/issues/$1/comments?per_page=100" --paginate \
+    --jq ".[] | (.body | split(\"\n\")[0]) as \$l | select(\$l | test($(marker_re | jq -Rs .))) | .created_at + \" \" + .user.login + \" \" + \$l"
 }
 markers <N>                 # the whole marker trail
 markers <N> | tail -1       # the current state
@@ -250,7 +250,12 @@ Then poll for a **new** marker in bounded chunks (each poll fits inside the Bash
 
 ```bash
 . ~/.claude/hooks/pipeline-markers.sh
-count() { gh issue view "$1" --json comments --jq "[.comments[] | select(.body | split(\"\n\")[0] | test($(marker_re "$2" | jq -Rs .)))] | length"; }   # same count the handoff hook uses
+count() {  # same count the handoff hook uses: one integer, 0 when none. A failed read prints nothing and returns non-zero — never 0
+  local hits
+  hits=$(gh api "repos/{owner}/{repo}/issues/$1/comments?per_page=100" --paginate \
+    --jq ".[] | select(.body | split(\"\n\")[0] | test($(marker_re "$2" | jq -Rs .))) | 1") || return 1   # --paginate filters per page: one line per match, counted below
+  printf '%s' "$hits" | grep -c . || true
+}
 BEFORE=$(count <N> <agent-name>)
 NAG0=$(stat -f %m /tmp/pipeline/<N>-<agent-name>-nags.txt 2>/dev/null || echo none)   # nag-file mtime baseline for the cap-hit check
 # one Bash call = one chunk of up to 36 × 15s (9 min); repeat chunks until the stage cap below is reached
