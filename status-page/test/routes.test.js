@@ -147,7 +147,7 @@ describe('completed[] end to end (issue #51)', () => {
     new Date(Date.now() - hours * 3600 * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
   const storedMac = async (env) => JSON.parse(await env.STATUS.get('host:mac'));
 
-  it('AC7 size: 20 runs + 10 completed, every title 140 ASCII chars, is < 16 KB and accepted (204) with all 30 stored', async () => {
+  it('AC7 size: 20 runs + 10 completed, every title 140 ASCII chars, is < 128 KB and accepted (204) with all 30 stored', async () => {
     const title = 'T'.repeat(140);
     const runs = Array.from({ length: 20 }, (_v, i) =>
       validRun({ issue: i + 1, title, url: `https://github.com/example-owner/project-a/issues/${i + 1}` })
@@ -156,7 +156,7 @@ describe('completed[] end to end (issue #51)', () => {
       validCompleted({ issue: 100 + i, title, url: `https://github.com/example-owner/project-a/issues/${100 + i}`, closed_at: hourAgoIso(i + 1) })
     );
     const body = JSON.stringify(validPayload({ runs, completed }));
-    expect(new TextEncoder().encode(body).length).toBeLessThan(16 * 1024);
+    expect(new TextEncoder().encode(body).length).toBeLessThan(128 * 1024);
 
     const env = makeEnv();
     const res = await worker.fetch(beatRequest({ body, token: TOKEN_MAC }), env, {});
@@ -212,7 +212,7 @@ describe('completed[] end to end (issue #51)', () => {
     expect((await storedMac(env)).completed).toEqual([]);
   });
 
-  it('AC2: GET / renders the Completed table from the stored beat, escaped, with no <script tag', async () => {
+  it('AC2: GET / renders the Done group from the stored beat, escaped, with no <script tag', async () => {
     const env = makeEnv();
     await worker.fetch(
       beatRequest({
@@ -223,7 +223,7 @@ describe('completed[] end to end (issue #51)', () => {
       {}
     );
     const html = await (await worker.fetch(getRequest('/'), env, {})).text();
-    expect(html).toContain('<h2>Completed</h2>');
+    expect(html).toContain('Done (1)');
     expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
     expect(html).not.toMatch(/<script/i);
   });
@@ -237,12 +237,13 @@ describe('completed[] end to end (issue #51)', () => {
     expect(html.split('/issues/42"').length - 1).toBe(1);
   });
 
-  it('AC8 (new Worker, old host): a beat with no completed key renders the page with "no completed tickets"', async () => {
+  it('AC8 (new Worker, old host): a beat with no completed key renders the page with Done (0) and a none row', async () => {
     const env = makeEnv();
     const res = await worker.fetch(beatRequest({ body: validPayload(), token: TOKEN_MAC }), env, {});
     expect(res.status).toBe(204);
     const html = await (await worker.fetch(getRequest('/'), env, {})).text();
-    expect(html).toContain('<h2>Completed</h2>');
-    expect(html).toContain('no completed tickets');
+    expect(html).toContain('Done (0)');
+    expect(html).toMatch(/<tr><td[^>]*>none/);
+    expect(html).not.toContain('<h2>Completed</h2>');
   });
 });

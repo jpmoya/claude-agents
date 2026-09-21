@@ -120,27 +120,24 @@ describe('AC4 — malformed / oversized requests', () => {
     expect(res.status).toBe(400);
   });
 
-  // The 16 KB cap is exercised at the real edge (16383/16384/16385 bytes, measured with
-  // TextEncoder in sizedBeatBody, not an arbitrarily-small/large pair) per test-reviewer
-  // finding 2 on the first round. "Over 16 KB" per the routes table means the cap itself
-  // (16384) succeeds and one byte past it is rejected.
-  it('accepts a body of exactly 16383 bytes (one under the 16 KB cap)', async () => {
+  // #62 AC3: the cap is now 128 KB (131072). Edge tested at cap-1 / cap / cap+1.
+  it('accepts a body of exactly 131071 bytes (one under the 128 KB cap)', async () => {
     const env = makeEnv();
-    const body = sizedBeatBody(16383);
+    const body = sizedBeatBody(131071);
     const res = await worker.fetch(beatRequest({ body, token: TOKEN_MAC }), env, {});
     expect(res.status).toBe(204);
   });
 
-  it('accepts a body of exactly 16384 bytes (the cap itself, not yet "over")', async () => {
+  it('accepts a body of exactly 131072 bytes (the cap itself, not yet "over")', async () => {
     const env = makeEnv();
-    const body = sizedBeatBody(16384);
+    const body = sizedBeatBody(131072);
     const res = await worker.fetch(beatRequest({ body, token: TOKEN_MAC }), env, {});
     expect(res.status).toBe(204);
   });
 
-  it('returns 413 for a body of exactly 16385 bytes (one byte over the 16 KB cap)', async () => {
+  it('returns 413 for a body of exactly 131073 bytes (one byte over the 128 KB cap)', async () => {
     const env = makeEnv();
-    const body = sizedBeatBody(16385);
+    const body = sizedBeatBody(131073);
     const res = await worker.fetch(beatRequest({ body, token: TOKEN_MAC }), env, {});
     expect(res.status).toBe(413);
     expect(env.STATUS._calls().put).toBe(0);
@@ -226,8 +223,8 @@ describe('#29 — POST /beat with the optional ticket fields', () => {
     const html = await home.text();
     const tbody = html.match(/<tbody>([\s\S]*?)<\/tbody>/)[1];
     const cells = [...tbody.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((m) => m[1].trim());
-    expect(cells).toHaveLength(7); // the new 7-column layout
-    expect(cells[1]).toBe(''); // Ticket
+    expect(cells).toHaveLength(8); // AC 6: run-shaped rows are 8 columns (Host inserted)
+    expect(cells[cells.length - 7]).toBe(''); // Ticket
     expect(html).not.toContain('href');
   });
 
