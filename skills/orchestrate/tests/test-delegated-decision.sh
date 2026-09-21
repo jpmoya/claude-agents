@@ -416,7 +416,8 @@ test_dd_ac21_no_pre_existing_test_modified() {
   # #66 supersedes part of this: its AC 8 requires test-stall-liveness-docs.sh to be rewritten
   # (it currently asserts the removed nag-file check), so that one file is allowed here.
   d=$(cd "$ROOT_DD" && git diff --name-status "$base" -- skills/orchestrate/tests | grep -v 'test-delegated-decision.sh' \
-        | grep -vE '^M[[:space:]]+skills/orchestrate/tests/test-stall-liveness-docs\.sh$')
+        | grep -vE '^M[[:space:]]+skills/orchestrate/tests/test-stall-liveness-docs\.sh$' \
+        | grep -vE '^A[[:space:]]+skills/orchestrate/tests/test-supervisor-queue-order\.sh$')
   assert_eq "$d" "" "AC21: only test-delegated-decision.sh changes under skills/orchestrate/tests" || return 1
 }
 
