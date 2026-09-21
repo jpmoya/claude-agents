@@ -18,6 +18,9 @@ const TITLE_WHITESPACE_OR_CONTROL = /[\u0000-\u001f\u007f\s]+/g;
 const MAX_TITLE_CODE_POINTS = 140;
 const MAX_RUNS = 20;
 const MAX_COMPLETED = 10;
+const MAX_STAGING = 60;
+const MAX_APPROVED = 20;
+const RELEASE = /^v\d+\.\d+\.\d+$/;
 
 /** True iff `value` is a string that is exactly a GitHub issue URL. render.js re-checks with it. */
 export function isIssueUrl(value) {
@@ -123,8 +126,29 @@ function sanitiseCompleted(rawItem) {
   if (title !== null) item.title = title;
   if (isIssueUrl(rawItem.url)) item.url = rawItem.url;
   if (rawItem.marker !== undefined && rawItem.marker !== null) item.marker = sanitiseMarker(rawItem.marker);
+  if (typeof rawItem.release === 'string' && RELEASE.test(rawItem.release)) item.release = rawItem.release;
 
   return item;
+}
+
+/**
+ * Sanitises one staging[] / approved[] item (issue #62): {repo, issue, title?, url?, updated_at?}.
+ * Invalid `issue` -> item dropped; the optional fields are omitted when absent or invalid.
+ */
+function sanitiseListItem(rawItem) {
+  if (!isPlainObject(rawItem)) return null;
+  if (!isIntInRange(rawItem.issue, 1, 999999)) return null;
+
+  const item = { repo: sanitiseRepo(rawItem.repo), issue: rawItem.issue };
+  const title = sanitiseTitle(rawItem.title);
+  if (title !== null) item.title = title;
+  if (isIssueUrl(rawItem.url)) item.url = rawItem.url;
+  if (isIsoTimestamp(rawItem.updated_at)) item.updated_at = rawItem.updated_at;
+  return item;
+}
+
+function sanitiseList(raw, max) {
+  return Array.isArray(raw) ? raw.map(sanitiseListItem).filter((item) => item !== null).slice(0, max) : [];
 }
 
 /**
@@ -168,6 +192,10 @@ export function validateBeatPayload(parsedBody) {
   value.completed = Array.isArray(parsedBody.completed)
     ? parsedBody.completed.map(sanitiseCompleted).filter((item) => item !== null).slice(0, MAX_COMPLETED)
     : [];
+
+  // Optional (issue #62): absent or non-array -> []; never a rejection.
+  value.staging = sanitiseList(parsedBody.staging, MAX_STAGING);
+  value.approved = sanitiseList(parsedBody.approved, MAX_APPROVED);
 
   return { ok: true, value };
 }

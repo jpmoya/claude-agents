@@ -12,7 +12,7 @@ import { validateBeatPayload } from './validate.js';
 import { renderPage } from './render.js';
 import { KEEPALIVE_SECS, computeThresholds } from './vocab.js';
 
-const MAX_BEAT_BYTES = 16 * 1024; // 16 KB cap (routes table: "> 16 KB" -> 413)
+const MAX_BEAT_BYTES = 128 * 1024; // 128 KB cap (#62; "> 128 KB" -> 413)
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX_PER_WINDOW = 60;
 const RATE_LIMIT_EVICTION_BATCH = 1000; // bounded eviction — an isolate can live a long time

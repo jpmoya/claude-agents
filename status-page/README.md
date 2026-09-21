@@ -24,13 +24,41 @@ title to the issue, and timestamps read like `Sat 19 Sep, 14:05` in Europe/Madri
 - `STATUS_REPO_ALIASES` on the host still populates `runs[].repo` in the payload and
   `/status.json`, but the alias is no longer shown in the HTML table.
 
-### Completed table (issue #51)
+### Status groups (issue #62)
 
-Below the host tables the page shows one combined **Completed** table —
-`Issue · Ticket · Closed · Final marker` — for tickets whose GitHub issue is CLOSED. Rows from
-both hosts are merged, de-duplicated (on `url`, else repo + issue, keeping the later close time)
-and sorted newest first; entries closed more than 7 days ago are not shown, and each host sends
-its 10 newest, so the page shows at most 20. With nothing to show it reads `no completed tickets`.
+The page shows the two host health blocks (name, badge, last seen, capacity), then **one row per
+ticket** in seven groups, each an `<h2>` with a count (`Running (4)`). `src/group.js`
+(`groupTickets`) is a pure function: tickets are keyed on `url` (else `repo#issue`); among a
+ticket's `runs[]` rows across both hosts the latest `last_activity_at` wins (missing loses, tie →
+Mac). The first matching rule decides the group:
+
+1. winning run `running` → **Running**
+2. key in any `completed[]` (closed within 7 days) → **Done**
+3. key in any `approved[]` → **Approved, waiting for a slot**
+4. winning run `queued` → **Queued**
+5. key in any `staging[]` → **On staging (awaiting production)**
+6. winning run `restarting` → **Running** (state cell reads `restarting`)
+7. winning run `held` with marker `MOCKUPS PENDING APPROVAL`, `AWAITING GO`,
+   `EFFORT APPROVAL NEEDED` or `BLOCKED` → **Needs JP**
+8. any other `held` → **Parked** (a `BLOCKED` answered by `DECISION` / `JP CONFIRMED` lands here)
+
+Order: newest first (`last_activity_at`; `updated_at` for Approved / On staging; `closed_at` for
+Done; missing last). Caps: Running and Queued uncapped; Approved 20; Needs JP 20 (never aged out);
+On staging 60; Parked 10 and hidden once its last activity is older than 7 days; Done 20 within
+7 days. Columns: Running / Queued / Needs JP / Parked `Issue · Ticket · Host · State · Stage ·
+Marker · Last activity · Restarts`; Approved / On staging `Issue · Ticket · Updated`; Done
+`Issue · Ticket · Closed · Release · Final marker`. An empty group reads `(0)` and one `none` row.
+
+Payload (`v` stays 1, every new key optional; the host half is #65):
+
+- `staging[]` (first 60 valid kept) and `approved[]` (first 20): `{repo, issue, title?, url?,
+  updated_at?}`, sanitised by reconstruction (`issue` 1–999999 required else the item is dropped;
+  `updated_at` ISO-8601 Z else omitted). Absent or non-array → `[]`.
+- `completed[].release`, kept only if it matches `^v\d+\.\d+\.\d+$`.
+- `DECISION` and `JP CONFIRMED` are known markers.
+- The beat body cap is **128 KB** (`131072` bytes → `204`, one more → `413`).
+
+Completed-ticket source (issue #51):
 
 - The host half is `skills/orchestrate/reconcile-status.sh`: a reconcile pass, run from the
   supervisor tick at most once per 600 s per host, that asks GitHub for each listed ticket's state,
@@ -39,7 +67,7 @@ its 10 newest, so the page shows at most 20. With nothing to show it reads `no c
 - `completed[]` items are `{repo, issue, closed_at, title?, url?, marker?}`, sanitised by
   reconstruction like `runs[]` (`issue` 1–999999 and an ISO-8601 Z `closed_at` are required, more
   than 10 items keep the first 10, a non-array becomes `[]`). Payload `v` stays 1: an older Worker
-  drops the key, a newer Worker renders a payload without it as an empty table.
+  drops the key, a newer Worker renders a payload without it as an empty Done group.
 
 ## Infra hand-off contract (companion `infra` issue's job, not this one's)
 

@@ -6,14 +6,12 @@
 // tested directly per skills/quality-gate/SKILL.md).
 
 import { isIssueUrl } from './validate.js';
+import { groupTickets } from './group.js';
 
 // Auto-refresh interval in seconds. Must stay <= 30 (AC15). Grepped directly by tests.
 export const PAGE_REFRESH_SECS = 20;
 
 const HOST_LABELS = { mac: 'Mac', vm: 'VM' };
-
-// Completed table (issue #51): entries closed longer ago than this are not shown.
-const COMPLETED_RETENTION_SECS = 7 * 86400;
 
 /** @param {unknown} value */
 export function esc(value) {
@@ -82,16 +80,49 @@ function renderTicketCell(run) {
   return `<a href="${esc(run.url)}" target="_blank" rel="noopener noreferrer">${esc(run.title)}</a>`;
 }
 
-function renderRunRow(run) {
-  return `<tr>
-    <td>#${esc(run.issue)}</td>
-    <td>${renderTicketCell(run)}</td>
-    <td>${esc(run.state)}</td>
-    <td>${esc(run.stage)}</td>
-    <td>${esc(run.marker)}</td>
-    <td>${esc(formatCet(run.last_activity_at))}</td>
-    <td>${esc(run.restarts)}</td>
-  </tr>`;
+const RUN_COLUMNS = ['Issue', 'Ticket', 'Host', 'State', 'Stage', 'Marker', 'Last activity', 'Restarts'];
+const LIST_COLUMNS = ['Issue', 'Ticket', 'Updated'];
+const DONE_COLUMNS = ['Issue', 'Ticket', 'Closed', 'Release', 'Final marker'];
+
+const runCells = (run) => [
+  `#${esc(run.issue)}`,
+  renderTicketCell(run),
+  esc(HOST_LABELS[run.host] || run.host),
+  esc(run.state),
+  esc(run.stage),
+  esc(run.marker),
+  esc(formatCet(run.last_activity_at)),
+  esc(run.restarts),
+];
+const listCells = (item) => [`#${esc(item.issue)}`, renderTicketCell(item), esc(formatCet(item.updated_at))];
+const doneCells = (item) => [
+  `#${esc(item.issue)}`,
+  renderTicketCell(item),
+  esc(formatCet(item.closed_at)),
+  esc(item.release),
+  esc(item.marker),
+];
+
+// Group heading -> table layout. Headings come from group.js; anything unlisted gets the run layout.
+const LAYOUTS = {
+  'Approved, waiting for a slot': { columns: LIST_COLUMNS, cells: listCells },
+  'On staging (awaiting production)': { columns: LIST_COLUMNS, cells: listCells },
+  Done: { columns: DONE_COLUMNS, cells: doneCells },
+};
+const RUN_LAYOUT = { columns: RUN_COLUMNS, cells: runCells };
+
+function renderGroupSection(group) {
+  const { columns, cells } = LAYOUTS[group.heading] || RUN_LAYOUT;
+  const rows = group.rows.length
+    ? group.rows.map((row) => `<tr>${cells(row).map((c) => `<td>${c}</td>`).join('')}</tr>`).join('')
+    : `<tr><td colspan="${columns.length}">none</td></tr>`;
+  return `<section class="group">
+    <h2>${esc(group.heading)} (${group.rows.length})</h2>
+    <table>
+      <tr>${columns.map((c) => `<th>${esc(c)}</th>`).join('')}</tr>
+      <tbody>${rows}</tbody>
+    </table>
+  </section>`;
 }
 
 function renderHostSection(key, host, thresholds, nowEpochSecs) {
@@ -107,64 +138,11 @@ function renderHostSection(key, host, thresholds, nowEpochSecs) {
 
   const badge = computeBadge(host.received_at, thresholds, nowEpochSecs);
   const capacity = host.capacity && typeof host.capacity === 'object' ? host.capacity : {};
-  const runs = Array.isArray(host.runs) ? host.runs : [];
-  const runRows = runs.length
-    ? runs.map(renderRunRow).join('')
-    : '<tr><td colspan="7">no active runs</td></tr>';
 
   return `<section class="host">
     <h2>${esc(label)} <span class="badge ${esc(badge)}">${esc(badge)}</span></h2>
     <p class="last-seen">Last seen: ${esc(formatCet(host.received_at))}</p>
     <p class="capacity">Capacity: running ${esc(capacity.running)} / max ${esc(capacity.max)} (queued ${esc(capacity.queued)})</p>
-    <table>
-      <thead>
-        <tr><th>Issue</th><th>Ticket</th><th>State</th><th>Stage</th><th>Marker</th><th>Last activity</th><th>Restarts</th></tr>
-      </thead>
-      <tbody>${runRows}</tbody>
-    </table>
-  </section>`;
-}
-
-/** Merges both hosts' completed[]: parseable closed_at within 7 days, de-duplicated (url, else repo+issue) keeping the later closed_at, newest first. */
-function mergeCompleted(hosts, nowEpochSecs) {
-  const byKey = new Map();
-  for (const host of [hosts.mac, hosts.vm]) {
-    if (!host || !Array.isArray(host.completed)) continue;
-    for (const item of host.completed) {
-      if (!item || typeof item !== 'object') continue;
-      const closedMs = typeof item.closed_at === 'string' ? Date.parse(item.closed_at) : NaN;
-      if (Number.isNaN(closedMs)) continue;
-      if (nowEpochSecs - closedMs / 1000 > COMPLETED_RETENTION_SECS) continue;
-      const key = isIssueUrl(item.url) ? item.url : `${item.repo}#${item.issue}`;
-      const seen = byKey.get(key);
-      if (!seen || closedMs > seen.closedMs) byKey.set(key, { item, closedMs });
-    }
-  }
-  return [...byKey.values()].sort((a, b) => b.closedMs - a.closedMs).map((entry) => entry.item);
-}
-
-function renderCompletedRow(item) {
-  return `<tr>
-    <td>#${esc(item.issue)}</td>
-    <td>${renderTicketCell(item)}</td>
-    <td>${esc(formatCet(item.closed_at))}</td>
-    <td>${esc(item.marker)}</td>
-  </tr>`;
-}
-
-function renderCompletedSection(hosts, nowEpochSecs) {
-  const items = mergeCompleted(hosts, nowEpochSecs);
-  const rows = items.length
-    ? items.map(renderCompletedRow).join('')
-    : '<tr><td colspan="4">no completed tickets</td></tr>';
-  return `<section class="completed">
-    <h2>Completed</h2>
-    <table>
-      <thead>
-        <tr><th>Issue</th><th>Ticket</th><th>Closed</th><th>Final marker</th></tr>
-      </thead>
-      <tbody>${rows}</tbody>
-    </table>
   </section>`;
 }
 
@@ -179,7 +157,7 @@ export function renderPage(hosts, thresholds, nowEpochSecs) {
 
   const body = bothEmpty
     ? '<p class="empty">no data from either host yet</p>'
-    : `${renderHostSection('mac', hosts.mac, thresholds, nowEpochSecs)}${renderHostSection('vm', hosts.vm, thresholds, nowEpochSecs)}${renderCompletedSection(hosts, nowEpochSecs)}`;
+    : `${renderHostSection('mac', hosts.mac, thresholds, nowEpochSecs)}${renderHostSection('vm', hosts.vm, thresholds, nowEpochSecs)}${groupTickets(hosts, nowEpochSecs).map(renderGroupSection).join('')}`;
 
   return `<!doctype html>
 <html lang="en">
@@ -200,7 +178,7 @@ export function renderPage(hosts, thresholds, nowEpochSecs) {
   .badge.nodata { background: #6e7781; color: #ffffff; }
   table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
   th, td { text-align: left; padding: 0.25rem; border-bottom: 1px solid rgba(127, 127, 127, 0.3); }
-  section.host, section.completed { margin-bottom: 1.5rem; }
+  section.host, section.group { margin-bottom: 1.5rem; }
   @media (prefers-color-scheme: dark) {
     body { background: #111111; color: #eeeeee; }
     th, td { border-bottom-color: rgba(255, 255, 255, 0.2); }
