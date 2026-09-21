@@ -356,11 +356,16 @@ json.dump({'issue':'$issue','repo':'$repo','extra':'''$extra''','reason':'auto-r
   report_status_async "queue-restart"   # event push: run exited -> requeued (design #10 §4.4)
 done
 
-# 2. Drain queue (one item per tick)
-if [ "$launched" -eq 0 ] && has_capacity; then
+# 2. Drain queue (one item per tick, oldest queued_at first)
+# Capacity is decided once per tick; the drain and the dispatch step (5) share the result, so a slot freed
+# mid-tick never goes to a new agent-go issue while a queued ticket waits.
+HAS_CAP=0
+has_capacity && HAS_CAP=1
+if [ "$launched" -eq 0 ] && [ "$HAS_CAP" -eq 1 ]; then
   now_epoch=$(date +%s)
   best_qf=""
   best_issue=""
+  best_key=""
 
   for qf in "$QUEUE"/orch-*.json; do
     [ -e "$qf" ] || break
@@ -380,9 +385,22 @@ if [ "$launched" -eq 0 ] && has_capacity; then
       continue
     fi
 
-    best_qf="$qf"
-    best_issue="$q_issue"
-    break  # take first eligible
+    # Order key: queued_at epoch (fallback: file mtime when missing/unparseable), then issue number
+    q_key=$(python3 -c "
+import json, os, datetime
+f='$qf'
+try:
+    t=datetime.datetime.strptime(json.load(open(f))['queued_at'], '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=datetime.timezone.utc).timestamp()
+except Exception:
+    t=os.path.getmtime(f)
+print('%d %d' % (int(t), int('$q_issue')))
+" 2>/dev/null)
+    [ -z "$q_key" ] && q_key="$(stat -c %Y "$qf" 2>/dev/null || stat -f %m "$qf") ${q_issue//[!0-9]/}"
+    if [ -z "$best_qf" ] || python3 -c "import sys; a=tuple(map(int,'$q_key'.split())); b=tuple(map(int,'$best_key'.split())); sys.exit(0 if a<b else 1)"; then
+      best_qf="$qf"
+      best_issue="$q_issue"
+      best_key="$q_key"
+    fi
   done
 
   if [ -n "$best_qf" ]; then
@@ -447,7 +465,7 @@ fi
 if [ "$launched" -eq 0 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
   if ! power_ok; then
     slog "[dispatch] skipped — on battery power"
-  elif ! has_capacity; then
+  elif [ "$HAS_CAP" -ne 1 ]; then
     :  # nothing to log every 2 min; status shows the running set
   else
     now_epoch=$(date +%s)
