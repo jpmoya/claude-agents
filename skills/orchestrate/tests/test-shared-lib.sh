@@ -392,6 +392,7 @@ test_sl_both_launch_blocks_still_present_once() {
     assert_eq "$n" "1" "AC6: $f must keep exactly one 'claude ... --agent orchestrator -p' launch line" || return 1
   done
   assert_contains "$(cat "$RS_SL/supervisor.sh")" '2>&1 9>&- &' "AC6: supervisor.sh's launch block keeps its 9>&- fd close" || return 1
+  assert_contains "$(cat "$RS_SL/orchestrate.sh")" '2>&1 9>&- &' "AC6: orchestrate.sh's launch block keeps its 9>&- fd close (#56)" || return 1
 }
 
 # ---------------------------------------------------------------------------
