@@ -178,7 +178,7 @@ with open('$QUEUE/orch-$ISSUE.json', 'w') as f:
       echo 300 > /proc/self/oom_score_adj 2>/dev/null
       claude --dangerously-skip-permissions --agent orchestrator -p "$1"
       echo $? > "$2"
-    ' _ "$PROMPT" "$PIPE/orch-$ISSUE.exit" >> "$PIPE/orch-$ISSUE.log" 2>&1 &
+    ' _ "$PROMPT" "$PIPE/orch-$ISSUE.exit" >> "$PIPE/orch-$ISSUE.log" 2>&1 9>&- &
     echo $! > "$PIPE/orch-$ISSUE.pid"; echo "$REPO" > "$PIPE/orch-$ISSUE.repo"
     date -u +%FT%TZ > "$PIPE/orch-$ISSUE.start"; date -u +%FT%TZ > "$PIPE/orch-$ISSUE.launched-at"
     report_status_async "launch"   # event push: run launched (design #10 §4.4)
