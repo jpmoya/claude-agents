@@ -9,7 +9,7 @@
 #   AC21-AC22  gates: nothing outside the ticket's file list changed; no timer/counter/state file
 #
 # Characterisation cases (pass BEFORE and AFTER the change — do not "fix" them to fail first):
-#   AC7 (all three), AC8 (a FAIL already restarts today), AC9 (one gh call per issue per tick already
+#   AC4-AC6 (guards against over-implementation), AC7 (all three), AC8 (a FAIL already restarts today), AC9 (one gh call per issue per tick already
 #   holds), AC13's "still present" half and its byte-identical row, AC21/AC22 (guards).
 # Every other case fails until the ticket is implemented.
 #
@@ -38,7 +38,13 @@ dd_text_lacks() { if printf '%s\n' "$2" | grep -qF -- "$3"; then fail "$1: must 
 
 # dd_section <file> <heading-prefix> — lines after the heading up to the next heading of the same or higher level
 dd_section() {
-  awk -v h="$2" 'index($0, h) == 1 { on = 1; next } on && /^#+ / { exit } on { print }' "$1"
+  # Fenced code (``` ... ```) is ignored for heading detection: `# comment` lines inside a bash block are not headings.
+  awk -v h="$2" '
+    BEGIN { n = match(h, /[^#]/) - 1 }
+    /^```/ { if (on) print; fence = !fence; next }
+    !fence && index($0, h) == 1 { on = 1; next }
+    on && !fence && match($0, /^#+ /) && (RLENGTH - 1) <= n { exit }
+    on { print }' "$1"
 }
 
 dd_sha() { if command -v shasum >/dev/null 2>&1; then shasum -a 256 | cut -d' ' -f1; else sha256sum | cut -d' ' -f1; fi; }
