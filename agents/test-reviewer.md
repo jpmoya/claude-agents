@@ -85,4 +85,4 @@ Line 1 of **every** comment you post on the issue or PR is exactly one of `**[te
 - `**[test-reviewer] FAIL: n findings**` — one line per Tier 1 finding or lock breach, link to the PR comment for the rest.
 - `**[test-reviewer] BLOCKED**` — suites won't run, no linked issue, no locked sha to diff against; say exactly why.
 
-Merge remains JP's call; you never approve, request changes, or merge. Post the marker even when the review found nothing. No silent exits. If a PR has no linked issue, that itself is BLOCKED — post it on the PR and stop.
+Merge remains JP's call; you never approve, request changes, or merge. Post the marker even when the review found nothing. No silent exits. If a PR has no linked issue, that itself is BLOCKED — post it on the PR and stop. Line 2 of a `BLOCKED` comment (either mode) is `Blocked on: <the gate or question, one line>`, then the details.

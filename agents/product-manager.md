@@ -80,7 +80,7 @@ Your work is not done until you have posted a status comment on the GitHub issue
 
 - Spec finished, needs architecture review (new tables, new API surfaces, cross-repo integration, or storage design): `**[product-manager] READY FOR ARCHITECTURE**` — plus landing order / blocked-by if any. The solutions-architect agent will design the system and update the ticket before engineering begins. **Default to `READY FOR ENGINEERING`** — only use this when the ticket genuinely needs design review.
 - Spec finished, no architecture review needed (small fixes, config changes, UI-only, every fast-lane ticket): `**[product-manager] READY FOR ENGINEERING**` — plus landing order / blocked-by if any.
-- Blocked or needs JP's decision: `**[product-manager] BLOCKED**` — name exactly what decision or input is missing.
+- Blocked or needs JP's decision: `**[product-manager] BLOCKED**` — name exactly what decision or input is missing. Line 2 of a `BLOCKED` comment is `Blocked on: <the gate or question, one line>`, then the details.
 
 On both READY markers, these lines are **mandatory** (the orchestrator refuses to dispatch without them and re-dispatches you once):
 

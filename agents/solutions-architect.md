@@ -175,7 +175,7 @@ Post on the GitHub issue via `gh issue comment`. The orchestrator reads this to 
 
 - Design ready: `**[solutions-architect] READY FOR ENGINEERING**` — the design is above, sanity-checked by engineering agent, surrounding-code scan done (list the refactoring issues opened, or "none found"), ready to implement. Used when the work fits in a single PR (≤ 3 workstreams, ≤ ~400 LOC non-test).
 - Split into sub-issues: `**[solutions-architect] SPLIT**` — the design exceeds the sizing threshold. Sub-issues have been created with their own ACs and design sections, each marked `READY FOR ENGINEERING`. The parent comment lists children and landing order.
-- Blocked: `**[solutions-architect] BLOCKED**` — name what's missing (external dependency, JP decision needed).
+- Blocked: `**[solutions-architect] BLOCKED**` — name what's missing (external dependency, JP decision needed). Line 2 of a `BLOCKED` comment is `Blocked on: <the gate or question, one line>`, then the details.
 - Needs PM revision: `**[solutions-architect] NEEDS PM REVISION**` — the PM's spec has gaps or contradictions that must be resolved before architecture can proceed. List the specific questions.
 
 Post even on failure or no-op. No silent exits.

@@ -61,6 +61,6 @@ Comment on the **GitHub issue** via `gh issue comment`. The orchestrator reads t
   - `E2E specs (not executed):` — one repo-relative path per line, in a fenced block; the fullstack-developer runs these green
   - Pre-existing tests that contradict the ticket, if any
 - `**[test-writer] TEST UPHELD**` — only in response to a `[fullstack-developer] TEST DEFECT`: you re-read the test against the ticket and it stands. Quote the AC it encodes and say why the developer's reading is wrong. If instead the developer is right, fix the test and post a fresh `TESTS WRITTEN`.
-- `**[test-writer] BLOCKED**` — untestable AC, no expected values, suite won't run, missing contract for a new API surface; say exactly which.
+- `**[test-writer] BLOCKED**` — untestable AC, no expected values, suite won't run, missing contract for a new API surface; say exactly which. Line 2 of a `BLOCKED` comment is `Blocked on: <the gate or question, one line>`, then the details.
 
 Post it even when nothing changed. No silent exits.

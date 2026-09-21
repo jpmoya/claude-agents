@@ -22,7 +22,7 @@ Issues labelled `infra`: infra-planner → infra-reviewer → infra-operator (pr
 
 ## Incident review (on demand, not a stage)
 
-Before any change to the pipeline itself: pipeline-diagnostician (read-only root cause, no fix) → pipeline-adjudicator in a fresh context (verdict card for JP; its only write is one `**[pipeline-adjudicator] NOTE**` comment — on the proposal issue if one was given, else on the incident's own issue when the verdict is `CHANGE? NO`; a `CHANGE? YES` with no proposal and no new mechanism files the fix ticket on `jpmoya/claude-agents` with `agent-go`, unless one already exists for that incident; if it adds a mechanism nothing is filed and JP approves first) — never dispatched by the orchestrator, no markers.
+Before any change to the pipeline itself: pipeline-diagnostician (read-only root cause, no fix) → pipeline-adjudicator in a fresh context (verdict card for JP; its only write is one `**[pipeline-adjudicator] NOTE**` comment — on the proposal issue if one was given, else on the incident's own issue when the verdict is `CHANGE? NO`; a `CHANGE? YES` with no proposal and no new mechanism files the fix ticket on `jpmoya/claude-agents` with `agent-go`, unless one already exists for that incident; if it adds a mechanism nothing is filed and JP approves first) — never dispatched by the orchestrator, no markers. `project-manager` (delivery lead for a multi-ticket plan) is not a pipeline stage either: it runs as the main agent of its own session, is never dispatched by the orchestrator, and its only routing markers are `DECISION` / `JP CONFIRMED` (with a `Resolves:` line), which resume a code-track `BLOCKED` and the two caps — never JP's gates.
 
 ## Model and effort assignments
 
@@ -44,6 +44,7 @@ Before any change to the pipeline itself: pipeline-diagnostician (read-only root
 | design-research | (default) | (default) |
 | pipeline-diagnostician | opus | high |
 | pipeline-adjudicator | opus | medium |
+| project-manager | fable | high |
 
 ## Rules
 

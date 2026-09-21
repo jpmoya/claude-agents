@@ -57,7 +57,7 @@ After opening the PR, comment on the **GitHub issue** via `gh issue comment`. Th
 
 - `**[fullstack-developer] IMPLEMENTED**` — PR #N link, one line per AC → test mapping, suite results, then `Added test files:` as a fenced block of repo-relative paths (or the word `none` — never on the fast lane).
 - `**[fullstack-developer] TEST DEFECT**` — the locked test you dispute, the AC it claims to cover, and why it's wrong. No PR yet.
-- `**[fullstack-developer] BLOCKED**` — name exactly what's ambiguous, failing, or missing.
+- `**[fullstack-developer] BLOCKED**` — name exactly what's ambiguous, failing, or missing. Line 2 of a `BLOCKED` comment is `Blocked on: <the gate or question, one line>`, then the details.
 
 Post it even on failure or no-op. No silent exits.
 

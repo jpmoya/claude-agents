@@ -51,10 +51,13 @@ power_ok() {  # Mac: dispatch new work only on AC power (a sleeping laptop stran
   pmset -g batt 2>/dev/null | grep -q "AC Power"
 }
 
-latest_marker() {  # newest first line that is a real routing marker; NOTEs and off-vocabulary lines ("**[deployer] MARKER** PASS") are inert
-  local repo=$1 issue=$2
+latest_marker() {  # the GATE marker: newest real routing marker whose agent is not project-manager (NOTEs and off-vocabulary lines are inert).
+  # When the newest routing marker overall is a `[project-manager]` one (it follows the gate marker), it is printed on a 2nd line.
+  # Both come out of the same single `gh issue view` call (claude-agents#59).
+  local repo=$1 issue=$2 last
+  last=$(marker_last_jq)
   (cd "$repo" 2>/dev/null && gh issue view "$issue" --json comments \
-    --jq "$(marker_last_jq)") 2>/dev/null || echo "?"
+    --jq "($last) as \$last | ({comments: [.comments[] | select(.body | startswith(\"**[project-manager] \") | not)]} | $last) as \$gate | if \$last == \$gate then \$gate else \$gate + \"\\n\" + \$last end") 2>/dev/null || echo "?"
 }
 
 issue_is_closed() {
@@ -64,13 +67,19 @@ issue_is_closed() {
   [ "$state" = "CLOSED" ]
 }
 
-# terminal_kind <marker> <issue> → prints "done" / "gate" / "grace" (BLOCKED inside the grace window: wait) / "" (not terminal)
+# terminal_kind <gate marker> <issue> [<project-manager marker posted after it>] → prints "done" / "gate" /
+# "grace" (BLOCKED inside the grace window: wait) / "" (not terminal). It judges the GATE marker. A later
+# `[project-manager] DECISION` / `JP CONFIRMED` lifts exactly one gate — a code-track BLOCKED — so the run takes the
+# normal restart path and the orchestrator validates and relays the decision. It never lifts MOCKUPS PENDING APPROVAL,
+# AWAITING GO, EFFORT APPROVAL NEEDED or an infra-track BLOCKED: those stay with JP (claude-agents#59).
 terminal_kind() {
-  local marker=$1 issue=${2:-}
+  local marker=$1 issue=${2:-} decision=${3:-}
   marker=${marker%%\*\*}   # markers are bold ("**[deployer] DEPLOYED**"): strip the trailing bold so the $-anchors below match
   [[ "$marker" =~ \]\ (DEPLOYED|APPLIED)$ ]] && { echo done; return; }
   [[ "$marker" =~ \]\ (MOCKUPS\ PENDING\ APPROVAL|AWAITING\ GO|EFFORT\ APPROVAL\ NEEDED)$ ]] && { echo gate; return; }
   if [[ "$marker" =~ \]\ BLOCKED ]]; then
+    # delegated decision recorded after a code-track BLOCKED: not a gate (infra-track BLOCKED stays one)
+    if [ -n "$decision" ] && ! [[ "$marker" =~ ^\*\*\[infra- ]]; then echo ""; return; fi
     # BLOCKED gets a grace period — false BLOCKEDs from subagent races resolve within minutes
     if [ -n "$issue" ] && [ -f "$PIPE/orch-$issue.start" ]; then
       local age=$(( $(date +%s) - $(to_epoch "$(cat "$PIPE/orch-$issue.start")") ))
@@ -234,14 +243,19 @@ for f in "$PIPE"/orch-*.pid; do
   fi
 
   marker=$(latest_marker "$repo" "$issue")
-  case "$(terminal_kind "$marker" "$issue")" in
+  decision=""
+  case "$marker" in *$'\n'*) decision=${marker#*$'\n'}; marker=${marker%%$'\n'*} ;; esac   # line 2 = [project-manager] marker after the gate marker
+  case "$(terminal_kind "$marker" "$issue" "$decision")" in
     done)
       touch "$PIPE/orch-$issue.done"
       slog "[done] #$issue — terminal marker: $marker"
       notify_engineering "$issue" ":white_check_mark:" "Deployed" "$(cd "$repo" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo "unknown")"
       continue ;;
     gate)
-      # Human gate (mockups, infra go, BLOCKED): park it; JP relaunches (or re-adds agent-go) after acting
+      # Human gate (mockups, infra go, BLOCKED with no delegated decision after it): park it; JP relaunches (or re-adds
+      # agent-go) after acting. $marker is the gate marker, never a [project-manager] one. A run that is already .held is
+      # skipped above and stays held — held runs are not polled; the project-manager relaunches with orchestrate.sh,
+      # which clears .held (claude-agents#59).
       touch "$PIPE/orch-$issue.held"
       rm -f "$QUEUE/orch-$issue.json"
       printf '%s Pipeline #%s waiting on JP — %s; relaunch (or re-add %s) after acting\n' "$(date -u +%FT%TZ)" "$issue" "$marker" "$LABEL_GO" > "$PIPE/orch-$issue.alert"
