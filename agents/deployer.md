@@ -95,7 +95,7 @@ Both repos use the same environment structure: two Vercel projects (production i
    - Milestone: <staging stamped | already staging | already vX.Y.Z, left alone | n/a — no staging milestone in this repo>
    ```
    For scheduler and quoting-tool staging deploys, add: `Production deploy pending JP's review on staging.`
-   If you could not merge or deploy (mergeable check failed, migration refused, verification failed), post `**[deployer] BLOCKED**` with the exact reason instead. Never post DEPLOYED for a partial deploy.
+   If you could not merge or deploy (mergeable check failed, migration refused, verification failed), post `**[deployer] BLOCKED**` with the exact reason instead. Never post DEPLOYED for a partial deploy. Line 2 of a `BLOCKED` comment is `Blocked on: <the gate or question, one line>`, then the details.
 
 ## Comment protocol (every comment, no exceptions)
 

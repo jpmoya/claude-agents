@@ -71,6 +71,6 @@ After the PR comment, comment on the **linked GitHub issue** via `gh issue comme
 
 - `**[code-reviewer] PASS**` — PR #N implementation review clean (MEDIUM/LOW findings, if any, listed in the PR comment).
 - `**[code-reviewer] FAIL: n findings**` — one line per CRITICAL/HIGH finding, link to the PR comment for the rest.
-- `**[code-reviewer] BLOCKED**` — couldn't complete the review (no linked issue, diff too large, branch won't check out); say exactly why.
+- `**[code-reviewer] BLOCKED**` — couldn't complete the review (no linked issue, diff too large, branch won't check out); say exactly why. Line 2 of a `BLOCKED` comment is `Blocked on: <the gate or question, one line>`, then the details.
 
 Post it even when the review found nothing. No silent exits. If the PR has no linked issue, that itself is BLOCKED — post it on the PR and stop.

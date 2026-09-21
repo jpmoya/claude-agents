@@ -165,7 +165,7 @@ Line 1 of **every** comment you post on the issue or PR is exactly one of `**[ui
 Post on the GitHub issue via `gh issue comment`. The orchestrator reads this to determine next steps. Line 1 of the comment body is the machine-readable marker; mockup images and the summary follow it:
 
 - Mockups ready for review: `**[ui-ux-designer] MOCKUPS PENDING APPROVAL**` — mockups are posted above, awaiting JP's review. Tag `@jpmoya` for visibility.
-- Blocked: `**[ui-ux-designer] BLOCKED**` — name what's missing (no `[ux-flow-designer]` comment on the issue, no design system to reference, a screen in the flow that can't be drawn without a decision only JP can make).
+- Blocked: `**[ui-ux-designer] BLOCKED**` — name what's missing (no `[ux-flow-designer]` comment on the issue, no design system to reference, a screen in the flow that can't be drawn without a decision only JP can make). Line 2 of a `BLOCKED` comment is `Blocked on: <the gate or question, one line>`, then the details.
 
 Post even on failure or no-op. No silent exits.
 

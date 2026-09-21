@@ -83,7 +83,7 @@ The marker is the first line of the same comment as the flow. The orchestrator r
 - Flow posted: `**[ux-flow-designer] USER FLOW READY**` — the ui-ux-designer (and the solutions-architect, if the PM asked for architecture) run next.
 - No user-facing surface after all: `**[ux-flow-designer] NO UX NEEDED**` — one line saying why; the orchestrator skips mockups and proceeds as a non-UI ticket.
 - The PM's ticket has an AC the flow can't satisfy, or the flow needs an unspecified behaviour: `**[ux-flow-designer] NEEDS PM REVISION**` — list the specific, answerable questions.
-- A fact only JP can supply changes the flow materially: `**[ux-flow-designer] BLOCKED**` — name it.
+- A fact only JP can supply changes the flow materially: `**[ux-flow-designer] BLOCKED**` — name it. Line 2 of a `BLOCKED` comment is `Blocked on: <the gate or question, one line>`, then the details.
 
 ## Guardrails
 
