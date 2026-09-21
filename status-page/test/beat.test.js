@@ -223,8 +223,8 @@ describe('#29 — POST /beat with the optional ticket fields', () => {
     const html = await home.text();
     const tbody = html.match(/<tbody>([\s\S]*?)<\/tbody>/)[1];
     const cells = [...tbody.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((m) => m[1].trim());
-    expect(cells).toHaveLength(7); // the new 7-column layout
-    expect(cells[1]).toBe(''); // Ticket
+    expect(cells).toHaveLength(8); // AC 6: run-shaped rows are 8 columns (Host inserted)
+    expect(cells[cells.length - 7]).toBe(''); // Ticket
     expect(html).not.toContain('href');
   });
 
