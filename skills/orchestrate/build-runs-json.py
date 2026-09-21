@@ -10,16 +10,24 @@
 #               Local files only -- this script never makes a network call.
 #   completed:  emit the payload's "completed" array (issue #51) instead of "runs": the records
 #               reconcile-status.sh marked closed (state_code "closed", orch-<issue>.closed = closedAt),
-#               closed within the last 7 days, newest first, first 10.
+#               closed within the last 7 days, newest first, first 10. Items carry "release" when
+#               orch-<issue>.release exists (issue #65).
+#   staging | approved: emit the payload's "staging" / "approved" array (issue #65) from
+#               <pipe-dir>/status-staging.json / status-approved.json (written by reconcile-status.sh);
+#               no stdin, `[]` when the file is missing or unreadable.
 import sys
 import json
 import subprocess
 import os
+import re
 import datetime
 
 aliases_raw, runs_jsonl = sys.argv[1], sys.argv[2]
 pipe_dir = sys.argv[3] if len(sys.argv) > 3 else ""
-completed_mode = len(sys.argv) > 4 and sys.argv[4] == "completed"
+mode = sys.argv[4] if len(sys.argv) > 4 else ""
+completed_mode = mode == "completed"
+LIST_CAPS = {"staging": 60, "approved": 20}
+RELEASE_RE = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$")
 
 TITLE_MAX_CHARS = 140
 COMPLETED_RETENTION_SECS = 7 * 86400
@@ -141,7 +149,47 @@ STATE_MAP = {"running": "running", "restarting": "restarting", "held": "held", "
 # must never be bumped off the page by an older held/queued run just because its issue number
 # glob-sorts earlier (derive_runs() walks orch-*.pid in filename order, which is a lexicographic
 # string sort of the issue number, not numeric or recency order).
-STATE_PRIORITY = {"running": 0, "restarting": 1, "held": 2, "queued": 3}
+STATE_PRIORITY = {"running": 0, "restarting": 1, "queued": 2, "held": 3}
+
+def load_list(kind):  # <pipe-dir>/status-<kind>.json -> list of well-formed dicts, else []
+    if not pipe_dir:
+        return []
+    try:
+        with open(os.path.join(pipe_dir, "status-%s.json" % kind), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return []
+    if not isinstance(data, list):
+        return []
+    return [d for d in data if isinstance(d, dict) and isinstance(d.get("issue"), int)
+            and isinstance(d.get("owner_repo"), str) and d.get("owner_repo")]
+
+
+def build_list(kind):
+    items = []
+    for d in load_list(kind):
+        owner_repo = d["owner_repo"]
+        items.append({
+            "repo": aliases.get(owner_repo, "other"),
+            "issue": d["issue"],
+            "title": str(d.get("title") or "")[:TITLE_MAX_CHARS],
+            "url": "https://github.com/%s/issues/%s" % (owner_repo, d["issue"]),
+            "updated_at": str(d.get("updated_at") or ""),
+        })
+    items.sort(key=lambda i: i["updated_at"], reverse=True)
+    return items[:LIST_CAPS[kind]]
+
+
+def release_for(issue):  # first line of <pipe-dir>/orch-<issue>.release if it is vX.Y.Z, else ""
+    if not pipe_dir:
+        return ""
+    try:
+        with open(os.path.join(pipe_dir, "orch-%s.release" % issue), encoding="utf-8", errors="replace") as f:
+            text = f.readline(64).strip()
+    except OSError:
+        return ""
+    return text if RELEASE_RE.match(text) else ""
+
 
 def closed_at_for(issue):  # first line of <pipe-dir>/orch-<issue>.closed -> (iso string, epoch) or None
     if not pipe_dir:
@@ -181,6 +229,9 @@ def build_completed(rows):
             item["title"] = title
             if owner_repo and issue.isdigit():
                 item["url"] = "https://github.com/%s/issues/%s" % (owner_repo, issue)
+        release = release_for(issue)
+        if release:
+            item["release"] = release
         items.append((closed[1], {k: v for k, v in item.items() if v is not None}))
     items.sort(key=lambda pair: -pair[0])
     return [item for _, item in items[:COMPLETED_MAX]]
@@ -189,6 +240,13 @@ def build_completed(rows):
 if completed_mode:
     print(json.dumps(build_completed([l.rstrip("\n") for l in sys.stdin if l.strip()])))
     sys.exit(0)
+
+if mode in LIST_CAPS:
+    print(json.dumps(build_list(mode)))
+    sys.exit(0)
+
+# A non-running row whose ticket is already on this host's staging list is not "in flight" (#65).
+staged = set((d["owner_repo"], d["issue"]) for d in load_list("staging"))
 
 runs = []
 for raw in sys.stdin:
@@ -202,6 +260,8 @@ for raw in sys.stdin:
     if state_code not in STATE_MAP:
         continue
     repo_alias, owner_repo = alias_for(repo_path)
+    if state_code != "running" and issue.isdigit() and (owner_repo, int(issue)) in staged:
+        continue
     run = {
         "repo": repo_alias,
         "issue": int(issue) if issue.isdigit() else issue,

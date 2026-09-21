@@ -144,7 +144,7 @@ except Exception: print('?')
     # the local supervisor's job, not the label's; the supervisor drops agent-in-progress when the run is done or parked.
     (cd "$REPO" && gh issue edit "$ISSUE" --add-label "$LABEL_IN_PROGRESS" --remove-label "$LABEL_GO" 2>/dev/null) || true
     # Clear tombstones and restart state on manual launch
-    rm -f "$PIPE/orch-$ISSUE".{stopped,held,done,closed,marker,alert,label-cleared,start,exit} "$PIPE/orch-$ISSUE.restarts"
+    rm -f "$PIPE/orch-$ISSUE".{stopped,held,done,closed,release,marker,alert,label-cleared,start,exit} "$PIPE/orch-$ISSUE.restarts"
     # Persist on both the launch and queued paths: supervisor.sh rebuilds the queue JSON from this file.
     printf '%s' "$EXTRA" > "$PIPE/orch-$ISSUE.extra"
     # Ticket title for the status board (#29) — fetched once here, before the capacity check so a queued run has it
