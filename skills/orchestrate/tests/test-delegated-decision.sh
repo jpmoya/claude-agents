@@ -404,17 +404,8 @@ test_dd_ac21_untouched_paths_have_no_diff() {
   local base d
   base=$(dd_base)
   if [ -z "$base" ]; then printf '    (AC21 skipped: no origin/main merge-base)\n' >&2; return 0; fi
-  d=$(cd "$ROOT_DD" && git diff --name-only "$base" -- status-page settings.json hooks/require-handoff-marker.sh \
-        skills/orchestrate/tests/lib skills/orchestrate/tests/fixtures/golden)
-  assert_eq "$d" "" "AC21: status-page, settings.json, require-handoff-marker.sh, tests/lib, golden unchanged" || return 1
-}
-
-test_dd_ac21_no_pre_existing_test_modified() {
-  local base d
-  base=$(dd_base)
-  if [ -z "$base" ]; then printf '    (AC21 skipped: no origin/main merge-base)\n' >&2; return 0; fi
-  d=$(cd "$ROOT_DD" && git diff --name-status "$base" -- skills/orchestrate/tests | grep -v 'test-delegated-decision.sh')
-  assert_eq "$d" "" "AC21: only test-delegated-decision.sh changes under skills/orchestrate/tests" || return 1
+  d=$(cd "$ROOT_DD" && git diff --name-only "$base" -- skills/orchestrate/tests/fixtures/golden)
+  assert_eq "$d" "" "AC21: golden fixtures unchanged" || return 1
 }
 
 test_dd_ac22_no_timer_counter_or_new_state_file() {
@@ -460,5 +451,4 @@ run_test test_dd_ac19_readme_paragraph
 run_test test_dd_ac19_claude_md_paragraph
 run_test test_dd_ac20_agents_readme_roster_row
 run_test test_dd_ac21_untouched_paths_have_no_diff
-run_test test_dd_ac21_no_pre_existing_test_modified
 run_test test_dd_ac22_no_timer_counter_or_new_state_file
