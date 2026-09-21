@@ -53,6 +53,8 @@ export const MARKER_VOCAB = [
   'PLAN PASS',
   'APPLIED',
   'AWAITING GO',
+  'DECISION',
+  'JP CONFIRMED',
 ];
 
 // The `runs[].state` enum (validate.js table) — fixed by the frozen v1 payload contract,
