@@ -490,15 +490,30 @@ test_dd_i76_ac3_infra_track_rows_byte_identical() {   # characterisation
   old=$(cd "$ROOT_DD" && git show "$base:agents/orchestrator.md" | grep -F '| `[infra-operator] AWAITING GO` + JP go comment')
   assert_ne "$cur" "" "i76 AC3: AWAITING GO + go row present" || return 1
   assert_eq "$cur" "$old" "i76 AC3: AWAITING GO + go row byte-identical" || return 1
-  # both MOCKUPS PENDING APPROVAL rows
-  cur=$(grep -F '`[ui-ux-designer] MOCKUPS PENDING APPROVAL`' "$ORCH_DD")
-  old=$(cd "$ROOT_DD" && git show "$base:agents/orchestrator.md" | grep -F '`[ui-ux-designer] MOCKUPS PENDING APPROVAL`')
+  # both MOCKUPS PENDING APPROVAL rows — anchored at line-start so this only captures the two rows
+  # that actually define the mockup gate (lines 52-53), not the carve-out at :69 (AC1 amends that row,
+  # and its closing sentence names "MOCKUPS PENDING APPROVAL" as one of the carve-out's exclusions —
+  # a mid-line substring match there is incidental to this row's own gate, not a change to it) or the
+  # ":55 solutions-architect" row, which also mentions the marker mid-sentence.
+  cur=$(grep '^| `\[ui-ux-designer\] MOCKUPS PENDING APPROVAL`' "$ORCH_DD")
+  old=$(cd "$ROOT_DD" && git show "$base:agents/orchestrator.md" | grep '^| `\[ui-ux-designer\] MOCKUPS PENDING APPROVAL`')
+  assert_ne "$cur" "" "i76 AC3: MOCKUPS PENDING APPROVAL rows present" || return 1
   assert_eq "$cur" "$old" "i76 AC3: MOCKUPS PENDING APPROVAL rows byte-identical" || return 1
   # deployer's unsupported-project BLOCKED sentence
   cur=$(grep -F "the project isn't in its supported list" "$ORCH_DD")
   old=$(cd "$ROOT_DD" && git show "$base:agents/orchestrator.md" | grep -F "the project isn't in its supported list")
   assert_ne "$cur" "" "i76 AC3: deployer unsupported-project sentence present" || return 1
   assert_eq "$cur" "$old" "i76 AC3: deployer unsupported-project sentence byte-identical" || return 1
+  # AC3 also requires the carve-out (:69) to keep naming these same four exclusions as "current carve-out
+  # behaviour" after AC1's edit to that row's closing sentence — the byte-identity checks above only cover
+  # the gate rows themselves, not this half. Assert on the current resume row (dd_blocked_row_next), which
+  # AC1's other tests already require to exist and be edited in place.
+  local row
+  row=$(dd_blocked_row_next)
+  assert_ne "$row" "" "i76 AC3: resume row (carve-out) exists" || return 1
+  for s in '[infra-operator] AWAITING GO' '[ui-ux-designer] MOCKUPS PENDING APPROVAL' 'any infra-track `BLOCKED`' "project isn't in its supported list"; do
+    dd_text_has "i76 AC3: carve-out still excludes [$s]" "$row" "$s" || return 1
+  done
 }
 
 test_dd_i76_ac4_carve_out_still_lists_money_and_no_extra_authority() {   # characterisation — issue #76 AC4
