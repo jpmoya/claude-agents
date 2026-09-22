@@ -297,8 +297,8 @@ test_sg_ac3_missing_or_invalid_files_give_empty_arrays() {
   local none; none=$(sg_print)
   printf 'not json {' > "$SG_PIPE/status-staging.json"
   printf '{"an":"object"}' > "$SG_PIPE/status-approved.json"
-  local bad; bad=$(sg_print)
-  local rc=$?
+  local bad rc
+  bad=$(sg_print); rc=$?
   sg_cleanup
   assert_eq "$(printf '%s' "$none" | jq -c '[.staging,.approved]')" '[[],[]]' "AC3: no files -> [] and [] (keys present)" || return 1
   assert_eq "$(printf '%s' "$bad" | jq -c '[.staging,.approved]')" '[[],[]]' "AC3: invalid content -> [] and []" || return 1
