@@ -26,6 +26,9 @@ RS_HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 MIN_PUSH_INTERVAL_SECS=10
 KEEPALIVE_SECS=600
 MAX_PUSHES_PER_DAY=400
+# Host override (2026-09-22): a busy host may raise its own share in ~/.claude/pipeline/config.local.sh
+# as long as both hosts together stay under the KV free tier (1,000 writes/day).
+[ -f "$HOME/.claude/pipeline/config.local.sh" ] && { _mp=$(grep -E "^MAX_PUSHES_PER_DAY=[0-9]+" "$HOME/.claude/pipeline/config.local.sh" | tail -1 | cut -d= -f2 | tr -dc 0-9); [ -n "$_mp" ] && MAX_PUSHES_PER_DAY=$_mp; }
 
 EVENT="${1:-event}"
 CACHE="$PIPE/status-push.state"
