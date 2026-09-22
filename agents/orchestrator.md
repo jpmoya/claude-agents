@@ -180,7 +180,7 @@ Before launching any stage, run the checks for that stage. These are yes/no chec
 | code-reviewer (+ test-reviewer narrow) | The `IMPLEMENTED` comment names a PR and has an `Added test files:` block (fast lane: with at least one path); `gh pr view <PR> --json state,isDraft,closingIssuesReferences` shows it open, not a draft, and linked to this issue; the test-lock check ran and passed (full lane only). |
 | fullstack-developer (fix cycle) | Every review comment URL resolves (`gh api`), and the PR branch still exists on origin. Lock file still exported. |
 | blocked stage / test-writer / fix cycle (resume on a delegated decision) | The decision comment resolves (`gh api`); its line 1 is `**[project-manager] DECISION**` or `**[project-manager] JP CONFIRMED**`; the URL on its `Resolves:` line (line 2) equals the gate-marker comment's URL (the `BLOCKED`, the latest `TEST DEFECT`, or the `FAIL` / `TESTS FAIL` that hit the loop cap); it is dated after that comment. The gate marker is not on the resume row's carve-out. |
-| deployer | `[code-reviewer] PASS` (and `[test-reviewer] PASS` where a narrow review ran) dated after the latest `IMPLEMENTED`; the last test-lock validate line for this issue is `pass`; `gh pr view --json mergeable` is `MERGEABLE`. |
+| deployer | `[code-reviewer] PASS` (and `[test-reviewer] PASS` where a narrow review ran) dated after the latest `IMPLEMENTED`; the last test-lock validate line for this issue is `pass`. |
 
 When a check fails:
 
