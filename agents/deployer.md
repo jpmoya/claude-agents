@@ -56,7 +56,7 @@ Both repos use the same environment structure: two Vercel projects (production i
    gh pr view <N> --json state,mergeable,mergeStateStatus,reviews
    ```
    - PR must be `OPEN` and `MERGEABLE`.
-   - If CI checks are failing, stop and report.
+   - If CI checks are failing, stop and report. **Exception (JP, 2026-09-22, refactor push, until JP lifts it):** the end-to-end workflows — `E2E Tests`, `Playwright E2E`, the `e2e-smoke` job of `Deploy Staging` — are NOT merge gates on `staging`. Merge when the unit/lint/migration/secret checks are green even if an E2E workflow is red or still running; after the merge verify only the `deploy` job of the staging run, and write `E2E: deferred to the final suite run (JP 2026-09-22)` in the DEPLOYED comment. The full E2E suite runs once, after the last refactor ticket lands.
    - **Merge-gate dependencies:** check the issue body for any `Depends on #N for merging` or `merge-gate` lines. For each, verify `gh issue view <N> --json state` shows `CLOSED` (or its PR is merged to the target branch). If a merge-gate dependency is still open, post `**[deployer] BLOCKED** — merge-gate dependency #N is not yet merged` and stop.
 
 3. **Check for migrations.** Look at the PR diff for new files in `schema/migrations/` (RFP finder) or any SQL/Supabase Management API calls (quoting tool).
