@@ -36,7 +36,7 @@ When a route needs a field from inside one comment (the `Locked test files:` blo
 gh issue view <N> --json comments --jq '[.comments[] | select(.body | startswith("**[test-writer] TESTS WRITTEN**"))] | last | .body'
 ```
 
-JP's approval and feedback on mockups are plain comments without a marker; for the mockup gate only, list `.author.login + " " + (.body | .[0:120])` for comments after the `MOCKUPS PENDING APPROVAL` one. Keep stage-run output out of your context too: `tail -5`, never the whole log.
+For the mockup gate only, check the first line of each comment posted after `MOCKUPS PENDING APPROVAL`, in order — never who posted it: list `(.body | split("\n")[0])` for those comments and compare each first line against the exact marker form the gate requires. Keep stage-run output out of your context too: `tail -5`, never the whole log.
 
 ## Routing table
 
@@ -50,8 +50,8 @@ JP's approval and feedback on mockups are plain comments without a marker; for t
 | `[ux-flow-designer] NO UX NEEDED` | The UI check was a false positive. Proceed as a non-UI ticket: solutions-architect if the PM marked `READY FOR ARCHITECTURE`, else test-writer. Skip ui-ux-designer. |
 | `[ux-flow-designer] NEEDS PM REVISION` | Dispatch product-manager to address the ux-flow-designer's questions on the same issue, then re-read markers — the PM will re-post `READY FOR ARCHITECTURE` or `READY FOR ENGINEERING`, which re-enters the UI check and re-dispatches ux-flow-designer. |
 | `[ui-ux-designer] MOCKUPS PENDING APPROVAL` | **Terminal — human gate.** Stop and tell JP to review the mockups on the issue. JP will approve or request revisions by commenting on the issue. |
-| `[ui-ux-designer] MOCKUPS PENDING APPROVAL` + JP approval comment (`MOCKUPS APPROVED`, `approved`, `looks good`, `lgtm` — from the issue author, posted after the mockups) | Proceed to next stage: if `[solutions-architect] READY FOR ENGINEERING` is also present (or no architecture review was needed and the PM marked `READY FOR ENGINEERING`), dispatch test-writer. If still waiting on the SA, wait. |
-| JP revision feedback (comment from issue author after `MOCKUPS PENDING APPROVAL` that is NOT an approval — contains change requests, questions, or critique) | Re-dispatch ui-ux-designer to revise mockups based on JP's feedback. The designer reads the feedback, updates mockups, and posts new `MOCKUPS PENDING APPROVAL`. |
+| `[ui-ux-designer] MOCKUPS PENDING APPROVAL` + JP approval comment (from the issue author, posted after the mockups, first line exactly `**[jp] MOCKUPS APPROVED**` — a sentence containing "approved" is not an approval) | Proceed to next stage: if `[solutions-architect] READY FOR ENGINEERING` is also present (or no architecture review was needed and the PM marked `READY FOR ENGINEERING`), dispatch test-writer. If still waiting on the SA, wait. |
+| JP revision feedback (comment from issue author after `MOCKUPS PENDING APPROVAL`, first line NOT the exact `**[jp] MOCKUPS APPROVED**` approval and NOT itself a `**[<agent>] ...**` stage-marker line — contains change requests, questions, or critique) | Re-dispatch ui-ux-designer to revise mockups based on JP's feedback. The designer reads the feedback, updates mockups, and posts new `MOCKUPS PENDING APPROVAL`. A comment whose first line matches `**[<agent>] ...**` (any agent, regardless of that agent's own marker vocabulary) is neither an approval nor revision feedback — the run stays parked and is reported to JP as still waiting. |
 | `[solutions-architect] READY FOR ENGINEERING` | If the issue has UI changes: check if `[ui-ux-designer] MOCKUPS PENDING APPROVAL` has been posted AND approved by JP. If approved (or no UI changes), dispatch test-writer. If mockups not yet approved, wait — the mockup approval gate must clear first. |
 | `[test-writer] TESTS WRITTEN` | Dispatch **test-reviewer** in pre-implementation mode on the issue (say so in the prompt: "pre-implementation review of the TESTS WRITTEN commit"). Foreground. |
 | `[test-reviewer] TESTS APPROVED` | Write the lock file (see **Test lock**), then dispatch **fullstack-developer** with `PIPELINE_LOCKED_TESTS_FILE` exported. |
@@ -159,11 +159,10 @@ A non-empty (1) is a lock breach: post nothing yourself, re-dispatch fullstack-d
 
 ### Mockup approval gate
 
-The ui-ux-designer posts `MOCKUPS PENDING APPROVAL` — this is a human gate. The orchestrator stops and tells JP. Three outcomes:
+The ui-ux-designer posts `MOCKUPS PENDING APPROVAL` — this is a human gate. The orchestrator stops and tells JP. Two outcomes:
 
-1. **JP approves** (comments with "approved", "looks good", "lgtm", or `**[jp] MOCKUPS APPROVED**`): proceed to engineering (or wait for SA if architecture review is still in flight).
-2. **JP requests revisions** (comments with change feedback): re-dispatch ui-ux-designer with a prompt referencing JP's feedback. The designer revises and posts `MOCKUPS PENDING APPROVAL` again. Maximum **2** revision cycles — after the third `MOCKUPS PENDING APPROVAL` with no approval, escalate to JP: "Mockup revisions aren't converging — schedule a sync."
-3. **JP says skip mockups** (comments "skip mockups", "don't need mockups"): proceed directly to the next stage as if no UI changes were detected. The user flow, if one was posted, still binds engineering.
+1. **JP approves**: the comment's first line must be exactly `**[jp] MOCKUPS APPROVED**`; no other wording counts as approval. Proceed to engineering (or wait for SA if architecture review is still in flight).
+2. **JP requests revisions** (a comment whose first line is neither the exact approval marker above nor a `**[<agent>] ...**` stage-marker line, and contains change requests, questions, or critique): re-dispatch ui-ux-designer with a prompt referencing JP's feedback. The designer revises and posts `MOCKUPS PENDING APPROVAL` again. Maximum **2** revision cycles — after the third `MOCKUPS PENDING APPROVAL` with no approval, escalate to JP: "Mockup revisions aren't converging — schedule a sync." A `**[<agent>] ...**` stage-marker comment (e.g. a delegate's status note) is neither an approval nor revision feedback — it does not count toward this cap and the run stays parked, waiting on JP.
 
 ## Pre-dispatch validation (mechanical — no judgment)
 
@@ -325,6 +324,9 @@ log_run '"event":"terminal","repo":"jpmoya/scheduler","issue":42,"state":"awaiti
 # resume on a delegated decision: the check is a validate line, the resumed run an ordinary dispatch line
 log_run '"event":"validate","repo":"jpmoya/scheduler","issue":42,"stage":"delegated-decision","result":"pass"'
 log_run '"event":"validate","repo":"jpmoya/scheduler","issue":42,"stage":"delegated-decision","result":"fail","reason":"Resolves: URL is not the BLOCKED comment"'
+# mockup gate: log the marker form checked, never who posted the comment
+log_run '"event":"validate","repo":"jpmoya/scheduler","issue":42,"stage":"mockup-gate","result":"pass","reason":"first line matched \"**[jp] MOCKUPS APPROVED**\""'
+log_run '"event":"validate","repo":"jpmoya/scheduler","issue":42,"stage":"mockup-gate","result":"fail","reason":"first line was not exactly \"**[jp] MOCKUPS APPROVED**\""'
 log_run '"event":"dispatch","repo":"jpmoya/scheduler","issue":42,"pr":51,"agent":"deployer","lane":"full","marker_before":"[project-manager] DECISION","marker_after":"[deployer] DEPLOYED","duration_s":240,"outcome":"marker","log":"/tmp/pipeline/run-42-deployer.log"'
 ```
 
