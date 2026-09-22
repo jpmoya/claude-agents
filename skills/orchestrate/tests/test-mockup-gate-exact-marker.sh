@@ -26,6 +26,24 @@
 #   AC4  agents/orchestrator.md:166 (outcome 3, "skip mockups") is deleted outright.
 #   AC5  none of the 2026-09-21 approval bodies, and no "skip mockups" / "don't need mockups"
 #        comment, clears the gate.
+#
+#        ROUND 2 FIX (test-reviewer FINDING 2, #74): the prior fixture test pinned a value with
+#        assert_eq to a fixed literal, then compared other fixed literals against it -- every
+#        comparison was two statically-known-distinct strings and could never fail, for any
+#        document content. test_mg_ac5_incident_bodies_are_not_the_rewritten_exact_form is
+#        rewritten to extract every backtick-quoted token from the approval row itself (minus the
+#        gate-name token) and assert the set is exactly one member equal to the required marker --
+#        this reads the row's actual text (4 tokens pre-fix, 1 post-fix), not a static fixture list.
+#        test_mg_ac5_substring_containment_does_not_clear_the_gate is kept but demoted to
+#        characterisation only (it drives marker_re(), unchanged per AC7, so it can't discriminate
+#        this ticket's change on its own).
+#
+#        ROUND 2 FIX (test-reviewer FINDING 1, #74): mg_ac3_pattern_source's branch order let a row
+#        that names marker_re()/pipeline-markers.sh as its mechanism slip through as "generic"
+#        merely by also using generic-sounding words ("bracket-and-agent", "regardless of
+#        vocabulary"). The marker_re/pipeline-markers mention check now runs first (unless
+#        explicitly negated: "not marker_re()", "without calling marker_re()") so that reading
+#        wins and the fixture correctly fails such a row against the NOTE fixture.
 #   AC6  the gate outcome is logged to runs.jsonl as a `"stage":"mockup-gate"` validate line on
 #        both pass and fail, with a `reason` naming the marker form — never who posted it.
 #   AC7  hooks/pipeline-markers.sh byte-identical; project-manager still has no MOCKUPS APPROVED
@@ -157,22 +175,32 @@ test_mg_ac3_revision_row_does_not_hand_roll_the_agent_list() {
 }
 
 # mg_ac3_pattern_source <row> -> generic | marker_re | none
-#   Which pattern source the row commits to, in preference order. A row is "generic" only if it
-#   literally spells the bracket-and-agent-name shape (`**[<agent>]` or equivalent, i.e. a marker
-#   test that is NOT gated on any one agent's own vocabulary of marker words). A row that only
-#   names `marker_re`/`pipeline-markers.sh` falls to "marker_re" — which we then resolve for real
-#   below, and which is provably wrong (see the fixture table) because marker_re() is
-#   vocabulary-gated per agent (hooks/pipeline-markers.sh:9-24: no agent's vocabulary contains
-#   NOTE) and so cannot exclude `**[product-manager] NOTE**`, the exact #717 comment the ticket's
-#   Why paragraph names as the case this row must exclude.
+#   Which pattern source the row commits to. FIX (test-reviewer FINDING 1, round 2, #74): a row
+#   that names `marker_re()`/`pipeline-markers.sh` as its mechanism is "marker_re" EVEN IF it also
+#   uses generic-sounding words like "bracket-and-agent" or "regardless of vocabulary" to describe
+#   it — those words don't change what actually runs. The round-1 ordering checked the
+#   generic-sounding phrases first, so a row worded "...bracket-and-agent-list shape derived from
+#   marker_re() vocabulary" was misclassified "generic" and the fixture then ran the hand-coded
+#   correct regex instead of the real, vocabulary-gated marker_re() — exactly the exploit the
+#   round-1 fixture existed to catch. The mention-of-marker_re check now runs FIRST and wins,
+#   unless the row explicitly negates it ("not marker_re()", "instead of marker_re()", "without
+#   calling marker_re()" — i.e. the row is explaining what it does NOT do). Only once marker_re/
+#   pipeline-markers is absent (or explicitly negated) do we fall through to the literal
+#   `**[<agent>]` bracket-shape check, then the softer "regardless of vocabulary" phrasing check.
 mg_ac3_pattern_source() {
   local row="$1"
+  if printf '%s' "$row" | grep -qiE -- 'marker_re|pipeline-markers'; then
+    if printf '%s' "$row" | grep -qiE -- '(not|instead of|rather than|without (calling|using))[^.]{0,40}(marker_re|pipeline-markers)'; then
+      : # negated mention -- fall through to the generic checks below
+    else
+      echo marker_re
+      return 0
+    fi
+  fi
   if printf '%s' "$row" | grep -qE -- '\*\*\[<?[Aa]gent[-_ ]?([Nn]ame)?>?\]'; then
     echo generic
   elif printf '%s' "$row" | grep -qiE -- 'regardless of (its|that agent.s|the agent.s) (marker )?vocabulary|any agent.s (marker )?bracket|bracket-and-agent|\[<agent'; then
     echo generic
-  elif printf '%s' "$row" | grep -qiE -- 'marker_re|pipeline-markers'; then
-    echo marker_re
   else
     echo none
   fi
@@ -242,28 +270,59 @@ test_mg_ac5_2026_09_21_bodies_do_not_clear_the_gate() {
   done
 }
 
-# AC5, doc-level (closes test-reviewer FINDING 2 on #74): the three tests above all drive
-# marker_re() or supervisor.sh directly — both unchanged/out-of-scope for this ticket (AC7), so
-# they pass identically whether or not agents/orchestrator.md is ever edited. This test instead
-# reads the *rewritten* approval row itself: it extracts the exact required first-line form the
-# row quotes (AC1 requires it to be quoted in backticks) and checks two things against it: (a)
-# none of the 2026-09-21 incident bodies, nor either "skip mockups" phrasing, equals that form,
-# and (b) a comment whose first line merely CONTAINS the exact marker as a substring (e.g. "well,
-# **[jp] MOCKUPS APPROVED** thanks") also does not equal it — proving the row's rule is first-line
-# equality, not substring containment, per AC1's "first line is exactly" wording. It is red today
-# because the row does not yet quote any single exact form (only the old prose list).
+# AC5, doc-level (closes test-reviewer FINDING 2 on #74, round 2). ROUND-2 REWRITE: the prior
+# version pinned `form` with `assert_eq "$form" '**[jp] MOCKUPS APPROVED**'` and then looped
+# `assert_ne "$f" "$form"` over a set of fixtures — every one of those comparisons is two
+# statically-known-distinct string literals, so none of them can ever fail for any document
+# content ("Every subsequent assert_ne... compares two statically-known-distinct string literals
+# — none can fail for any document content, ever", test-reviewer round-2 FAIL). Deleting one
+# fixture (as the round-1-of-round-2 attempt did) does not change that shape.
+#
+# This version instead extracts EVERY backtick-quoted token from the approval row (dropping only
+# the `[ui-ux-designer] MOCKUPS PENDING APPROVAL` gate-name token, which is not an approval form)
+# and asserts the remaining set has exactly one member, equal to `**[jp] MOCKUPS APPROVED**`. This
+# reads the row's actual content, not a fixture list: pre-fix the row quotes four backtick tokens
+# (`MOCKUPS APPROVED`, `approved`, `looks good`, `lgtm` — three of them literal 2026-09-21 incident
+# words), so the set has 4 members and the assertion is red for the right reason; post-fix the row
+# quotes exactly one, `**[jp] MOCKUPS APPROVED**`, and the assertion goes green. A row that kept
+# even one prose alternative in backticks, or quoted a substring/incorrect form, would still fail
+# this test — genuine discriminating power over the document text itself, not a static fixture.
 test_mg_ac5_incident_bodies_are_not_the_rewritten_exact_form() {
-  local row form f
+  local row tokens n
   row=$(mg_row 'JP approval comment')
   assert_ne "$row" "" "AC5: approval row exists" || return 1
-  form=$(printf '%s\n' "$row" | grep -oE '`\*\*\[jp\] MOCKUPS APPROVED\*\*`' | head -1 | tr -d '`')
-  assert_eq "$form" '**[jp] MOCKUPS APPROVED**' "AC5: approval row quotes the exact required first-line form" || return 1
-  for f in "approved — MOCKUPS APPROVED on JP's behalf, see thread" \
-           'approved' 'looks good' 'lgtm' \
-           'skip mockups' "don't need mockups" \
-           'well, **[jp] MOCKUPS APPROVED** thanks'; do
-    assert_ne "$f" "$form" "AC5: incident/skip/substring body [$f] must not equal the rewritten exact form" || return 1
-  done
+  # markdown table row: | <marker+condition column> | <action column> | -- restrict extraction to
+  # the first cell only (field 2 of a `|`-split), or the action column's unrelated backtick tokens
+  # (e.g. `[solutions-architect] READY FOR ENGINEERING`) would pollute the count.
+  cell=$(printf '%s\n' "$row" | awk -F'|' '{print $2}')
+  tokens=$(printf '%s\n' "$cell" \
+    | grep -oE '`[^`]+`' \
+    | tr -d '`' \
+    | grep -vF '[ui-ux-designer] MOCKUPS PENDING APPROVAL')
+  n=$(printf '%s\n' "$tokens" | grep -c .)
+  # KNOWN ANCHOR LIMITATION (disclosed, not blocking -- weighed by test-reviewer round 2 on the
+  # sibling "approved" collision and found no forced conflict): this assumes the row's negative
+  # clause quotes "approved" with straight quotes, as :98 (the model AC1 cites) and the landed row
+  # both do. A compliant reword that backticks the negative clause instead (e.g. "a sentence
+  # containing `approved` is not an approval") would add a second backtick token and fail this
+  # count -- a text-level extraction can't distinguish an accept-clause token from a negative-
+  # clause one. If this test goes red on a plausible reword rather than a real regression, treat
+  # AC1's own test_mg_ac1_prose_alternatives_deleted_from_approval_row (which permits that reword)
+  # as authoritative and TEST UPHELD/dispute this one, citing this note. Same caveat applies to the
+  # `awk -F'|' '{print $2}'` cell split above if a future first cell ever quotes a literal `|`.
+  assert_eq "$n" "1" "AC5: approval row quotes exactly one non-gate-name backtick form (found: $(printf '%s' "$tokens" | tr '\n' '|'))" || return 1
+  assert_eq "$tokens" '**[jp] MOCKUPS APPROVED**' "AC5: the sole quoted form is the exact required marker, not an incident/prose form" || return 1
+}
+
+# AC5, real mechanism (characterisation — marker_re() is unchanged per AC7, so this passes
+# identically before and after the fix; kept as a guard, not presented as closing FINDING 2. The
+# doc-level test above (reading the row's actual backtick tokens) is what closes it). Drives the
+# actual production regex against a first line that merely CONTAINS the exact marker as a
+# substring rather than being exactly it, proving marker_re() already anchors the match.
+test_mg_ac5_substring_containment_does_not_clear_the_gate() {
+  local r
+  r=$(mg_matches 'well, **[jp] MOCKUPS APPROVED** thanks')
+  assert_eq "$r" "false" "AC5 (characterisation): a first line that merely CONTAINS the exact marker as a substring must not clear the gate" || return 1
 }
 
 # ---------------------------------------------------------------------------------------- AC5 (supervisor-level: real dd_-style behavior)
@@ -405,6 +464,7 @@ run_test test_mg_ac4_skip_mockups_outcome_deleted
 run_test test_mg_ac4_gate_section_has_exactly_two_outcomes
 run_test test_mg_ac5_2026_09_21_bodies_do_not_clear_the_gate
 run_test test_mg_ac5_incident_bodies_are_not_the_rewritten_exact_form
+run_test test_mg_ac5_substring_containment_does_not_clear_the_gate
 run_test test_mg_ac5_prose_approval_after_mockups_stays_a_gate
 run_test test_mg_ac5_skip_mockups_after_mockups_stays_a_gate
 run_test test_mg_ac1_exact_marker_after_mockups_lifts_the_gate
