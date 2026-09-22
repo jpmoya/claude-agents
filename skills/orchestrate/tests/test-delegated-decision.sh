@@ -15,6 +15,32 @@
 #
 # Doc-contract cases read tracked files only (fixed-string grep, per test-followup-rules-docs.sh).
 # Every function/variable is prefixed dd_ / DD_ (all test files share one shell). Placeholder repo names only.
+#
+# Issue #76 — a JP-only code-track `BLOCKED` (money/prod/etc.) resumes only on JP's own exact-form `go` (worded on
+# the model of the `:98` AWAITING GO + go row), dated after the BLOCKED; a `[project-manager] DECISION` / `JP
+# CONFIRMED` never clears it. All cases below are `orchestrator.md` doc-contract cases (prefixed `test_dd_i76_`,
+# distinct from #59's ac4/ac5/ac6/ac9 names already used above):
+#   AC1  i76_ac1  — the resume row (`dd_blocked_row_next`) names the go-form clearing path AND still carries the
+#                    carve-out (money etc.) and still refuses [project-manager]. RED before the fix.
+#   AC2  i76_ac2  — the `:182` validation row gains the matching go clause. RED before the fix.
+#   AC3  i76_ac3  — infra-track rows (AWAITING GO+go, both MOCKUPS PENDING APPROVAL rows, deployer unsupported-
+#                    project text) are byte-identical to origin/main. Characterisation (passes before and after).
+#   AC4  i76_ac4  — no widening of the delegate: a DECISION/JP CONFIRMED comment on a money-worded BLOCKED is
+#                    still refused by doc text (the carve-out sentence still lists spending money and still says
+#                    those markers carry no extra authority). Characterisation — the carve-out already says this.
+#   AC5  i76_ac5  — staleness wording (go dated before the BLOCKED, or "go" inside a sentence) is present, mirrored
+#                    from the AWAITING GO row's own staleness clause. RED before the fix (new sentence for this row).
+#   AC6  i76_ac6  — the amended resume row's go clause, applied to the #773-shaped case (a plain DECISION does not
+#                    clear; only a later exact-form go does) — same text as AC1/AC2, asserted from the "positive"
+#                    angle (go present + dated after -> clears). RED before the fix.
+#   AC7  i76_ac7  — Run log section names delegated-decision fail-before-terminal ordering and a `reason` field on
+#                    pass lines. RED before the fix.
+#   AC8  i76_ac8  — no new mechanisms: hooks/pipeline-markers.sh, agents/project-manager.md, supervisor.sh,
+#                    orchestrate.sh byte-identical to origin/main. Characterisation (passes before and after).
+# No supervisor.sh runtime test is added: terminal_kind() resumes on ANY non-infra BLOCKED + DECISION regardless of
+# wording (it never reads `Blocked on:` text) and AC8 forbids touching it — the money-carve-out enforcement lives
+# entirely in orchestrator.md prose, read by the orchestrator agent itself, so it is only testable as doc-contract.
+# Comment IDs named in the ticket (5771446275, 5771399990, 5771497848, 5771588228) are cited here only, not fetched.
 
 HERE_DD=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT_DD=$(cd "$HERE_DD/../../.." && pwd)
@@ -419,6 +445,137 @@ test_dd_ac22_no_timer_counter_or_new_state_file() {
   assert_eq "$bad" "" "AC22: supervisor.sh adds no new orch-\$issue.<suffix> file" || return 1
 }
 
+# ---------------------------------------------------------------------------------------- Issue #76 (i76_ac1-ac8)
+
+# dd_next_row_after <prefix> — the table row directly after the row whose text starts with <prefix>
+dd_next_row_after() {
+  awk -v p="$2" 'found { print; exit } index($0, p) == 1 { found = 1 }' "$1"
+}
+
+test_dd_i76_ac1_resume_row_names_the_go_clearing_path() {
+  local row s
+  row=$(dd_blocked_row_next)
+  assert_ne "$row" "" "i76 AC1: resume row exists" || return 1
+  # go-form clause, worded on the model of the :98 AWAITING GO + go row (Expected Behavior, issue #76)
+  for s in '`go` / `GO` / `**[jp] GO**`' 'a sentence containing "go" is not a go' 'posted after'; do
+    dd_text_has "i76 AC1: resume row go-form clause" "$row" "$s" || return 1
+  done
+  # the carve-out itself must survive the edit — still names money, still refuses [project-manager]
+  for s in 'spending money' 'carries no extra authority'; do
+    dd_text_has "i76 AC1: carve-out survives" "$row" "$s" || return 1
+  done
+  # AC1: "No new routing row is added beside the carve-out" — the row right after this one is unchanged
+  # (still the SPEC CONFLICT row), i.e. the edit is in-place, not a new row inserted after it.
+  dd_text_has "i76 AC1: no new row inserted" "$(dd_next_row_after "$ORCH_DD" '| any `SPEC CONFLICT`')" 'solutions-architect' || return 1
+}
+
+test_dd_i76_ac2_validation_row_gains_the_go_clause() {
+  local tbl row
+  tbl=$(dd_section "$ORCH_DD" '## Pre-dispatch validation' | grep '^|')
+  row=$(printf '%s\n' "$tbl" | grep -F 'blocked stage / test-writer / fix cycle' | head -1)
+  assert_ne "$row" "" "i76 AC2: the resume-on-delegated-decision validation row exists" || return 1
+  # AC2: "gate marker on the carve-out -> validation fails unless a later JP go comment in the exact form of
+  # AC1 exists, dated after the BLOCKED, in which case it passes" (issue #76 AC2)
+  for s in 'carve-out' 'JP go comment' 'dated after'; do
+    dd_text_has "i76 AC2: validation row go clause" "$row" "$s" || return 1
+  done
+}
+
+test_dd_i76_ac3_infra_track_rows_byte_identical() {   # characterisation
+  local base cur old
+  base=$(dd_base)
+  if [ -z "$base" ]; then printf '    (i76 AC3 skipped: no origin/main merge-base)\n' >&2; return 0; fi
+  # AWAITING GO + go row (already covered by AC13 too; re-asserted here as this ticket's own AC3 gate)
+  cur=$(grep -F '| `[infra-operator] AWAITING GO` + JP go comment' "$ORCH_DD")
+  old=$(cd "$ROOT_DD" && git show "$base:agents/orchestrator.md" | grep -F '| `[infra-operator] AWAITING GO` + JP go comment')
+  assert_ne "$cur" "" "i76 AC3: AWAITING GO + go row present" || return 1
+  assert_eq "$cur" "$old" "i76 AC3: AWAITING GO + go row byte-identical" || return 1
+  # both MOCKUPS PENDING APPROVAL rows — anchored at line-start so this only captures the two rows
+  # that actually define the mockup gate (lines 52-53), not the carve-out at :69 (AC1 amends that row,
+  # and its closing sentence names "MOCKUPS PENDING APPROVAL" as one of the carve-out's exclusions —
+  # a mid-line substring match there is incidental to this row's own gate, not a change to it) or the
+  # ":55 solutions-architect" row, which also mentions the marker mid-sentence.
+  cur=$(grep '^| `\[ui-ux-designer\] MOCKUPS PENDING APPROVAL`' "$ORCH_DD")
+  old=$(cd "$ROOT_DD" && git show "$base:agents/orchestrator.md" | grep '^| `\[ui-ux-designer\] MOCKUPS PENDING APPROVAL`')
+  assert_ne "$cur" "" "i76 AC3: MOCKUPS PENDING APPROVAL rows present" || return 1
+  assert_eq "$cur" "$old" "i76 AC3: MOCKUPS PENDING APPROVAL rows byte-identical" || return 1
+  # deployer's unsupported-project BLOCKED sentence
+  cur=$(grep -F "the project isn't in its supported list" "$ORCH_DD")
+  old=$(cd "$ROOT_DD" && git show "$base:agents/orchestrator.md" | grep -F "the project isn't in its supported list")
+  assert_ne "$cur" "" "i76 AC3: deployer unsupported-project sentence present" || return 1
+  assert_eq "$cur" "$old" "i76 AC3: deployer unsupported-project sentence byte-identical" || return 1
+  # AC3 also requires the carve-out (:69) to keep naming these same four exclusions as "current carve-out
+  # behaviour" after AC1's edit to that row's closing sentence — the byte-identity checks above only cover
+  # the gate rows themselves, not this half. Assert on the current resume row (dd_blocked_row_next), which
+  # AC1's other tests already require to exist and be edited in place.
+  local row
+  row=$(dd_blocked_row_next)
+  assert_ne "$row" "" "i76 AC3: resume row (carve-out) exists" || return 1
+  for s in '[infra-operator] AWAITING GO' '[ui-ux-designer] MOCKUPS PENDING APPROVAL' 'any infra-track `BLOCKED`' "project isn't in its supported list"; do
+    dd_text_has "i76 AC3: carve-out still excludes [$s]" "$row" "$s" || return 1
+  done
+}
+
+test_dd_i76_ac4_carve_out_still_lists_money_and_no_extra_authority() {   # characterisation — issue #76 AC4
+  # "No widening of the delegate": a DECISION/JP CONFIRMED comment on a money-worded BLOCKED still fails,
+  # because the carve-out row still names spending money and still says [project-manager] markers carry no
+  # extra authority. This is the doc text the developer must NOT weaken while adding the go clause (AC1/AC2).
+  # (Real-world shape: scheduler#711/#784/#792 gate markers 5771446275/5771399990/5771497848, cited not fetched.)
+  local row
+  row=$(dd_blocked_row_next)
+  assert_ne "$row" "" "i76 AC4: resume row exists" || return 1
+  dd_text_has "i76 AC4: carve-out still names money" "$row" 'spending money' || return 1
+  dd_text_has "i76 AC4: JP CONFIRMED carries no extra authority" "$row" 'JP CONFIRMED` routes exactly like `DECISION` and carries no extra authority' || return 1
+  dd_text_has "i76 AC4: carve-out never resumes" "$row" 'this row never resumes' || return 1
+}
+
+test_dd_i76_ac5_staleness_wording_present() {
+  local row s
+  row=$(dd_blocked_row_next)
+  assert_ne "$row" "" "i76 AC5: resume row exists" || return 1
+  # "A go comment dated before the BLOCKED it would clear does not clear it. A comment that merely contains
+  # the word 'go' somewhere in a sentence does not clear it (only an exact-form first line does)." (issue #76 AC5)
+  for s in 'dated after' 'exact' 'a sentence containing'; do
+    dd_text_has "i76 AC5: staleness clause" "$row" "$s" || return 1
+  done
+}
+
+test_dd_i76_ac6_go_clause_covers_the_773_shape() {
+  # #773 regression case (issue #76 AC6): gate marker 5771588228 with only a DECISION after it must still
+  # fail; the same marker with a later exact-form go must pass. Both halves are the same doc text as AC1/AC2 —
+  # asserted again here from the positive angle: the row names re-dispatching the BLOCKED-posting agent on a
+  # later go, and the validation row's fail/pass split is mechanical (marker form + date), not judgment.
+  local row valrow
+  row=$(dd_blocked_row_next)
+  assert_ne "$row" "" "i76 AC6: resume row exists" || return 1
+  dd_text_has "i76 AC6: re-dispatches the agent that posted BLOCKED" "$row" 'Re-dispatch the agent that posted' || return 1
+  dd_text_has "i76 AC6: go comment URL carried in the prompt" "$row" 'go comment' || return 1
+  valrow=$(dd_section "$ORCH_DD" '## Pre-dispatch validation' | grep '^|' | grep -F 'blocked stage / test-writer / fix cycle' | head -1)
+  dd_text_has "i76 AC6: validation row is mechanical, names the carve-out" "$valrow" 'carve-out' || return 1
+}
+
+test_dd_i76_ac7_run_log_names_fail_before_terminal_and_reason() {
+  local log
+  log=$(dd_section "$ORCH_DD" '## Run log')
+  assert_ne "$log" "" "i76 AC7: Run log section exists" || return 1
+  # "the refusal path writes a delegated-decision fail line ... before emitting a terminal event"; "Pass lines
+  # carry a reason naming the form checked" (issue #76 AC7)
+  dd_text_has "i76 AC7: Run log names fail-before-terminal ordering" "$log" 'before emitting a terminal event' || return 1
+  dd_text_has "i76 AC7: Run log names reason on pass lines" "$log" 'reason naming the form checked' || return 1
+}
+
+test_dd_i76_ac8_no_new_mechanisms() {   # characterisation
+  local base d
+  base=$(dd_base)
+  if [ -z "$base" ]; then printf '    (i76 AC8 skipped: no origin/main merge-base)\n' >&2; return 0; fi
+  for f in hooks/pipeline-markers.sh agents/project-manager.md skills/orchestrate/supervisor.sh skills/orchestrate/orchestrate.sh; do
+    d=$(cd "$ROOT_DD" && git diff --name-only "$base" -- "$f")
+    assert_eq "$d" "" "i76 AC8: $f unchanged" || return 1
+  done
+  dd_has "$MARKERS_DD" 'GO|MOCKUPS APPROVED' || return 1
+  dd_has "$PMGR_DD" 'never resum' || return 1
+}
+
 run_test test_dd_ac1_markers_for_project_manager_and_jp
 run_test test_dd_ac2_marker_re_matches_the_two_new_markers
 run_test test_dd_ac2_marker_re_rejects_wrong_authority_and_off_vocabulary
@@ -452,3 +609,11 @@ run_test test_dd_ac19_claude_md_paragraph
 run_test test_dd_ac20_agents_readme_roster_row
 run_test test_dd_ac21_untouched_paths_have_no_diff
 run_test test_dd_ac22_no_timer_counter_or_new_state_file
+run_test test_dd_i76_ac1_resume_row_names_the_go_clearing_path
+run_test test_dd_i76_ac2_validation_row_gains_the_go_clause
+run_test test_dd_i76_ac3_infra_track_rows_byte_identical
+run_test test_dd_i76_ac4_carve_out_still_lists_money_and_no_extra_authority
+run_test test_dd_i76_ac5_staleness_wording_present
+run_test test_dd_i76_ac6_go_clause_covers_the_773_shape
+run_test test_dd_i76_ac7_run_log_names_fail_before_terminal_and_reason
+run_test test_dd_i76_ac8_no_new_mechanisms
