@@ -90,6 +90,10 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/protect-locked-tests.sh"
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/no-duplicate-stage.sh"
           }
         ]
       },
