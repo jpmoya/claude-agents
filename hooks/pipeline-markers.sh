@@ -16,7 +16,7 @@ markers_for() {  # markers_for <agent> → that agent's routing markers, |-separ
     test-reviewer)       echo 'TESTS APPROVED|TESTS FAIL|PASS|FAIL|BLOCKED' ;;
     fullstack-developer) echo 'IMPLEMENTED|TEST DEFECT|BLOCKED' ;;
     code-reviewer)       echo 'PASS|FAIL|BLOCKED' ;;
-    deployer)            echo 'DEPLOYED|BLOCKED' ;;
+    deployer)            echo 'DEPLOYED TO STAGING|DEPLOYED|BLOCKED' ;;   # 'DEPLOYED TO STAGING' = the deployer's staging phrasing, same terminal state (2026-09-22)
     infra-planner)       echo 'PLAN READY|BLOCKED' ;;
     infra-reviewer)      echo 'PLAN PASS|PLAN FAIL|BLOCKED' ;;
     infra-operator)      echo 'APPLIED|AWAITING GO|BLOCKED' ;;
