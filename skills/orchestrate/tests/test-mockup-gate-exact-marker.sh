@@ -9,7 +9,11 @@
 #   AC2  agents/orchestrator.md:163-165 — same single form, no prose alternatives, cap unchanged (2).
 #   AC3  agents/orchestrator.md:54 — the revision row excludes any `**[<agent>] ...**`-shaped
 #        first line (marker_re() as pattern source, not a hand-rolled agent list); such a comment
-#        neither approves nor requests a revision, and the run stays parked.
+#        neither approves nor requests a revision, and the run stays parked. Because marker_re()'s
+#        no-arg form is vocabulary-gated per agent, it does NOT match `**[product-manager] NOTE**`
+#        (NOTE is not in project-manager's vocabulary, the exact case the ticket's Why names) —
+#        the row must state the generic `**[<agent>]` shape, not tie the exclusion to marker_re()'s
+#        vocabulary.
 #   AC4  agents/orchestrator.md:166 (outcome 3, "skip mockups") is deleted outright.
 #   AC5  none of the 2026-09-21 approval bodies, and no "skip mockups" / "don't need mockups"
 #        comment, clears the gate.
@@ -128,12 +132,10 @@ test_mg_ac2_revision_cap_unchanged_at_2() {
 # ---------------------------------------------------------------------------------------- AC3
 
 test_mg_ac3_revision_row_excludes_agent_marker_comments() {
-  local row s
+  local row
   row=$(mg_row 'JP revision feedback')
   assert_ne "$row" "" "AC3: revision-feedback row exists" || return 1
-  for s in 'marker_re' 'parked'; do
-    mg_text_has "AC3: revision row" "$row" "$s" || return 1
-  done
+  mg_text_has "AC3: revision row" "$row" 'parked' || return 1
 }
 
 # AC3 also forbids re-deriving the agent enumeration by hand: the row must not itself spell out
@@ -143,6 +145,60 @@ test_mg_ac3_revision_row_does_not_hand_roll_the_agent_list() {
   row=$(mg_row 'JP revision feedback')
   assert_ne "$row" "" "AC3: revision-feedback row exists" || return 1
   mg_text_lacks "AC3: revision row must not hand-roll agent alternation" "$row" 'product-manager|ux-flow-designer' || return 1
+}
+
+# mg_ac3_pattern_source <row> -> generic | marker_re | none
+#   Which pattern source the row commits to, in preference order. A row is "generic" only if it
+#   literally spells the bracket-and-agent-name shape (`**[<agent>]` or equivalent, i.e. a marker
+#   test that is NOT gated on any one agent's own vocabulary of marker words). A row that only
+#   names `marker_re`/`pipeline-markers.sh` falls to "marker_re" — which we then resolve for real
+#   below, and which is provably wrong (see the fixture table) because marker_re() is
+#   vocabulary-gated per agent (hooks/pipeline-markers.sh:9-24: no agent's vocabulary contains
+#   NOTE) and so cannot exclude `**[product-manager] NOTE**`, the exact #717 comment the ticket's
+#   Why paragraph names as the case this row must exclude.
+mg_ac3_pattern_source() {
+  local row="$1"
+  if printf '%s' "$row" | grep -qF -- '**[<agent>]'; then
+    echo generic
+  elif printf '%s' "$row" | grep -qiE -- 'regardless of (its|that agent.s) (marker )?vocabulary|any agent.s (marker )?bracket'; then
+    echo generic
+  elif printf '%s' "$row" | grep -qiE -- 'marker_re|pipeline-markers'; then
+    echo marker_re
+  else
+    echo none
+  fi
+}
+
+# mg_ac3_is_marker_shaped <source> <first-line> -> true/false, per the resolved pattern source
+mg_ac3_is_marker_shaped() {
+  case "$1" in
+    generic) jq -n --arg l "$2" '$l | test("^\\*\\*\\[[A-Za-z][A-Za-z0-9_-]*\\] ")' ;;
+    marker_re) mg_matches "$2" ;;
+    *) echo false ;;
+  esac
+}
+
+# AC3, fixture-driven doc-contract test (closes test-reviewer FINDING 1 on #74): this does not
+# grep for a wording token — it resolves whichever pattern source the row actually names and runs
+# it against a fixture table, so a row that names `marker_re()` as its pattern source (a reading
+# AC3's own text invites, and the previous locked test rewarded by grepping for the literal
+# substring "marker_re") fails here exactly because marker_re() rejects the NOTE fixture, proving
+# the exclusion is not actually enforced.
+test_mg_ac3_revision_row_note_fixture_is_actually_excluded() {
+  local row src f expect result
+  row=$(mg_row 'JP revision feedback')
+  assert_ne "$row" "" "AC3: revision-feedback row exists" || return 1
+  src=$(mg_ac3_pattern_source "$row")
+  assert_ne "$src" "none" "AC3: revision row names a resolvable pattern source (a generic **[<agent>]-shaped test, not marker_re()'s per-agent vocabulary gate)" || return 1
+
+  while IFS='|' read -r f expect; do
+    result=$(mg_ac3_is_marker_shaped "$src" "$f")
+    assert_eq "$result" "$expect" "AC3: row's named pattern source ($src) applied to fixture [$f]" || return 1
+  done <<'MG_AC3_FIXTURES'
+**[product-manager] NOTE**|true
+**[test-writer] TESTS WRITTEN**|true
+please make the button smaller and the copy friendlier|false
+MG_AC3_FIXTURES
 }
 
 # ---------------------------------------------------------------------------------------- AC4
@@ -174,6 +230,26 @@ test_mg_ac5_2026_09_21_bodies_do_not_clear_the_gate() {
            'skip mockups' "don't need mockups"; do
     r=$(mg_matches "$l")
     assert_eq "$r" "false" "AC5 (characterisation): marker_re must NOT clear the gate for [$l]" || return 1
+  done
+}
+
+# AC5, doc-level (closes test-reviewer FINDING 2 on #74): the three tests above all drive
+# marker_re() or supervisor.sh directly — both unchanged/out-of-scope for this ticket (AC7), so
+# they pass identically whether or not agents/orchestrator.md is ever edited. This test instead
+# reads the *rewritten* approval row itself: it extracts the exact required first-line form the
+# row quotes (AC1 requires it to be quoted in backticks) and asserts none of the 2026-09-21
+# incident bodies, nor either "skip mockups" phrasing, equals that extracted form. It is red today
+# because the row does not yet quote any single exact form (only the old prose list).
+test_mg_ac5_incident_bodies_are_not_the_rewritten_exact_form() {
+  local row form f
+  row=$(mg_row 'MOCKUPS PENDING APPROVAL` + JP approval comment')
+  assert_ne "$row" "" "AC5: approval row exists" || return 1
+  form=$(printf '%s\n' "$row" | grep -oE '`\*\*\[jp\] MOCKUPS APPROVED\*\*`' | head -1 | tr -d '`')
+  assert_eq "$form" '**[jp] MOCKUPS APPROVED**' "AC5: approval row quotes the exact required first-line form" || return 1
+  for f in "approved — MOCKUPS APPROVED on JP's behalf, see thread" \
+           'approved' 'looks good' 'lgtm' \
+           'skip mockups' "don't need mockups"; do
+    assert_ne "$f" "$form" "AC5: incident/skip body [$f] must not equal the rewritten exact form" || return 1
   done
 }
 
@@ -311,9 +387,11 @@ run_test test_mg_ac2_outcome1_is_single_exact_form_no_prose
 run_test test_mg_ac2_revision_cap_unchanged_at_2
 run_test test_mg_ac3_revision_row_excludes_agent_marker_comments
 run_test test_mg_ac3_revision_row_does_not_hand_roll_the_agent_list
+run_test test_mg_ac3_revision_row_note_fixture_is_actually_excluded
 run_test test_mg_ac4_skip_mockups_outcome_deleted
 run_test test_mg_ac4_gate_section_has_exactly_two_outcomes
 run_test test_mg_ac5_2026_09_21_bodies_do_not_clear_the_gate
+run_test test_mg_ac5_incident_bodies_are_not_the_rewritten_exact_form
 run_test test_mg_ac5_prose_approval_after_mockups_stays_a_gate
 run_test test_mg_ac5_skip_mockups_after_mockups_stays_a_gate
 run_test test_mg_ac1_exact_marker_after_mockups_lifts_the_gate
