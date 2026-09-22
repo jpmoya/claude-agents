@@ -63,6 +63,10 @@ _rs_build_completed_json() {  # same TSV on stdin, prints the payload's "complet
   python3 "$RS_HERE/build-runs-json.py" "$(_rs_aliases_arg)" "$HOME/.claude/pipeline/runs.jsonl" "$PIPE" completed
 }
 
+_rs_build_list_json() {  # <staging|approved>: the payload's host-published GitHub lists (issue #65), local files only
+  python3 "$RS_HERE/build-runs-json.py" "$(_rs_aliases_arg)" "$HOME/.claude/pipeline/runs.jsonl" "$PIPE" "$1" </dev/null
+}
+
 _rs_supervisor_last_tick() {  # mtime of the supervisor's own log, else "now" (no supervisor has run yet)
   local log="$LOGDIR/supervisor.log" epoch
   if [ -e "$log" ]; then
@@ -77,7 +81,7 @@ print(datetime.datetime.fromtimestamp(int(sys.argv[1]), tz=datetime.timezone.utc
 }
 
 build_payload() {
-  local runs_tsv running queued runs_json completed_json
+  local runs_tsv running queued runs_json completed_json staging_json approved_json
   runs_tsv=$(derive_runs)
   running=$(printf '%s\n' "$runs_tsv" | awk -F'\t' '$3=="running"{c++} END{print c+0}')
   queued=$(printf '%s\n' "$runs_tsv" | awk -F'\t' '$3=="queued"{c++} END{print c+0}')
@@ -85,6 +89,8 @@ build_payload() {
   [ -n "$runs_json" ] || runs_json='[]'
   completed_json=$(printf '%s\n' "$runs_tsv" | _rs_build_completed_json)
   [ -n "$completed_json" ] || completed_json='[]'
+  staging_json=$(_rs_build_list_json staging);   [ -n "$staging_json" ] || staging_json='[]'
+  approved_json=$(_rs_build_list_json approved); [ -n "$approved_json" ] || approved_json='[]'
   jq -n \
     --arg sent_at "$SENT_AT" \
     --arg tick "$SUPERVISOR_LAST_TICK" \
@@ -93,8 +99,11 @@ build_payload() {
     --argjson queued "$queued" \
     --argjson runs "$runs_json" \
     --argjson completed "$completed_json" \
+    --argjson staging "$staging_json" \
+    --argjson approved "$approved_json" \
     '{v: 1, sent_at: $sent_at, supervisor_last_tick: $tick,
-      capacity: {running: $running, max: $max, queued: $queued}, runs: $runs, completed: $completed}'
+      capacity: {running: $running, max: $max, queued: $queued}, runs: $runs, completed: $completed,
+      staging: $staging, approved: $approved}'
 }
 
 SENT_AT=$(python3 -c "import datetime; print(datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))")

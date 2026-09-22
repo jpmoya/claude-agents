@@ -58,6 +58,16 @@ Payload (`v` stays 1, every new key optional; the host half is #65):
 - `DECISION` and `JP CONFIRMED` are known markers.
 - The beat body cap is **128 KB** (`131072` bytes → `204`, one more → `413`).
 
+Host half (issue #65): `reconcile-status.sh` also fetches, for every repo in `DISPATCH_REPOS` ∪
+`SCAN_ONLY_REPOS` (each once), the open issues with milestone `staging` and the open `agent-go`
+issues, writes them to `$PIPE/status-staging.json` / `status-approved.json` (a failed call keeps
+that repo's previous entries) and the network-free builder publishes them as `staging[]` and
+`approved[]` (newest `updated_at` first, caps 60 / 20, title ≤ 140 chars). A ticket whose GitHub
+milestone is a release (`vX.Y.Z`) counts as released even while its issue is still open: the host
+treats it like a closed one (Done, with `completed[].release`). `runs[]` priority is
+running, restarting, queued, held (newest activity first within a state), total cap 20; a non-running row
+whose ticket is in the host's staging list is left out.
+
 Completed-ticket source (issue #51):
 
 - The host half is `skills/orchestrate/reconcile-status.sh`: a reconcile pass, run from the

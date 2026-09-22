@@ -198,6 +198,22 @@ case "$*" in
     emit "$json" "$@"
     exit 0
     ;;
+  *"issue list"*)
+    # Additive (#65): per-repo list fixtures. <dir>/gh-list-staging-<key> answers the
+    # `--search milestone:staging` call, <dir>/gh-list-approved-<key> the `--label agent-go` call
+    # (key = owner/repo with "/" -> "_"; default `[]`); <dir>/gh-list-fail-<key> makes both exit 1.
+    repo=""; prev=""
+    for a in "$@"; do [ "$prev" = "--repo" ] && repo=$a; prev=$a; done
+    key=$(printf '%s' "$repo" | tr '/' '_')
+    [ -f "$HERE/gh-list-fail-$key" ] && exit 1
+    f=""
+    case "$*" in
+      *milestone:staging*) f="$HERE/gh-list-staging-$key" ;;
+      *"--label agent-go"*) f="$HERE/gh-list-approved-$key" ;;
+    esac
+    if [ -n "$f" ] && [ -f "$f" ]; then cat "$f"; else echo '[]'; fi
+    exit 0
+    ;;
   *"issue view"*)
     # Additive (#51): the per-issue variant <file>-<n> of every gh-issue-* file below wins over the
     # plain <file> when it exists (n = the number right after "issue view"); gh-issue-view-rc makes
@@ -220,6 +236,13 @@ case "$*" in
         '. + {comments: [{body: $body, createdAt: "2026-01-01T00:00:00Z"}]}')
     elif case "$*" in *closedAt*) true ;; *) false ;; esac; then
       json=$(printf '%s' "$json" | jq '. + {comments: []}')   # like real gh: a requested comments field is always present
+    fi
+    if case "$*" in *milestone*) true ;; *) false ;; esac; then   # additive (#65): gh-issue-milestone[-n] = title; absent -> null
+      if [ -f "$(pick gh-issue-milestone)" ]; then
+        json=$(printf '%s' "$json" | jq --arg t "$(cat "$(pick gh-issue-milestone)")" '. + {milestone: {title: $t}}')
+      else
+        json=$(printf '%s' "$json" | jq '. + {milestone: null}')
+      fi
     fi
     emit "$json" "$@"
     exit 0
