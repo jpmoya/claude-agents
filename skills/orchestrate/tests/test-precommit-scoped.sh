@@ -42,7 +42,8 @@ EOF
   echo "$dir"
 }
 
-run_hook() {  # run_hook <repo_dir> <commit_cmd> -> sets RC_PC, OUT_PC (via globals)
+run_hook() {  # run_hook <repo_dir> <commit_cmd> -> sets RC_PC, OUT_PC, LOG_PC, HOME_PC (via
+              # globals); caller is responsible for `rm -rf "$HOME_PC"` once done inspecting LOG_PC.
   local repo=$1 cmd=$2 home
   home=$(new_home)
   local payload
@@ -50,22 +51,46 @@ run_hook() {  # run_hook <repo_dir> <commit_cmd> -> sets RC_PC, OUT_PC (via glob
   OUT_PC=$( (cd "$repo" && HOME="$home" LOGDIR="$home/logs/pipeline" bash "$HOOK_PC" <<<"$payload") 2>&1)
   RC_PC=$?
   LOG_PC="$home/logs/pipeline/enforce-tests-before-commit.log"
-  rm -rf "$home"
+  HOME_PC="$home"
 }
 
 test_pc_scoped_run_is_selected_and_never_blocks() {
-  local marker repo
+  local marker repo merge_base
   marker=$(mktemp -u "${TMPDIR:-/tmp}/pc-vitest-calls.XXXXXX")
   repo=$(vitest_fixture_repo "$marker")
   ( cd "$repo" && echo "b" > src/b.js && git add -A ) >/dev/null 2>&1
+  merge_base=$(git -C "$repo" merge-base HEAD origin/main 2>/dev/null)
 
   run_hook "$repo" 'git commit -m "add b"'
 
   local calls; calls=$(cat "$marker" 2>/dev/null)
-  rm -rf "$repo"; rm -f "$marker"
+  rm -rf "$repo" "$HOME_PC"; rm -f "$marker"
 
   assert_exit0 "$RC_PC" "AC: hook never exits non-zero for a scoped run" || return 1
-  assert_contains "$calls" "--changed" "AC: vitest scoping is used (merge-base --changed), not a full run" || return 1
+  assert_contains "$calls" "--changed $merge_base" "AC: vitest scoping is --changed against the actual merge-base sha, not a full run" || return 1
+}
+
+test_pc_custom_flags_in_test_script_fall_back_to_full_not_silently_dropped() {
+  local marker repo
+  marker=$(mktemp -u "${TMPDIR:-/tmp}/pc-vitest-calls5.XXXXXX")
+  repo=$(vitest_fixture_repo "$marker")
+  ( cd "$repo" && python3 - "$repo" <<'EOF'
+import json, sys
+p = sys.argv[1] + "/package.json"
+d = json.load(open(p))
+d["scripts"]["test"] = "vitest run --project=api"
+json.dump(d, open(p, "w"))
+EOF
+    echo "b" > src/b.js && git add -A && git commit -qm "custom test script" ) >/dev/null 2>&1
+  ( cd "$repo" && echo "c" > src/c.js && git add -A ) >/dev/null 2>&1
+
+  run_hook "$repo" 'git commit -m "add c"'
+
+  local calls; calls=$(cat "$marker" 2>/dev/null)
+  rm -rf "$repo" "$HOME_PC"; rm -f "$marker"
+
+  assert_exit0 "$RC_PC" "AC: hook never exits non-zero even for the full fallback" || return 1
+  assert_not_contains "$calls" "--changed" "AC: scripts.test flags beyond a bare vitest invocation (e.g. --project=api) are not safe to scope silently — must fall back to full" || return 1
 }
 
 test_pc_config_change_falls_back_to_full_but_still_nonblocking() {
@@ -77,33 +102,55 @@ test_pc_config_change_falls_back_to_full_but_still_nonblocking() {
   run_hook "$repo" 'git commit -m "add config"'
 
   local calls; calls=$(cat "$marker" 2>/dev/null)
-  rm -rf "$repo"; rm -f "$marker"
+  rm -rf "$repo" "$HOME_PC"; rm -f "$marker"
 
   assert_exit0 "$RC_PC" "AC: hook never exits non-zero even though the fallback-full stub fails" || return 1
   assert_not_contains "$calls" "--changed" "AC: a config-file change forces the conservative full fallback, not scoped" || return 1
 }
 
 test_pc_bypasses_skip_the_hook_and_the_runner_entirely() {
-  local marker repo home payload rc1 rc2
+  local marker repo home1 home2 home3 payload rc1 rc2 rc3
+  local log1_exists log2_exists log3_exists
+
+  # Positive control (same repo, same commit shape, NO bypass): proves logging exists and
+  # fires on this hook at all — dies (log absent) against origin/main, which has no logging,
+  # so it also anchors the two bypass checks below against a real revert, not just each other.
   marker=$(mktemp -u "${TMPDIR:-/tmp}/pc-vitest-calls3.XXXXXX")
   repo=$(vitest_fixture_repo "$marker")
   ( cd "$repo" && echo "b" > src/b.js && git add -A ) >/dev/null 2>&1
 
-  home=$(new_home)
+  home3=$(new_home)
   payload=$(python3 -c "import json; print(json.dumps({'tool_input':{'command':'git commit -m x'}}))")
-  ( cd "$repo" && HOME="$home" PIPELINE_LOCKED_TESTS_FILE="$home/locked.txt" bash "$HOOK_PC" <<<"$payload" >/dev/null 2>&1 )
-  rc1=$?
+  ( cd "$repo" && HOME="$home3" LOGDIR="$home3/logs/pipeline" bash "$HOOK_PC" <<<"$payload" >/dev/null 2>&1 )
+  rc3=$?
+  [ -f "$home3/logs/pipeline/enforce-tests-before-commit.log" ] && log3_exists=yes || log3_exists=no
+  rm -rf "$home3"
+  local calls_after_control; calls_after_control=$(cat "$marker" 2>/dev/null)
 
+  home1=$(new_home)
+  payload=$(python3 -c "import json; print(json.dumps({'tool_input':{'command':'git commit -m x'}}))")
+  ( cd "$repo" && HOME="$home1" LOGDIR="$home1/logs/pipeline" PIPELINE_LOCKED_TESTS_FILE="$home1/locked.txt" bash "$HOOK_PC" <<<"$payload" >/dev/null 2>&1 )
+  rc1=$?
+  [ -f "$home1/logs/pipeline/enforce-tests-before-commit.log" ] && log1_exists=yes || log1_exists=no
+  rm -rf "$home1"
+
+  home2=$(new_home)
   payload2=$(python3 -c "import json; print(json.dumps({'tool_input':{'command':'git commit -m \"test(#5): stub\"'}}))")
-  ( cd "$repo" && HOME="$home" bash "$HOOK_PC" <<<"$payload2" >/dev/null 2>&1 )
+  ( cd "$repo" && HOME="$home2" LOGDIR="$home2/logs/pipeline" bash "$HOOK_PC" <<<"$payload2" >/dev/null 2>&1 )
   rc2=$?
+  [ -f "$home2/logs/pipeline/enforce-tests-before-commit.log" ] && log2_exists=yes || log2_exists=no
+  rm -rf "$home2"
 
   local calls; calls=$(cat "$marker" 2>/dev/null)
-  rm -rf "$repo" "$home"; rm -f "$marker"
+  rm -rf "$repo"; rm -f "$marker"
 
+  assert_exit0 "$rc3" "control: an un-bypassed commit exits 0" || return 1
+  assert_eq "$log3_exists" "yes" "control: an un-bypassed commit DOES write a log file — proves logging exists, so its absence below is meaningful" || return 1
   assert_exit0 "$rc1" "AC8: PIPELINE_LOCKED_TESTS_FILE bypass still exits 0" || return 1
   assert_exit0 "$rc2" "AC8: test(#N): commit-message bypass still exits 0" || return 1
-  assert_eq "$calls" "" "AC8: both bypasses skip the test runner entirely, including new scoped-selection logic" || return 1
+  assert_eq "$calls" "$calls_after_control" "AC8: both bypasses skip the test runner entirely — no new call recorded beyond the earlier un-bypassed control run" || return 1
+  assert_eq "$log1_exists" "no" "AC8: PIPELINE_LOCKED_TESTS_FILE bypass must skip logging too" || return 1
+  assert_eq "$log2_exists" "no" "AC8: test(#N): bypass must skip logging too" || return 1
 }
 
 test_pc_non_vitest_repo_falls_back_to_full_selection_and_stays_nonblocking() {
@@ -126,6 +173,7 @@ EOF
 }
 
 run_test test_pc_scoped_run_is_selected_and_never_blocks
+run_test test_pc_custom_flags_in_test_script_fall_back_to_full_not_silently_dropped
 run_test test_pc_config_change_falls_back_to_full_but_still_nonblocking
 run_test test_pc_bypasses_skip_the_hook_and_the_runner_entirely
 run_test test_pc_non_vitest_repo_falls_back_to_full_selection_and_stays_nonblocking

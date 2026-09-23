@@ -70,12 +70,11 @@ fi
 # is a single-command invocation of vitest (safe to pass --changed/--passWithNoTests to) versus
 # something compound (&&, ;, ||) that isn't safe to append flags to.
 FOUND=""
-TEST_SCRIPT=""
 VITEST_SAFE=""
 CHECK="$DIR"
 while [ "$CHECK" != "/" ]; do
   if [ -f "$CHECK/package.json" ]; then
-    read -r HAS_TEST TEST_SCRIPT_LINE VITEST_SAFE_LINE <<PYEOF_MARKER
+    read -r HAS_TEST VITEST_SAFE_LINE <<PYEOF_MARKER
 $(python3 -c "
 import json, sys
 try:
@@ -83,16 +82,23 @@ try:
     scripts = pkg.get('scripts', {})
     test_cmd = (scripts.get('test', '') or '').strip()
     has = 'yes' if (test_cmd and 'no test specified' not in test_cmd) else 'no'
-    import re
-    compound = bool(re.search(r'&&|;|\|\|', test_cmd))
-    is_vitest = bool(re.match(r'^(npx\s+)?vitest(\s|\$)', test_cmd)) or 'vitest' in test_cmd.split(' ')[0]
-    safe = 'yes' if (has == 'yes' and is_vitest and not compound) else 'no'
-    print(has, (test_cmd.replace(' ', '\x1f') or '-'), safe)
+    # Only a BARE vitest invocation (no extra flags beyond an optional 'run') is safe to
+    # append --changed/--passWithNoTests to. Any other flags in scripts.test (e.g.
+    # --project=api) would be silently dropped by a scoped run and make the signal
+    # untrustworthy vs. CI, so those fall back to the full 'npm test' selection instead.
+    is_vitest = bool(test_cmd) and test_cmd.split()[0] in ('vitest', 'npx')
+    if test_cmd.split()[:1] == ['npx']:
+        bare = test_cmd.split()[1:2] == ['vitest'] and test_cmd.split()[2:] in ([], ['run'])
+    elif is_vitest:
+        bare = test_cmd.split()[1:] in ([], ['run'])
+    else:
+        bare = False
+    safe = 'yes' if (has == 'yes' and bare) else 'no'
+    print(has, safe)
 except Exception:
-    print('no - no')
+    print('no no')
 " 2>/dev/null)
 PYEOF_MARKER
-    TEST_SCRIPT=$(echo "$TEST_SCRIPT_LINE" | tr '\x1f' ' ')
     if [ "$HAS_TEST" = "yes" ]; then
       FOUND="$CHECK"
       VITEST_SAFE="$VITEST_SAFE_LINE"
