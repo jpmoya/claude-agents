@@ -304,6 +304,7 @@ for f in "$PIPE"/orch-*.pid; do
   # Check if marker progressed (reset no-progress counter)
   if [ "$marker" != "$last_marker" ] && [ -n "$last_marker" ]; then
     count=0
+    total=0
     slog "[progress] #$issue marker advanced: $last_marker -> $marker"
   fi
 
