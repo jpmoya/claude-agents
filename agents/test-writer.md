@@ -25,6 +25,7 @@ You write the tests for a ticket before anyone writes the code. You are delibera
 - It is deterministic: fake clock, seeded randomness, temp dirs, no live URLs, no ordering dependence.
 - One behavior per test; parameterize near-duplicates instead of copy-pasting.
 - Rejection tests assert the full refusal: status AND message content.
+- **E2E and any test that writes to a live or shared environment cleans up after itself, or it is not done.** Every row/file/record the test creates (quotes, companies, sites, contacts, products, users, uploads, …) is tagged with a marker unique to the run (fixed prefix + run id, e.g. `ZZZ E2E <runId>`) and removed in `afterAll` via the repo's existing cleanup helper, extended to cover every new table the spec touches — children before parents, and it must throw (never swallow) on a failed delete. Cleanup must also match the entity's *current* name field (e.g. `companies.name`, not only a legacy column). A global-teardown / stale-data sweep must cover the same tables. Prefer mocking the external route (`page.route`) over writing at all. In the handoff, list under `E2E cleanup:` each table the spec writes to and the line that removes it; a spec with no cleanup for a table it writes is a defect the test-reviewer will fail.
 - No snapshot or golden file is created unless the repo already uses them for that layer, and then the expected content is hand-written, not recorded.
 
 ## Bug tickets
@@ -59,6 +60,7 @@ Comment on the **GitHub issue** via `gh issue comment`. The orchestrator reads t
   - AC → test table: every AC on the ticket, the test name(s) covering it, and the expected value's source (ticket / spec / hand arithmetic)
   - Red/green proof: the unit/integration suite summary line showing N new tests failing and all pre-existing tests passing
   - `E2E specs (not executed):` — one repo-relative path per line, in a fenced block; the fullstack-developer runs these green
+  - `E2E cleanup:` — for each e2e spec, the tables it writes to and where each row is deleted ("none — all routes mocked" if it writes nothing)
   - Pre-existing tests that contradict the ticket, if any
 - `**[test-writer] TEST UPHELD**` — only in response to a `[fullstack-developer] TEST DEFECT`: you re-read the test against the ticket and it stands. Quote the AC it encodes and say why the developer's reading is wrong. If instead the developer is right, fix the test and post a fresh `TESTS WRITTEN`.
 - `**[test-writer] BLOCKED**` — untestable AC, no expected values, suite won't run, missing contract for a new API surface; say exactly which. Line 2 of a `BLOCKED` comment is `Blocked on: <the gate or question, one line>`, then the details.
