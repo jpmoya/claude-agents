@@ -71,15 +71,26 @@ issue_is_closed() {
 # "grace" (BLOCKED inside the grace window: wait) / "" (not terminal). It judges the GATE marker. A later
 # `[project-manager] DECISION` / `JP CONFIRMED` lifts exactly one gate — a code-track BLOCKED — so the run takes the
 # normal restart path and the orchestrator validates and relays the decision. It never lifts MOCKUPS PENDING APPROVAL,
-# AWAITING GO, EFFORT APPROVAL NEEDED or an infra-track BLOCKED: those stay with JP (claude-agents#59).
+# AWAITING GO, EFFORT APPROVAL NEEDED or an infra-reviewer BLOCKED. An infra planner/operator BLOCKED is lifted only when
+# infra_staging_only holds (staging-only ticket, no JP-only item; claude-agents#89); otherwise it stays with JP.
 terminal_kind() {
   local marker=$1 issue=${2:-} decision=${3:-}
   marker=${marker%%\*\*}   # markers are bold ("**[deployer] DEPLOYED**"): strip the trailing bold so the $-anchors below match
   [[ "$marker" =~ \]\ (DEPLOYED|DEPLOYED\ TO\ STAGING|APPLIED)$ ]] && { echo done; return; }
   [[ "$marker" =~ \]\ (MOCKUPS\ PENDING\ APPROVAL|AWAITING\ GO|EFFORT\ APPROVAL\ NEEDED)$ ]] && { echo gate; return; }
   if [[ "$marker" =~ \]\ BLOCKED ]]; then
-    # delegated decision recorded after a code-track BLOCKED: not a gate (infra-track BLOCKED stays one)
-    if [ -n "$decision" ] && ! [[ "$marker" =~ ^\*\*\[infra- ]]; then echo ""; return; fi
+    # delegated decision recorded after a code-track BLOCKED: not a gate. An infra planner/operator BLOCKED is lifted
+    # only when infra_staging_only succeeds (claude-agents#89); infra-reviewer BLOCKED always stays a gate.
+    if [ -n "$decision" ]; then
+      if ! [[ "$marker" =~ ^\*\*\[infra- ]]; then echo ""; return; fi
+      if [[ "$marker" =~ ^\*\*\[infra-(planner|operator)\] ]]; then
+        local orepo burl
+        orepo=$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)
+        burl=$(gh issue view "$issue" --repo "$orepo" --json comments --jq \
+          '[.comments[] | select(.body | split("\n")[0] | test("^\\*\\*\\[infra-(planner|operator)\\] BLOCKED"))] | last | .url' 2>/dev/null)
+        if [ -n "$orepo" ] && [ -n "$burl" ] && infra_staging_only "$orepo" "$issue" "$burl"; then echo ""; return; fi
+      fi
+    fi
     # BLOCKED gets a grace period — false BLOCKEDs from subagent races resolve within minutes
     if [ -n "$issue" ] && [ -f "$PIPE/orch-$issue.start" ]; then
       local age=$(( $(date +%s) - $(to_epoch "$(cat "$PIPE/orch-$issue.start")") ))
@@ -94,10 +105,26 @@ terminal_kind() {
 }
 
 # infra_staging_only <owner/repo> <issue> <blocked-comment-url> → 0 when a staging-only infra BLOCKED may be resumed by a
-# delegated decision, 1 otherwise (claude-agents#89). STUB — the developer replaces this.
+# delegated decision, 1 otherwise (claude-agents#89). All must hold: the BLOCKED is an infra-planner/operator one (not
+# "Held: blocked by", not JP-only: prod/spend/secret/external comms); the issue body has a line exactly
+# `Scope: staging-only`; the latest PLAN READY has no prod target step; a later `[project-manager] DECISION`/`JP CONFIRMED`
+# has line 2 `Resolves: <that url>`.
 infra_staging_only() {
-  echo "NotImplemented: infra_staging_only" >&2
-  return 99
+  local owner_repo=$1 issue=$2 url=$3 json
+  json=$(gh issue view "$issue" --repo "$owner_repo" --json body,comments 2>/dev/null) || return 1
+  printf '%s' "$json" | jq -e --arg url "$url" '
+    def l1: (.body | split("\n")[0] | rtrimstr("\r"));
+    def l2: (.body | split("\n")[1] // "" | rtrimstr("\r"));
+    ([.body | split("\n")[] | rtrimstr("\r") | select(. == "Scope: staging-only")] | length > 0) as $scoped
+    | (.comments | map(select(.url == $url)) | first) as $b
+    | if ($scoped | not) or $b == null then false else
+      ($b | l1 | test("^\\*\\*\\[infra-(planner|operator)\\] BLOCKED")) as $kind
+      | ($b.body | test("held: blocked by|\\bprod(uction)?\\b|\\bspend|\\bsecret|who gets access|external communication"; "i") | not) as $safe
+      | ([.comments[] | select(l1 | test("\\[infra-planner\\] PLAN READY"))] | last) as $plan
+      | (($plan == null) or ($plan.body | test("(target|environment|env)\\s*:\\s*prod|prod step"; "i") | not)) as $planok
+      | ([.comments[] | select((l1 == "**[project-manager] DECISION**" or l1 == "**[project-manager] JP CONFIRMED**")
+            and l2 == ("Resolves: " + $url) and .createdAt > $b.createdAt)] | length > 0) as $dec
+      | $kind and $safe and $planok and $dec end' >/dev/null 2>&1
 }
 
 slack_thread_for() {  # <owner/repo> <issue> → "<channel> <ts>" from the last "**[pipeline-bridge] NOTE** slack-thread: <channel>:<ts>" comment, only if <channel> is $SLACK_ENGINEERING_CHANNEL; else nothing
