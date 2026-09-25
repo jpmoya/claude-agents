@@ -11,7 +11,7 @@ test_dd_no_wait_or_timeout600() {
   assert_eq 0 0 "no wait/timeout"
 }
 test_dd_reviewers_detached_both_pids() {
-  grep -qF 'PID_CODE=$!' "$ORCH_DD" && grep -qF 'PID_TEST=$!' "$ORCH_DD" || { fail "both reviewer PIDs not recorded"; return 1; }
+  { grep -qF 'PID_CODE=$!' "$ORCH_DD" || grep -qE 'PID_CODE=\$\(cat ' "$ORCH_DD"; } && { grep -qF 'PID_TEST=$!' "$ORCH_DD" || grep -qE 'PID_TEST=\$\(cat ' "$ORCH_DD"; } || { fail "both reviewer PIDs not recorded"; return 1; }
   grep -qF 'kill -0 "$PID_CODE"' "$ORCH_DD" && grep -qF 'kill -0 "$PID_TEST"' "$ORCH_DD" || { fail "poll must check both PIDs"; return 1; }
   assert_eq 0 0 "reviewers detached"
 }

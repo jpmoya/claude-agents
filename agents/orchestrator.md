@@ -271,6 +271,10 @@ echo "PID_CODE=$PID_CODE PID_TEST=$PID_TEST"
 Poll both in one loop (chunks of up to 36 × 15s; repeat chunks to the 10 min reviewer cap). A reviewer is resolved when it posted a new marker or its process exited; the wait ends when **both** are resolved:
 
 ```bash
+# Each Bash call is a fresh shell: reload helpers and state from disk every chunk.
+. ~/.claude/hooks/pipeline-markers.sh   # and define count() as in the launch block
+BEFORE_CODE=$(cat /tmp/pipeline/<N>-code-reviewer-before.txt); BEFORE_TEST=$(cat /tmp/pipeline/<N>-test-reviewer-before.txt)
+PID_CODE=$(cat /tmp/pipeline/<N>-code-reviewer.pid); PID_TEST=$(cat /tmp/pipeline/<N>-test-reviewer.pid)
 DONE_CODE=0; DONE_TEST=0
 for i in $(seq 1 36); do
   sleep 15
