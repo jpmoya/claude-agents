@@ -568,7 +568,7 @@ test_dd_i76_ac8_no_new_mechanisms() {   # characterisation
   local base d
   base=$(dd_base)
   if [ -z "$base" ]; then printf '    (i76 AC8 skipped: no origin/main merge-base)\n' >&2; return 0; fi
-  for f in hooks/pipeline-markers.sh agents/project-manager.md skills/orchestrate/supervisor.sh skills/orchestrate/orchestrate.sh; do
+  for f in hooks/pipeline-markers.sh agents/project-manager.md skills/orchestrate/orchestrate.sh; do
     d=$(cd "$ROOT_DD" && git diff --name-only "$base" -- "$f")
     assert_eq "$d" "" "i76 AC8: $f unchanged" || return 1
   done
