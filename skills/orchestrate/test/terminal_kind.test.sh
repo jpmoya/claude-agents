@@ -9,7 +9,6 @@ TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 export PIPE="$TMP/pipe"; mkdir -p "$PIPE" "$TMP/bin"
 export GRACE_PERIOD_SECS=0 CASE_JSON="$TMP/case.json"
 slog() { :; }
-to_epoch() { echo 0; }
 
 # gh shim: `repo view` -> acme/widgets; `issue view` / `api` serve $CASE_JSON in either shape, honouring --jq/-q.
 cat > "$TMP/bin/gh" <<'SH'
@@ -27,7 +26,7 @@ if [ -n "$jq_expr" ]; then printf '%s' "$src" | jq -r "$jq_expr"; else printf '%
 SH
 chmod +x "$TMP/bin/gh"; export PATH="$TMP/bin:$PATH"
 
-for fn in terminal_kind infra_staging_only; do
+for fn in to_epoch terminal_kind infra_staging_only; do
   eval "$(awk -v f="$fn" '$0 ~ "^"f"\\(\\) \\{" {on=1} on {print} on && /^}/ {exit}' "$SUP")"
 done
 source "$HERE/../../../hooks/pipeline-markers.sh"; source "$HERE/../pipeline-lib.sh"
@@ -104,6 +103,24 @@ infra_staging_only acme/widgets 7 "${U}5" >/dev/null 2>&1; [ $? = 1 ] && ok || b
 build "$BODY_OK" "$(c 3 2026-01-01T01:00:00Z $'**[fullstack-developer] BLOCKED**\nx')" "$(c 4 2026-01-01T02:00:00Z "$DEC")"
 check_kind "code-track BLOCKED + decision resumes" "" '**[fullstack-developer] BLOCKED**' '**[project-manager] DECISION**'
 check_kind "code-track BLOCKED, no decision: gate" gate '**[fullstack-developer] BLOCKED**' ''
+
+# ---- operator variants of the JP-only / prod / Scope / Resolves negatives
+build "$BODY_OK" "$(c 1 2026-01-01T00:00:00Z "$PLAN_OK")" "$(c 3 2026-01-01T01:00:00Z "$OP"$'\nBLOCKED\nBlocked on: needs prod write')" "$(c 4 2026-01-01T02:00:00Z "$DEC")"
+both "neg: operator BLOCKED needs prod write" no "$OP"
+build $'Why: x' "$(c 1 2026-01-01T00:00:00Z "$PLAN_OK")" "$(c 3 2026-01-01T01:00:00Z "$OP"$'\n'"$BLK_SEQ")" "$(c 4 2026-01-01T02:00:00Z "$DEC")"
+both "neg: operator, body lacks Scope line" no "$OP"
+build "$BODY_OK" "$(c 1 2026-01-01T00:00:00Z "$PLAN_OK")" "$(c 3 2026-01-01T01:00:00Z "$OP"$'\n'"$BLK_SEQ")" "$(c 4 2026-01-01T02:00:00Z "${DEC/${U}3/${U}9}")"
+both "neg: operator, Resolves points elsewhere" no "$OP"
+
+# ---- docs (AC2, AC4, AC5): mechanical greps on the repo's own files
+ROOT="$HERE/../../.."
+ORCH="$ROOT/agents/orchestrator.md"; CMD="$ROOT/CLAUDE.md"
+grep -q 'resume nothing on the infra track' "$ORCH" && bad "AC5: 'resume nothing on the infra track' removed" "still present" || ok
+grep -q 'any infra-track `BLOCKED` except' "$ORCH" && ok || bad "AC2: carve-out qualifies infra-track BLOCKED" "carve-out not qualified with an 'except' clause"
+grep -q 'any infra-track `BLOCKED` [^e]' "$ORCH" && bad "AC2: no unqualified 'any infra-track BLOCKED'" "unqualified form present" || ok
+grep -E '^\| `\[infra-planner\] BLOCKED`.*(Scope: staging-only)' "$ORCH" | grep -q 'PROJECT-MANAGER\|project-manager' && ok || bad "AC2: infra table row names Scope: staging-only + project-manager decision" "row missing"
+grep -q 'Scope: staging-only' "$CMD" && ok || bad "AC4: CLAUDE.md mentions Scope: staging-only" "missing"
+grep -qi 'infra' "$CMD" && grep 'Scope: staging-only' "$CMD" | grep -qi 'infra' && ok || bad "AC4: CLAUDE.md ties Scope: staging-only to infra BLOCKED resume" "missing"
 
 echo "terminal_kind.test.sh: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
