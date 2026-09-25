@@ -93,6 +93,13 @@ terminal_kind() {
   echo ""
 }
 
+# infra_staging_only <owner/repo> <issue> <blocked-comment-url> → 0 when a staging-only infra BLOCKED may be resumed by a
+# delegated decision, 1 otherwise (claude-agents#89). STUB — the developer replaces this.
+infra_staging_only() {
+  echo "NotImplemented: infra_staging_only" >&2
+  return 99
+}
+
 slack_thread_for() {  # <owner/repo> <issue> → "<channel> <ts>" from the last "**[pipeline-bridge] NOTE** slack-thread: <channel>:<ts>" comment, only if <channel> is $SLACK_ENGINEERING_CHANNEL; else nothing
   local owner_repo=$1 issue=$2 prefix line ch ts
   prefix='**[pipeline-bridge] NOTE** slack-thread: '
