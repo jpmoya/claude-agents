@@ -67,14 +67,14 @@ issue_is_closed() {
   [ "$state" = "CLOSED" ]
 }
 
-# terminal_kind <gate marker> <issue> [<project-manager marker posted after it>] → prints "done" / "gate" /
+# terminal_kind <gate marker> <issue> [<project-manager marker posted after it>] [<repo dir>] → prints "done" / "gate" /
 # "grace" (BLOCKED inside the grace window: wait) / "" (not terminal). It judges the GATE marker. A later
 # `[project-manager] DECISION` / `JP CONFIRMED` lifts exactly one gate — a code-track BLOCKED — so the run takes the
 # normal restart path and the orchestrator validates and relays the decision. It never lifts MOCKUPS PENDING APPROVAL,
 # AWAITING GO, EFFORT APPROVAL NEEDED or an infra-reviewer BLOCKED. An infra planner/operator BLOCKED is lifted only when
 # infra_staging_only holds (staging-only ticket, no JP-only item; claude-agents#89); otherwise it stays with JP.
 terminal_kind() {
-  local marker=$1 issue=${2:-} decision=${3:-}
+  local marker=$1 issue=${2:-} decision=${3:-} repo=${4:-.}
   marker=${marker%%\*\*}   # markers are bold ("**[deployer] DEPLOYED**"): strip the trailing bold so the $-anchors below match
   [[ "$marker" =~ \]\ (DEPLOYED|DEPLOYED\ TO\ STAGING|APPLIED)$ ]] && { echo done; return; }
   [[ "$marker" =~ \]\ (MOCKUPS\ PENDING\ APPROVAL|AWAITING\ GO|EFFORT\ APPROVAL\ NEEDED)$ ]] && { echo gate; return; }
@@ -85,7 +85,7 @@ terminal_kind() {
       if ! [[ "$marker" =~ ^\*\*\[infra- ]]; then echo ""; return; fi
       if [[ "$marker" =~ ^\*\*\[infra-(planner|operator)\] ]]; then
         local orepo burl
-        orepo=$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)
+        orepo=$(cd "$repo" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)
         burl=$(gh issue view "$issue" --repo "$orepo" --json comments --jq \
           '[.comments[] | select(.body | split("\n")[0] | test("^\\*\\*\\[infra-(planner|operator)\\] BLOCKED"))] | last | .url' 2>/dev/null)
         if [ -n "$orepo" ] && [ -n "$burl" ] && infra_staging_only "$orepo" "$issue" "$burl"; then echo ""; return; fi
@@ -279,7 +279,7 @@ for f in "$PIPE"/orch-*.pid; do
   marker=$(latest_marker "$repo" "$issue")
   decision=""
   case "$marker" in *$'\n'*) decision=${marker#*$'\n'}; marker=${marker%%$'\n'*} ;; esac   # line 2 = [project-manager] marker after the gate marker
-  case "$(terminal_kind "$marker" "$issue" "$decision")" in
+  case "$(terminal_kind "$marker" "$issue" "$decision" "$repo")" in
     done)
       touch "$PIPE/orch-$issue.done"
       slog "[done] #$issue — terminal marker: $marker"
