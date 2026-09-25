@@ -91,7 +91,7 @@ Infrastructure and configuration changes — DNS, Vercel domains/env/redirects, 
 | Latest marker on the issue | Action |
 |---|---|
 | none | Dispatch **infra-planner** (detached — it runs inventory commands). |
-| `[infra-planner] PLAN READY` | Dispatch **infra-reviewer** (foreground). |
+| `[infra-planner] PLAN READY` | Dispatch **infra-reviewer** (detached). |
 | `[infra-reviewer] PLAN FAIL: n findings` | Re-dispatch **infra-planner** to revise; it posts a fresh `PLAN READY`, which re-enters review. Counts toward the loop cap (2 revision cycles, then escalate to JP with the findings history). |
 | `[infra-reviewer] PLAN PASS` | Dispatch **infra-operator** (detached — DNS verification can wait minutes). It runs staging steps and any prod step already covered by a JP `go`; otherwise it stops at the first prod step. |
 | `[infra-operator] AWAITING GO` | **Terminal — human gate.** Report to JP: steps done, next prod step, what is held and why. Stop. |
@@ -230,11 +230,11 @@ wait_for_capacity() {
 }
 ```
 
-Call `wait_for_capacity` before every `claude` invocation (both foreground and detached). If it returns non-zero, do not dispatch — report to JP as a stall with reason "API rate limit — too many concurrent sessions." Log the gate result as a `validate` line with `"stage":"concurrency-gate"`.
+Call `wait_for_capacity` before every `claude` invocation (every dispatch is detached). If it returns non-zero, do not dispatch — report to JP as a stall with reason "API rate limit — too many concurrent sessions." Log the gate result as a `validate` line with `"stage":"concurrency-gate"`.
 
 ## How to dispatch
 
-Subagents can't spawn subagents, so each stage runs as its own headless Claude Code process from the repo root, **with the stage agent as that process's main agent** (`claude --agent <agent-name> -p`). Never launch a stage as `claude -p "Use the <agent-name> subagent to …"`: that makes a generic wrapper session which has not read the agent definition, backgrounds the real agent, and — when the handoff hook stops it — posts made-up first lines like `**[deployer] MARKER** BLOCKED` that bury the real marker (claude-agents#5, 2026-09-17). **Long-running stages** (test-writer, fullstack-developer, fix cycles) must be detached so the 600s Bash timeout never arms; **short stages** (reviewers, deployer) can run foreground — with `timeout 600` on the `claude` command so a stuck reviewer is killed at the 10-minute cap rather than hanging the Bash call. When launching fullstack-developer, prefix the command with `PIPELINE_LOCKED_TESTS_FILE=/tmp/pipeline/locked-<issue>.txt` so the lock hook is armed in that process.
+Subagents can't spawn subagents, so each stage runs as its own headless Claude Code process from the repo root, **with the stage agent as that process's main agent** (`claude --agent <agent-name> -p`). Never launch a stage as `claude -p "Use the <agent-name> subagent to …"`: that makes a generic wrapper session which has not read the agent definition, backgrounds the real agent, and — when the handoff hook stops it — posts made-up first lines like `**[deployer] MARKER** BLOCKED` that bury the real marker (claude-agents#5, 2026-09-17). **Every stage is dispatched detached** (`nohup … &`, then the bounded poll below): a stage started inside the orchestrator's own Bash call becomes a session task and is killed when the orchestrator ends its turn (scheduler#792, #882). When launching fullstack-developer, prefix the command with `PIPELINE_LOCKED_TESTS_FILE=/tmp/pipeline/locked-<issue>.txt` so the lock hook is armed in that process.
 
 ### Every launch: stage coordinates for the handoff hook
 
@@ -246,18 +246,24 @@ count <N> <agent-name> > /tmp/pipeline/<N>-<agent-name>-before.txt
 export PIPELINE_ISSUE=<N> PIPELINE_AGENT=<agent-name> PIPELINE_REPO=<owner>/<repo>
 ```
 
-(`count` is defined under **Long stages**; `<agent-name>` is the marker name the agent posts with, e.g. `test-reviewer`.) Unset or stale coordinates make the hook inert, so re-run these two lines for each launch, including fix cycles and parallel reviewers (run each reviewer in its own subshell with its own exports).
+(`count` is defined under **Every stage — detached + poll**; `<agent-name>` is the marker name the agent posts with, e.g. `test-reviewer`.) Unset or stale coordinates make the hook inert, so re-run these two lines for each launch, including fix cycles and parallel reviewers (run each reviewer in its own subshell with its own exports).
 
-### Short stages (reviewers, deployer) — foreground
+### Parallel reviewers (code-reviewer + test-reviewer) — both detached
+
+Launch each in its own subshell with its own stage-coordinate exports, record both PIDs, then poll both (never a shell wait; neither process is held by this Bash call):
 
 ```bash
 cd <repo-root>
-claude --dangerously-skip-permissions --agent <agent-name> -p "<task>. Repo: <owner>/<repo>. Issue: #<N>." > /tmp/pipeline/run-<issue>-<agent>.log 2>&1; tail -5 /tmp/pipeline/run-<issue>-<agent>.log
+nohup claude --dangerously-skip-permissions --agent code-reviewer -p "<task>. Repo: <owner>/<repo>. Issue: #<N>." > /tmp/pipeline/run-<issue>-code-reviewer.log 2>&1 &
+PID_CODE=$!
+nohup claude --dangerously-skip-permissions --agent test-reviewer -p "<task>. Repo: <owner>/<repo>. Issue: #<N>." > /tmp/pipeline/run-<issue>-test-reviewer.log 2>&1 &
+PID_TEST=$!
+echo "PID_CODE=$PID_CODE PID_TEST=$PID_TEST"
 ```
 
-For the reviewer stage, launch both in parallel (background both in one shell, `wait`). All agents use the model and effort from their frontmatter — do not pass `--model` or `--effort` overrides.
+Poll with the loop below, checking both markers (`BEFORE_CODE`/`BEFORE_TEST`) and both PIDs (`kill -0 "$PID_CODE"`, `kill -0 "$PID_TEST"`); a reviewer that exited with no marker ends its own wait. Deployer and infra-reviewer use the single-stage template below.
 
-### Long stages (fullstack-developer, fix cycles) — detached + poll
+### Every stage — detached + poll
 
 ```bash
 cd <repo-root>
@@ -347,7 +353,7 @@ Answering "what happened to #42" is then `grep '"issue":42' ~/.claude/pipeline/r
 - Never skip a stage or downgrade a FAIL. The only exits are: reviews PASS with the lock intact (deployer or hand to JP), BLOCKED (hand to JP), or loop cap hit (hand to JP) — except that a validated `[project-manager]` decision resumes those two (and the TEST DEFECT cap) per the routing table.
 - Never dispatch fullstack-developer without the lock exported once `TESTS APPROVED` exists (full lane). Never edit the lock file after writing it. Never put a ticket on the fast lane yourself — the PM's `Lane:` line or JP's label decides.
 - One issue per invocation. If asked to run several, do them sequentially and summarize each.
-- **Never end your turn assuming something will wake you up later.** You are a one-shot headless process — there is no notification, callback, or monitor that resumes *this* invocation once it exits. If you dispatch a long stage (test-writer, fullstack-developer) and stop without running the poll loop in **Long stages** to completion, you are simply gone; the only thing that runs next is the external supervisor launching a brand-new orchestrator with no memory of this one, 2 minutes later. Concretely: never write or imply "I'll wait for a notification / the monitor will tell me / check back later" and then finish your response — that's a silent exit with unfinished work, indistinguishable from a stall. Either poll to completion in this same invocation (marker found, cap hit, or process died) and act on the result, or explicitly report a stall to JP. (Incident: #220, 2026-09-17 — the orchestrator dispatched test-writer, said "I'll stop here and wait for the monitor notification," and exited; the supervisor restarted it 3 times with the same result before pausing auto-restart.)
+- **Never end your turn assuming something will wake you up later.** You are a one-shot headless process — there is no notification, callback, or monitor that resumes *this* invocation once it exits. If you dispatch a long stage (test-writer, fullstack-developer) and stop without running the poll loop in **Every stage — detached + poll** to completion, you are simply gone; the only thing that runs next is the external supervisor launching a brand-new orchestrator with no memory of this one, 2 minutes later. Concretely: never write or imply "I'll wait for a notification / the monitor will tell me / check back later" and then finish your response — that's a silent exit with unfinished work, indistinguishable from a stall. Either poll to completion in this same invocation (marker found, cap hit, or process died) and act on the result, or explicitly report a stall to JP. (Incident: #220, 2026-09-17 — the orchestrator dispatched test-writer, said "I'll stop here and wait for the monitor notification," and exited; the supervisor restarted it 3 times with the same result before pausing auto-restart.)
 - On the infra track, never dispatch infra-operator past an `AWAITING GO` without a go comment that passes the validation above. JP's go in chat, in a PR, or on another issue does not count — it has to be on the issue.
 
 ## Report to JP (end of every invocation)
