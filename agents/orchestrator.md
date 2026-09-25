@@ -254,14 +254,41 @@ Launch each in its own subshell with its own stage-coordinate exports, record bo
 
 ```bash
 cd <repo-root>
-nohup claude --dangerously-skip-permissions --agent code-reviewer -p "<task>. Repo: <owner>/<repo>. Issue: #<N>." > /tmp/pipeline/run-<issue>-code-reviewer.log 2>&1 &
-PID_CODE=$!
-nohup claude --dangerously-skip-permissions --agent test-reviewer -p "<task>. Repo: <owner>/<repo>. Issue: #<N>." > /tmp/pipeline/run-<issue>-test-reviewer.log 2>&1 &
-PID_TEST=$!
+mkdir -p /tmp/pipeline
+. ~/.claude/hooks/pipeline-markers.sh   # and define count() from the single-stage section below
+BEFORE_CODE=$(count <N> code-reviewer); echo "$BEFORE_CODE" > /tmp/pipeline/<N>-code-reviewer-before.txt
+BEFORE_TEST=$(count <N> test-reviewer); echo "$BEFORE_TEST" > /tmp/pipeline/<N>-test-reviewer-before.txt
+( export PIPELINE_ISSUE=<N> PIPELINE_AGENT=code-reviewer PIPELINE_REPO=<owner>/<repo>
+  nohup claude --dangerously-skip-permissions --agent code-reviewer -p "<task>. Repo: <owner>/<repo>. Issue: #<N>." > /tmp/pipeline/run-<N>-code-reviewer.log 2>&1 &
+  echo $! > /tmp/pipeline/<N>-code-reviewer.pid )
+( export PIPELINE_ISSUE=<N> PIPELINE_AGENT=test-reviewer PIPELINE_REPO=<owner>/<repo>
+  nohup claude --dangerously-skip-permissions --agent test-reviewer -p "<task>. Repo: <owner>/<repo>. Issue: #<N>." > /tmp/pipeline/run-<N>-test-reviewer.log 2>&1 &
+  echo $! > /tmp/pipeline/<N>-test-reviewer.pid )
+PID_CODE=$(cat /tmp/pipeline/<N>-code-reviewer.pid); PID_TEST=$(cat /tmp/pipeline/<N>-test-reviewer.pid)
 echo "PID_CODE=$PID_CODE PID_TEST=$PID_TEST"
 ```
 
-Poll with the loop below, checking both markers (`BEFORE_CODE`/`BEFORE_TEST`) and both PIDs (`kill -0 "$PID_CODE"`, `kill -0 "$PID_TEST"`); a reviewer that exited with no marker ends its own wait. Deployer and infra-reviewer use the single-stage template below.
+Poll both in one loop (chunks of up to 36 × 15s; repeat chunks to the 10 min reviewer cap). A reviewer is resolved when it posted a new marker or its process exited; the wait ends when **both** are resolved:
+
+```bash
+DONE_CODE=0; DONE_TEST=0
+for i in $(seq 1 36); do
+  sleep 15
+  if [ "$DONE_CODE" = 0 ]; then
+    NOW_CODE=$(count <N> code-reviewer)
+    if [ "$NOW_CODE" -gt "$BEFORE_CODE" ]; then echo "code-reviewer: MARKER FOUND"; DONE_CODE=1
+    elif ! kill -0 "$PID_CODE" 2>/dev/null; then echo "code-reviewer: PROCESS EXITED, NO MARKER"; DONE_CODE=1; fi
+  fi
+  if [ "$DONE_TEST" = 0 ]; then
+    NOW_TEST=$(count <N> test-reviewer)
+    if [ "$NOW_TEST" -gt "$BEFORE_TEST" ]; then echo "test-reviewer: MARKER FOUND"; DONE_TEST=1
+    elif ! kill -0 "$PID_TEST" 2>/dev/null; then echo "test-reviewer: PROCESS EXITED, NO MARKER"; DONE_TEST=1; fi
+  fi
+  [ "$DONE_CODE" = 1 ] && [ "$DONE_TEST" = 1 ] && break
+done
+```
+
+Each reviewer is then handled independently by the no-marker rules below (recovery for one that exited, cap-hit report for one still alive). Deployer and infra-reviewer use the single-stage template below.
 
 ### Every stage — detached + poll
 
