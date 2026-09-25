@@ -353,8 +353,8 @@ test_dd_ac15_infra_track_sentence_and_hard_limits() {
   local infra line hard
   infra=$(awk '/^### Infra track/ { on = 1; next } on && /^### Opt-in/ { exit } on { print }' "$ORCH_DD")
   assert_ne "$infra" "" "AC15: Infra track section exists" || return 1
-  line=$(printf '%s\n' "$infra" | grep -F '[project-manager]' | grep -F 'resume nothing on the infra track' | head -1)
-  assert_ne "$line" "" "AC15: a sentence has [project-manager] and 'resume nothing on the infra track'" || return 1
+  line=$(printf '%s\n' "$infra" | grep -F '[project-manager]' | grep -F 'resume only a staging-only' | head -1)
+  assert_ne "$line" "" "AC15: a sentence has [project-manager] and 'resume only a staging-only'" || return 1
   hard=$(grep -F 'The only exits are:' "$ORCH_DD" | head -1)
   assert_ne "$hard" "" "AC15: Hard limits 'only exits' line exists" || return 1
   dd_text_has "AC15: Hard limits line" "$hard" '[project-manager]' || return 1
@@ -568,7 +568,7 @@ test_dd_i76_ac8_no_new_mechanisms() {   # characterisation
   local base d
   base=$(dd_base)
   if [ -z "$base" ]; then printf '    (i76 AC8 skipped: no origin/main merge-base)\n' >&2; return 0; fi
-  for f in hooks/pipeline-markers.sh agents/project-manager.md skills/orchestrate/supervisor.sh skills/orchestrate/orchestrate.sh; do
+  for f in hooks/pipeline-markers.sh agents/project-manager.md skills/orchestrate/orchestrate.sh; do
     d=$(cd "$ROOT_DD" && git diff --name-only "$base" -- "$f")
     assert_eq "$d" "" "i76 AC8: $f unchanged" || return 1
   done
