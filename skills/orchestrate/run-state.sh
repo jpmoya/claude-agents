@@ -28,17 +28,48 @@ try: print(int(os.path.getmtime(sys.argv[1])))
 except OSError: pass" "$1" 2>/dev/null
 }
 
-_rs_stage_for() {  # _rs_stage_for <issue> -> agent name of the newest-mtime run-<issue>-<agent>.log, else empty
-  local issue=$1 f best_f="" best_ts=-1 ts base agent
-  for f in "$PIPE"/run-"$issue"-*.log; do
-    [ -e "$f" ] || break
-    ts=$(_rs_mtime "$f"); [ -n "$ts" ] || continue
-    if [ "$ts" -gt "$best_ts" ]; then best_ts=$ts; best_f=$f; fi
-  done
-  [ -n "$best_f" ] || return 0
-  base=$(basename "$best_f" .log)          # run-<issue>-<agent>
-  agent=${base#run-"$issue"-}
-  printf '%s' "$agent"
+_rs_ps_lines() {  # live claude processes: <start_epoch> TAB <PIPELINE_ISSUE> TAB <command line>; RS_PS_CMD overrides (tests)
+  if [ -n "${RS_PS_CMD:-}" ]; then bash -c "$RS_PS_CMD" 2>/dev/null; return 0; fi
+  if [ "$(uname)" = "Linux" ]; then
+    python3 - <<'PY' 2>/dev/null
+import os, re
+hz = os.sysconf("SC_CLK_TCK")
+try:
+    btime = [int(l.split()[1]) for l in open("/proc/stat") if l.startswith("btime")][0]
+except Exception:
+    btime = 0
+for pid in os.listdir("/proc"):
+    if not pid.isdigit():
+        continue
+    try:
+        argv = open("/proc/%s/cmdline" % pid, "rb").read().split(b"\0")
+        if not argv or os.path.basename(argv[0].decode("utf-8", "replace")) != "claude":
+            continue
+        env = dict(kv.split(b"=", 1) for kv in open("/proc/%s/environ" % pid, "rb").read().split(b"\0") if b"=" in kv)
+        issue = env.get(b"PIPELINE_ISSUE", b"").decode()
+        start = btime + int(open("/proc/%s/stat" % pid).read().rsplit(")", 1)[1].split()[19]) // hz
+        cmd = " ".join(a.decode("utf-8", "replace") for a in argv if a).replace("\t", " ").replace("\n", " ")
+        print("%d\t%s\t%s" % (start, issue, cmd))
+    except Exception:
+        continue
+PY
+  else
+    # macOS: `ps eww` prints the environment after the command line; start time is not needed to rank
+    # parallel stages, so use pid order (newer pid = newer start) as the epoch stand-in.
+    ps -axeww -o pid=,command= 2>/dev/null | awk '/--agent / && /PIPELINE_ISSUE=/ {
+      pid=$1; iss=$0; sub(/.*PIPELINE_ISSUE=/, "", iss); sub(/[ \t].*/, "", iss);
+      cmd=$0; sub(/^[ \t]*[0-9]+ +/, "", cmd); printf "%d\t%s\t%s\n", pid, iss, cmd }'
+  fi
+}
+
+_rs_live_stage() {  # _rs_live_stage <issue> <alive 0|1> -> --agent of the newest-start live process with PIPELINE_ISSUE=<issue>;
+  # orchestrator alive + no stage line -> "orchestrator"; nothing alive -> empty
+  local issue=$1 alive=${2:-0} best
+  best=$(_rs_ps_lines | awk -F'\t' -v want="$issue" '$2 == want && match($3, /--agent [^ ]+/) {
+    a = substr($3, RSTART + 8, RLENGTH - 8); if (!found || $1 + 0 >= best) { best = $1 + 0; found = 1; agent = a } }
+    END { if (found) print agent }')
+  if [ -n "$best" ]; then printf '%s' "$best"
+  elif [ "$alive" = 1 ]; then printf 'orchestrator'; fi
 }
 
 _rs_last_activity_for() {  # _rs_last_activity_for <issue> -> newest epoch among orch-<issue>.log and run-<issue>-*.log
@@ -73,7 +104,7 @@ derive_runs() {
     fi
     started=$(cat "$PIPE/orch-$issue.start" 2>/dev/null || echo "")
     restarts=$(python3 -c "import json; print(json.load(open('$PIPE/orch-$issue.restarts')).get('total',0))" 2>/dev/null || echo 0)
-    stage=$(_rs_stage_for "$issue")
+    stage=$(_rs_live_stage "$issue" "$([ "$state_code" = running ] && echo 1 || echo 0)")
     last_activity=$(_rs_last_activity_for "$issue")
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$issue" "$repo" "$state_code" "$pid" "$started" "$last_activity" "$restarts" "$stage"

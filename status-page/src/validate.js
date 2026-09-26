@@ -69,11 +69,13 @@ function sanitiseTitle(value) {
 
 /** Sanitises `runs[].stage`: known agent-roster enum, else "other". */
 function sanitiseStage(value) {
+  if (value === undefined || value === null || value === '') return '';
   return typeof value === 'string' && STAGE_VOCAB.includes(value) ? value : 'other';
 }
 
 /** Sanitises `runs[].marker`: known routing-marker enum, else "other". */
 function sanitiseMarker(value) {
+  if (value === undefined || value === null || value === '') return '';
   return typeof value === 'string' && MARKER_VOCAB.includes(value) ? value : 'other';
 }
 

@@ -150,12 +150,7 @@ except Exception: print('?')
     # Ticket title for the status board (#29) — fetched once here, before the capacity check so a queued run has it
     # too; the status reporter only ever reads the file. A failed or empty fetch leaves no title file and never blocks
     # the launch.
-    TITLE=$(cd "$REPO" && gh issue view "$ISSUE" --json title --jq .title 2>/dev/null) || TITLE=""
-    if [ -n "$TITLE" ]; then
-      printf '%s\n' "$TITLE" > "$PIPE/orch-$ISSUE.title"
-    else
-      rm -f "$PIPE/orch-$ISSUE.title"
-    fi
+    write_title_marker "$REPO" "$ISSUE" 1
     if ! has_capacity; then
       python3 -c "
 import json, datetime, time
