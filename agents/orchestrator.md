@@ -188,7 +188,7 @@ Before launching any stage, run the checks for that stage. These are yes/no chec
 When a check fails:
 
 - **Ticket content missing** (no Why / ACs / Files, or no `UI change:` / `Lane:` line on the READY comment, or `READY FOR ARCHITECTURE` on a fast-lane ticket): re-dispatch the product-manager once with the exact list of missing sections/lines in the prompt. If the next validation still fails, terminal — report to JP.
-- **Structural** (blocked-by still open, PR missing/closed-unmerged/draft, mockups unapproved, SA design missing): first log `log_run '"event":"validate","repo":"<owner/repo>","issue":<N>,"stage":"structural","result":"fail","reason":"<failing check>"'`, then the `terminal` line: report to JP with the failing check. Do not dispatch around it. The supervisor holds the ticket on this line; a start-gate report says it is held until it is relaunched after #N closes.
+- **Structural** (blocked-by still open, PR missing/closed-unmerged/draft, mockups unapproved, SA design missing): first log `log_run '"event":"validate","stage":"structural","result":"fail","repo":"<owner/repo>","issue":<N>,"reason":"<failing check>"'`, then the `terminal` line: report to JP with the failing check. Do not dispatch around it. The supervisor holds the ticket on this line; a start-gate report says it is held until it is relaunched after #N closes.
 - **Delegated decision** (any check in that row fails): terminal — report to JP, naming the failing check. Do not dispatch on a decision that does not validate, and do not repair it yourself.
 
 Log every validation result (see Run log). Validation replaces any self-audit by the upstream agent: the PM writes the ticket, the orchestrator decides whether it's dispatchable.
