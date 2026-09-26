@@ -70,6 +70,23 @@ test_ms_structural_fail_in_earlier_run_restarts() {
   assert_eq "$MS_HELD" "absent" "#92: no .held" || return 1
 }
 
+# structural fail logged for a different issue (99) must not hold #42
+test_ms_structural_fail_other_issue_does_not_hold() {
+  sq_env open
+  mk_restarting "$SQ_PIPE" 42 "$SQ_REPO"
+  sq_iso_ago 600 > "$SQ_PIPE/orch-42.launched-at"
+  sq_marker "$MS_IMPL"
+  mkdir -p "$SQ_HOME/.claude/pipeline"
+  printf '{"ts":"%s","host":"h","event":"validate","repo":"project-a/repo-a","issue":99,"stage":"structural","result":"fail","reason":"x"}\n' \
+    "$(sq_iso_ago 60)" >> "$SQ_HOME/.claude/pipeline/runs.jsonl"
+  sq_tick
+  local log held
+  log=$(sq_log); held=$(sq_present "$SQ_PIPE/orch-42.held")
+  sq_cleanup
+  assert_contains "$log" "[queue-restart] #42" "#92: other issue's structural fail does not hold #42" || return 1
+  assert_eq "$held" "absent" "#92: no .held for #42" || return 1
+}
+
 # ---- doc pins (text of the agent definitions) ----
 
 ms_has() { grep -qF -- "$2" "$1" || { fail "$(basename "$1"): missing [$2]"; return 1; }; }
@@ -86,11 +103,13 @@ test_ms_orchestrator_merged_pr_route() {
   assert_contains "$row" "IMPLEMENTED" "#92: gate marker IMPLEMENTED covered" || return 1
   assert_contains "$row" "PASS" "#92: gate marker code-reviewer PASS (deployer merged, no marker) covered" || return 1
   assert_contains "$row" "closingIssuesReferences" "#92: row states the route does not key on closingIssuesReferences" || return 1
+  assert_contains "$row" "no reviewer" "#92: dispatches no reviewer for an already-merged PR" || return 1
+  assert_contains "$row" "unmerged" "#92: closed, unmerged PR stays a Structural stop" || return 1
+  assert_contains "$row" "Structural" "#92: closed, unmerged PR stays a Structural stop" || return 1
 }
 
 test_ms_orchestrator_structural_log_line() {
-  ms_has "$ORCH_MS" '"event":"validate","stage":"structural","result":"fail"' 2>/dev/null \
-    || ms_has "$ORCH_MS" '"stage":"structural"' || return 1
+  ms_has "$ORCH_MS" '"event":"validate","stage":"structural","result":"fail"' || return 1
   local line
   line=$(grep -F '**Structural**' "$ORCH_MS" | head -1)
   assert_contains "$line" "structural" "#92: Structural bullet says to log the structural fail line" || return 1
@@ -109,12 +128,16 @@ test_ms_deployer_post_merge_mode() {
   ms_has "$DEPL_MS" "DEPLOYED TO STAGING" || return 1
   local para
   para=$(grep -F 'post-merge mode' "$DEPL_MS")
+  assert_contains "$para" "reviewer" "#92: exception skips the reviewer-pass input" || return 1
+  assert_contains "$para" "OPEN" "#92: exception skips the OPEN check" || return 1
+  assert_contains "$para" "Skip" "#92: exception says skip (steps 1-2)" || return 1
+  assert_contains "$para" "merge commit" "#92: deploy job verified for the merge commit" || return 1
   assert_contains "$para" "MERGED" "#92: post-merge mode starts from a MERGED PR (skips the OPEN check)" || return 1
   assert_contains "$para" "migration" "#92: post-merge mode checks migrations" || return 1
   assert_contains "$para" "staging project" "#92: migrations checked on the staging project" || return 1
   assert_contains "$para" "refuse" "#92: missing migration applied under the refuse-list" || return 1
   assert_contains "$para" "BLOCKED" "#92: unappliable migration -> BLOCKED" || return 1
-  assert_contains "$para" "deploy" "#92: verifies the deploy job for the merge commit" || return 1
+  assert_contains "$para" "deploy job" "#92: verifies the deploy job" || return 1
   assert_contains "$para" "milestone" "#92: runs the milestone check" || return 1
 }
 
@@ -129,6 +152,7 @@ test_ms_project_manager_wording_replaced() {
 run_test test_ms_structural_fail_in_this_run_holds
 run_test test_ms_concurrency_gate_fail_in_this_run_restarts
 run_test test_ms_structural_fail_in_earlier_run_restarts
+run_test test_ms_structural_fail_other_issue_does_not_hold
 run_test test_ms_orchestrator_merged_pr_route
 run_test test_ms_orchestrator_structural_log_line
 run_test test_ms_orchestrator_start_gate_wording
