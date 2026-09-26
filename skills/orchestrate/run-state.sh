@@ -65,7 +65,7 @@ PY
 _rs_live_stage() {  # _rs_live_stage <issue> <alive 0|1> -> --agent of the newest-start live process with PIPELINE_ISSUE=<issue>;
   # orchestrator alive + no stage line -> "orchestrator"; nothing alive -> empty
   local issue=$1 alive=${2:-0} best
-  best=$(_rs_ps_lines | awk -F'\t' -v want="$issue" '$2 == want && match($3, /--agent [^ ]+/) {
+  best=$(_rs_ps_lines | awk -F'\t' -v want="$issue" '$2 == want && match($3, /--agent [^ ]+/) && $3 !~ /--agent orchestrator([ \t]|$)/ {
     a = substr($3, RSTART + 8, RLENGTH - 8); if (!found || $1 + 0 >= best) { best = $1 + 0; found = 1; agent = a } }
     END { if (found) print agent }')
   if [ -n "$best" ]; then printf '%s' "$best"
