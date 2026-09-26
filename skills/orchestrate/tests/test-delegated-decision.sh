@@ -396,7 +396,7 @@ test_dd_ac18_project_manager_sections_and_untouched_parts_byte_identical() {
   head=$(awk '/^## 2\. How to decide/{exit} {print}' "$PMGR_DD" | dd_sha)
   tail=$(awk '/^## 3\. Start-up/{f=1} f' "$PMGR_DD" | dd_sha)
   assert_eq "$head" "25d77b367bb6ecb6b9762340ffdb1a654b8c09a5e9aaff36f9ba972d4466d50e" "AC18: frontmatter + section 1" || return 1
-  assert_eq "$tail" "e34f6e335d9fb8481cf702dd06e19ddb940147907b64504f69360669728e82a2" "AC18: sections 3-8" || return 1
+  assert_eq "$tail" "3ba1df1a9efe351c23b4ca9d3d965003f66bb89834d07be0c184bb86b399b229" "AC18: sections 3-8 (re-pinned for #92 AC3)" || return 1
 }
 
 # ---------------------------------------------------------------------------------------- AC19-AC20 docs
@@ -568,7 +568,7 @@ test_dd_i76_ac8_no_new_mechanisms() {   # characterisation
   local base d
   base=$(dd_base)
   if [ -z "$base" ]; then printf '    (i76 AC8 skipped: no origin/main merge-base)\n' >&2; return 0; fi
-  for f in hooks/pipeline-markers.sh agents/project-manager.md skills/orchestrate/orchestrate.sh; do
+  for f in hooks/pipeline-markers.sh skills/orchestrate/orchestrate.sh; do
     d=$(cd "$ROOT_DD" && git diff --name-only "$base" -- "$f")
     assert_eq "$d" "" "i76 AC8: $f unchanged" || return 1
   done
