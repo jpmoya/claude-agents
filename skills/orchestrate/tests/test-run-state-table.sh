@@ -211,19 +211,47 @@ test_stage_log_names_are_no_longer_read() {
 
 test_stage_real_process_table_on_linux_reads_agent_and_pipeline_issue() {
   # No RS_PS_CMD: the real /proc path. A bash copy named `claude` carries PIPELINE_ISSUE in its env and
-  # `--agent deployer` in its argv (the real launch shape). Linux only.
-  [ "$(uname)" = "Linux" ] || return 0
-  local pipe tmp pid got
+  # `--agent deployer` in its argv (the real launch shape). Linux only; skipped visibly elsewhere.
+  if [ "$(uname)" != "Linux" ]; then printf '    (SKIP: real /proc lookup is Linux-only)\n' >&2; return 0; fi
+  local pipe tmp pid got i
   pipe=$(new_pipe); tmp=$(mktemp -d)
   cp "$(command -v bash)" "$tmp/claude"
   mk_running "$pipe" 890 "$pipe/repo-a"
   PIPELINE_ISSUE=890 "$tmp/claude" -c 'sleep 30; :' _ --agent deployer -p "Deploy" >/dev/null 2>&1 &
   pid=$!
-  sleep 0.3
-  got=$( unset RS_PS_CMD; derive_runs_lines "$pipe" | awk -F'\t' '$1 == 890 { print $8 }' )
+  got=""
+  for i in $(seq 1 50); do   # poll (up to 5s) until the process shows the stage, no fixed sleep
+    got=$( unset RS_PS_CMD; derive_runs_lines "$pipe" | awk -F'\t' '$1 == 890 { print $8 }' )
+    [ "$got" = "deployer" ] && break
+    sleep 0.1
+  done
   kill "$pid" 2>/dev/null; pkill -P "$pid" 2>/dev/null
   cleanup_running; rm -rf "$pipe" "$tmp"
   assert_eq "$got" "deployer" "#94: Linux /proc lookup — --agent of the process whose env has PIPELINE_ISSUE=890" || return 1
+}
+
+test_stage_macos_ps_eww_lookup_reads_agent_and_pipeline_issue() {
+  # macOS branch: uname says Darwin, `ps` prints `ps eww` lines (command line followed by the environment).
+  # Fake uname/ps on PATH; RS_PS_CMD unset. Lines are hand-written in real `ps eww` shape.
+  local pipe tmp got_a got_b
+  pipe=$(new_pipe); tmp=$(mktemp -d)
+  printf '#!/bin/bash\necho Darwin\n' > "$tmp/uname"
+  cat > "$tmp/ps" <<'PSEOF'
+#!/bin/bash
+cat <<'OUT'
+  4001 /opt/homebrew/bin/claude --agent test-writer -p Work on ticket #8900 HOME=/Users/jp PIPELINE_ISSUE=8900 PIPELINE_AGENT=test-writer TERM=dumb
+  4002 /opt/homebrew/bin/claude --agent deployer -p Deploy, mention PIPELINE_ISSUE=891 in prose HOME=/Users/jp PIPELINE_ISSUE=890 PIPELINE_AGENT=deployer TERM=dumb
+  4003 /usr/bin/vim notes.txt HOME=/Users/jp PIPELINE_ISSUE=890 TERM=dumb
+OUT
+PSEOF
+  chmod +x "$tmp/uname" "$tmp/ps"
+  mk_running "$pipe" 890 "$pipe/repo-a"
+  mk_running "$pipe" 89 "$pipe/repo-b"
+  got_a=$( unset RS_PS_CMD; PATH="$tmp:$PATH" derive_runs_lines "$pipe" | awk -F'\t' '$1 == 890 { print $8 }' )
+  got_b=$( unset RS_PS_CMD; PATH="$tmp:$PATH" derive_runs_lines "$pipe" | awk -F'\t' '$1 == 89 { print $8 }' )
+  cleanup_running; rm -rf "$pipe" "$tmp"
+  assert_eq "$got_a" "deployer" "#94: macOS ps eww — issue 890 (exact env match, not 8900, not prompt text) -> deployer" || return 1
+  assert_eq "$got_b" "orchestrator" "#94: macOS ps eww — issue 89 has no stage process (890/8900 are not prefixes) -> orchestrator" || return 1
 }
 
 test_run_state_has_no_log_name_stage_parsing() {
@@ -276,5 +304,6 @@ run_test test_stage_prompt_text_with_agent_like_words_is_ignored
 run_test test_stage_process_for_a_different_issue_is_ignored_including_prefix_numbers
 run_test test_stage_log_names_are_no_longer_read
 run_test test_stage_real_process_table_on_linux_reads_agent_and_pipeline_issue
+run_test test_stage_macos_ps_eww_lookup_reads_agent_and_pipeline_issue
 run_test test_run_state_has_no_log_name_stage_parsing
 run_test test_last_activity_at_is_newest_mtime_among_orch_and_run_logs

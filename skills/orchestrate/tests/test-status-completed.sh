@@ -567,12 +567,15 @@ test_sc_ac5_orchestrate_relaunch_clears_closed_and_marker_and_ticket_returns_to_
   local out2; out2=$(sc_print)
   local closed_after marker_after
   closed_after=$(sc_present "$SC_PIPE/orch-301.closed"); marker_after=$(sc_present "$SC_PIPE/orch-301.marker")
+  local marker_content; marker_content=$(cat "$SC_PIPE/orch-301.marker" 2>/dev/null)
   sc_cleanup
   assert_eq "$closed_before:$marker_before" "present:present" "AC5: control — reconcile wrote .closed and .marker" || return 1
   assert_eq "$(sc_completed_issues "$out1")" "301" "AC5: control — the closed ticket was in completed[]" || return 1
   assert_contains "$launch_out" "launched orchestrator" "AC5: relaunch took the launch path (scenario sanity)" || return 1
   assert_eq "$closed_after" "absent" "AC5: orchestrate.sh clears orch-<n>.closed on launch" || return 1
-  assert_eq "$marker_after" "absent" "AC5: orchestrate.sh clears orch-<n>.marker on launch" || return 1
+  # #94 AC3: launch writes the current GitHub marker (DEPLOYED, set above) instead of deleting the file
+  assert_eq "$marker_after" "present" "AC5/#94 AC3: orchestrate.sh rewrites orch-<n>.marker on launch (current GitHub marker)" || return 1
+  assert_eq "$marker_content" "DEPLOYED" "#94 AC3: rewritten marker holds the current GitHub marker name" || return 1
   assert_ne "$(sc_run_field "$out2" 301 state)" "NORUN" "AC5: the relaunched ticket is back in runs[]" || return 1
   assert_eq "$(sc_completed_issues "$out2")" "" "AC5: ...and absent from completed[]" || return 1
 }
