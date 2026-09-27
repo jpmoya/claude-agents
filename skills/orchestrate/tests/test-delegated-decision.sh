@@ -420,7 +420,7 @@ test_dd_ac19_claude_md_paragraph() {
 }
 
 test_dd_ac20_agents_readme_roster_row() {
-  dd_has "$AGREADME_DD" '| project-manager | fable | high |' || return 1
+  dd_has "$AGREADME_DD" '| project-manager | opus | high |' || return 1
 }
 
 # ---------------------------------------------------------------------------------------- AC21-AC22 gates
