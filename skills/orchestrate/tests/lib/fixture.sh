@@ -195,6 +195,16 @@ case "$*" in
     [ "$rc" -eq 0 ] || exit "$rc"
     title=$(cat "$HERE/gh-issue-title" 2>/dev/null || echo "Fixture title")
     json=$(jq -n --arg title "$title" '{title:$title}')
+    # Additive (#94): `--json title,comments` also returns the per-issue latest-marker comment (same files as below).
+    case "$*" in *comments*)
+      n=$(printf '%s' "$*" | sed -n 's/.*issue view \([0-9][0-9]*\).*/\1/p')
+      mf="$HERE/gh-issue-latest-marker"; [ -n "$n" ] && [ -f "$HERE/gh-issue-latest-marker-$n" ] && mf="$HERE/gh-issue-latest-marker-$n"
+      if [ -f "$mf" ]; then
+        json=$(printf '%s' "$json" | jq --arg body "$(cat "$mf")" '. + {comments: [{body: $body, createdAt: "2026-01-01T00:00:00Z"}]}')
+      else
+        json=$(printf '%s' "$json" | jq '. + {comments: []}')
+      fi ;;
+    esac
     emit "$json" "$@"
     exit 0
     ;;

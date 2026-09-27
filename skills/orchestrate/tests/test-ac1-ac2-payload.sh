@@ -38,21 +38,22 @@ test_ac1_payload_has_all_four_runs_correct_fields() {
   repoB="$pipe/repo-other"; fixture_repo "$repoB" "example-owner/totally-unmapped-repo"
 
   mk_running "$pipe" 201 "$repoA"
-  mk_stage_log "$pipe" 201 "test-writer" 5
-  mk_stage_log "$pipe" 201 "fullstack-developer" 1   # newest -> stage should read fullstack-developer
+  export RS_PS_CMD="cat $pipe/ps.fixture"   # #94: stage comes from the live process table, not log names
+  printf '%s\t201\tclaude --dangerously-skip-permissions --agent test-writer -p x\n%s\t201\tclaude --dangerously-skip-permissions --agent fullstack-developer -p x\n' \
+    "$(( $(date +%s) - 5 ))" "$(( $(date +%s) - 1 ))" > "$pipe/ps.fixture"   # newest -> fullstack-developer
 
   mk_running "$pipe" 202 "$repoB"
-  mk_stage_log "$pipe" 202 "code-reviewer" 0
 
   mk_queued "$pipe" 203 "$repoA"
 
   mk_held "$pipe" 204 "$repoB"
 
   out=$(print_payload "$pipe" "$home")
+  unset RS_PS_CMD
   cleanup_running; rm -rf "$pipe" "$home"
 
   assert_eq "$(run_field "$out" 201 state)" "running" "AC1: #201 state" || return 1
-  assert_eq "$(run_field "$out" 201 stage)" "fullstack-developer" "AC1: #201 stage = newest-mtime log" || return 1
+  assert_eq "$(run_field "$out" 201 stage)" "fullstack-developer" "AC1 (#94): #201 stage = --agent of the newest live process for the ticket" || return 1
   assert_eq "$(run_field "$out" 202 state)" "running" "AC1: #202 state" || return 1
   assert_eq "$(run_field "$out" 203 state)" "queued" "AC1: #203 (queued) state" || return 1
   assert_eq "$(run_field "$out" 204 state)" "held" "AC1: #204 (held) state" || return 1

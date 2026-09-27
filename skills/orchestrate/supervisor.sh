@@ -185,8 +185,7 @@ do_launch() {
   # Ticket title for the status board (#29): orchestrate.sh normally wrote it at launch and restarts reuse that
   # file; fetch only when it is missing. A failed or empty fetch leaves no file and never blocks the launch.
   if [ ! -f "$PIPE/orch-$issue.title" ]; then
-    title=$(cd "$repo" && gh issue view "$issue" --json title --jq .title 2>/dev/null) || title=""
-    [ -n "$title" ] && printf '%s\n' "$title" > "$PIPE/orch-$issue.title"
+    write_title_marker "$repo" "$issue" 0   # one gh issue view --json title,comments (title + marker)
   fi
 
   if [ "$restart_n" -gt 0 ]; then

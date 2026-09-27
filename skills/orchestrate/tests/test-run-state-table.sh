@@ -68,16 +68,201 @@ test_state_table_queue_entry_no_pid_is_queued() {
   assert_eq "$(field_for_issue "$out" 805 3)" "queued" "state-table: a queue entry with no orch-<issue>.pid at all is queued" || return 1
 }
 
-test_stage_is_agent_of_newest_mtime_log() {
-  local pipe out
+# ---- #94: stage = the live process table (never log names) -------------------------------------
+#
+# Process-lookup hook contract (defined here; run-state.sh must honour it): when RS_PS_CMD is set,
+# run-state.sh runs it (bash -c) INSTEAD of the real process table (/proc on Linux, `ps eww` on
+# macOS). It prints one line per live claude process:
+#     <start_epoch> TAB <PIPELINE_ISSUE> TAB <full command line>
+# The stage of issue N = the value after `--agent` in the command line of the newest-start line whose
+# PIPELINE_ISSUE == N exactly. Prompt text is never parsed for names. Orchestrator alive (pid alive)
+# with no stage line -> "orchestrator". Nothing alive -> empty.
+
+ps_line() {  # ps_line <secs_ago> <issue> <command line...> -> one fixture line on stdout
+  local ago=$1 issue=$2; shift 2
+  printf '%s\t%s\t%s\n' "$(( $(date +%s) - ago ))" "$issue" "$*"
+}
+
+stage_of() {  # stage_of <pipe> <issue> -> stage field (8) from derive_runs, RS_PS_CMD reading <pipe>/ps.fixture
+  local tsv
+  tsv=$( RS_PS_CMD="cat $1/ps.fixture" derive_runs_lines "$1" )
+  field_for_issue "$tsv" "$2" 8
+}
+
+test_stage_is_agent_of_the_single_live_stage_process() {
+  local pipe got
   pipe=$(new_pipe)
   mk_running "$pipe" 806 "$pipe/repo-a"
-  mk_stage_log "$pipe" 806 "test-writer" 10
-  mk_stage_log "$pipe" 806 "solutions-architect" 5
-  mk_stage_log "$pipe" 806 "code-reviewer" 0   # newest
-  out=$(derive_runs_lines "$pipe")
+  ps_line 30 806 claude --dangerously-skip-permissions --agent code-reviewer -p "Review PR" > "$pipe/ps.fixture"
+  got=$(stage_of "$pipe" 806)
   cleanup_running; rm -rf "$pipe"
-  assert_eq "$(field_for_issue "$out" 806 8)" "code-reviewer" "stage = agent name of the newest-mtime run-<issue>-<agent>.log" || return 1
+  assert_eq "$got" "code-reviewer" "#94: stage = --agent of the live process whose PIPELINE_ISSUE is the ticket" || return 1
+}
+
+test_stage_parallel_processes_newest_start_wins_in_either_listing_order() {
+  local pipe got1 got2
+  pipe=$(new_pipe)
+  mk_running "$pipe" 806 "$pipe/repo-a"
+  { ps_line 60 806 claude --agent test-writer -p x; ps_line 5 806 claude --agent solutions-architect -p x; } > "$pipe/ps.fixture"
+  got1=$(stage_of "$pipe" 806)
+  { ps_line 5 806 claude --agent solutions-architect -p x; ps_line 60 806 claude --agent test-writer -p x; } > "$pipe/ps.fixture"
+  got2=$(stage_of "$pipe" 806)
+  cleanup_running; rm -rf "$pipe"
+  assert_eq "$got1" "solutions-architect" "#94: two parallel stages -> the newest start wins (older listed first)" || return 1
+  assert_eq "$got2" "solutions-architect" "#94: two parallel stages -> the newest start wins (older listed last)" || return 1
+}
+
+test_stage_suffixed_agent_name_is_reported_exactly_as_the_agent_flag() {
+  # boundary: the exact --agent value is reported (no log-name-style suffix mapping, no trimming)
+  local pipe got
+  pipe=$(new_pipe)
+  mk_running "$pipe" 806 "$pipe/repo-a"
+  ps_line 5 806 claude --agent fullstack-developer -p "fix cycle" > "$pipe/ps.fixture"
+  got=$(stage_of "$pipe" 806)
+  cleanup_running; rm -rf "$pipe"
+  assert_eq "$got" "fullstack-developer" "#94: stage is the bare agent name" || return 1
+}
+
+test_stage_orchestrator_only_process_reports_orchestrator() {
+  local pipe got
+  pipe=$(new_pipe)
+  mk_running "$pipe" 806 "$pipe/repo-a"
+  ps_line 200 806 claude --dangerously-skip-permissions --agent orchestrator -p "Drive x#806" > "$pipe/ps.fixture"
+  got=$(stage_of "$pipe" 806)
+  cleanup_running; rm -rf "$pipe"
+  assert_eq "$got" "orchestrator" "#94: only the orchestrator process is alive -> stage = orchestrator" || return 1
+}
+
+test_stage_orchestrator_alive_with_empty_process_list_reports_orchestrator() {
+  local pipe got
+  pipe=$(new_pipe)
+  mk_running "$pipe" 806 "$pipe/repo-a"     # pid alive (run is running), no stage process in the table
+  : > "$pipe/ps.fixture"
+  got=$(stage_of "$pipe" 806)
+  cleanup_running; rm -rf "$pipe"
+  assert_eq "$got" "orchestrator" "#94: orchestrator alive, no stage process -> orchestrator" || return 1
+}
+
+test_stage_running_stage_beats_the_older_orchestrator_process() {
+  local pipe got
+  pipe=$(new_pipe)
+  mk_running "$pipe" 806 "$pipe/repo-a"
+  { ps_line 500 806 claude --agent orchestrator -p "Drive"; ps_line 20 806 claude --agent test-reviewer -p "Review"; } > "$pipe/ps.fixture"
+  got=$(stage_of "$pipe" 806)
+  cleanup_running; rm -rf "$pipe"
+  assert_eq "$got" "test-reviewer" "#94: a live stage (newer) is reported, not the orchestrator that dispatched it" || return 1
+}
+
+test_stage_nothing_alive_is_empty_for_held_done_queued_and_restarting() {
+  local pipe tsv
+  pipe=$(new_pipe)
+  mk_held "$pipe" 811 "$pipe/repo-a"
+  mk_done "$pipe" 812 "$pipe/repo-a"
+  mk_queued "$pipe" 813 "$pipe/repo-a"
+  mk_restarting "$pipe" 814 "$pipe/repo-a"
+  mk_stage_log "$pipe" 811 "deployer-recovery" 0     # stale log names must not leak into the stage
+  mk_stage_log "$pipe" 812 "code-reviewer-3" 0
+  mk_stage_log "$pipe" 814 "fullstack-developer-fix1" 0
+  : > "$pipe/ps.fixture"
+  tsv=$( RS_PS_CMD="cat $pipe/ps.fixture" derive_runs_lines "$pipe" )
+  rm -rf "$pipe"
+  assert_eq "$(field_for_issue "$tsv" 811 8)" "" "#94: held, nothing alive -> empty stage" || return 1
+  assert_eq "$(field_for_issue "$tsv" 812 8)" "" "#94: done, nothing alive -> empty stage" || return 1
+  assert_eq "$(field_for_issue "$tsv" 813 8)" "" "#94: queued -> empty stage" || return 1
+  assert_eq "$(field_for_issue "$tsv" 814 8)" "" "#94: restarting (dead pid), nothing alive -> empty stage" || return 1
+}
+
+test_stage_prompt_text_with_agent_like_words_is_ignored() {
+  # VM #919's fix cycle prompt starts "PR #932"; prompts also mention suffixed names. Only --agent counts.
+  local pipe got
+  pipe=$(new_pipe)
+  mk_running "$pipe" 806 "$pipe/repo-a"
+  ps_line 5 806 claude --dangerously-skip-permissions --agent fullstack-developer -p "PR #932 fix cycle: see run-806-code-reviewer-3.log, deployer-recovery, product-manager-retry" > "$pipe/ps.fixture"
+  got=$(stage_of "$pipe" 806)
+  cleanup_running; rm -rf "$pipe"
+  assert_eq "$got" "fullstack-developer" "#94: names in the prompt text are ignored — only the --agent value counts" || return 1
+}
+
+test_stage_process_for_a_different_issue_is_ignored_including_prefix_numbers() {
+  local pipe got
+  pipe=$(new_pipe)
+  mk_running "$pipe" 806 "$pipe/repo-a"      # pid alive, no stage process of its own
+  { ps_line 5 999 claude --agent deployer -p x; ps_line 5 8060 claude --agent code-reviewer -p x; ps_line 5 80 claude --agent test-writer -p x; } > "$pipe/ps.fixture"
+  got=$(stage_of "$pipe" 806)
+  cleanup_running; rm -rf "$pipe"
+  assert_eq "$got" "orchestrator" "#94: processes for #999, #8060 and #80 do not count for #806 (exact issue match) -> only the live orchestrator" || return 1
+}
+
+test_stage_log_names_are_no_longer_read() {
+  # Negative fixture from the ticket: a stage log with no live process must not produce a stage.
+  local pipe got_held got_running
+  pipe=$(new_pipe)
+  mk_held "$pipe" 805 "$pipe/repo-a"
+  mk_stage_log "$pipe" 805 "code-reviewer-3" 0        # run-805-code-reviewer-3.log
+  mk_running "$pipe" 806 "$pipe/repo-a"
+  mk_stage_log "$pipe" 806 "test-writer" 0
+  : > "$pipe/ps.fixture"
+  got_held=$(stage_of "$pipe" 805)
+  got_running=$(stage_of "$pipe" 806)
+  cleanup_running; rm -rf "$pipe"
+  assert_eq "$got_held" "" "#94: run-805-code-reviewer-3.log with no live process -> empty stage" || return 1
+  assert_eq "$got_running" "orchestrator" "#94: a stage log never names the stage; live orchestrator with no stage process -> orchestrator" || return 1
+}
+
+test_stage_real_process_table_on_linux_reads_agent_and_pipeline_issue() {
+  # No RS_PS_CMD: the real /proc path. A bash copy named `claude` carries PIPELINE_ISSUE in its env and
+  # `--agent deployer` in its argv (the real launch shape). Linux only; skipped visibly elsewhere.
+  if [ "$(uname)" != "Linux" ]; then printf '    (SKIP: real /proc lookup is Linux-only)\n' >&2; return 0; fi
+  local pipe tmp pid got i
+  pipe=$(new_pipe); tmp=$(mktemp -d)
+  cp "$(command -v bash)" "$tmp/claude"
+  mk_running "$pipe" 890 "$pipe/repo-a"
+  PIPELINE_ISSUE=890 "$tmp/claude" -c 'sleep 30; :' _ --agent deployer -p "Deploy" >/dev/null 2>&1 &
+  pid=$!
+  got=""
+  for i in $(seq 1 50); do   # poll (up to 5s) until the process shows the stage, no fixed sleep
+    got=$( unset RS_PS_CMD; derive_runs_lines "$pipe" | awk -F'\t' '$1 == 890 { print $8 }' )
+    [ "$got" = "deployer" ] && break
+    sleep 0.1
+  done
+  kill "$pid" 2>/dev/null; pkill -P "$pid" 2>/dev/null
+  cleanup_running; rm -rf "$pipe" "$tmp"
+  assert_eq "$got" "deployer" "#94: Linux /proc lookup — --agent of the process whose env has PIPELINE_ISSUE=890" || return 1
+}
+
+test_stage_macos_ps_eww_lookup_reads_agent_and_pipeline_issue() {
+  # macOS branch: uname says Darwin, `ps` prints `ps eww` lines (command line followed by the environment).
+  # Fake uname/ps on PATH; RS_PS_CMD unset. Lines are hand-written in real `ps eww` shape.
+  local pipe tmp got_a got_b
+  pipe=$(new_pipe); tmp=$(mktemp -d)
+  printf '#!/bin/bash\necho Darwin\n' > "$tmp/uname"
+  cat > "$tmp/ps" <<'PSEOF'
+#!/bin/bash
+cat <<'OUT'
+  4001 /opt/homebrew/bin/claude --agent test-writer -p Work on ticket #8900 HOME=/Users/jp PIPELINE_ISSUE=8900 PIPELINE_AGENT=test-writer TERM=dumb
+  4002 /opt/homebrew/bin/claude --agent deployer -p Deploy, mention PIPELINE_ISSUE=891 in prose HOME=/Users/jp PIPELINE_ISSUE=890 PIPELINE_AGENT=deployer TERM=dumb
+  4003 /usr/bin/vim notes.txt HOME=/Users/jp PIPELINE_ISSUE=890 TERM=dumb
+OUT
+PSEOF
+  chmod +x "$tmp/uname" "$tmp/ps"
+  mk_running "$pipe" 890 "$pipe/repo-a"
+  mk_running "$pipe" 89 "$pipe/repo-b"
+  got_a=$( unset RS_PS_CMD; PATH="$tmp:$PATH" derive_runs_lines "$pipe" | awk -F'\t' '$1 == 890 { print $8 }' )
+  got_b=$( unset RS_PS_CMD; PATH="$tmp:$PATH" derive_runs_lines "$pipe" | awk -F'\t' '$1 == 89 { print $8 }' )
+  cleanup_running; rm -rf "$pipe" "$tmp"
+  assert_eq "$got_a" "deployer" "#94: macOS ps eww — issue 890 (exact env match, not 8900, not prompt text) -> deployer" || return 1
+  assert_eq "$got_b" "orchestrator" "#94: macOS ps eww — issue 89 has no stage process (890/8900 are not prefixes) -> orchestrator" || return 1
+}
+
+test_run_state_has_no_log_name_stage_parsing() {
+  local src
+  src=$(cat "$RS_RST/run-state.sh")
+  case "$src" in *_rs_stage_for*) fail "#94: _rs_stage_for must be deleted from run-state.sh"; return 1 ;; esac
+  # the only run-<n>-*.log use left is _rs_last_activity_for (last-activity mtime); no basename/agent extraction
+  if grep -nE 'agent=\$\{base#|base=\$\(basename' "$RS_RST/run-state.sh" >/dev/null; then
+    fail "#94: run-state.sh still derives a stage from a log file name"; return 1
+  fi
+  assert_contains "$src" "_rs_last_activity_for" "#94: _rs_last_activity_for stays" || return 1
 }
 
 test_last_activity_at_is_newest_mtime_among_orch_and_run_logs() {
@@ -108,5 +293,17 @@ run_test test_state_table_stopped_precedes_held_when_both_files_present
 run_test test_state_table_held_precedes_done_when_both_files_present
 run_test test_state_table_no_markers_is_restarting
 run_test test_state_table_queue_entry_no_pid_is_queued
-run_test test_stage_is_agent_of_newest_mtime_log
+run_test test_stage_is_agent_of_the_single_live_stage_process
+run_test test_stage_parallel_processes_newest_start_wins_in_either_listing_order
+run_test test_stage_suffixed_agent_name_is_reported_exactly_as_the_agent_flag
+run_test test_stage_orchestrator_only_process_reports_orchestrator
+run_test test_stage_orchestrator_alive_with_empty_process_list_reports_orchestrator
+run_test test_stage_running_stage_beats_the_older_orchestrator_process
+run_test test_stage_nothing_alive_is_empty_for_held_done_queued_and_restarting
+run_test test_stage_prompt_text_with_agent_like_words_is_ignored
+run_test test_stage_process_for_a_different_issue_is_ignored_including_prefix_numbers
+run_test test_stage_log_names_are_no_longer_read
+run_test test_stage_real_process_table_on_linux_reads_agent_and_pipeline_issue
+run_test test_stage_macos_ps_eww_lookup_reads_agent_and_pipeline_issue
+run_test test_run_state_has_no_log_name_stage_parsing
 run_test test_last_activity_at_is_newest_mtime_among_orch_and_run_logs

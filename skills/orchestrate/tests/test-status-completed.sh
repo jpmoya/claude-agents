@@ -308,13 +308,29 @@ test_sc_ac3_open_held_ticket_keeps_state_and_marker_comes_from_github() {
   mfile=$(cat "$SC_PIPE/orch-208.marker" 2>/dev/null); closed=$(sc_present "$SC_PIPE/orch-208.closed")
   local rc=$SC_RC
   sc_cleanup
-  assert_eq "$(sc_run_field "$before" 208 marker)" "TESTS WRITTEN" "AC3: control — runs.jsonl's (stale) value is what the page shows before the pass" || return 1
+  assert_eq "$(sc_run_field "$before" 208 marker)" "MISSING_FIELD" "AC3 (#94): control — runs.jsonl's marker_after is never read; no marker file -> no marker before the pass" || return 1
   assert_exit0 "$rc" "AC3: exit 0" || return 1
   assert_eq "$mfile" "TESTS APPROVED" "AC3: orch-208.marker = latest routing marker name" || return 1
   assert_eq "$(sc_run_field "$out" 208 marker)" "TESTS APPROVED" "AC3: runs[].marker = GitHub's marker, not runs.jsonl's" || return 1
   assert_eq "$(sc_run_field "$out" 208 state)" "held" "AC3: an OPEN held ticket stays held" || return 1
   assert_eq "$closed" "absent" "AC3: an OPEN ticket gets no .closed" || return 1
   assert_eq "$(sc_completed_issues "$out")" "" "AC3: an OPEN ticket is not in completed[]" || return 1
+}
+
+# #94 AC4 — build-runs-json.py: marker = contents of orch-<n>.marker or null; runs.jsonl's hand-typed
+# marker_after is never a fallback.
+test_sc_94_marker_is_file_only_runs_jsonl_never_consulted() {
+  sc_env
+  mk_held "$SC_PIPE" 231 "$SC_REPO"; sc_title 231     # runs.jsonl marker only -> no marker
+  mk_held "$SC_PIPE" 232 "$SC_REPO"; sc_title 232     # marker file AND a different runs.jsonl value -> file wins
+  echo "SPEC RESOLVED" > "$SC_PIPE/orch-232.marker"
+  mkdir -p "$SC_HOME/.claude/pipeline"
+  printf '{"event":"dispatch","repo":"%s","issue":231,"marker_after":"TESTS WRITTEN"}\n{"event":"dispatch","repo":"%s","issue":232,"marker_after":"TESTS WRITTEN"}\n' \
+    "$SC_REPO_ALIAS" "$SC_REPO_ALIAS" > "$SC_HOME/.claude/pipeline/runs.jsonl"
+  local out; out=$(sc_print)
+  sc_cleanup
+  assert_eq "$(sc_run_field "$out" 231 marker)" "MISSING_FIELD" "#94 AC4: no orch-231.marker -> no marker (runs.jsonl marker_after ignored)" || return 1
+  assert_eq "$(sc_run_field "$out" 232 marker)" "SPEC RESOLVED" "#94 AC4: marker = orch-232.marker contents" || return 1
 }
 
 test_sc_ac3_latest_real_marker_wins_and_notes_are_inert() {
@@ -551,12 +567,15 @@ test_sc_ac5_orchestrate_relaunch_clears_closed_and_marker_and_ticket_returns_to_
   local out2; out2=$(sc_print)
   local closed_after marker_after
   closed_after=$(sc_present "$SC_PIPE/orch-301.closed"); marker_after=$(sc_present "$SC_PIPE/orch-301.marker")
+  local marker_content; marker_content=$(cat "$SC_PIPE/orch-301.marker" 2>/dev/null)
   sc_cleanup
   assert_eq "$closed_before:$marker_before" "present:present" "AC5: control — reconcile wrote .closed and .marker" || return 1
   assert_eq "$(sc_completed_issues "$out1")" "301" "AC5: control — the closed ticket was in completed[]" || return 1
   assert_contains "$launch_out" "launched orchestrator" "AC5: relaunch took the launch path (scenario sanity)" || return 1
   assert_eq "$closed_after" "absent" "AC5: orchestrate.sh clears orch-<n>.closed on launch" || return 1
-  assert_eq "$marker_after" "absent" "AC5: orchestrate.sh clears orch-<n>.marker on launch" || return 1
+  # #94 AC3: launch writes the current GitHub marker (DEPLOYED, set above) instead of deleting the file
+  assert_eq "$marker_after" "present" "AC5/#94 AC3: orchestrate.sh rewrites orch-<n>.marker on launch (current GitHub marker)" || return 1
+  assert_eq "$marker_content" "DEPLOYED" "#94 AC3: rewritten marker holds the current GitHub marker name" || return 1
   assert_ne "$(sc_run_field "$out2" 301 state)" "NORUN" "AC5: the relaunched ticket is back in runs[]" || return 1
   assert_eq "$(sc_completed_issues "$out2")" "" "AC5: ...and absent from completed[]" || return 1
 }
@@ -707,6 +726,7 @@ run_test test_sc_ac1_completed_carries_final_marker_from_github
 run_test test_sc_ac3_open_held_ticket_keeps_state_and_marker_comes_from_github
 run_test test_sc_ac3_latest_real_marker_wins_and_notes_are_inert
 run_test test_sc_ac3_no_routing_marker_removes_a_stale_marker_file
+run_test test_sc_94_marker_is_file_only_runs_jsonl_never_consulted
 run_test test_sc_ac4_gh_failure_is_a_silent_noop_exit_0
 run_test test_sc_ac4_throttle_one_pass_per_600_seconds_force_bypasses
 run_test test_sc_ac4_scope_is_open_states_plus_finished_within_48h_and_skips_already_closed

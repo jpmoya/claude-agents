@@ -106,10 +106,7 @@ while IFS=$'\t' read -r issue repo state pid started last_activity restarts stag
   gh_state=$(printf '%s' "$info" | jq -r '.state // empty' 2>/dev/null) || continue
   [ -n "$gh_state" ] || continue
   marker=$(printf '%s' "$info" | jq -r "$MARKER_JQ" 2>/dev/null) || marker=""
-  case "$marker" in
-    none|"") marker="" ;;
-    *) marker=$(printf '%s' "$marker" | sed -e 's/^\*\*\[[^]]*\] //' -e 's/\*\*.*$//' -e 's/:.*$//' -e 's/[[:space:]]*$//') ;;
-  esac
+  marker=$(marker_name_from_line "$marker")
 
   old_marker=$(head -n1 "$PIPE/orch-$issue.marker" 2>/dev/null)
   if [ -n "$marker" ]; then

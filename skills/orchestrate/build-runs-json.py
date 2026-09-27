@@ -70,53 +70,14 @@ def alias_for(repo_path):  # -> (published repo string, owner/repo or "" for the
     return aliases.get(owner_repo, "other"), owner_repo
 
 
-_marker_cache = {}
-
-
-def marker_file_for(issue):  # first line of <pipe-dir>/orch-<issue>.marker (GitHub truth, written by reconcile-status.sh), else ""
+def marker_for(owner_repo, issue):  # first line of <pipe-dir>/orch-<issue>.marker (written at launch + by reconcile-status.sh), else None
     if not pipe_dir:
-        return ""
+        return None
     try:
         with open(os.path.join(pipe_dir, "orch-%s.marker" % issue), encoding="utf-8", errors="replace") as f:
-            return f.readline(256).strip()
+            return f.readline(256).strip() or None
     except OSError:
-        return ""
-
-
-def marker_for(owner_repo, issue):  # orch-<issue>.marker if present, else last dispatch event's marker_after for this repo+issue, else None
-    from_file = marker_file_for(issue)
-    if from_file:
-        return from_file
-    if not owner_repo:
         return None
-    key = (owner_repo, str(issue))
-    if key in _marker_cache:
-        return _marker_cache[key]
-    marker = None
-    if os.path.isfile(runs_jsonl):
-        try:
-            with open(runs_jsonl) as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        d = json.loads(line)
-                    except Exception:
-                        continue
-                    if d.get("event") != "dispatch":
-                        continue
-                    if d.get("repo") != owner_repo:
-                        continue
-                    if str(d.get("issue")) != str(issue):
-                        continue
-                    marker_after = d.get("marker_after")
-                    if marker_after:
-                        marker = marker_after
-        except OSError:
-            pass
-    _marker_cache[key] = marker
-    return marker
 
 
 def title_for(issue):  # first line of <pipe-dir>/orch-<issue>.title, stripped + capped; else ""
