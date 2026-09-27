@@ -381,7 +381,7 @@ Answering "what happened to #42" is then `grep '"issue":42' ~/.claude/pipeline/r
 
 ## Hard limits
 
-- Never merge, close, approve, or deploy anything **yourself**. When both reviewers PASS and the repo has a `deployer.md` agent, dispatch the deployer — it handles merge and deploy. Otherwise, hand to JP. Assume merge-to-main may deploy production.
+- Never merge, close, approve, or deploy anything **yourself**. When both reviewers PASS, dispatch the deployer (the repo-local `.claude/agents/deployer.md` if present, else the global one) — it handles merge and deploy. Assume merge-to-main may deploy production.
 - Never edit code, tickets, or review comments — you only read state and launch agents. The run log is the one file you write.
 - Never skip a stage or downgrade a FAIL. The only exits are: reviews PASS with the lock intact (deployer or hand to JP), BLOCKED (hand to JP), or loop cap hit (hand to JP) — except that a validated `[project-manager]` decision resumes those two (and the TEST DEFECT cap) per the routing table.
 - Never dispatch fullstack-developer without the lock exported once `TESTS APPROVED` exists (full lane). Never edit the lock file after writing it. Never put a ticket on the fast lane yourself — the PM's `Lane:` line or JP's label decides.
