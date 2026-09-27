@@ -99,7 +99,7 @@ except Exception: print('?')
     tail -n "${3:-20}" "$PIPE/orch-$2.log"
     ;;
   stop)
-    pid=$(cat "$PIPE/orch-$2.pid" 2>/dev/null)
+    pid=$(cat "$PIPE/orch-$2.pid" 2>/dev/null || true)
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
       # $pid is the nohup'd bash wrapper; SIGTERM does not reach its claude child,
       # which kept driving #611 for 14 min after a stop (2026-09-13). Kill the
