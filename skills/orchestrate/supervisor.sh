@@ -325,25 +325,33 @@ for f in "$PIPE"/orch-*.pid; do
   transient=false
   [ "$run_duration" -lt "$MIN_RUN_SECS" ] && transient=true
 
-  # Deliberate stop: the run that just ended logged a validate fail of a structural stage (start-gate, closed PR).
-  # A restart cannot heal it — hold instead of looping to MAX_TOTAL. Other stages (concurrency-gate, ...) still restart.
-  # "This run" = ts >= .launched-at. One list of stage values: structural (claude-agents#92).
+  # Deliberate stop: the run that just ended logged a validate fail of a structural stage (start-gate, closed PR)
+  # or the infra PLAN FAIL loop cap (claude-agents#100). A restart cannot heal it — hold instead of looping to
+  # MAX_TOTAL. Other stages (concurrency-gate, ...) still restart.
+  # "This run" = ts >= .launched-at. One list of stage values: structural (claude-agents#92), loop-cap (claude-agents#100).
   since=$(date -u -d "@$(( $(date +%s) - run_duration ))" +%FT%TZ 2>/dev/null)   # this launch's start
-  if [ -n "$since" ] && [ -f "$HOME/.claude/pipeline/runs.jsonl" ] \
-     && python3 - "$HOME/.claude/pipeline/runs.jsonl" "$issue" "$since" <<'PY' 2>/dev/null
+  found_stage=""
+  if [ -n "$since" ] && [ -f "$HOME/.claude/pipeline/runs.jsonl" ]; then
+    found_stage=$(python3 - "$HOME/.claude/pipeline/runs.jsonl" "$issue" "$since" <<'PY' 2>/dev/null
 import json, sys
 path, issue, since = sys.argv[1], int(sys.argv[2]), sys.argv[3]
 for line in open(path):
     try: r = json.loads(line)
     except ValueError: continue
     if (r.get("issue") == issue and r.get("event") == "validate" and r.get("result") == "fail"
-            and r.get("stage") in ("structural",) and str(r.get("ts", "")) >= since):
-        sys.exit(0)
-sys.exit(1)
+            and r.get("stage") in ("structural", "loop-cap") and str(r.get("ts", "")) >= since):
+        print(r.get("stage"))
+        break
 PY
-  then
+)
+  fi
+  if [ -n "$found_stage" ]; then
     touch "$PIPE/orch-$issue.held"
-    slog "[held] #$issue — structural stop (start-gate / closed PR), needs a relaunch after it is resolved"
+    case "$found_stage" in
+      loop-cap) hold_reason="loop-cap stop (infra PLAN FAIL cap)" ;;
+      *) hold_reason="structural stop (start-gate / closed PR)" ;;
+    esac
+    slog "[held] #$issue — $hold_reason, needs a relaunch after it is resolved"
     report_status_async "held"
     continue
   fi
