@@ -334,7 +334,7 @@ Write the minimum code to make the test pass.
 - No bundled refactoring
 - No feature additions
 
-**Run the test. Watch it pass.** Then run the full suite. Zero regressions.
+**Run the test. Watch it pass.** Then run the tests scoped to the changed files (`vitest run --changed <merge-base>` or the repo's native equivalent, else explicit test paths). Zero regressions.
 
 ---
 
