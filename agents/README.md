@@ -44,7 +44,7 @@ Before any change to the pipeline itself: pipeline-diagnostician (read-only root
 | design-research | (default) | (default) |
 | pipeline-diagnostician | opus | high |
 | pipeline-adjudicator | opus | medium |
-| project-manager | fable | high |
+| project-manager | opus | high |
 
 ## Rules
 
