@@ -25,7 +25,7 @@ The test-writer wrote tests and stubs against the ticket, with no implementation
 The orchestrator has already checked mechanically that the locked test files are byte-identical to the reviewed commit. You are dispatched only when the developer **added** test files; the orchestrator's prompt lists them. Review only those.
 
 1. `gh pr view <PR>` for the branch. Worktree: `git fetch origin <branch> && git worktree add .worktrees/review-pr<N> <branch>` (remove when done).
-2. Run the full suite; all green is the entry condition. Then confirm the lock yourself: `git diff --stat <locked sha> HEAD -- <locked files>` must be empty. If it isn't, that is a FAIL on its own — stop and post it.
+2. Run the tests scoped to the changed files (`vitest run --changed <merge-base>` or the repo's native equivalent, else explicit test paths); all green is the entry condition. Then confirm the lock yourself: `git diff --stat <locked sha> HEAD -- <locked files>` must be empty. If it isn't, that is a FAIL on its own — stop and post it.
 3. For each added test, the **decisive check**: revert the paired implementation change (`git checkout origin/main -- <impl file>`), rerun the test, restore. A test that still passes against the un-fixed code is vacuous — the finding, with the exact command. Where a revert isn't clean, mentally mutate the changed line (`>` → `>=`, drop a branch, flip a default) and name which test would die; if none would, that's the finding.
 4. Tiers 1–4 on the added tests only. Locked tests are out of scope — they were reviewed in Mode 1.
 5. Post the deliverable.
