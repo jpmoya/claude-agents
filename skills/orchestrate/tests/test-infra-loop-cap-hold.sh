@@ -108,9 +108,14 @@ test_lc_orchestrator_plan_fail_row_logs_loop_cap() {
 }
 
 test_lc_orchestrator_loop_cap_section_code_track() {
-  # Only meaningful if #88 has not already landed this line; if it has, this AC is a documented
-  # no-op (grep would already find it) and the case is still valid — it just asserts the line exists.
-  lc_has "$ORCH_LC" '"stage":"loop-cap"' || return 1
+  # Scoped to the code-track caps' own paragraph inside "## Loop cap" (:196-200), identified by the
+  # unique phrase "third round" — NOT the :96 PLAN FAIL row (covered by a separate test above) and
+  # NOT the :200 "unchanged" sentence (covered by test_lc_orchestrator_unchanged_cap_sentence_names_log_line
+  # below). A whole-document grep would pass vacuously off either of those; this must not.
+  local para
+  para=$(grep -F 'third round' "$ORCH_LC" | head -1)
+  assert_ne "$para" "" "#100: code-track pre/post-implementation loop-cap paragraph present" || return 1
+  assert_contains "$para" '"stage":"loop-cap"' "#100: code-track caps get the identical log_run instruction (no-op only if #88 already added it here)" || return 1
 }
 
 test_lc_orchestrator_unchanged_cap_sentence_names_log_line() {
