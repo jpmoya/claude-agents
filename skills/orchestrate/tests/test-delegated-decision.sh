@@ -395,7 +395,8 @@ test_dd_ac18_project_manager_sections_and_untouched_parts_byte_identical() {
   # hashes pinned from the source comment (issue #59 comment 5758640117), no network
   head=$(awk '/^## 2\. How to decide/{exit} {print}' "$PMGR_DD" | dd_sha)
   tail=$(awk '/^## 3\. Start-up/{f=1} f' "$PMGR_DD" | dd_sha)
-  assert_eq "$head" "25d77b367bb6ecb6b9762340ffdb1a654b8c09a5e9aaff36f9ba972d4466d50e" "AC18: frontmatter + section 1" || return 1
+  # re-pinned for #98 (model line only)
+  assert_eq "$head" "c4b1f6b6daf2e305346aabe35af0036882f537504d5d8e5a2b68f13e24bf2147" "AC18: frontmatter + section 1 (re-pinned for #98, model line only)" || return 1
   assert_eq "$tail" "3ba1df1a9efe351c23b4ca9d3d965003f66bb89834d07be0c184bb86b399b229" "AC18: sections 3-8 (re-pinned for #92 AC3)" || return 1
 }
 
