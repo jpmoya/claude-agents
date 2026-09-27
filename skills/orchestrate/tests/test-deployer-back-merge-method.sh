@@ -29,9 +29,10 @@ test_dbm_ac1_both_merge_methods_present() {
   body=$(cat "$DEPLOYER_DBM")
   assert_contains "$body" "--merge --delete-branch" "deployer.md" || return 1
   assert_contains "$body" "--squash --delete-branch" "deployer.md" || return 1
-  # The off-by-one that would merge on every PR (>= 1 parents, i.e. every commit) instead of only
-  # on a real merge commit (> 1 parents) — pin the exact filter literal.
-  assert_not_contains "$body" "(.parents|length) >= 1)" "deployer.md (jq filter must be strictly > 1, not >= 1)" || return 1
+  # Positively pin the correct filter literal, rather than blacklisting one wrong spelling —
+  # a blacklist on ">= 1" alone would still let a semantically identical off-by-one, like
+  # "> 0" (merge on every PR, since every commit has at least 1 parent), slip through.
+  assert_contains "$body" "select((.parents|length) > 1)" "deployer.md (jq filter must be exactly '> 1')" || return 1
 }
 
 test_dbm_ac1_merge_methods_wired_to_correct_branch() {
