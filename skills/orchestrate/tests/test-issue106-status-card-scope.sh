@@ -80,12 +80,12 @@ test_i106_orchestrator_comment_brevity_is_issue_comments_only() {
 
 test_i106_project_manager_every_status_is_one_card_per_run() {
   local l
-  l=$(grep -iF 'status card' "$PMGR_106" | tail -1)
+  l=$(grep -E '^(Status requests mid-run|Every status the project-manager writes)' "$PMGR_106" | head -1)
   assert_ne "$l" "" "AC4: PM status-card line exists" || return 1
   assert_not_contains "$l" 'Status requests mid-run' "AC4: no longer limited to mid-run requests" || return 1
   i106_has_i "AC4: every status the PM writes" "$l" 'every status' || return 1
-  i106_has_i "AC4: covers end-of-turn and log status messages" "$l" 'end-of-turn' || return 1
-  i106_has_i "AC4: covers log status messages" "$l" 'log' || return 1
+  i106_has_i "AC4: covers end-of-turn messages" "$l" 'end-of-turn' || return 1
+  i106_has_i "AC4: covers log status messages" "$l" 'log status' || return 1
   i106_has_i "AC4: one card per run" "$l" 'card per run|one card' || return 1
   i106_has_i "AC4: points to JP's CLAUDE.md" "$l" 'CLAUDE\.md' || return 1
 }
@@ -94,6 +94,30 @@ test_i106_project_manager_seven_section_report_not_restructured() {
   local body
   body=$(awk '/^## 8\. Reporting/{on=1} on' "$PMGR_106")
   assert_contains "$body" '7. **Pipeline health** — incidents, verdicts, config you changed (with where the old values are saved).' "AC4: 7-section end-of-plan report kept" || return 1
+}
+
+# Self-contained no-new-mechanism guard (test_fu_ac6/test_sl_ac7 are red on main for unrelated reasons).
+# The change may touch only the 3 doc files + tests under skills/orchestrate/tests/.
+test_i106_no_new_mechanism_only_doc_files_and_tests_touched() {
+  local base changed f bad=""
+  base=$(git -C "$ROOT_106" merge-base HEAD origin/main 2>/dev/null) || { fail "AC5: cannot resolve origin/main merge-base"; return 1; }
+  changed=$(git -C "$ROOT_106" diff --name-only "$base" HEAD)
+  while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    case "$f" in
+      CLAUDE.md|agents/orchestrator.md|agents/project-manager.md|skills/orchestrate/tests/*) ;;
+      *) bad="$bad $f" ;;
+    esac
+  done <<< "$changed"
+  assert_eq "$bad" "" "AC5/AC6: no hook, skill, script or state file added/changed (unexpected:$bad)" || return 1
+}
+
+# Nothing parses the orchestrator's final report text: no runtime script references the report heading/card.
+test_i106_no_runtime_script_parses_final_report() {
+  local hits
+  hits=$(grep -lE 'Report to JP|STATUS: +<|NEEDED FROM YOU|SELF-HEAL TICKETS|marker trail' \
+    "$ROOT_106"/skills/orchestrate/*.sh "$ROOT_106"/hooks/* 2>/dev/null)
+  assert_eq "$hits" "" "AC6: no runtime script/hook parses the final report" || return 1
 }
 
 run_test test_i106_claude_md_trigger_covers_end_of_run_reports
@@ -105,3 +129,5 @@ run_test test_i106_orchestrator_report_to_jp_has_no_card_template_copy_and_keeps
 run_test test_i106_orchestrator_comment_brevity_is_issue_comments_only
 run_test test_i106_project_manager_every_status_is_one_card_per_run
 run_test test_i106_project_manager_seven_section_report_not_restructured
+run_test test_i106_no_new_mechanism_only_doc_files_and_tests_touched
+run_test test_i106_no_runtime_script_parses_final_report
