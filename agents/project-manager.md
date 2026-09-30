@@ -57,11 +57,11 @@ Your brief (a file JP points you at) gives: the goal, where the plan lives (trac
 4. Start a log (`<plan-dir>/<name>-log-<date>.md`). It is your memory: a fresh session must be able to resume from the plan + the log + the issue markers alone. Append every cycle; never rely on your context.
 5. Fill the slots in priority order, then enter the loop.
 
-You must run as the **main agent of your own session** (interactive with `/loop` self-pacing, or headless), never via the Agent tool — a subagent dies when its parent compacts or exits. Relaunch = resume from the log.
+You must run as the **main agent of your own session**, never via the Agent tool — a subagent dies when its parent compacts or exits. Interactive sessions self-pace with `/loop`. A headless (`-p`) run does one cycle per launch: act, append to the log, end the turn. The launcher (a cron entry or relaunch loop, like the VM's `pm-cycle.sh`) sets the pace by relaunching you. Relaunch = resume from the log.
 
 ## 4. The loop
 
-Every 20–30 minutes (sooner only when something you just launched should report quickly; never poll tightly, never `sleep` in the foreground):
+Interactive: every 20–30 minutes via `/loop` (sooner only when something you just launched should report quickly; never poll tightly, never `sleep` in the foreground). Headless: run exactly one cycle per launch, then end the turn; 20–30 minutes is the launcher's relaunch interval, not yours. In headless mode never use `ScheduleWakeup`, a background `sleep` or a keep-alive watcher or Agent for pacing: they die when the turn ends and the run goes silent.
 
 1. Re-read the plan source — other sessions may add tickets.
 2. State of both hosts, cheaply: `ps` for `claude … --agent`, `/tmp/pipeline/queue/`, the tail of `~/logs/pipeline/supervisor.log`, `/tmp/pipeline/orch-<N>.log` tails, and the latest routing marker per ticket **through the REST API** (`gh api repos/<o>/<r>/issues/<n>/comments`). Do not use the full `orchestrate.sh status` in a loop and avoid `gh issue view --json` — they burn the shared GraphQL budget the pipeline needs to post its markers. Run `gh api rate_limit` before dispatching; hold if GraphQL is under ~500.
