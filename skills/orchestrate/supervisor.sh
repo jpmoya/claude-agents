@@ -325,9 +325,9 @@ for f in "$PIPE"/orch-*.pid; do
   transient=false
   [ "$run_duration" -lt "$MIN_RUN_SECS" ] && transient=true
 
-  # Deliberate stop: the run that just ended logged a validate fail of a structural stage (start-gate, closed PR).
+  # Deliberate stop: the run that just ended logged a validate fail of a deliberate-stop stage (start-gate, closed PR, refused delegated decision, loop cap).
   # A restart cannot heal it — hold instead of looping to MAX_TOTAL. Other stages (concurrency-gate, ...) still restart.
-  # "This run" = ts >= .launched-at. One list of stage values: structural (claude-agents#92).
+  # "This run" = ts >= .launched-at. One list of stage values: structural (claude-agents#92), delegated-decision, loop-cap (#88).
   since=$(date -u -d "@$(( $(date +%s) - run_duration ))" +%FT%TZ 2>/dev/null)   # this launch's start
   if [ -n "$since" ] && [ -f "$HOME/.claude/pipeline/runs.jsonl" ] \
      && python3 - "$HOME/.claude/pipeline/runs.jsonl" "$issue" "$since" <<'PY' 2>/dev/null
@@ -337,13 +337,13 @@ for line in open(path):
     try: r = json.loads(line)
     except ValueError: continue
     if (r.get("issue") == issue and r.get("event") == "validate" and r.get("result") == "fail"
-            and r.get("stage") in ("structural",) and str(r.get("ts", "")) >= since):
+            and r.get("stage") in ("structural", "delegated-decision", "loop-cap") and str(r.get("ts", "")) >= since):
         sys.exit(0)
 sys.exit(1)
 PY
   then
     touch "$PIPE/orch-$issue.held"
-    slog "[held] #$issue — structural stop (start-gate / closed PR), needs a relaunch after it is resolved"
+    slog "[held] #$issue — deliberate stop (structural / refused decision / loop cap), needs a relaunch after it is resolved"
     report_status_async "held"
     continue
   fi
