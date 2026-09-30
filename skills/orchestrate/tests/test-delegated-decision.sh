@@ -396,8 +396,8 @@ test_dd_ac18_project_manager_sections_and_untouched_parts_byte_identical() {
   head=$(awk '/^## 2\. How to decide/{exit} {print}' "$PMGR_DD" | dd_sha)
   tail=$(awk '/^## 3\. Start-up/{f=1} f' "$PMGR_DD" | dd_sha)
   # re-pinned for #98 (model line only)
-  assert_eq "$head" "c4b1f6b6daf2e305346aabe35af0036882f537504d5d8e5a2b68f13e24bf2147" "AC18: frontmatter + section 1 (re-pinned for #98, model line only)" || return 1
-  assert_eq "$tail" "3ba1df1a9efe351c23b4ca9d3d965003f66bb89834d07be0c184bb86b399b229" "AC18: sections 3-8 (re-pinned for #92 AC3)" || return 1
+  assert_eq "$head" "48559acd3e9f4a55feb1f8938d40b5afc0e1c3f4a6d9da9a8436f5348d8b826d" "AC18: frontmatter + section 1 (re-pinned for a9439aa, model line only)" || return 1
+  assert_eq "$tail" "63eae647dfb1d3798566ad12c511509afc7bd5ca49285e81b015c3a78733174a" "AC18: sections 3-8 (re-pinned for #109, lines 60/64 only)" || return 1
 }
 
 # ---------------------------------------------------------------------------------------- AC19-AC20 docs
