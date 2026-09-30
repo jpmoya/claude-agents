@@ -23,9 +23,15 @@ TAB=$(printf '\t')
 die() { echo "pm-slack: $*" >&2; exit 1; }
 
 # slack <method> <json> — POST to the Slack Web API; sets RESP; returns 1 (message on stderr) on curl failure or ok:false.
+# SLACK_FORM=1 sends $2 (a flat JSON object) form-encoded instead — read methods like conversations.history reject JSON bodies.
 slack() {
+  local -a body=(-H 'Content-Type: application/json; charset=utf-8' --data "$2")
+  if [ -n "${SLACK_FORM:-}" ]; then
+    body=(); local kv
+    while IFS= read -r kv; do body+=(--data-urlencode "$kv"); done < <(printf '%s' "$2" | jq -r 'to_entries[] | "\(.key)=\(.value)"')
+  fi
   RESP=$(curl -s --max-time 15 -X POST -H "Authorization: Bearer $PM_SLACK_BOT_TOKEN" \
-    -H 'Content-Type: application/json; charset=utf-8' --data "$2" "https://slack.com/api/$1" </dev/null) \
+    "${body[@]}" "https://slack.com/api/$1" </dev/null) \
     || { echo "pm-slack: curl failed calling $1" >&2; return 1; }
   printf '%s' "$RESP" | jq -e '.ok == true' >/dev/null 2>&1 \
     || { echo "pm-slack: Slack $1 failed: $(printf '%s' "$RESP" | jq -r '.error // "bad response"' 2>/dev/null)" >&2; return 1; }
@@ -101,7 +107,7 @@ cmd_poll() {
   local last ch msgs mts mtext m tokens tok matches n repo issue mch pend
   last=$(cat "$LASTREAD")
   ch=$(cat "$CHANNEL_FILE" 2>/dev/null); [ -n "$ch" ] || ch=$(open_dm) || exit 1
-  slack conversations.history "$(jq -nc --arg c "$ch" --arg o "$last" '{channel:$c,oldest:$o,limit:200}')" || exit 1
+  SLACK_FORM=1 slack conversations.history "$(jq -nc --arg c "$ch" --arg o "$last" '{channel:$c,oldest:$o,limit:200}')" || exit 1
   msgs=$(printf '%s' "$RESP" | jq -c '(.messages // []) | map(select(.type=="message" and .ts)) | sort_by(.ts|tonumber) | .[]') || exit 1
   while IFS= read -r m <&3; do
     [ -n "$m" ] || continue
