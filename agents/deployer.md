@@ -30,9 +30,11 @@ Both repos use the same environment structure: two Vercel projects (production i
 - **Shared-table refuse list (quoting tool PRs):** the staging and production databases are shared with the scheduler. Refuse any quoting-tool migration that touches `users`, `technicians`, `clients`, `sites`, `contracts`, `visits`, `visit_assignments`, `timesheets`, `historical_timesheets` — STOP and escalate to JP; a bad policy change here has previously broken the scheduler for all users.
 - **Post-merge:** Wait up to 3 minutes for the staging GitHub Actions deploy to complete, then verify:
   ```bash
-  gh run list --branch staging --limit 1 --json status,conclusion
+  SHA=$(gh pr view <N> -R <owner>/<repo> --json mergeCommit --jq .mergeCommit.oid)   # full 40-char SHA
+  gh run list -R <owner>/<repo> --workflow deploy-staging.yml --commit "$SHA" --limit 1 --json databaseId,url
+  gh run view <id> -R <owner>/<repo> --json jobs --jq '.jobs[]|select(.name|test("^[Dd]eploy"))|[.name,.status,.conclusion]|join(" ")'
   ```
-  If the run fails, stop and report — do not retry or attempt to fix. If the run is still `in_progress` or `queued` at 3 minutes, stop waiting: post your handoff marker with the run URL and its current status, and stop. Never poll a workflow to completion.
+  Only the `deploy` job of that run counts: success = `completed success`. A still-running or failed E2E/smoke job in the same run, or a separate E2E workflow, does not block. If the deploy job fails, stop and report — do not retry or attempt to fix. If it is still `in_progress` or `queued` at 3 minutes, stop waiting: post your handoff marker with the run URL (of the `deploy-staging.yml` run you read, never another workflow's) and the job's current status, and stop. Never poll a workflow to completion.
 - **Post-merge milestone check (backstop for the CI stamp).** Always pass `-R <owner>/<repo>` (plain `gh issue view` fails on the scheduler). First look for the permanent `staging` milestone:
   ```bash
   gh api repos/<owner>/<repo>/milestones --jq '.[] | select(.title=="staging") | .number'
