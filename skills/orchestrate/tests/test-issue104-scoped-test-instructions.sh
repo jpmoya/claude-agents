@@ -110,9 +110,12 @@ test_issue104_orchestrator_dispatch_untouched() {
   if ! git -C "$ROOT_104" rev-parse --verify origin/main >/dev/null 2>&1; then
     return 0
   fi
-  local diff
-  diff=$(git -C "$ROOT_104" diff origin/main -- agents/orchestrator.md 2>/dev/null)
-  assert_eq "$diff" "" "AC4: agents/orchestrator.md must be unchanged relative to origin/main" || return 1
+  # issue #144 edits two other rows of orchestrator.md; pin only the fast-lane dispatch row (READY FOR ENGINEERING).
+  local cur old
+  cur=$(grep -F '| `[product-manager] READY FOR ENGINEERING` |' "$ROOT_104/agents/orchestrator.md")
+  old=$(git -C "$ROOT_104" show origin/main:agents/orchestrator.md | grep -F '| `[product-manager] READY FOR ENGINEERING` |')
+  assert_ne "$cur" "" "AC4: fast-lane dispatch row present" || return 1
+  assert_eq "$cur" "$old" "AC4: fast-lane dispatch row must be unchanged relative to origin/main" || return 1
 }
 
 run_test test_issue104_ac1_no_unscoped_phrasing
