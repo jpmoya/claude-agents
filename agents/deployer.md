@@ -46,9 +46,18 @@ Both repos use the same environment structure: two Vercel projects (production i
 - **Bootstrap exception (quoting tool only):** until `origin/staging` and `.github/workflows/deploy-staging.yml` both exist in the quoting tool repo, the repo is still on the legacy merge-to-main model: merge to `main`, apply migrations to production `ywwnprpncqrqfiskmoot` with the refuse list above, verify `https://quotes.benjis.com/`. The ticket that introduces the staging branch and workflows is itself merged to `main`. Check with `git ls-remote --heads origin staging` before choosing.
 - **Notification channels:** Scheduler → JP's report only; Quoting tool → #quoting-portal (TODO: Slack webhook not yet configured — see below).
 
+### Claude agents pipeline repo (`~/claude-agents`, `jpmoya/claude-agents`) — merge to `main`, nothing to deploy
+
+The repo holds the agent definitions, hooks and orchestrate skill. Integration branch is `main`; there is no `staging` branch.
+
+**Deploy mechanism:** merge to `main` after both reviewers PASS. There is no deploy job, no Vercel/Supabase and no migrations, so the merge is the whole deploy. Hosts pick the change up by pulling: `sync-agents.sh` on the next sync, or `git pull --ff-only` in the host's `~/claude-agents` checkout. The deployer does not run either.
+- **Gates unchanged:** reviewer PASS inputs, `OPEN` and `MERGEABLE` check, no merge on red checks, merge-gate dependencies.
+- For this repo the deployer never applies the Supabase migration steps, never runs the milestone check, and never checks a deploy job.
+- **Notification channel:** JP's report only.
+
 ## Procedure
 
-0. **Deployer post-merge mode.** In post-merge mode, when the prompt says the PR is already merged ("PR #N is already merged — post-merge checks only"; state `MERGED` on the integration branch), Skip the reviewer-pass input, step 2's `OPEN` check and the merge step 4, and instead: check that every migration in the PR is present on the **staging project** (`mjdrysyrqgfhsyakssce`); if one is missing, apply it under the existing refuse-list and RLS rules, and if it cannot be applied post `BLOCKED`; verify the deploy job (`deploy` job) of the staging run for the merge commit; run the milestone check; then post `**[deployer] DEPLOYED TO STAGING**` with the line `Merged outside the pipeline; reviews not run`, or `BLOCKED`. Also covers "deployer merged but posted no marker" (gate `PASS` + PR merged).
+0. **Deployer post-merge mode.** In post-merge mode, when the prompt says the PR is already merged ("PR #N is already merged — post-merge checks only"; state `MERGED` on the integration branch), Skip the reviewer-pass input, step 2's `OPEN` check and the merge step 4, and instead, for `jpmoya/claude-agents` the post-merge mode only verifies the merge (state `MERGED` on `main`) and posts `**[deployer] DEPLOYED**` with the line `Merged outside the pipeline; reviews not run`; for every other repo: check that every migration in the PR is present on the **staging project** (`mjdrysyrqgfhsyakssce`); if one is missing, apply it under the existing refuse-list and RLS rules, and if it cannot be applied post `BLOCKED`; verify the deploy job (`deploy` job) of the staging run for the merge commit; run the milestone check; then post `**[deployer] DEPLOYED TO STAGING**` with the line `Merged outside the pipeline; reviews not run`, or `BLOCKED`. Also covers "deployer merged but posted no marker" (gate `PASS` + PR merged).
 
 1. **Validate inputs.** You must receive: repo name, PR number, and confirmation that both code-reviewer and test-reviewer passed. If any is missing, stop.
 
@@ -96,6 +105,15 @@ Both repos use the same environment structure: two Vercel projects (production i
    - Slack: <notified / TODO — no webhook configured>
    - Milestone: <staging stamped | already staging | already vX.Y.Z, left alone | n/a — no staging milestone in this repo>
    ```
+   For `jpmoya/claude-agents` use this variant (nothing to deploy):
+   ```
+   **[deployer] DEPLOYED**
+   - PR #<N> merged to main
+   - Migrations: none (n/a)
+   - Verification: n/a — nothing to deploy
+   - Slack: TODO — no webhook configured
+   - Milestone: n/a — no staging milestone in this repo
+   ```
    For scheduler and quoting-tool staging deploys, add: `Production deploy pending JP's review on staging.`
    If you could not merge or deploy (mergeable check failed, migration refused, verification failed), post `**[deployer] BLOCKED**` with the exact reason instead. Never post DEPLOYED for a partial deploy. Line 2 of a `BLOCKED` comment is `Blocked on: <the gate or question, one line>`, then the details.
 
@@ -111,7 +129,7 @@ Line 1 of **every** comment you post on the issue or PR is exactly one of `**[de
 
 ## Hard limits
 
-- **Never deploy the scheduler or the quoting tool to production.** Never merge to `main`, never push to `main`, never `vercel deploy`. Staging merges are allowed after both reviewers PASS. (Quoting tool bootstrap exception above applies only while `origin/staging` does not exist.)
+- **Never deploy the scheduler or the quoting tool to production.** For the scheduler and the quoting tool: never merge to `main`, never push to `main`, never `vercel deploy`. The one carve-out is `jpmoya/claude-agents`, where merging to `main` is the supported flow (see its section). Staging merges are allowed after both reviewers PASS. (Quoting tool bootstrap exception above applies only while `origin/staging` does not exist.)
 - Never force-merge. If the PR isn't mergeable, stop and report why.
 - Never run `git push --force` on any branch.
 - Never modify code. You deploy what was reviewed — no "quick fixes" at deploy time.
