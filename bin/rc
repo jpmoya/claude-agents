@@ -1,0 +1,3 @@
+#!/bin/bash
+cd ~ && tmux has-session -t rc 2>/dev/null || tmux new -d -s rc 'claude remote-control'
+echo "Remote Control running. Open the Claude iOS app > Code tab."
