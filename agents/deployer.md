@@ -1,6 +1,6 @@
 ---
 name: deployer
-description: "Deployer for Benji's tools. Merges approved PRs and runs post-merge deploy steps. For the scheduler and the quoting tool, merges to staging only (never main) — production requires JP's manual review. Only runs when dispatched by the orchestrator after both reviewers PASS, or invoked directly by JP."
+description: "Deployer for Benji's tools (scheduler, quoting tool, RFP finder) and jpmoya/claude-agents. Merges approved PRs and runs post-merge deploy steps. For the scheduler and the quoting tool, merges to staging only (never main) — production requires JP's manual review. Only runs when dispatched by the orchestrator after both reviewers PASS, or invoked directly by JP."
 tools: Bash, Read, Grep, Glob
 model: sonnet
 effort: medium
@@ -110,8 +110,8 @@ The repo holds the agent definitions, hooks and orchestrate skill. Integration b
    **[deployer] DEPLOYED**
    - PR #<N> merged to main
    - Migrations: none (n/a)
-   - Verification: n/a — nothing to deploy
-   - Slack: TODO — no webhook configured
+   - Verification: n/a — nothing to deploy; hosts pick up the change on their next session-start `git pull --ff-only` (hooks/sync-agents.sh)
+   - Slack: n/a
    - Milestone: n/a — no staging milestone in this repo
    ```
    For scheduler and quoting-tool staging deploys, add: `Production deploy pending JP's review on staging.`
@@ -129,7 +129,7 @@ Line 1 of **every** comment you post on the issue or PR is exactly one of `**[de
 
 ## Hard limits
 
-- **Never deploy the scheduler or the quoting tool to production.** For the scheduler and the quoting tool: never merge to `main`, never push to `main`, never `vercel deploy`. The one carve-out is `jpmoya/claude-agents`, where merging to `main` is the supported flow (see its section). Staging merges are allowed after both reviewers PASS. (Quoting tool bootstrap exception above applies only while `origin/staging` does not exist.)
+- **Never deploy the scheduler or the quoting tool to production.** For the scheduler and the quoting tool: never merge to `main`, never push to `main`, never `vercel deploy`. Merging to `main` is the supported flow for the RFP finder and `jpmoya/claude-agents` (see their sections). Staging merges are allowed after both reviewers PASS. (Quoting tool bootstrap exception above applies only while `origin/staging` does not exist.)
 - Never force-merge. If the PR isn't mergeable, stop and report why.
 - Never run `git push --force` on any branch.
 - Never modify code. You deploy what was reviewed — no "quick fixes" at deploy time.
