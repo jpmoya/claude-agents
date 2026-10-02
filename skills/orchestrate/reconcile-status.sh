@@ -119,6 +119,15 @@ while IFS=$'\t' read -r issue repo state pid started last_activity restarts stag
   printf '%s' "$release" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || release=""
   [ -z "$release" ] || printf '%s\n' "$release" > "$PIPE/orch-$issue.release"
 
+  ms=$(printf '%s' "$info" | jq -r '.milestone.title // empty' 2>/dev/null | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//' | cut -c1-60)
+  printf '%s' "$ms" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' && ms=""
+  old_ms=$(head -n1 "$PIPE/orch-$issue.milestone" 2>/dev/null)
+  if [ -n "$ms" ]; then
+    [ "$ms" = "$old_ms" ] || { printf '%s\n' "$ms" > "$PIPE/orch-$issue.milestone"; changed=1; }
+  elif [ -f "$PIPE/orch-$issue.milestone" ]; then
+    rm -f "$PIPE/orch-$issue.milestone"; changed=1
+  fi
+
   if [ "$gh_state" = "CLOSED" ] || { [ "$gh_state" = "OPEN" ] && [ -n "$release" ]; }; then
     closed_at=""
     [ "$gh_state" = "CLOSED" ] && closed_at=$(printf '%s' "$info" | jq -r '.closedAt // empty' 2>/dev/null)

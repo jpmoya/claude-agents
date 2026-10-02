@@ -20,6 +20,7 @@ const MAX_RUNS = 20;
 const MAX_COMPLETED = 10;
 const MAX_STAGING = 60;
 const MAX_APPROVED = 20;
+const MILESTONE = /^[\w .,()&/+:-]{1,60}$/;
 const RELEASE = /^v\d+\.\d+\.\d+$/;
 
 /** True iff `value` is a string that is exactly a GitHub issue URL. render.js re-checks with it. */
@@ -104,6 +105,11 @@ function sanitiseRun(rawRun) {
   const title = sanitiseTitle(rawRun.title);
   if (title !== null) run.title = title;
   if (isIssueUrl(rawRun.url)) run.url = rawRun.url;
+
+  if (typeof rawRun.milestone === 'string') {
+    const milestone = rawRun.milestone.trim();
+    if (MILESTONE.test(milestone)) run.milestone = milestone;
+  }
 
   return run;
 }

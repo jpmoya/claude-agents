@@ -49,6 +49,14 @@ On staging 60; Parked 10 and hidden once its last activity is older than 7 days;
 Marker · Last activity · Restarts`; Approved / On staging `Issue · Ticket · Updated`; Done
 `Issue · Ticket · Closed · Release · Final marker`. An empty group reads `(0)` and one `none` row.
 
+Needs JP is grouped by (`repo`, `milestone`) (issue #140), from the optional `runs[].milestone`
+key (a non-version GitHub milestone title, ≤ 60 chars matching `^[\w .,()&/+:-]+$`; anything else
+is omitted; a missing milestone is **no release**). Groups are ordered by waiting rows (counted
+before the cap) descending, ties by repo alias then milestone, "no release" last; rows within a
+group newest first; the 20-row cap applies after that ordering. Each group has a header row
+`<milestone or no release> (<repo>) — <n> waiting` (n = rows shown after the cap; a group fully
+cut by the cap gets none). Other groups are unchanged.
+
 Payload (`v` stays 1, every new key optional; the host half is #65):
 
 - `staging[]` (first 60 valid kept) and `approved[]` (first 20): `{repo, issue, title?, url?,
