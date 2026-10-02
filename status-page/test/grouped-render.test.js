@@ -461,3 +461,74 @@ describe('re-homed #51 — Done group', () => {
     expect(s).not.toContain('href=');
   });
 });
+
+// ---- Issue #140: group header rows in Needs JP --------------------------------------------------
+describe('#140 — Needs JP group header rows', () => {
+  const blocked = (issue, repo, milestone, hoursAgo) => {
+    const r = run(issue, { state: 'held', marker: 'BLOCKED', repo, last_activity_at: ago(hoursAgo) });
+    if (milestone !== undefined) r.milestone = milestone;
+    return r;
+  };
+  const needsHtml = (runs) => section(render(hostRecord({ runs }), null), 'Needs JP');
+  const headers = (frag) => [...frag.matchAll(/\(([^)<]*)\) — (\d+) waiting/g)].map((m) => [m[1], Number(m[2])]);
+
+  it('one header per group, text "<milestone> (<repo>) — <n> waiting", spanning all 8 columns', () => {
+    const frag = needsHtml([blocked(1, 'quoting', 'Release 3', 1), blocked(2, 'quoting', 'Release 3', 2), blocked(3, 'scheduler', 'Beta', 3)]);
+    expect(frag).toMatch(/<t[dh][^>]*colspan="8"[^>]*>\s*Release 3 \(quoting\) — 2 waiting\s*<\/t[dh]>/);
+    expect(frag).toMatch(/<t[dh][^>]*colspan="8"[^>]*>\s*Beta \(scheduler\) — 1 waiting\s*<\/t[dh]>/);
+    expect(count(frag, /waiting/g)).toBe(2);
+  });
+
+  it('header comes before its group rows, groups in order', () => {
+    const frag = needsHtml([blocked(1, 'quoting', 'Big', 1), blocked(2, 'quoting', 'Big', 2), blocked(3, 'quoting', 'Small', 3)]);
+    const big = frag.indexOf('Big (quoting)');
+    const small = frag.indexOf('Small (quoting)');
+    expect(big).toBeGreaterThan(-1);
+    expect(small).toBeGreaterThan(big);
+    expect(frag.indexOf('Title1')).toBeGreaterThan(big);
+    expect(frag.indexOf('Title2')).toBeLessThan(small);
+    expect(frag.indexOf('Title3')).toBeGreaterThan(small);
+  });
+
+  it('missing milestone -> "no release (<repo>) — n waiting"', () => {
+    const frag = needsHtml([blocked(1, 'quoting', undefined, 1)]);
+    expect(frag).toContain('no release (quoting) — 1 waiting');
+  });
+
+  it('same milestone in two repos -> two headers, each with its repo', () => {
+    const frag = needsHtml([blocked(1, 'quoting', 'Release 3', 1), blocked(2, 'scheduler', 'Release 3', 2)]);
+    expect(headers(frag).sort()).toEqual([['quoting', 1], ['scheduler', 1]]);
+  });
+
+  it('milestone is HTML-escaped: "A & B" -> "A &amp; B"', () => {
+    const frag = needsHtml([blocked(1, 'quoting', 'A & B', 1), blocked(2, 'quoting', 'A & B', 2)]);
+    expect(frag).toContain('A &amp; B (quoting) — 2 waiting');
+    expect(frag).not.toContain('A & B (quoting)');
+  });
+
+  it('n is the rows shown after the cap; a fully capped-out group gets no header', () => {
+    const runs = [];
+    for (let i = 0; i < 15; i++) runs.push(blocked(100 + i, 'alpha', 'M', 1 + i));
+    for (let i = 0; i < 8; i++) runs.push(blocked(200 + i, 'beta', 'M', 1 + i));
+    const frag = needsHtml(runs);
+    expect(headers(frag)).toEqual([['alpha', 15], ['beta', 5]]);
+
+    const more = [];
+    for (let i = 0; i < 20; i++) more.push(blocked(300 + i, 'alpha', 'M', 1 + i));
+    for (let i = 0; i < 3; i++) more.push(blocked(400 + i, 'beta', 'M', 1 + i));
+    const frag2 = needsHtml(more);
+    expect(headers(frag2)).toEqual([['alpha', 20]]);
+    expect(frag2).not.toContain('(beta)');
+  });
+
+  it('no Needs JP rows: section is the unchanged "none" row, no header', () => {
+    const frag = section(render(hostRecord({ runs: [run(1, { state: 'running' })] }), null), 'Needs JP');
+    expect(count(frag, /<tr>\s*<td[^>]*>\s*none\s*<\/td>/g)).toBe(1);
+    expect(frag).not.toContain('waiting');
+  });
+
+  it('other groups get no milestone header', () => {
+    const html = render(hostRecord({ runs: [{ ...run(1, { state: 'held', marker: 'TESTS FAIL' }), milestone: 'M' }] }), null);
+    expect(section(html, 'Parked')).not.toContain('waiting');
+  });
+});
