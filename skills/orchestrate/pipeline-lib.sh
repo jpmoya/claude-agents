@@ -49,3 +49,6 @@ write_title_marker() {
   fi
   if [ -n "$marker" ]; then printf '%s\n' "$marker" > "$PIPE/orch-$issue.marker"; else rm -f "$PIPE/orch-$issue.marker"; fi
 }
+
+# STUB (issue #136, test-writer): limit_kind_of <file> — real implementation pending.
+limit_kind_of() { echo "limit_kind_of: NotImplemented" >&2; return 1; }
