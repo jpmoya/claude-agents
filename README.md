@@ -16,6 +16,10 @@ JP's shared Claude Code config, synced across machines (Mac + Clog VM). Despite 
 - To change anything: edit here (or through the symlink), commit, push. Other machines pick it up on their next session.
 - **No repo-local agents.** A repo's `.claude/agents/` holds at most `deployer.md`, which the orchestrator looks for locally. Nothing else: project-level agents override user-level ones, so a local `code-reviewer` silently replaces the pipeline one, and a repo-prefixed fork drifts from the global definition (casa-verde-site's did, 2026-09-03). Repo-specific rules go in that repo's `CLAUDE.md`, which every global agent reads.
 
+## Pipeline logging (issue #134)
+
+`skills/orchestrate/stage-run.sh` wraps every stage dispatch and appends a `stage_start` and a `stage_end` row (timing, outcome, marker, cost) to `~/logs/pipeline/events.jsonl`; the orchestrator never writes that file. A `stage_start` with no matching `stage_end` means the wrapper itself was killed hard.
+
 ## Install on a new machine
 
 ```bash
