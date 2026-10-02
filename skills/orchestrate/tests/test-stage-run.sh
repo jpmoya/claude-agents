@@ -258,7 +258,7 @@ test_sr_ac8_identity_fields_from_env() {
   assert_eq "$(sr_f "$e" .pr)" 51 "pr" || { sr_teardown; return 1; }
   assert_eq "$(sr_f "$e" .attempt)" 1 "attempt (first run)" || { sr_teardown; return 1; }
   local host start; host=$(sr_f "$e" .host); start=$(sr_f "$(sr_start)" .start_ts)
-  assert_eq "$(sr_f "$e" '.run_id | test("^" + .host + "-42-code-reviewer-[0-9]+$")')" true "run_id is <host>-<issue>-<agent>-<epoch>" || { sr_teardown; return 1; }
+  assert_eq "$(sr_f "$e" '. as $r | .run_id | test("^" + $r.host + "-42-code-reviewer-[0-9]+$")')" true "run_id is <host>-<issue>-<agent>-<epoch>" || { sr_teardown; return 1; }
   assert_eq "$(sr_f "$e" '.start_ts')" "$start" "stage_end repeats the start_ts" || { sr_teardown; return 1; }
   assert_eq "$(sr_f "$e" '.dur_s | type')" number "dur_s is a number" || { sr_teardown; return 1; }
   sr_teardown
