@@ -110,9 +110,13 @@ test_issue104_orchestrator_dispatch_untouched() {
   if ! git -C "$ROOT_104" rev-parse --verify origin/main >/dev/null 2>&1; then
     return 0
   fi
-  local diff
-  diff=$(git -C "$ROOT_104" diff origin/main -- agents/orchestrator.md 2>/dev/null)
-  assert_eq "$diff" "" "AC4: agents/orchestrator.md must be unchanged relative to origin/main" || return 1
+  # narrowed to the routing row named above: #136 AC11 legitimately edits other parts of the file
+  local want got
+  want=$(git -C "$ROOT_104" show origin/main:agents/orchestrator.md | grep '^| `\[product-manager\] READY FOR ENGINEERING` |')
+  got=$(grep '^| `\[product-manager\] READY FOR ENGINEERING` |' "$ROOT_104/agents/orchestrator.md")
+  [ "$(printf '%s\n' "$want" | grep -c .)" = 1 ] && [ "$(printf '%s\n' "$got" | grep -c .)" = 1 ] \
+    || { fail "AC4: expected exactly one READY FOR ENGINEERING routing row on each side"; return 1; }
+  assert_eq "$got" "$want" "AC4: fast-lane dispatch routing row unchanged relative to origin/main" || return 1
 }
 
 run_test test_issue104_ac1_no_unscoped_phrasing
