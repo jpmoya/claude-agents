@@ -67,7 +67,7 @@ describe('#139 Needs column', () => {
     expect(cells).toHaveLength(needsCols.length);
     expect(cells[0]).toBe('#7');
     expect(cells[2]).toBe('');
-    expect(cells[5]).toBe('BLOCKED'); // Marker column after Host, State, Stage
+    expect(cells[6]).toBe('BLOCKED'); // cells: Issue, Ticket, Needs, Host, State, Stage, Marker
   });
 
   it('an empty Needs JP group spans all nine columns', () => {
