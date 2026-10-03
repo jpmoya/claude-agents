@@ -85,7 +85,7 @@ test_sl_ac6_deployer_in_progress_outcome() {
 
 test_sl_ac7_no_new_mechanism() {
   local n h; n=$(ls "$ROOT_SL/hooks" | wc -l | tr -d ' ')
-  assert_eq "$n" 11 "AC7: hooks/ file count unchanged" || return 1
+  assert_eq "$n" 12 "AC7: hooks/ file count unchanged" || return 1
   h=$(git hash-object "$ROOT_SL/hooks/require-handoff-marker.sh")
   assert_eq "$h" 73de42d9cb5613f423bd62337b40e8b67b9cac00 "AC7: require-handoff-marker.sh unmodified" || return 1
   if sl_cap_branch | grep -qiE 'heartbeat|reaper|timer|counter'; then fail "AC7: new mechanism in cap-hit branch"; return 1; fi
