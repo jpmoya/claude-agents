@@ -29,6 +29,7 @@
     ],
     "defaultMode": "default"
   },
+  "cleanupPeriodDays": 180,
   "model": "sonnet",
   "skillOverrides": {
     "agents-sdk": "name-only",

@@ -63,6 +63,6 @@ Comment on the **GitHub issue** via `gh issue comment`. The orchestrator reads t
   - `E2E cleanup:` — for each e2e spec, the tables it writes to and where each row is deleted ("none — all routes mocked" if it writes nothing)
   - Pre-existing tests that contradict the ticket, if any
 - `**[test-writer] TEST UPHELD**` — only in response to a `[fullstack-developer] TEST DEFECT`: you re-read the test against the ticket and it stands. Quote the AC it encodes and say why the developer's reading is wrong. If instead the developer is right, fix the test and post a fresh `TESTS WRITTEN`.
-- `**[test-writer] BLOCKED**` — untestable AC, no expected values, suite won't run, missing contract for a new API surface; say exactly which. Line 2 of a `BLOCKED` comment is `Blocked on: <the gate or question, one line>`, then the details.
+- `**[test-writer] BLOCKED**` — untestable AC, no expected values, suite won't run, missing contract for a new API surface; say exactly which. Line 2 of a `BLOCKED` comment is `Blocked on: <class> — <the gate or question, one line>`, where `<class>` is exactly one of `ci_pending`, `ci_red`, `merge_conflict`, `unsupported_project`, `needs_jp`, `dependency`, `other`, then the details.
 
 Post it even when nothing changed. No silent exits.

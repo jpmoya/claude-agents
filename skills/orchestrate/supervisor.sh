@@ -67,6 +67,7 @@ issue_is_closed() {
   [ "$state" = "CLOSED" ]
 }
 
+# "done" covers DEPLOYED / DEPLOYED TO STAGING / APPLIED and the architect's SPLIT (children run their own pipelines; #118).
 # terminal_kind <gate marker> <issue> [<project-manager marker posted after it>] [<repo dir>] → prints "done" / "gate" /
 # "grace" (BLOCKED inside the grace window: wait) / "" (not terminal). It judges the GATE marker. A later
 # `[project-manager] DECISION` / `JP CONFIRMED` lifts exactly one gate — a code-track BLOCKED — so the run takes the
@@ -76,7 +77,7 @@ issue_is_closed() {
 terminal_kind() {
   local marker=$1 issue=${2:-} decision=${3:-} repo=${4:-.}
   marker=${marker%%\*\*}   # markers are bold ("**[deployer] DEPLOYED**"): strip the trailing bold so the $-anchors below match
-  [[ "$marker" =~ \]\ (DEPLOYED|DEPLOYED\ TO\ STAGING|APPLIED)$ ]] && { echo done; return; }
+  [[ "$marker" =~ \]\ (DEPLOYED|DEPLOYED\ TO\ STAGING|APPLIED|SPLIT)$ ]] && { echo done; return; }
   [[ "$marker" =~ \]\ (MOCKUPS\ PENDING\ APPROVAL|AWAITING\ GO|EFFORT\ APPROVAL\ NEEDED)$ ]] && { echo gate; return; }
   if [[ "$marker" =~ \]\ BLOCKED ]]; then
     # delegated decision recorded after a code-track BLOCKED: not a gate. An infra planner/operator BLOCKED is lifted
@@ -282,7 +283,8 @@ for f in "$PIPE"/orch-*.pid; do
     done)
       touch "$PIPE/orch-$issue.done"
       slog "[done] #$issue — terminal marker: $marker"
-      notify_engineering "$issue" ":white_check_mark:" "Deployed" "$(cd "$repo" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo "unknown")"
+      done_text="Deployed"; case "$marker" in *"] SPLIT"*) done_text="Split into sub-issues" ;; esac
+      notify_engineering "$issue" ":white_check_mark:" "$done_text" "$(cd "$repo" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo "unknown")"
       continue ;;
     gate)
       # Human gate (mockups, infra go, BLOCKED with no delegated decision after it): park it; JP relaunches (or re-adds
@@ -325,25 +327,33 @@ for f in "$PIPE"/orch-*.pid; do
   transient=false
   [ "$run_duration" -lt "$MIN_RUN_SECS" ] && transient=true
 
-  # Deliberate stop: the run that just ended logged a validate fail of a structural stage (start-gate, closed PR).
+  # Deliberate stop: the run that just ended logged a validate fail of a deliberate-stop stage (start-gate, closed PR, refused delegated decision, loop cap).
   # A restart cannot heal it — hold instead of looping to MAX_TOTAL. Other stages (concurrency-gate, ...) still restart.
-  # "This run" = ts >= .launched-at. One list of stage values: structural (claude-agents#92).
-  since=$(date -u -d "@$(( $(date +%s) - run_duration ))" +%FT%TZ 2>/dev/null)   # this launch's start
-  if [ -n "$since" ] && [ -f "$HOME/.claude/pipeline/runs.jsonl" ] \
-     && python3 - "$HOME/.claude/pipeline/runs.jsonl" "$issue" "$since" <<'PY' 2>/dev/null
+  # "This run" = ts >= .launched-at. One list of stage values: structural (claude-agents#92), delegated-decision, loop-cap (#88).
+  since=$(cat "$PIPE/orch-$issue.launched-at" 2>/dev/null || cat "$PIPE/orch-$issue.start" 2>/dev/null)   # this launch's start (no GNU date -d: BSD date lacks it)
+  found_stage=""
+  if [ -n "$since" ] && [ -f "$HOME/.claude/pipeline/runs.jsonl" ]; then
+    found_stage=$(python3 - "$HOME/.claude/pipeline/runs.jsonl" "$issue" "$since" <<'PY' 2>/dev/null
 import json, sys
 path, issue, since = sys.argv[1], int(sys.argv[2]), sys.argv[3]
 for line in open(path):
     try: r = json.loads(line)
     except ValueError: continue
     if (r.get("issue") == issue and r.get("event") == "validate" and r.get("result") == "fail"
-            and r.get("stage") in ("structural",) and str(r.get("ts", "")) >= since):
-        sys.exit(0)
-sys.exit(1)
+            and r.get("stage") in ("structural", "delegated-decision", "loop-cap") and str(r.get("ts", "")) >= since):
+        print(r.get("stage"))
+        break
 PY
-  then
+)
+  fi
+  if [ -n "$found_stage" ]; then
     touch "$PIPE/orch-$issue.held"
-    slog "[held] #$issue — structural stop (start-gate / closed PR), needs a relaunch after it is resolved"
+    case "$found_stage" in
+      loop-cap) hold_reason="loop-cap stop" ;;
+      delegated-decision) hold_reason="refused delegated decision" ;;
+      *) hold_reason="structural stop (start-gate / closed PR)" ;;
+    esac
+    slog "[held] #$issue — $hold_reason, needs a relaunch after it is resolved"
     report_status_async "held"
     continue
   fi

@@ -110,13 +110,13 @@ test_issue104_orchestrator_dispatch_untouched() {
   if ! git -C "$ROOT_104" rev-parse --verify origin/main >/dev/null 2>&1; then
     return 0
   fi
-  # Pin only the fast-lane dispatch row (found by its marker text, not line number); other
-  # orchestrator.md edits (e.g. #106) are out of this test's scope.
-  local key='| `[product-manager] READY FOR ENGINEERING` |' base cur
-  base=$(git -C "$ROOT_104" show origin/main:agents/orchestrator.md 2>/dev/null | grep -F -- "$key" | grep -F 'fast-lane mode')
-  cur=$(grep -F -- "$key" "$ROOT_104/agents/orchestrator.md" | grep -F 'fast-lane mode')
-  assert_ne "$cur" "" "AC4: fast-lane dispatch row must exist" || return 1
-  assert_eq "$cur" "$base" "AC4: fast-lane dispatch row must be unchanged relative to origin/main" || return 1
+  # narrowed to the routing row named above: #136 AC11 legitimately edits other parts of the file
+  local want got
+  want=$(git -C "$ROOT_104" show origin/main:agents/orchestrator.md | grep '^| `\[product-manager\] READY FOR ENGINEERING` |')
+  got=$(grep '^| `\[product-manager\] READY FOR ENGINEERING` |' "$ROOT_104/agents/orchestrator.md")
+  [ "$(printf '%s\n' "$want" | grep -c .)" = 1 ] && [ "$(printf '%s\n' "$got" | grep -c .)" = 1 ] \
+    || { fail "AC4: expected exactly one READY FOR ENGINEERING routing row on each side"; return 1; }
+  assert_eq "$got" "$want" "AC4: fast-lane dispatch routing row unchanged relative to origin/main" || return 1
 }
 
 run_test test_issue104_ac1_no_unscoped_phrasing

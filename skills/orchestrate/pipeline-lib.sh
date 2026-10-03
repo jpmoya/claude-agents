@@ -2,6 +2,8 @@
 # Shared launcher helpers (issue #8), sourced by orchestrate.sh and supervisor.sh right after config.sh.
 # Reads $PIPE, $MAX_CONCURRENT and $MEM_FLOOR_MB at call time, so it does not source config.sh itself.
 # marker_last_jq needs marker_re from hooks/pipeline-markers.sh, which both launchers also source.
+pipeline_host() { hostname -s 2>/dev/null | tr '[:upper:]' '[:lower:]'; }
+
 SETSID=$(command -v setsid >/dev/null 2>&1 && echo setsid || true)   # absent on macOS; nohup + & is enough there
 
 count_running() {
@@ -48,4 +50,17 @@ write_title_marker() {
     marker=$(marker_name_from_line "$line")
   fi
   if [ -n "$marker" ]; then printf '%s\n' "$marker" > "$PIPE/orch-$issue.marker"; else rm -f "$PIPE/orch-$issue.marker"; fi
+}
+
+# limit_kind_of <file> — looks at the last 20 lines, case-insensitive: a `hit your … limit` line prints monthly_spend
+# (contains "spend limit"), weekly (contains "weekly limit") or other; no match prints nothing.
+limit_kind_of() {
+  local line
+  line=$(tail -n 20 "$1" 2>/dev/null | grep -iE 'hit your.*limit' | tail -1) || true
+  [ -n "$line" ] || return 0
+  case $(printf '%s' "$line" | tr '[:upper:]' '[:lower:]') in
+    *"spend limit"*) echo monthly_spend ;;
+    *"weekly limit"*) echo weekly ;;
+    *) echo other ;;
+  esac
 }
