@@ -515,8 +515,12 @@ if [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
       if [ -f "$PIPE/orch-$num.pid" ] && kill -0 "$(cat "$PIPE/orch-$num.pid" 2>/dev/null)" 2>/dev/null; then continue; fi
       [ -f "$QUEUE/orch-$num.json" ] && continue
       # Check marker staleness — only clear if no movement for STALE_LABEL_SECS
-      last_comment_age=$(cd "$local_path" && gh issue view "$num" --json comments,updatedAt \
-        --jq '(.comments[-1].createdAt // .updatedAt) // ""' 2>/dev/null)
+      # Same call also yields the latest "claim: <host>" comment: a claim naming another machine means it owns the run.
+      view=$(cd "$local_path" && gh issue view "$num" --json comments,updatedAt \
+        --jq '((.comments[-1].createdAt // .updatedAt) // ""), ([.comments[] | select(.body | startswith("**[supervisor] NOTE** claim: "))] | last | .body // "" | split(" ") | .[3] // "")' 2>/dev/null)
+      last_comment_age=$(printf '%s\n' "$view" | sed -n 1p)
+      claim_host=$(printf '%s\n' "$view" | sed -n 2p)
+      [ -n "$claim_host" ] && [ "$claim_host" != "$HOST" ] && continue
       if [ -n "$last_comment_age" ]; then
         comment_epoch=$(to_epoch "$last_comment_age")
         age=$(( $(date +%s) - comment_epoch ))
