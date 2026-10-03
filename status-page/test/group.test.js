@@ -124,8 +124,8 @@ describe('groupTickets — precedence conflicts (first matching rule wins)', () 
     expect(where(group({ mac: hostRecord({ completed: [done(9, { closed_at: ago(24 * 6) })] }) }), 9)).toBe(H.done);
   });
 
-  it('a held AWAITING GO dated 30 days ago is still Needs JP (never aged out)', () => {
-    const g = group({ mac: hostRecord({ runs: [run(10, { state: 'held', marker: 'AWAITING GO', last_activity_at: ago(24 * 30) })] }) });
+  it('a held AWAITING GO dated 13 days ago is still Needs JP (#139: ages out after 14 days)', () => {
+    const g = group({ mac: hostRecord({ runs: [run(10, { state: 'held', marker: 'AWAITING GO', last_activity_at: ago(24 * 13) })] }) });
     expect(where(g, 10)).toBe(H.needsJp);
   });
 
@@ -224,13 +224,13 @@ describe('groupTickets — ordering, caps and ageing (#62 AC7)', () => {
     expect(issuesOf(g, H.parked)).toEqual([2]);
   });
 
-  it('Needs JP: 25 rows -> capped at 20, newest first, none aged out', () => {
-    const runs = Array.from({ length: 20 }, (_v, i) => run(i + 1, { state: 'held', marker: 'BLOCKED', last_activity_at: ago(24 * 30 + i) }));
-    const more = Array.from({ length: 5 }, (_v, i) => run(i + 101, { state: 'held', marker: 'AWAITING GO', last_activity_at: ago(24 * 40 + i) }));
+  it('Needs JP: 25 rows -> capped at 20, newest first, none aged out (< 14 days)', () => {
+    const runs = Array.from({ length: 20 }, (_v, i) => run(i + 1, { state: 'held', marker: 'BLOCKED', last_activity_at: ago(24 * 10 + i) }));
+    const more = Array.from({ length: 5 }, (_v, i) => run(i + 101, { state: 'held', marker: 'AWAITING GO', last_activity_at: ago(24 * 12 + i) }));
     const g = group({ mac: hostRecord({ runs }), vm: hostRecord({ runs: more }) });
     const out = issuesOf(g, H.needsJp);
     expect(out).toHaveLength(20);
-    expect(out[0]).toBe(1); // newest (30 days ago); every 40-day row is older and cut
+    expect(out[0]).toBe(1); // newest (10 days ago); every 12-day row is older and cut
     expect(out.every((n) => n <= 20)).toBe(true);
   });
 
