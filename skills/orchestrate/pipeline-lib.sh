@@ -51,3 +51,16 @@ write_title_marker() {
   fi
   if [ -n "$marker" ]; then printf '%s\n' "$marker" > "$PIPE/orch-$issue.marker"; else rm -f "$PIPE/orch-$issue.marker"; fi
 }
+
+# limit_kind_of <file> — looks at the last 20 lines, case-insensitive: a `hit your … limit` line prints monthly_spend
+# (contains "spend limit"), weekly (contains "weekly limit") or other; no match prints nothing.
+limit_kind_of() {
+  local line
+  line=$(tail -n 20 "$1" 2>/dev/null | grep -iE 'hit your.*limit' | tail -1) || true
+  [ -n "$line" ] || return 0
+  case $(printf '%s' "$line" | tr '[:upper:]' '[:lower:]') in
+    *"spend limit"*) echo monthly_spend ;;
+    *"weekly limit"*) echo weekly ;;
+    *) echo other ;;
+  esac
+}

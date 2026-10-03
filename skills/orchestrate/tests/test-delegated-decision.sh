@@ -602,10 +602,12 @@ test_dd_i76_ac8_no_new_mechanisms() {   # characterisation
   base=$(dd_base)
   if [ -z "$base" ]; then printf '    (i76 AC8 skipped: no origin/main merge-base)\n' >&2; return 0; fi
   # orchestrate.sh dropped: #94 AC3 must edit it (launch writes the marker file)
-  for f in hooks/pipeline-markers.sh; do
-    d=$(cd "$ROOT_DD" && git diff --name-only "$base" -- "$f")
-    assert_eq "$d" "" "i76 AC8: $f unchanged" || return 1
-  done
+  # whole-file check narrowed to markers_for/marker_re: #136 AC10 appends block_classes()
+  local want got
+  want=$(cd "$ROOT_DD" && git show "$base:hooks/pipeline-markers.sh" | awk '/^(markers_for|marker_re)\(\)/ {p=1} p {print} p && /^}/ {p=0}')
+  got=$(cd "$ROOT_DD" && awk '/^(markers_for|marker_re)\(\)/ {p=1} p {print} p && /^}/ {p=0}' hooks/pipeline-markers.sh)
+  [ -n "$want" ] || { fail "i76 AC8: markers_for/marker_re not found at merge-base"; return 1; }
+  assert_eq "$got" "$want" "i76 AC8: markers_for/marker_re unchanged" || return 1
   dd_has "$MARKERS_DD" 'GO|MOCKUPS APPROVED' || return 1
   dd_has "$PMGR_DD" 'never resum' || return 1
 }

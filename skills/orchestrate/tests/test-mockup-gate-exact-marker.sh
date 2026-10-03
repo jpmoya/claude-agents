@@ -439,8 +439,12 @@ test_mg_ac7_pipeline_markers_byte_identical() {
   local base d
   base=$(mg_base)
   if [ -z "$base" ]; then printf '    (AC7 byte-identity skipped: no origin/main merge-base)\n' >&2; return 0; fi
-  d=$(cd "$ROOT_MG" && git diff --name-only "$base" -- hooks/pipeline-markers.sh)
-  assert_eq "$d" "" "AC7: hooks/pipeline-markers.sh unchanged" || return 1
+  # whole-file check narrowed to markers_for/marker_re: #136 AC10 appends block_classes()
+  local want got
+  want=$(cd "$ROOT_MG" && git show "$base:hooks/pipeline-markers.sh" | awk '/^(markers_for|marker_re)\(\)/ {p=1} p {print} p && /^}/ {p=0}')
+  got=$(cd "$ROOT_MG" && awk '/^(markers_for|marker_re)\(\)/ {p=1} p {print} p && /^}/ {p=0}' hooks/pipeline-markers.sh)
+  [ -n "$want" ] || { fail "AC7: markers_for/marker_re not found at merge-base"; return 1; }
+  assert_eq "$got" "$want" "AC7: markers_for/marker_re unchanged" || return 1
 }
 
 test_mg_ac7_project_manager_still_has_no_mockups_approved_marker() {
