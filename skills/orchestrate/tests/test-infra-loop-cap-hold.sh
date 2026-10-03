@@ -115,7 +115,31 @@ test_lc_orchestrator_loop_cap_section_code_track() {
   local para
   para=$(grep -F 'third round' "$ORCH_LC" | head -1)
   assert_ne "$para" "" "#100: code-track pre/post-implementation loop-cap paragraph present" || return 1
+  assert_contains "$para" 'log_run' "#100: code-track cap paragraph calls log_run" || return 1
+  assert_contains "$para" '"event":"validate"' "#100: code-track cap paragraph logs a validate event" || return 1
   assert_contains "$para" '"stage":"loop-cap"' "#100: code-track caps get the identical log_run instruction (no-op only if #88 already added it here)" || return 1
+  assert_contains "$para" '"result":"fail"' "#100: code-track cap paragraph logs a fail result" || return 1
+}
+
+test_lc_hold_message_generic_for_code_track_cap() {
+  # Step 2 of the PM decision: the hold wording must not claim "infra PLAN FAIL cap" when the cap that
+  # fired is a code-track one (latest marker is a test-reviewer TESTS FAIL). It must still name loop-cap.
+  sq_env open
+  mk_restarting "$SQ_PIPE" 42 "$SQ_REPO"
+  sq_iso_ago 600 > "$SQ_PIPE/orch-42.launched-at"
+  sq_marker '**[test-reviewer] TESTS FAIL: 2 findings**'
+  ms_seed_run_line loop-cap 60
+  sq_tick
+  LC_LOG=$(sq_log)
+  LC_HELD=$(sq_present "$SQ_PIPE/orch-42.held")
+  LC_QUEUED=$(sq_present "$SQ_PIPE/queue/orch-42.json")
+  sq_cleanup
+  assert_eq "$LC_HELD" "present" "#100: code-track loop-cap fail this run -> .held" || return 1
+  assert_contains "$LC_LOG" "[held] #42" "#100: [held] line logged" || return 1
+  assert_contains "$LC_LOG" "loop-cap" "#100: slog line names the loop-cap stop" || return 1
+  assert_not_contains "$LC_LOG" "infra PLAN FAIL" "#100: hold message is generic, not infra-specific, for a code-track cap" || return 1
+  assert_not_contains "$LC_LOG" "[queue-restart] #42" "#100: no restart queued" || return 1
+  assert_eq "$LC_QUEUED" "absent" "#100: no queue entry" || return 1
 }
 
 test_lc_orchestrator_unchanged_cap_sentence_names_log_line() {
@@ -129,6 +153,7 @@ run_test test_lc_loop_cap_fail_in_this_run_holds
 run_test test_lc_plan_fail_no_loop_cap_line_restarts
 run_test test_lc_loop_cap_fail_in_earlier_run_restarts
 run_test test_lc_structural_fail_still_holds_unedited
+run_test test_lc_hold_message_generic_for_code_track_cap
 run_test test_lc_orchestrator_plan_fail_row_logs_loop_cap
 run_test test_lc_orchestrator_loop_cap_section_code_track
 run_test test_lc_orchestrator_unchanged_cap_sentence_names_log_line
