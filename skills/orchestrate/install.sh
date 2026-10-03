@@ -63,12 +63,14 @@ echo "4. cron"
 SUP="$M * * * * $CL/skills/orchestrate/supervisor.sh >> $LOGS/supervisor.log 2>&1"
 SCN="0 * * * * $CL/skills/orchestrate/scan-backlog.sh >> $LOGS/scan.log 2>&1"
 BKF="23 13 * * * $CL/skills/orchestrate/session-backfill.sh >> $LOGS/session-backfill.log 2>&1"
+ROT="41 13 * * * $CL/skills/orchestrate/rotate-logs.sh >> $LOGS/rotate-logs.log 2>&1"
 cur=$(crontab -l 2>/dev/null || true)
-new=$(printf '%s\n' "$cur" | grep -v -E 'orchestrate/supervisor\.sh|scan-backlog\.sh|pipeline/dispatch\.sh|orchestrate/session-backfill\.sh')
+new=$(printf '%s\n' "$cur" | grep -v -E 'orchestrate/supervisor\.sh|scan-backlog\.sh|pipeline/dispatch\.sh|orchestrate/session-backfill\.sh|orchestrate/rotate-logs\.sh')
 new="$new"$'\n'"# Agent pipeline supervisor (installed by claude-agents install.sh)"$'\n'"$SUP"
 new="$new"$'\n'"# Agent pipeline session backfill (installed by claude-agents install.sh)"$'\n'"$BKF"
+new="$new"$'\n'"# Agent pipeline log rotation (installed by claude-agents install.sh)"$'\n'"$ROT"
 [ "$SCAN" = 1 ] && new="$new"$'\n'"# Agent pipeline hourly backlog scan"$'\n'"$SCN"
-if [ "$(printf '%s\n' "$cur" | grep -c -F "$SUP")" = 1 ] && [ "$(printf '%s\n' "$cur" | grep -c -F "$BKF")" = 1 ] && [ "$(printf '%s\n' "$cur" | grep -c 'orchestrate/session-backfill\.sh')" = 1 ] && { [ "$SCAN" = 0 ] || [ "$(printf '%s\n' "$cur" | grep -c -F "$SCN")" = 1 ]; } && ! printf '%s\n' "$cur" | grep -q 'pipeline/dispatch\.sh'; then ok "crontab already correct"
+if [ "$(printf '%s\n' "$cur" | grep -c -F "$SUP")" = 1 ] && [ "$(printf '%s\n' "$cur" | grep -c -F "$BKF")" = 1 ] && [ "$(printf '%s\n' "$cur" | grep -c 'orchestrate/session-backfill\.sh')" = 1 ] && [ "$(printf '%s\n' "$cur" | grep -c -F "$ROT")" = 1 ] && [ "$(printf '%s\n' "$cur" | grep -c 'orchestrate/rotate-logs\.sh')" = 1 ] && { [ "$SCAN" = 0 ] || [ "$(printf '%s\n' "$cur" | grep -c -F "$SCN")" = 1 ]; } && ! printf '%s\n' "$cur" | grep -q 'pipeline/dispatch\.sh'; then ok "crontab already correct"
 else printf '%s\n' "$new" | sed '/^$/N;/^\n$/D' | crontab - && ok "crontab updated: supervisor on $MINUTE minutes$([ "$SCAN" = 1 ] && echo ', hourly scan')"; fi
 
 echo "5. tools"

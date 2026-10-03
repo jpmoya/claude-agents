@@ -27,6 +27,12 @@ SCAN_ONLY_REPOS=()
 CLAIM_SETTLE_SECS=15       # wait after posting a claim before checking who was first
 CLAIM_WINDOW_SECS=600      # claims older than this are ignored
 
+# Log rotation (rotate-logs.sh, issue #141) and the per-ticket cost ceiling (stage-run.sh)
+ROTATE_MIN_BYTES=1048576   # rotate supervisor.log / report-status.log / runs.jsonl when larger than this
+ROTATE_KEEP=12             # rotations kept per log
+RUNS_KEEP_DAYS=14          # runs.jsonl lines newer than this stay in the live file
+COST_CEILING_USD=40        # refuse a new fix-cycle developer/test-writer stage once a ticket's logged cost passes this; 0 = off
+
 [ -f "$HOME/.claude/pipeline/config.local.sh" ] && source "$HOME/.claude/pipeline/config.local.sh"
 
 export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:/opt/homebrew/bin:$PATH"

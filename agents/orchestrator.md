@@ -200,6 +200,8 @@ Maximum **2** fix cycles per phase: pre-implementation (test-writer → test-rev
 
 The cap hit is terminal **unless** a later `[project-manager] DECISION` / `JP CONFIRMED` comment whose `Resolves:` line is the URL of the `FAIL` / `TESTS FAIL` comment that hit the cap passes the delegated-decision validation: then run one more fix cycle in that phase, with the decision comment URL in the prompt. One decision comment = one extra cycle; if that cycle FAILs again the cap is hit again and needs a new decision comment pointing at the new FAIL comment. No counter, no state file — the `Resolves:` URL is the whole mechanism. The infra `PLAN FAIL` loop cap is unchanged: no `[project-manager]` marker extends it; the cap hit logs `"stage":"loop-cap"` per `:96` first.
 
+A `BLOCKED` whose line 2 is `Blocked on: cost_ceiling` is posted by `stage-run.sh` when a ticket's logged cost passes `COST_CEILING_USD`; it is a loop guard like the cap above, handled by the ordinary `BLOCKED` rows (terminal, report to JP; resumable by a `[project-manager] DECISION` / `JP CONFIRMED` whose `Resolves:` line points at it), and it is not on the JP-only list. The ceiling only looks at fix-cycle dispatches of fullstack-developer and test-writer, so every such dispatch passes `--mode fix` to `stage-run.sh`.
+
 On any cap hit (pre-impl, post-impl, or the second TEST DEFECT round), before the terminal event, write `log_run '"event":"validate","repo":…,"issue":N,"stage":"loop-cap","result":"fail","reason":"…"'` so the supervisor holds the run for JP instead of restarting it.
 
 ## Concurrency gate (before every dispatch)
