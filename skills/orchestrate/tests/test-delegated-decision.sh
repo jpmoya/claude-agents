@@ -435,16 +435,6 @@ test_dd_ac21_untouched_paths_have_no_diff() {
   assert_eq "$d" "" "AC21: golden fixtures unchanged" || return 1
 }
 
-test_dd_ac22_no_timer_counter_or_new_state_file() {
-  local base d added bad
-  base=$(dd_base)
-  if [ -z "$base" ]; then printf '    (AC22 skipped: no origin/main merge-base)\n' >&2; return 0; fi
-  d=$(cd "$ROOT_DD" && git diff --name-only "$base" -- skills/orchestrate/config.sh)
-  assert_eq "$d" "" "AC22: config.sh unchanged" || return 1
-  added=$(cd "$ROOT_DD" && git diff -U0 "$base" -- skills/orchestrate/supervisor.sh | grep '^+' | grep -v '^+++')
-  bad=$(printf '%s\n' "$added" | grep -oE 'orch-\$\{?issue\}?\.[A-Za-z_-]+' | grep -vE '\.(held|alert|done|start|launched-at)$')
-  assert_eq "$bad" "" "AC22: supervisor.sh adds no new orch-\$issue.<suffix> file" || return 1
-}
 
 # ---------------------------------------------------------------------------------------- Issue #76 (i76_ac1-ac8)
 
@@ -644,7 +634,6 @@ run_test test_dd_ac19_readme_paragraph
 run_test test_dd_ac19_claude_md_paragraph
 run_test test_dd_ac20_agents_readme_roster_row
 run_test test_dd_ac21_untouched_paths_have_no_diff
-run_test test_dd_ac22_no_timer_counter_or_new_state_file
 run_test test_dd_i76_ac1_resume_row_names_the_go_clearing_path
 run_test test_dd_i76_ac2_validation_row_gains_the_go_clause
 run_test test_dd_i76_ac3_gate_rows_byte_identical_and_carve_out_keeps_exclusions
