@@ -348,7 +348,7 @@ PY
   if [ -n "$found_stage" ]; then
     touch "$PIPE/orch-$issue.held"
     case "$found_stage" in
-      loop-cap) hold_reason="loop-cap stop (infra PLAN FAIL cap)" ;;
+      loop-cap) hold_reason="loop-cap stop" ;;
       *) hold_reason="structural stop (start-gate / closed PR)" ;;
     esac
     slog "[held] #$issue — $hold_reason, needs a relaunch after it is resolved"
