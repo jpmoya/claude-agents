@@ -200,6 +200,8 @@ Maximum **2** fix cycles per phase: pre-implementation (test-writer → test-rev
 
 The cap hit is terminal **unless** a later `[project-manager] DECISION` / `JP CONFIRMED` comment whose `Resolves:` line is the URL of the `FAIL` / `TESTS FAIL` comment that hit the cap passes the delegated-decision validation: then run one more fix cycle in that phase, with the decision comment URL in the prompt. One decision comment = one extra cycle; if that cycle FAILs again the cap is hit again and needs a new decision comment pointing at the new FAIL comment. No counter, no state file — the `Resolves:` URL is the whole mechanism. The infra `PLAN FAIL` loop cap is unchanged: no `[project-manager]` marker extends it.
 
+On any cap hit (pre-impl, post-impl, or the second TEST DEFECT round), before the terminal event, write `log_run '"event":"validate","repo":…,"issue":N,"stage":"loop-cap","result":"fail","reason":"…"'` so the supervisor holds the run for JP instead of restarting it.
+
 ## Concurrency gate (before every dispatch)
 
 Before launching any agent, check how many pipeline Claude Code processes (`claude --agent …`: orchestrators and their stages) are already running. Too many concurrent sessions hit the account's API rate limit and cause agents to stall with zero output. JP's interactive sessions are not counted — the pipeline cannot drain them (claude-agents#40). The ceiling is `MAX_CLAUDE_PROCS` in `skills/orchestrate/config.sh` (per-machine override in `~/.claude/pipeline/config.local.sh`).
@@ -366,6 +368,8 @@ log_run '"event":"terminal","repo":"jpmoya/scheduler","issue":42,"state":"awaiti
 # resume on a delegated decision: the check is a validate line, the resumed run an ordinary dispatch line
 log_run '"event":"validate","repo":"jpmoya/scheduler","issue":42,"stage":"delegated-decision","result":"pass"'
 log_run '"event":"validate","repo":"jpmoya/scheduler","issue":42,"stage":"delegated-decision","result":"fail","reason":"Resolves: URL is not the BLOCKED comment"'
+# loop cap hit (pre-impl, post-impl, TEST DEFECT second round): logged before the terminal event
+log_run '"event":"validate","repo":"jpmoya/scheduler","issue":42,"stage":"loop-cap","result":"fail","reason":"post-impl cap: 3rd FAIL"'
 # mockup gate: log the marker form checked, never who posted the comment
 log_run '"event":"validate","repo":"jpmoya/scheduler","issue":42,"stage":"mockup-gate","result":"pass","reason":"first line matched \"**[jp] MOCKUPS APPROVED**\""'
 log_run '"event":"validate","repo":"jpmoya/scheduler","issue":42,"stage":"mockup-gate","result":"fail","reason":"first line was not exactly \"**[jp] MOCKUPS APPROVED**\""'
