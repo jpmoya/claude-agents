@@ -102,3 +102,20 @@ for t in test_ic_ac12_install_twice_one_backfill_line_and_one_supervisor_line te
   test_ic_ac13_settings_json_has_cleanup_period_and_is_valid_json test_ic_ac13_readme_paragraph; do
   run_test "$t"
 done
+
+# Issue #141 AC20 — install.sh also installs the daily log-rotation cron entry (idempotent, every host, not gated on --scan).
+test_ic_141_ac20_install_twice_one_rotate_line_one_each_of_the_others_and_seeded_line_kept() {
+  ic_setup
+  ic_install --minute even; local rc1=$?
+  [ "$rc1" -ne 99 ] || { fail "AC20: refused to run (crontab not stubbed)"; rm -rf "$IC_HOME"; return 1; }
+  ic_install --minute even
+  local tab r=0; tab=$(cat "$IC_TAB")
+  assert_eq "$(printf '%s\n' "$tab" | grep -c 'orchestrate/rotate-logs\.sh')" "1" "AC20: exactly one rotate-logs line after two runs" || r=1
+  assert_eq "$(printf '%s\n' "$tab" | grep -c 'orchestrate/supervisor\.sh')" "1" "AC20: exactly one supervisor line" || r=1
+  assert_eq "$(printf '%s\n' "$tab" | grep -c 'orchestrate/session-backfill\.sh')" "1" "AC20: exactly one backfill line" || r=1
+  assert_contains "$tab" "0 14 * * 1 /usr/bin/true" "AC20: unrelated seeded line kept" || r=1
+  assert_contains "$tab" "41 13 * * * $IC_HOME/.claude/skills/orchestrate/rotate-logs.sh >> $IC_HOME/logs/pipeline/rotate-logs.log 2>&1" "AC20: the exact daily 13:41 line" || r=1
+  assert_contains "$tab" "# Agent pipeline log rotation (installed by claude-agents install.sh)" "AC20: comment header" || r=1
+  rm -rf "$IC_HOME"; return $r
+}
+run_test test_ic_141_ac20_install_twice_one_rotate_line_one_each_of_the_others_and_seeded_line_kept
