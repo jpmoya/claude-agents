@@ -91,6 +91,16 @@ def title_for(issue):  # first line of <pipe-dir>/orch-<issue>.title, stripped +
     return first_line.strip()[:TITLE_MAX_CHARS]
 
 
+def milestone_for(issue):  # first line of <pipe-dir>/orch-<issue>.milestone, stripped + capped at 60; else ""
+    if not pipe_dir:
+        return ""
+    try:
+        with open(os.path.join(pipe_dir, "orch-%s.milestone" % issue), encoding="utf-8", errors="replace") as f:
+            return f.readline(256).strip()[:60]
+    except OSError:
+        return ""
+
+
 def iso(epoch_str):
     epoch_str = (epoch_str or "").strip()
     if not epoch_str:
@@ -256,6 +266,9 @@ for raw in sys.stdin:
         run["title"] = title
         if owner_repo and issue.isdigit():
             run["url"] = "https://github.com/%s/issues/%s" % (owner_repo, issue)
+    milestone = milestone_for(issue)
+    if milestone:
+        run["milestone"] = milestone
     # Issue #139: fixed labels / enum / timestamp only, never comment text (re-checked here).
     needs = state_file_for(issue, "needs")
     if needs in NEEDS_LABELS:

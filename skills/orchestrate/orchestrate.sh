@@ -146,7 +146,7 @@ except Exception: print('?')
     # Post the owner claim (same format as shared dispatch) so the other machine's reconcile leaves the label alone.
     (cd "$REPO" && gh issue comment "$ISSUE" --body "**[supervisor] NOTE** claim: $(hostname -s) $(date -u +%FT%TZ)" >/dev/null 2>&1) || true
     # Clear tombstones and restart state on manual launch
-    rm -f "$PIPE/orch-$ISSUE".{stopped,held,done,closed,release,marker,alert,label-cleared,start,exit,exit-logged} "$PIPE/orch-$ISSUE.restarts"
+    rm -f "$PIPE/orch-$ISSUE".{stopped,held,done,closed,release,marker,milestone,alert,label-cleared,start,exit,exit-logged} "$PIPE/orch-$ISSUE.restarts"
     # Persist on both the launch and queued paths: supervisor.sh rebuilds the queue JSON from this file.
     printf '%s' "$EXTRA" > "$PIPE/orch-$ISSUE.extra"
     # Ticket title for the status board (#29) — fetched once here, before the capacity check so a queued run has it

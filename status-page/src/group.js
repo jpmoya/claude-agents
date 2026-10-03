@@ -60,6 +60,29 @@ function mergeList(hosts, name, field, keep = () => true) {
   return byKey;
 }
 
+const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+
+/** Needs JP: groups by (repo, milestone), biggest group first; ties by repo, then milestone ("no release" last). */
+function groupNeedsJp(rows) {
+  const byKey = new Map();
+  for (const row of rows) {
+    const milestone = typeof row.milestone === 'string' && row.milestone !== '' ? row.milestone : null;
+    const repo = String(row.repo ?? '');
+    const key = JSON.stringify([repo, milestone]);
+    if (!byKey.has(key)) byKey.set(key, { repo, milestone, rows: [] });
+    byKey.get(key).rows.push(row);
+  }
+  return [...byKey.values()]
+    .sort(
+      (a, b) =>
+        b.rows.length - a.rows.length ||
+        cmp(a.repo, b.repo) ||
+        (a.milestone === null) - (b.milestone === null) ||
+        cmp(a.milestone ?? '', b.milestone ?? ''),
+    )
+    .flatMap((g) => newestFirst(g.rows, 'last_activity_at'));
+}
+
 /**
  * A held gate leaves Needs JP when the host says it was answered / is out of scope, or when
  * max(gate_at, last_activity_at) is older than 14 days. No timestamp at all -> stays.
@@ -119,7 +142,7 @@ export function groupTickets(hosts, nowEpochSecs) {
   }
 
   const build = (name, field) => {
-    const rows = newestFirst(groups[name], field);
+    const rows = name === 'needsJp' ? groupNeedsJp(groups[name]) : newestFirst(groups[name], field);
     return { heading: HEADINGS[name], rows: CAPS[name] ? rows.slice(0, CAPS[name]) : rows };
   };
   return [

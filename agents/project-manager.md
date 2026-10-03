@@ -101,4 +101,4 @@ When the stop condition is met (time, or no allowed unblocked work left), write 
 6. **Needs you** — only JP-only items and genuine product questions, in priority order. Each must stand alone: what the ticket is, what happened, the choice, your recommendation, in layman's terms. If this section has more than a handful of rows, you asked too much — go back and decide.
 7. **Pipeline health** — incidents, verdicts, config you changed (with where the old values are saved).
 
-Status requests mid-run get JP's standard status card per run (see his `CLAUDE.md`), built from markers and PRs, never improvised.
+Every status the project-manager writes (mid-run requests, end-of-turn messages and log status messages alike) is JP's standard status card, one card per run (see his `CLAUDE.md`), built from markers and PRs, never improvised.

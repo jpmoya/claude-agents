@@ -69,6 +69,37 @@ row_head() {  # row_head <event> → JSON object with the fields both rows carry
     '{v:1,ts:$ts,host:$host,event:$event,run_id:$run_id,session_id:$sid,repo:$repo,issue:$issue,pr:$pr,agent:$agent,lane:$lane,mode:$mode,cycle:$cycle,attempt:$attempt,start_ts:$start_ts}'
 }
 
+# ---- cost ceiling (issue #141): refuse a new fix-cycle developer / test-writer stage once the ticket's logged cost passes
+# COST_CEILING_USD. Spend counts stage_end rows after the ticket's last cost_ceiling row. Fails open on any problem.
+cost_ceiling_check() {
+  local ceil=${COST_CEILING_USD:-40} stats spent runs nn body line2 id row
+  [ "$MODE" = fix ] || return 0
+  case "$AGENT" in fullstack-developer|test-writer) ;; *) return 0 ;; esac
+  [ -n "$REPO" ] && [ -n "$ISSUE" ] && [ -f "$EVENTS" ] || return 0
+  case "$ceil" in ''|*[!0-9.]*) return 0 ;; esac
+  awk -v c="$ceil" 'BEGIN{exit !(c+0 > 0)}' || return 0
+  stats=$(jq -R 'fromjson? | select(type == "object")' "$EVENTS" 2>/dev/null | jq -s -r --arg repo "$REPO" --argjson issue "$ISSUE" '
+    [.[] | select(.event == "stage_end" and .repo == $repo and .issue == $issue)] as $rows
+    | ([$rows | to_entries[] | select(.value.block_class == "cost_ceiling") | .key] | last // -1) as $cut
+    | [$rows | to_entries[] | select(.key > $cut) | .value] as $s
+    | "\([$s[].cost_usd // 0] | add // 0) \($s | length) \([$s[] | select(.cost_usd != null)] | length)"' 2>/dev/null) || return 0
+  set -- $stats; spent=${1:-}; runs=${2:-}; nn=${3:-}
+  [ -n "$spent" ] && [ -n "$runs" ] && [ "${nn:-0}" -gt 0 ] || return 0
+  awk -v s="$spent" -v c="$ceil" 'BEGIN{exit !(s+0 > c+0)}' || return 0
+  line2=$(awk -v s="$spent" -v c="$ceil" -v r="$runs" 'BEGIN{printf "Blocked on: cost_ceiling — this ticket has used $%.2f over %d stage runs (ceiling $%.2f); no new fix cycle was started", s, r, c}')
+  body="**[$AGENT] BLOCKED**"$'\n'"$line2"$'\n'"$(awk -v c="$ceil" 'BEGIN{printf "Posted by stage-run.sh, not by the agent. To continue, record a decision that resolves this comment; the ticket then gets a further $%.2f.", c}')"
+  id=$(gh api -X POST "repos/$REPO/issues/$ISSUE/comments" -f "body=$body" --jq .id 2>/dev/null </dev/null) || return 0
+  case "$id" in ''|*[!0-9]*) return 0 ;; esac
+  row=$(row_head stage_end | jq -c --arg ma "**[$AGENT] BLOCKED**" --argjson id "$id" \
+    '. + {dur_s:0, exit_code:null, outcome:"marker", limit_kind:null, marker_before:null, marker_after:$ma, marker_comment_id:$id,
+          marker_read_ok:true, findings:null, block_class:"cost_ceiling", cost_usd:null, in_tok:null, out_tok:null,
+          cache_read:null, cache_create:null, models:{}, tool_calls:null} | .session_id = null' 2>/dev/null) || return 0
+  [ -n "$row" ] || return 0
+  emit "$row"
+  return 7
+}
+cost_ceiling_check 2>/dev/null; [ $? -eq 7 ] && exit 0
+
 emit "$(row_head stage_start 2>/dev/null)"
 
 # ---- run the child, keeping a private copy of the output for the limit check

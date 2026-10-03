@@ -665,7 +665,7 @@ if [ "$launched" -eq 0 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
           continue
         fi
         # Won: a re-dispatch is JP's explicit "go again", so clear local tombstones like a manual launch does.
-        rm -f "$PIPE/orch-$num".{stopped,held,done,closed,marker,alert,label-cleared} "$PIPE/orch-$num.restarts"
+        rm -f "$PIPE/orch-$num".{stopped,held,done,closed,marker,milestone,alert,label-cleared} "$PIPE/orch-$num.restarts"
         out=$(LAUNCH_REASON=agent-go "$(dirname "${BASH_SOURCE[0]}")/orchestrate.sh" --force "$local_path" "$num" 2>&1 | tail -1)
         slog "[dispatch] $owner_repo#$num — claimed by $HOST, $out"
         launched=1

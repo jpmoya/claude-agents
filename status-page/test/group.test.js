@@ -281,3 +281,118 @@ describe('groupTickets — ordering, caps and ageing (#62 AC7)', () => {
     expect(issuesOf(g, H.done)).toEqual([3]);
   });
 });
+
+// ---- Issue #140: Needs JP grouped by (repo, milestone) -----------------------------------------
+// Expected orders hand-derived from the ticket's "Grouping" rules and fixtures.
+
+describe('groupTickets — Needs JP by (repo, milestone) (#140)', () => {
+  const blocked = (issue, repo, milestone, hoursAgo, o = {}) => {
+    const r = run(issue, { state: 'held', marker: 'BLOCKED', repo, last_activity_at: ago(hoursAgo), ...o });
+    if (milestone !== undefined) r.milestone = milestone;
+    return r;
+  };
+  const needs = (runs) => issuesOf(group({ mac: hostRecord({ runs }) }), H.needsJp);
+
+  it('ticket fixture: no-milestone quoting (4), scheduler Release 3 (3), quoting Release 3 - ... (2); newest first inside', () => {
+    const LONG = 'Release 3 - Clean Up Quote Status and Actions';
+    const runs = [
+      blocked(1, 'scheduler', 'Release 3', 5),
+      blocked(2, 'scheduler', 'Release 3', 1), // newest of scheduler
+      blocked(3, 'scheduler', 'Release 3', 3),
+      blocked(4, 'quoting', LONG, 2),
+      blocked(5, 'quoting', LONG, 4),
+      blocked(6, 'quoting', undefined, 6),
+      blocked(7, 'quoting', undefined, 2),
+      blocked(8, 'quoting', undefined, 8),
+      blocked(9, 'quoting', undefined, 1),
+    ];
+    // none-quoting (4 rows): 9(1h) 7(2h) 6(6h) 8(8h); scheduler: 2(1h) 3(3h) 1(5h); quoting R3: 4(2h) 5(4h)
+    expect(needs(runs)).toEqual([9, 7, 6, 8, 2, 3, 1, 4, 5]);
+  });
+
+  it('tie on count: alphabetical by repo alias', () => {
+    const runs = [
+      blocked(1, 'scheduler', 'R1', 1), blocked(2, 'scheduler', 'R1', 2),
+      blocked(3, 'quoting', 'R1', 3), blocked(4, 'quoting', 'R1', 4),
+    ];
+    expect(needs(runs)).toEqual([3, 4, 1, 2]);
+  });
+
+  it('tie on count, same repo: alphabetical by milestone', () => {
+    const runs = [
+      blocked(1, 'quoting', 'Beta', 1), blocked(2, 'quoting', 'Beta', 2),
+      blocked(3, 'quoting', 'Alpha', 3), blocked(4, 'quoting', 'Alpha', 4),
+    ];
+    expect(needs(runs)).toEqual([3, 4, 1, 2]);
+  });
+
+  it('tie on count, same repo: "no release" sorts after a named milestone', () => {
+    const runs = [
+      blocked(1, 'quoting', undefined, 1), blocked(2, 'quoting', undefined, 2),
+      blocked(3, 'quoting', 'Zeta', 3), blocked(4, 'quoting', 'Zeta', 4),
+    ];
+    expect(needs(runs)).toEqual([3, 4, 1, 2]);
+  });
+
+  it('same milestone title in two repos -> two separate, contiguous groups (larger first)', () => {
+    const runs = [
+      blocked(1, 'quoting', 'Release 3', 1), // newest overall, but belongs to the smaller group
+      blocked(2, 'scheduler', 'Release 3', 2),
+      blocked(3, 'scheduler', 'Release 3', 3),
+    ];
+    expect(needs(runs)).toEqual([2, 3, 1]);
+  });
+
+  it('negative: a run with milestone absent sorts as "no release" and does not throw', () => {
+    const runs = [blocked(1, 'quoting', undefined, 1), blocked(2, 'quoting', 'Beta', 2), blocked(3, 'quoting', 'Beta', 3)];
+    expect(() => needs(runs)).not.toThrow();
+    expect(needs(runs)).toEqual([2, 3, 1]);
+  });
+
+  it('cap: 25 rows -> exactly 20, taken in group order; the last group is truncated, not dropped', () => {
+    const runs = [];
+    let n = 100;
+    for (let i = 0; i < 10; i++) runs.push(blocked(n++, 'alpha', 'M', 1 + i)); // 100..109
+    for (let i = 0; i < 9; i++) runs.push(blocked(n++, 'beta', 'M', 1 + i)); // 110..118
+    for (let i = 0; i < 6; i++) runs.push(blocked(n++, 'gamma', 'M', 1 + i)); // 119..124
+    const got = needs(runs);
+    expect(got).toHaveLength(20);
+    // alpha 10 + beta 9 + newest 1 of gamma (119, 1h ago)
+    expect(got.slice(0, 10)).toEqual([100, 101, 102, 103, 104, 105, 106, 107, 108, 109]);
+    expect(got.slice(10, 19)).toEqual([110, 111, 112, 113, 114, 115, 116, 117, 118]);
+    expect(got[19]).toBe(119);
+  });
+
+  it('group order uses the row count before the cap', () => {
+    const runs = [];
+    for (let i = 0; i < 21; i++) runs.push(blocked(100 + i, 'zeta', 'M', 1 + i));
+    for (let i = 0; i < 5; i++) runs.push(blocked(200 + i, 'alpha', 'M', 1 + i));
+    const got = needs(runs);
+    expect(got).toHaveLength(20);
+    expect(got.every((i) => i >= 100 && i < 121)).toBe(true); // 21-row group first, fills the cap
+  });
+
+  it('other groups are unchanged: Parked stays newest-first, not grouped', () => {
+    const runs = [
+      run(1, { state: 'held', marker: 'TESTS FAIL', repo: 'b', last_activity_at: ago(3), milestone: 'X' }),
+      run(2, { state: 'held', marker: 'TESTS FAIL', repo: 'a', last_activity_at: ago(1), milestone: 'Y' }),
+      run(3, { state: 'held', marker: 'TESTS FAIL', repo: 'b', last_activity_at: ago(2), milestone: 'X' }),
+    ];
+    expect(issuesOf(group({ mac: hostRecord({ runs }) }), H.parked)).toEqual([2, 3, 1]);
+  });
+});
+
+describe('status-page README documents Needs JP grouping (#140 AC6)', () => {
+  it('"Status groups" mentions milestone grouping, "no release" and runs[].milestone', async () => {
+    const { readFileSync } = await import('node:fs');
+    const md = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+    const start = md.indexOf('### Status groups');
+    expect(start).toBeGreaterThan(-1);
+    const rest = md.slice(start + 5);
+    const next = rest.search(/\n##+ /);
+    const section = next === -1 ? rest : rest.slice(0, next);
+    expect(section).toContain('milestone');
+    expect(section).toContain('no release');
+    expect(section).toContain('runs[].milestone');
+  });
+});

@@ -38,4 +38,4 @@ marker_re() {  # marker_re [agent] → jq (oniguruma) regex for a valid first li
   printf '^\\*\\*\\[(%s)(\\*\\*|:| |$)' "$alt"
 }
 
-block_classes() { echo 'ci_pending|ci_red|merge_conflict|unsupported_project|needs_jp|dependency|other'; }  # class word on a BLOCKED comment's `Blocked on:` line (line 2); anything else reads as `other`
+block_classes() { echo 'ci_pending|ci_red|merge_conflict|unsupported_project|needs_jp|dependency|cost_ceiling|other'; }  # class word on a BLOCKED comment's `Blocked on:` line (line 2); anything else reads as `other`
