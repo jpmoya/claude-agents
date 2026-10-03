@@ -368,7 +368,7 @@ test_rl_ac17_supervisor_label_dispatch_is_agent_go() {
 DISPATCH_REPOS=("project-a/repo-a:$SQ_REPO")
 CLAIM_SETTLE_SECS=0
 EOF
-  echo '[{"number":42,"labels":[{"name":"agent-go"}]}]' > "$SQ_GH/gh-list-approved-project-a_repo-a"
+  echo 42 > "$SQ_GH/gh-list-approved-project-a_repo-a"   # fake gh ignores --jq; this is the already-filtered output (issue numbers)
   jq -n --arg b "**[supervisor] NOTE** claim: $(hostname -s) $(sq_iso_ago 0)" --arg t "$(sq_iso_ago 0)" \
     '[{body:$b, createdAt:$t}]' > "$SQ_GH/gh-issue-comments-json"
   sq_tick; rl_wait_launches 1
