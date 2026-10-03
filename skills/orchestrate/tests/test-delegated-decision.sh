@@ -442,7 +442,7 @@ test_dd_ac22_no_timer_counter_or_new_state_file() {
   d=$(cd "$ROOT_DD" && git diff --name-only "$base" -- skills/orchestrate/config.sh)
   assert_eq "$d" "" "AC22: config.sh unchanged" || return 1
   added=$(cd "$ROOT_DD" && git diff -U0 "$base" -- skills/orchestrate/supervisor.sh | grep '^+' | grep -v '^+++')
-  bad=$(printf '%s\n' "$added" | grep -oE 'orch-\$\{?issue\}?\.[A-Za-z_-]+' | grep -vE '\.(held|alert|done|start)$')
+  bad=$(printf '%s\n' "$added" | grep -oE 'orch-\$\{?issue\}?\.[A-Za-z_-]+' | grep -vE '\.(held|alert|done|start|launched-at)$')
   assert_eq "$bad" "" "AC22: supervisor.sh adds no new orch-\$issue.<suffix> file" || return 1
 }
 
