@@ -178,7 +178,7 @@ clear_in_progress() {  # idempotent; one gh call per issue, remembered in a mark
 }
 
 do_launch() {
-  local repo=$1 issue=$2 extra=$3 restart_n=${4:-0} reason=${5:-manual}
+  local repo=$1 issue=$2 extra=$3 restart_n=${4:-0} reason=${5:-manual} queue_wait_s=${6:-}
   local owner_repo prompt title preamble=""
 
   owner_repo=$(cd "$repo" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo "unknown")
@@ -210,8 +210,51 @@ do_launch() {
   [ -f "$PIPE/orch-$issue.start" ] || date -u +%FT%TZ > "$PIPE/orch-$issue.start"
   date -u +%FT%TZ > "$PIPE/orch-$issue.launched-at"
   rm -f "$PIPE/orch-$issue.label-cleared"
+  local ev_reason=manual
+  case "$reason" in auto-restart) ev_reason=auto-restart ;; queued) ev_reason=queue ;; esac
+  log_run_launch "$owner_repo" "$issue" "$ev_reason" "$restart_n" "$queue_wait_s"
 
   slog "[launch] #$issue pid=$! reason=$reason restart=$restart_n mem=$(mem_available_mb)MB running=$(count_running)/$MAX_CONCURRENT"
+}
+
+file_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
+
+# log_run_exit <repo dir> <issue> — the one writer of run_exit (design #138): classify the exit of a launched run
+# (stopped > rate_limited > killed > error > normal), append the row, write .exit-class ("<class> <limit_kind|->"),
+# touch .exit-logged. Never fails the tick.
+log_run_exit() {
+  local repo=$1 issue=$2 rid ex="" cls lk="" last_line seg exf="$PIPE/orch-$2.exit" lf="$PIPE/orch-$2.log"
+  local launched dur now owner_repo
+  rid=$(cat "$PIPE/orch-$issue.run-id" 2>/dev/null) || return 0
+  [ -f "$exf" ] && ex=$(tr -dc '0-9' < "$exf")
+  last_line=""; seg=$(mktemp "${TMPDIR:-/tmp}/run-exit.XXXXXX" 2>/dev/null) || seg=""
+  if [ -n "$seg" ] && [ -f "$lf" ]; then
+    awk '/^===== .* LAUNCH .* =====$/ {buf=""; next} {buf = buf $0 "\n"} END {printf "%s", buf}' "$lf" 2>/dev/null \
+      | awk 'NF {l=$0} END {print l}' > "$seg" 2>/dev/null
+    last_line=$(cat "$seg" 2>/dev/null)
+  fi
+  if [ -f "$PIPE/orch-$issue.stopped" ]; then cls=stopped
+  elif [ -n "$seg" ] && lk=$(limit_kind_of "$seg") && [ -n "$lk" ]; then cls=rate_limited
+  elif [ ! -f "$exf" ]; then cls=killed
+  elif [ "${ex:-0}" != 0 ]; then cls=error
+  else cls=normal; fi
+  [ "$cls" = rate_limited ] || lk=""
+  [ -n "$seg" ] && rm -f "$seg"
+  now=$(date +%s)
+  launched=$(to_epoch "$(cat "$PIPE/orch-$issue.launched-at" 2>/dev/null)")
+  if [ "$launched" -gt 0 ] 2>/dev/null; then
+    if [ -f "$exf" ]; then dur=$(( $(file_mtime "$exf") - launched )); else dur=$((now - launched)); fi
+    [ "$dur" -ge 0 ] 2>/dev/null || dur=0
+  else dur=null; fi
+  owner_repo=$(cd "$repo" 2>/dev/null && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null </dev/null) || owner_repo=""
+  [ -n "$owner_repo" ] || owner_repo=unknown
+  pipeline_event run_exit --arg run_id "$rid" --arg repo "$owner_repo" --argjson issue "$issue" \
+    --argjson exit_code "${ex:-null}" --arg class "$cls" \
+    --argjson limit_kind "$([ -n "$lk" ] && jq -nc --arg v "$lk" '$v' || echo null)" \
+    --argjson dur_s "$dur" --arg last_line "${last_line:0:200}"
+  printf '%s %s\n' "$cls" "${lk:--}" > "$PIPE/orch-$issue.exit-class" 2>/dev/null || true
+  touch "$PIPE/orch-$issue.exit-logged" 2>/dev/null || true
+  return 0
 }
 
 escalate() {
@@ -264,6 +307,11 @@ for f in "$PIPE"/orch-*.pid; do
   # Skip if alive
   kill -0 "$pid" 2>/dev/null && continue
 
+  # First tick that sees a launched run gone: one run_exit row (runs without a run-id predate #138 and log nothing)
+  if [ -f "$PIPE/orch-$issue.run-id" ] && [ ! -f "$PIPE/orch-$issue.exit-logged" ]; then
+    log_run_exit "$repo" "$issue"
+  fi
+
   # Skip if tombstoned
   [ -f "$PIPE/orch-$issue.stopped" ] && continue
   [ -f "$PIPE/orch-$issue.held" ] && continue
@@ -303,17 +351,64 @@ for f in "$PIPE"/orch-*.pid; do
     grace) continue ;;
   esac
 
+  # How this run ended (written by log_run_exit; absent for runs launched before #138)
+  exit_class=""; exit_lk=""
+  [ -f "$PIPE/orch-$issue.exit-class" ] && read -r exit_class exit_lk < "$PIPE/orch-$issue.exit-class"
+  [ "$exit_lk" = "-" ] && exit_lk=""
+
+  restarts_file="$PIPE/orch-$issue.restarts"
+  exit_code=$(cat "$PIPE/orch-$issue.exit" 2>/dev/null || echo "?")
+
+  if [ "$exit_class" = rate_limited ] && [ "$exit_lk" = monthly_spend ]; then
+    # Restarting cannot fix it and clearing it means spending money: park like a human gate. Counters untouched.
+    run_owner_repo=$(cd "$repo" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo "unknown")
+    python3 - "$restarts_file" "$(date -u +%FT%TZ)" "$exit_code" "$marker" "$exit_class" "$exit_lk" <<'PY' 2>/dev/null
+import json, sys
+path, ts, ex, marker, cls, lk = sys.argv[1:7]
+try: d = json.load(open(path))
+except Exception: d = {'count': 0, 'total': 0, 'last_marker': '', 'history': []}
+d.setdefault('history', []).append({'ts': ts, 'exit': ex, 'marker': marker, 'transient': False, 'run_secs': 0, 'class': cls, 'limit_kind': lk or None})
+json.dump(d, open(path, 'w'))
+PY
+    touch "$PIPE/orch-$issue.held"
+    rm -f "$QUEUE/orch-$issue.json"
+    printf '%s Pipeline #%s waiting on JP — monthly spend limit reached; relaunch after credits or a model switch\n' "$(date -u +%FT%TZ)" "$issue" > "$PIPE/orch-$issue.alert"
+    slog "[held] #$issue — monthly spend limit: needs JP"
+    report_status_async "held"
+    notify_engineering "$issue" ":hand:" "Waiting on you — monthly spend limit reached" "$run_owner_repo"
+    continue
+  fi
+
   # Already queued — nothing ended this tick: don't count it, don't overwrite its not_before
   if [ -f "$QUEUE/orch-$issue.json" ]; then
     slog "[queue-wait] #$issue — already queued, skipping re-enqueue"
     continue
   fi
 
+  if [ "$exit_class" = rate_limited ]; then
+    # Weekly / unrecognised limit: wait, don't count (never trips the "stalled" escalation)
+    python3 - "$restarts_file" "$(date -u +%FT%TZ)" "$exit_code" "$marker" "$exit_class" "$exit_lk" <<'PY' 2>/dev/null
+import json, sys
+path, ts, ex, marker, cls, lk = sys.argv[1:7]
+try: d = json.load(open(path))
+except Exception: d = {'count': 0, 'total': 0, 'last_marker': '', 'history': []}
+d.setdefault('history', []).append({'ts': ts, 'exit': ex, 'marker': marker, 'transient': False, 'run_secs': 0, 'class': cls, 'limit_kind': lk or None})
+json.dump(d, open(path, 'w'))
+PY
+    extra=$(cat "$PIPE/orch-$issue.extra" 2>/dev/null || echo "")
+    not_before=$(( $(date +%s) + RATE_LIMIT_BACKOFF_SECS ))
+    python3 - "$QUEUE/orch-$issue.json" "$issue" "$repo" "$extra" "$(date -u +%FT%TZ)" "$not_before" <<'PY' 2>/dev/null
+import json, sys
+path, issue, repo, extra, qa, nb = sys.argv[1:7]
+json.dump({'issue': issue, 'repo': repo, 'extra': extra, 'reason': 'auto-restart', 'queued_at': qa, 'not_before': int(nb)}, open(path, 'w'))
+PY
+    slog "[rate-limited] #$issue limit=$exit_lk backoff=${RATE_LIMIT_BACKOFF_SECS}s"
+    report_status_async "queue-restart"
+    continue
+  fi
+
   # Non-terminal exit — potential restart
   [ "$launched" -ge 1 ] && continue  # one launch per tick
-
-  restarts_file="$PIPE/orch-$issue.restarts"
-  exit_code=$(cat "$PIPE/orch-$issue.exit" 2>/dev/null || echo "?")
   extra=$(cat "$PIPE/orch-$issue.extra" 2>/dev/null || echo "")
 
   # Detect transient exit: use per-launch timestamp (.launched-at), not the original .start
@@ -391,7 +486,7 @@ PY
 import json
 try: d = json.load(open('$restarts_file'))
 except: d = {'count':0,'total':0,'last_marker':'','history':[]}
-d['history'].append({'ts':'$(date -u +%FT%TZ)','exit':'$exit_code','marker':'''$marker''','transient':$($transient && echo True || echo False),'run_secs':$run_duration})
+d['history'].append({'ts':'$(date -u +%FT%TZ)','exit':'$exit_code','marker':'''$marker''','transient':$($transient && echo True || echo False),'run_secs':$run_duration,'class':$([ -n "$exit_class" ] && echo "'$exit_class'" || echo None),'limit_kind':$([ -n "$exit_lk" ] && echo "'$exit_lk'" || echo None)})
 d['count']=$count; d['total']=$total; d['last_marker']='''$marker'''
 json.dump(d, open('$restarts_file','w'))
 " 2>/dev/null
@@ -479,7 +574,15 @@ print('%d %d' % (int(t), int('$q_issue')))
       restart_n=$(python3 -c "import json; print(json.load(open('$PIPE/orch-$best_issue.restarts')).get('count',0))" 2>/dev/null || echo 0)
     fi
 
-    do_launch "$q_repo" "$best_issue" "$q_extra" "$restart_n" "$q_reason"
+    q_wait=$(python3 -c "
+import json, datetime, time
+try:
+    t = datetime.datetime.strptime(json.load(open('$best_qf'))['queued_at'], '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=datetime.timezone.utc).timestamp()
+    print(max(0, int(time.time() - t)))
+except Exception:
+    pass
+" 2>/dev/null)
+    do_launch "$q_repo" "$best_issue" "$q_extra" "$restart_n" "$q_reason" "$q_wait"
     rm -f "$best_qf"
     launched=1
   fi
@@ -563,7 +666,7 @@ if [ "$launched" -eq 0 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
         fi
         # Won: a re-dispatch is JP's explicit "go again", so clear local tombstones like a manual launch does.
         rm -f "$PIPE/orch-$num".{stopped,held,done,closed,marker,milestone,alert,label-cleared} "$PIPE/orch-$num.restarts"
-        out=$("$(dirname "${BASH_SOURCE[0]}")/orchestrate.sh" --force "$local_path" "$num" 2>&1 | tail -1)
+        out=$(LAUNCH_REASON=agent-go "$(dirname "${BASH_SOURCE[0]}")/orchestrate.sh" --force "$local_path" "$num" 2>&1 | tail -1)
         slog "[dispatch] $owner_repo#$num — claimed by $HOST, $out"
         launched=1
         break

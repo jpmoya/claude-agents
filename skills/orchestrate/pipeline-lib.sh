@@ -64,3 +64,28 @@ limit_kind_of() {
     *) echo other ;;
   esac
 }
+
+# pipeline_event <event> [jq --arg/--argjson pairs…] — appends one row (v, ts, host, event + the given fields) to
+# $LOGDIR/events.jsonl. Any failure is swallowed: logging never blocks a launch or a supervisor tick.
+pipeline_event() {
+  local ev=${1:-}; shift 2>/dev/null || true
+  local dir=${LOGDIR:-$HOME/logs/pipeline} row
+  row=$(jq -nc --arg event "$ev" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg host "$(pipeline_host)" "$@" \
+    '{v:1,ts:$ts,host:$host,event:$event} + ($ARGS.named | del(.event,.ts,.host))' 2>/dev/null) || return 0
+  { mkdir -p "$dir" && printf '%s\n' "$row" >> "$dir/events.jsonl"; } 2>/dev/null || true
+  return 0
+}
+
+# log_run_launch <owner/repo> <issue> <reason> <restart_n> <queue_wait_s|""> — writes $PIPE/orch-<issue>.run-id, clears
+# .exit-logged and appends the run_launch row. Call right after the process is started.
+log_run_launch() {
+  local repo=$1 issue=$2 reason=$3 restart_n=${4:-0} qw=${5:-} run_id
+  run_id="$(pipeline_host)-orch-$issue-$(date +%s)"
+  rm -f "$PIPE/orch-$issue.exit-logged" 2>/dev/null
+  printf '%s\n' "$run_id" > "$PIPE/orch-$issue.run-id" 2>/dev/null || true
+  case "$qw" in ''|*[!0-9]*) qw=null ;; esac
+  case "$issue" in ''|*[!0-9]*) return 0 ;; esac
+  pipeline_event run_launch --arg run_id "$run_id" --arg repo "$repo" --argjson issue "$issue" --arg reason "$reason" \
+    --argjson restart_n "${restart_n:-0}" --argjson queue_wait_s "$qw"
+  return 0
+}

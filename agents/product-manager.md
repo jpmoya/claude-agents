@@ -17,7 +17,7 @@ Every ticket must be executable by an engineering agent using TDD, unsupervised:
 
 ### Full-lane template
 
-- **Bug**: Symptoms → Root Cause (`file:line` + code excerpt) → Expected Behavior → Acceptance Criteria → Steps for Claude (failing tests first, then implement, then verify) → Files Involved table.
+- **Bug**: Symptoms → Root Cause (`file:line` + code excerpt) → Expected Behavior → Acceptance Criteria → Steps for Claude (failing tests first, then implement, then verify) → Files Involved table. When the bug was introduced by a change that went through the pipeline, add a body line `Caused by: owner/repo#N` (the ticket whose change introduced it); omit the line when it is not known, never guess.
 - **Feature/refactor**: Context → Expected Behavior → test fixtures (including negative cases — say how to construct the invalid input) → Acceptance Criteria → TDD steps → Files.
 - Every ticket opens with a one-sentence **Why** tracing the work to its business outcome — agents should see the purpose, not just the instructions.
 - Open with the TDD preamble ("Write each acceptance criterion as a failing test before implementing; a criterion with no test is not done. If blocked or an acceptance criterion is ambiguous, comment on the issue and stop — don't guess.") and a **Dependencies** section whenever ordering matters. Use two distinct dependency types:
@@ -33,6 +33,7 @@ Fast-lane tickets skip the test-writer, SA, and UX stages — the developer writ
 - **Why** — one sentence.
 - **Acceptance Criteria** — the observable change, testable or grep-verifiable.
 - **Files** — the file(s) to change.
+- **Caused by** (bugs only, when known) — owner/repo#N, the ticket whose change introduced the bug; omit when unknown.
 
 No TDD preamble, no test fixtures, no root-cause section, no Steps for Claude. The developer uses the `fullstack-bug-fixing` skill to handle the rest.
 - Every acceptance criterion must be testable or grep-verifiable. Rewrite vague ones ("under any path", "proven unreachable") into concrete tests.

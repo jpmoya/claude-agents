@@ -200,5 +200,20 @@ finish() {
 
 ROW=$(finish 2>/dev/null) || ROW=""
 [ -n "$ROW" ] && emit "$ROW"
+
+# escape row (#138): a product-manager stage that filed a bug with a `Caused by: owner/repo#N` line logs it once per ticket
+log_escape() {
+  [ "$AGENT" = product-manager ] && [ -n "$REPO" ] && [ -n "$ISSUE" ] || return 0
+  local body line cr ci
+  body=$(gh api "repos/$REPO/issues/$ISSUE" --jq .body 2>/dev/null </dev/null) || return 0
+  line=$(printf '%s\n' "$body" | tr -d '\r' | grep -E '^Caused by: [A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+ *$' | head -1)
+  [ -n "$line" ] || return 0
+  line=${line#Caused by: }; line=${line%"${line##*[! ]}"}
+  cr=${line%#*}; ci=${line##*#}
+  if [ -f "$EVENTS" ] && jq -e --argjson r "$(jstr "$REPO")" --argjson i "$ISSUE" 'select(.event=="escape" and .repo==$r and .issue==$i)' "$EVENTS" 2>/dev/null | grep -q .; then return 0; fi
+  emit "$(jq -nc --arg ts "$(iso_now)" --arg host "$HOST" --arg repo "$REPO" --argjson issue "$ISSUE" --arg cr "$cr" --argjson ci "$ci" \
+    '{v:1,ts:$ts,host:$host,event:"escape",repo:$repo,issue:$issue,caused_by_repo:$cr,caused_by_issue:$ci}' 2>/dev/null)"
+}
+log_escape 2>/dev/null || true
 [ -n "$TMPD" ] && rm -rf "$TMPD" 2>/dev/null
 exit "$RC"
