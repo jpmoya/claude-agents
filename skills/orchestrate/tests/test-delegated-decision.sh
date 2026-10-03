@@ -482,39 +482,71 @@ test_dd_i76_ac2_validation_row_gains_the_go_clause() {
   done
 }
 
-test_dd_i76_ac3_infra_track_rows_byte_identical() {   # characterisation
-  local base cur old
+test_dd_i76_ac3_gate_rows_byte_identical_and_carve_out_keeps_exclusions() {   # characterisation (issue #108: infra BLOCKED rows no longer held byte-identical)
+  local base cur old row s
   base=$(dd_base)
   if [ -z "$base" ]; then printf '    (i76 AC3 skipped: no origin/main merge-base)\n' >&2; return 0; fi
-  # AWAITING GO + go row (already covered by AC13 too; re-asserted here as this ticket's own AC3 gate)
   cur=$(grep -F '| `[infra-operator] AWAITING GO` + JP go comment' "$ORCH_DD")
   old=$(cd "$ROOT_DD" && git show "$base:agents/orchestrator.md" | grep -F '| `[infra-operator] AWAITING GO` + JP go comment')
   assert_ne "$cur" "" "i76 AC3: AWAITING GO + go row present" || return 1
   assert_eq "$cur" "$old" "i76 AC3: AWAITING GO + go row byte-identical" || return 1
-  # both MOCKUPS PENDING APPROVAL rows — anchored at line-start so this only captures the two rows
-  # that actually define the mockup gate (lines 52-53), not the carve-out at :69 (AC1 amends that row,
-  # and its closing sentence names "MOCKUPS PENDING APPROVAL" as one of the carve-out's exclusions —
-  # a mid-line substring match there is incidental to this row's own gate, not a change to it) or the
-  # ":55 solutions-architect" row, which also mentions the marker mid-sentence.
   cur=$(grep '^| `\[ui-ux-designer\] MOCKUPS PENDING APPROVAL`' "$ORCH_DD")
   old=$(cd "$ROOT_DD" && git show "$base:agents/orchestrator.md" | grep '^| `\[ui-ux-designer\] MOCKUPS PENDING APPROVAL`')
   assert_ne "$cur" "" "i76 AC3: MOCKUPS PENDING APPROVAL rows present" || return 1
   assert_eq "$cur" "$old" "i76 AC3: MOCKUPS PENDING APPROVAL rows byte-identical" || return 1
-  # deployer's unsupported-project BLOCKED sentence
-  cur=$(grep -F "the project isn't in its supported list" "$ORCH_DD")
-  old=$(cd "$ROOT_DD" && git show "$base:agents/orchestrator.md" | grep -F "the project isn't in its supported list")
+  # issue #144: the row's head now also mentions claude-agents; pin only the unsupported-project sentence (row tail).
+  cur=$(grep -F "the project isn't in its supported list" "$ORCH_DD" | sed 's/^.*\(If the deployer posts `BLOCKED` because the project isn.t in its supported list\)/\1/')
+  old=$(cd "$ROOT_DD" && git show "$base:agents/orchestrator.md" | grep -F "the project isn't in its supported list" | sed 's/^.*\(If the deployer posts `BLOCKED` because the project isn.t in its supported list\)/\1/')
   assert_ne "$cur" "" "i76 AC3: deployer unsupported-project sentence present" || return 1
   assert_eq "$cur" "$old" "i76 AC3: deployer unsupported-project sentence byte-identical" || return 1
-  # AC3 also requires the carve-out (:69) to keep naming these same four exclusions as "current carve-out
-  # behaviour" after AC1's edit to that row's closing sentence — the byte-identity checks above only cover
-  # the gate rows themselves, not this half. Assert on the current resume row (dd_blocked_row_next), which
-  # AC1's other tests already require to exist and be edited in place.
-  local row
   row=$(dd_blocked_row_next)
   assert_ne "$row" "" "i76 AC3: resume row (carve-out) exists" || return 1
   for s in '[infra-operator] AWAITING GO' '[ui-ux-designer] MOCKUPS PENDING APPROVAL' 'any infra-track `BLOCKED`' "project isn't in its supported list"; do
     dd_text_has "i76 AC3: carve-out still excludes [$s]" "$row" "$s" || return 1
   done
+}
+
+dd_infra_go_row() { grep -F '**Resume on JP' "$ORCH_DD" | grep -F '`[infra-planner] BLOCKED`' | head -1; }
+
+test_dd_i108_infra_go_row_resumes_planner_and_operator_blocked() {   # issue #108 AC1
+  local row s
+  row=$(dd_infra_go_row)
+  assert_ne "$row" "" "i108 AC1: infra BLOCKED row carries the go path" || return 1
+  for s in 'planner/operator `BLOCKED` on any infra ticket, prod or staging-only' 'issue author' 'dated after that `BLOCKED`' \
+           '`go` / `GO` / `**[jp] GO**`' 'a sentence containing "go" is not a go' 'Re-dispatch the agent that posted the `BLOCKED`' \
+           'go comment URL' 'names a stage to run first' 'Planner: revise'; do
+    dd_text_has "i108 AC1" "$row" "$s" || return 1
+  done
+}
+
+test_dd_i108_infra_go_path_exclusions_and_pm_never_clears() {   # issue #108 AC2
+  local row s
+  row=$(dd_infra_go_row)
+  assert_ne "$row" "" "i108 AC2: infra go path exists" || return 1
+  for s in 'never an `[infra-reviewer] BLOCKED`' '`Held: blocked by`' 'A `[project-manager]` marker never clears a prod infra `BLOCKED`'; do
+    dd_text_has "i108 AC2" "$row" "$s" || return 1
+  done
+}
+
+test_dd_i108_infra_go_staleness_and_plan_pass_rule() {   # issue #108 AC3
+  local row
+  row=$(dd_infra_go_row)
+  assert_ne "$row" "" "i108 AC3: infra go path exists" || return 1
+  dd_text_has "i108 AC3: go before BLOCKED clears nothing" "$row" 'a go dated before the `BLOCKED` clears nothing' || return 1
+  dd_text_has "i108 AC3: go must post-date PLAN PASS" "$row" 'dated after the latest `PLAN PASS`' || return 1
+  dd_text_has "i108 AC3: back to AWAITING GO" "$row" 'stops at `AWAITING GO` again' || return 1
+}
+
+test_dd_i108_carve_out_validation_and_prose_agree() {   # issue #108 AC4
+  local row val prose
+  row=$(dd_blocked_row_next)
+  dd_text_has "i108 AC4: carve-out names the go path" "$row" 'planner/operator go path' || return 1
+  dd_text_lacks "i108 AC4: carve-out has no stale line refs" "$row" '`:101`' || return 1
+  val=$(grep -F 'resume on JP go after `BLOCKED`' "$ORCH_DD")
+  assert_ne "$val" "" "i108 AC4: validation row exists" || return 1
+  dd_text_has "i108 AC4: validation row" "$val" 'dated after that `BLOCKED`' || return 1
+  prose=$(grep -F 'resume only a staging-only planner/operator' "$ORCH_DD" | head -1)
+  dd_text_has "i108 AC4: prose names the go path" "$prose" "JP's exact-form go also resumes a planner/operator" || return 1
 }
 
 test_dd_i76_ac4_carve_out_still_lists_money_and_no_extra_authority() {   # characterisation — issue #76 AC4
@@ -613,7 +645,11 @@ run_test test_dd_ac21_untouched_paths_have_no_diff
 run_test test_dd_ac22_no_timer_counter_or_new_state_file
 run_test test_dd_i76_ac1_resume_row_names_the_go_clearing_path
 run_test test_dd_i76_ac2_validation_row_gains_the_go_clause
-run_test test_dd_i76_ac3_infra_track_rows_byte_identical
+run_test test_dd_i76_ac3_gate_rows_byte_identical_and_carve_out_keeps_exclusions
+run_test test_dd_i108_infra_go_row_resumes_planner_and_operator_blocked
+run_test test_dd_i108_infra_go_path_exclusions_and_pm_never_clears
+run_test test_dd_i108_infra_go_staleness_and_plan_pass_rule
+run_test test_dd_i108_carve_out_validation_and_prose_agree
 run_test test_dd_i76_ac4_carve_out_still_lists_money_and_no_extra_authority
 run_test test_dd_i76_ac5_staleness_wording_present
 run_test test_dd_i76_ac6_go_clause_covers_the_773_shape
