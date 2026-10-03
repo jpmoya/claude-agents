@@ -21,7 +21,8 @@ function section(html, name) {
   return next === -1 ? rest : rest.slice(0, next);
 }
 const ths = (frag) => [...frag.matchAll(/<th[^>]*>([\s\S]*?)<\/th>/g)].map((m) => m[1].trim());
-const tds = (frag) => [...frag.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((m) => m[1].trim());
+// #140: group header rows (a single colspan cell) are not data cells.
+const tds = (frag) => [...frag.matchAll(/<td(?![^>]*colspan)[^>]*>([\s\S]*?)<\/td>/g)].map((m) => m[1].trim());
 
 const base = ['Issue', 'Ticket', 'Host', 'State', 'Stage', 'Marker', 'Last activity', 'Restarts'];
 const needsCols = ['Issue', 'Ticket', 'Needs', 'Host', 'State', 'Stage', 'Marker', 'Last activity', 'Restarts'];

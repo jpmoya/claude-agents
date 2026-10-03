@@ -719,3 +719,38 @@ describe('validateBeatPayload — DECISION / JP CONFIRMED markers (#62 AC2)', ()
     expect(r.value.runs[0].marker).toBe('other');
   });
 });
+
+// ---- Issue #140: optional runs[].milestone (additive v1) ---------------------------------------
+// Expected values from the ticket: string <= 60 chars after trim matching ^[\w .,()&/+:-]+$;
+// anything else is omitted, the run is kept, never an error.
+
+describe('validateBeatPayload — runs[].milestone (#140)', () => {
+  const mk = (milestone) => keptRun({ milestone });
+
+  it.each([
+    ['plain', 'Release 3', 'Release 3'],
+    ['parentheses', 'Release 3 (scheduler)', 'Release 3 (scheduler)'],
+    ['ampersand and punctuation', 'A & B, v2.0: x/y+z-1', 'A & B, v2.0: x/y+z-1'],
+    ['surrounding whitespace trimmed', '  Release 3  ', 'Release 3'],
+    ['exactly 60 chars', 'a'.repeat(60), 'a'.repeat(60)],
+  ])('keeps %s', (_label, input, expected) => {
+    expect(mk(input).milestone).toBe(expected);
+  });
+
+  it.each([
+    ['script tag', '<script>alert(1)</script>'],
+    ['61 chars', 'a'.repeat(61)],
+    ['number', 123],
+    ['empty string', ''],
+    ['whitespace only', '   '],
+    ['null', null],
+    ['quote char', "it's"],
+    ['object', { title: 'Release 3' }],
+  ])('omits %s but keeps the run', (_label, input) => {
+    expect('milestone' in mk(input)).toBe(false);
+  });
+
+  it('a run without milestone has no milestone key', () => {
+    expect('milestone' in keptRun({})).toBe(false);
+  });
+});

@@ -120,8 +120,16 @@ const RUN_LAYOUT = { columns: RUN_COLUMNS, cells: runCells };
 
 function renderGroupSection(group) {
   const { columns, cells } = LAYOUTS[group.heading] || RUN_LAYOUT;
+  const byMilestone = group.heading === 'Needs JP';
+  const label = (row) => (typeof row.milestone === 'string' && row.milestone ? row.milestone : 'no release');
+  const sameGroup = (a, b) => label(a) === label(b) && a.repo === b.repo;
+  const headerFor = (row, i) => {
+    if (!byMilestone || (i > 0 && sameGroup(group.rows[i - 1], row))) return '';
+    const n = group.rows.filter((r) => sameGroup(r, row)).length;
+    return `<tr><td colspan="${columns.length}">${esc(`${label(row)} (${row.repo}) — ${n} waiting`)}</td></tr>`;
+  };
   const rows = group.rows.length
-    ? group.rows.map((row) => `<tr>${cells(row).map((c) => `<td>${c}</td>`).join('')}</tr>`).join('')
+    ? group.rows.map((row, i) => `${headerFor(row, i)}<tr>${cells(row).map((c) => `<td>${c}</td>`).join('')}</tr>`).join('')
     : `<tr><td colspan="${columns.length}">none</td></tr>`;
   return `<section class="group">
     <h2>${esc(group.heading)} (${group.rows.length})</h2>
