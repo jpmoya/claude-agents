@@ -39,21 +39,37 @@ Mac). The first matching rule decides the group:
 5. key in any `staging[]` → **On staging (awaiting production)**
 6. winning run `restarting` → **Running** (state cell reads `restarting`)
 7. winning run `held` with marker `MOCKUPS PENDING APPROVAL`, `AWAITING GO`,
-   `EFFORT APPROVAL NEEDED` or `BLOCKED` → **Needs JP**
+   `EFFORT APPROVAL NEEDED` or `BLOCKED` → **Needs JP**, unless demoted to **Parked** by any of
+   (issue #139):
+   - **answered**: host set `parked_reason: "answered"` — a later `**[jp]` or `**[project-manager]`
+     comment (not `**[project-manager] NOTE**`) after the gate comment;
+   - **out of scope**: host set `parked_reason: "out_of_scope"` — repo not in `DISPATCH_REPOS` ∪
+     `SCAN_ONLY_REPOS`;
+   - **stale**: `max(gate_at, last_activity_at)` older than 14 days (missing `gate_at` falls back to
+     `last_activity_at`; both missing → stays); applied by `group.js`.
+   (A closed or released issue is already **Done**.)
 8. any other `held` → **Parked** (a `BLOCKED` answered by `DECISION` / `JP CONFIRMED` lands here)
 
+A row demoted by rule 7 is exempt from Parked's 7-day hide; Parked's cap of 10 still applies.
+
 Order: newest first (`last_activity_at`; `updated_at` for Approved / On staging; `closed_at` for
-Done; missing last). Caps: Running and Queued uncapped; Approved 20; Needs JP 20 (never aged out);
+Done; missing last). Caps: Running and Queued uncapped; Approved 20; Needs JP 20 (ages out after 14 days, see rule 7);
 On staging 60; Parked 10 and hidden once its last activity is older than 7 days; Done 20 within
-7 days. Columns: Running / Queued / Needs JP / Parked `Issue · Ticket · Host · State · Stage ·
+7 days. Columns: Running / Queued / Parked `Issue · Ticket · Host · State · Stage ·
 Marker · Last activity · Restarts`; Approved / On staging `Issue · Ticket · Updated`; Done
-`Issue · Ticket · Closed · Release · Final marker`. An empty group reads `(0)` and one `none` row.
+`Issue · Ticket · Closed · Release · Final marker`; Needs JP adds a `Needs` column after Ticket
+(`Issue · Ticket · Needs · Host · …`). An empty group reads `(0)` and one `none` row.
 
 Payload (`v` stays 1, every new key optional; the host half is #65):
 
 - `staging[]` (first 60 valid kept) and `approved[]` (first 20): `{repo, issue, title?, url?,
   updated_at?}`, sanitised by reconstruction (`issue` 1–999999 required else the item is dropped;
   `updated_at` ISO-8601 Z else omitted). Absent or non-array → `[]`.
+- `runs[].needs` (one of `Approve mockups`, `Say go`, `Approve effort`, `Missing credential`,
+  `Decision needed`; `BLOCKED` → `Missing credential` when its `Blocked on:` line matches
+  `credential|token|secret|api key|password|access`), `runs[].gate_at` (ISO-8601 Z) and
+  `runs[].parked_reason` (`answered` | `out_of_scope`): all optional, unknown values dropped, no
+  comment text is ever published. An old payload without them renders an empty `Needs` cell.
 - `completed[].release`, kept only if it matches `^v\d+\.\d+\.\d+$`.
 - `DECISION` and `JP CONFIRMED` are known markers.
 - The beat body cap is **128 KB** (`131072` bytes → `204`, one more → `413`).

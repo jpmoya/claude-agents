@@ -92,7 +92,7 @@ describe('AC6 — columns', () => {
   const html = render(mac, null);
   const runCols = ['Issue', 'Ticket', 'Host', 'State', 'Stage', 'Marker', 'Last activity', 'Restarts'];
 
-  it.each(['Running', 'Queued', 'Needs JP', 'Parked'])('%s columns', (name) => {
+  it.each(['Running', 'Queued', 'Parked'])('%s columns', (name) => {
     expect(ths(section(html, name))).toEqual(runCols);
   });
   it.each(['Approved, waiting for a slot', 'On staging (awaiting production)'])('%s columns', (name) => {
@@ -151,8 +151,8 @@ describe('AC7 — caps and ageing in the HTML', () => {
     expect(old).not.toMatch(/#50(?!\d)/);
   });
 
-  it('a 30-day-old AWAITING GO is still listed under Needs JP', () => {
-    const html = render(hostRecord({ runs: [run(60, { state: 'held', marker: 'AWAITING GO', last_activity_at: ago(24 * 30) })] }), null);
+  it('a 13-day-old AWAITING GO is still listed under Needs JP (#139: 14-day limit)', () => {
+    const html = render(hostRecord({ runs: [run(60, { state: 'held', marker: 'AWAITING GO', last_activity_at: ago(24 * 13) })] }), null);
     expect(Number(h2('Needs JP').exec(html)[1])).toBe(1);
     expect(section(html, 'Needs JP')).toMatch(/#60(?!\d)/);
   });
@@ -354,7 +354,7 @@ describe('re-homed #29 — CET timestamps in cells', () => {
 describe('re-homed #29 — the "none" row spans the group\'s column count', () => {
   const html = render(hostRecord(), hostRecord());
   it.each([
-    ['Running', 8], ['Queued', 8], ['Needs JP', 8], ['Parked', 8],
+    ['Running', 8], ['Queued', 8], ['Needs JP', 9], ['Parked', 8],
     ['Approved, waiting for a slot', 3], ['On staging (awaiting production)', 3],
     ['Done', 5],
   ])('%s: colspan="%i"', (name, n) => {

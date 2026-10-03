@@ -2,6 +2,8 @@
 # Shared launcher helpers (issue #8), sourced by orchestrate.sh and supervisor.sh right after config.sh.
 # Reads $PIPE, $MAX_CONCURRENT and $MEM_FLOOR_MB at call time, so it does not source config.sh itself.
 # marker_last_jq needs marker_re from hooks/pipeline-markers.sh, which both launchers also source.
+pipeline_host() { hostname -s 2>/dev/null | tr '[:upper:]' '[:lower:]'; }
+
 SETSID=$(command -v setsid >/dev/null 2>&1 && echo setsid || true)   # absent on macOS; nohup + & is enough there
 
 count_running() {
