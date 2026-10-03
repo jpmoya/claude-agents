@@ -52,8 +52,6 @@ write_title_marker() {
   if [ -n "$marker" ]; then printf '%s\n' "$marker" > "$PIPE/orch-$issue.marker"; else rm -f "$PIPE/orch-$issue.marker"; fi
 }
 
-pipeline_host() { hostname -s 2>/dev/null | tr '[:upper:]' '[:lower:]'; }
-
 # limit_kind_of <file> — looks at the last 20 lines, case-insensitive: a `hit your … limit` line prints monthly_spend
 # (contains "spend limit"), weekly (contains "weekly limit") or other; no match prints nothing.
 limit_kind_of() {
