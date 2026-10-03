@@ -81,6 +81,7 @@ function renderTicketCell(run) {
 }
 
 const RUN_COLUMNS = ['Issue', 'Ticket', 'Host', 'State', 'Stage', 'Marker', 'Last activity', 'Restarts'];
+const NEEDS_COLUMNS = ['Issue', 'Ticket', 'Needs', 'Host', 'State', 'Stage', 'Marker', 'Last activity', 'Restarts'];
 const LIST_COLUMNS = ['Issue', 'Ticket', 'Updated'];
 const DONE_COLUMNS = ['Issue', 'Ticket', 'Closed', 'Release', 'Final marker'];
 
@@ -94,6 +95,11 @@ const runCells = (run) => [
   esc(formatCet(run.last_activity_at)),
   esc(run.restarts),
 ];
+const needsCells = (run) => {
+  const cells = runCells(run);
+  cells.splice(2, 0, esc(run.needs));
+  return cells;
+};
 const listCells = (item) => [`#${esc(item.issue)}`, renderTicketCell(item), esc(formatCet(item.updated_at))];
 const doneCells = (item) => [
   `#${esc(item.issue)}`,
@@ -105,6 +111,7 @@ const doneCells = (item) => [
 
 // Group heading -> table layout. Headings come from group.js; anything unlisted gets the run layout.
 const LAYOUTS = {
+  'Needs JP': { columns: NEEDS_COLUMNS, cells: needsCells },
   'Approved, waiting for a slot': { columns: LIST_COLUMNS, cells: listCells },
   'On staging (awaiting production)': { columns: LIST_COLUMNS, cells: listCells },
   Done: { columns: DONE_COLUMNS, cells: doneCells },

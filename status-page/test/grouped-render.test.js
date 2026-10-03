@@ -92,7 +92,7 @@ describe('AC6 — columns', () => {
   const html = render(mac, null);
   const runCols = ['Issue', 'Ticket', 'Host', 'State', 'Stage', 'Marker', 'Last activity', 'Restarts'];
 
-  it.each(['Running', 'Queued', 'Needs JP', 'Parked'])('%s columns', (name) => {
+  it.each(['Running', 'Queued', 'Parked'])('%s columns', (name) => {
     expect(ths(section(html, name))).toEqual(runCols);
   });
   it.each(['Approved, waiting for a slot', 'On staging (awaiting production)'])('%s columns', (name) => {
@@ -151,8 +151,8 @@ describe('AC7 — caps and ageing in the HTML', () => {
     expect(old).not.toMatch(/#50(?!\d)/);
   });
 
-  it('a 30-day-old AWAITING GO is still listed under Needs JP', () => {
-    const html = render(hostRecord({ runs: [run(60, { state: 'held', marker: 'AWAITING GO', last_activity_at: ago(24 * 30) })] }), null);
+  it('a 13-day-old AWAITING GO is still listed under Needs JP (#139: 14-day limit)', () => {
+    const html = render(hostRecord({ runs: [run(60, { state: 'held', marker: 'AWAITING GO', last_activity_at: ago(24 * 13) })] }), null);
     expect(Number(h2('Needs JP').exec(html)[1])).toBe(1);
     expect(section(html, 'Needs JP')).toMatch(/#60(?!\d)/);
   });
@@ -231,7 +231,7 @@ describe('AC9 — backward compatibility with today\'s record shape', () => {
 // ---------------------------------------------------------------------------------------------
 // Re-homed from render.test.js (#62 AC10 amendment): the pre-#62 #29 / #51 layout assertions,
 // restated against the grouped layout. Expected values hand-written from the #29 / #51 / #62
-// tickets. Run-shaped groups have 8 columns: Issue0 Ticket1 Host2 State3 Stage4 Marker5
+// tickets. Run-shaped groups have 8 columns (Needs JP now 9 via #139; header rows span all): Issue0 Ticket1 Host2 State3 Stage4 Marker5
 // Last activity6 Restarts7. Done: Issue0 Ticket1 Closed2 Release3 Final marker4.
 // NOW = 2026-09-21 (Monday), 12:00Z; CEST = UTC+2.
 // ---------------------------------------------------------------------------------------------
@@ -354,7 +354,7 @@ describe('re-homed #29 — CET timestamps in cells', () => {
 describe('re-homed #29 — the "none" row spans the group\'s column count', () => {
   const html = render(hostRecord(), hostRecord());
   it.each([
-    ['Running', 8], ['Queued', 8], ['Needs JP', 8], ['Parked', 8],
+    ['Running', 8], ['Queued', 8], ['Needs JP', 9], ['Parked', 8],
     ['Approved, waiting for a slot', 3], ['On staging (awaiting production)', 3],
     ['Done', 5],
   ])('%s: colspan="%i"', (name, n) => {
@@ -472,10 +472,10 @@ describe('#140 — Needs JP group header rows', () => {
   const needsHtml = (runs) => section(render(hostRecord({ runs }), null), 'Needs JP');
   const headers = (frag) => [...frag.matchAll(/\(([^)<]*)\) — (\d+) waiting/g)].map((m) => [m[1], Number(m[2])]);
 
-  it('one header per group, text "<milestone> (<repo>) — <n> waiting", spanning all 8 columns', () => {
+  it('one header per group, text "<milestone> (<repo>) — <n> waiting", spanning all 9 columns', () => {
     const frag = needsHtml([blocked(1, 'quoting', 'Release 3', 1), blocked(2, 'quoting', 'Release 3', 2), blocked(3, 'scheduler', 'Beta', 3)]);
-    expect(frag).toMatch(/<t[dh][^>]*colspan="8"[^>]*>\s*Release 3 \(quoting\) — 2 waiting\s*<\/t[dh]>/);
-    expect(frag).toMatch(/<t[dh][^>]*colspan="8"[^>]*>\s*Beta \(scheduler\) — 1 waiting\s*<\/t[dh]>/);
+    expect(frag).toMatch(/<t[dh][^>]*colspan="9"[^>]*>\s*Release 3 \(quoting\) — 2 waiting\s*<\/t[dh]>/);
+    expect(frag).toMatch(/<t[dh][^>]*colspan="9"[^>]*>\s*Beta \(scheduler\) — 1 waiting\s*<\/t[dh]>/);
     expect(count(frag, /waiting/g)).toBe(2);
   });
 

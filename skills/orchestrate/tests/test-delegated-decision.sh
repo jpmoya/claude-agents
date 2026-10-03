@@ -442,7 +442,7 @@ test_dd_ac22_no_timer_counter_or_new_state_file() {
   d=$(cd "$ROOT_DD" && git diff --name-only "$base" -- skills/orchestrate/config.sh)
   assert_eq "$d" "" "AC22: config.sh unchanged" || return 1
   added=$(cd "$ROOT_DD" && git diff -U0 "$base" -- skills/orchestrate/supervisor.sh | grep '^+' | grep -v '^+++')
-  bad=$(printf '%s\n' "$added" | grep -oE 'orch-\$\{?issue\}?\.[A-Za-z_-]+' | grep -vE '\.(held|alert|done|start)$')
+  bad=$(printf '%s\n' "$added" | grep -oE 'orch-\$\{?issue\}?\.[A-Za-z_-]+' | grep -vE '\.(held|alert|done|start|launched-at)$')
   assert_eq "$bad" "" "AC22: supervisor.sh adds no new orch-\$issue.<suffix> file" || return 1
 }
 
@@ -494,8 +494,9 @@ test_dd_i76_ac3_gate_rows_byte_identical_and_carve_out_keeps_exclusions() {   # 
   old=$(cd "$ROOT_DD" && git show "$base:agents/orchestrator.md" | grep '^| `\[ui-ux-designer\] MOCKUPS PENDING APPROVAL`')
   assert_ne "$cur" "" "i76 AC3: MOCKUPS PENDING APPROVAL rows present" || return 1
   assert_eq "$cur" "$old" "i76 AC3: MOCKUPS PENDING APPROVAL rows byte-identical" || return 1
-  cur=$(grep -F "the project isn't in its supported list" "$ORCH_DD")
-  old=$(cd "$ROOT_DD" && git show "$base:agents/orchestrator.md" | grep -F "the project isn't in its supported list")
+  # issue #144: the row's head now also mentions claude-agents; pin only the unsupported-project sentence (row tail).
+  cur=$(grep -F "the project isn't in its supported list" "$ORCH_DD" | sed 's/^.*\(If the deployer posts `BLOCKED` because the project isn.t in its supported list\)/\1/')
+  old=$(cd "$ROOT_DD" && git show "$base:agents/orchestrator.md" | grep -F "the project isn't in its supported list" | sed 's/^.*\(If the deployer posts `BLOCKED` because the project isn.t in its supported list\)/\1/')
   assert_ne "$cur" "" "i76 AC3: deployer unsupported-project sentence present" || return 1
   assert_eq "$cur" "$old" "i76 AC3: deployer unsupported-project sentence byte-identical" || return 1
   row=$(dd_blocked_row_next)
@@ -601,10 +602,12 @@ test_dd_i76_ac8_no_new_mechanisms() {   # characterisation
   base=$(dd_base)
   if [ -z "$base" ]; then printf '    (i76 AC8 skipped: no origin/main merge-base)\n' >&2; return 0; fi
   # orchestrate.sh dropped: #94 AC3 must edit it (launch writes the marker file)
-  for f in hooks/pipeline-markers.sh; do
-    d=$(cd "$ROOT_DD" && git diff --name-only "$base" -- "$f")
-    assert_eq "$d" "" "i76 AC8: $f unchanged" || return 1
-  done
+  # whole-file check narrowed to markers_for/marker_re: #136 AC10 appends block_classes()
+  local want got
+  want=$(cd "$ROOT_DD" && git show "$base:hooks/pipeline-markers.sh" | awk '/^(markers_for|marker_re)\(\)/ {p=1} p {print} p && /^}/ {p=0}')
+  got=$(cd "$ROOT_DD" && awk '/^(markers_for|marker_re)\(\)/ {p=1} p {print} p && /^}/ {p=0}' hooks/pipeline-markers.sh)
+  [ -n "$want" ] || { fail "i76 AC8: markers_for/marker_re not found at merge-base"; return 1; }
+  assert_eq "$got" "$want" "i76 AC8: markers_for/marker_re unchanged" || return 1
   dd_has "$MARKERS_DD" 'GO|MOCKUPS APPROVED' || return 1
   dd_has "$PMGR_DD" 'never resum' || return 1
 }

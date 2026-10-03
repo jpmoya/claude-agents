@@ -151,6 +151,21 @@ def build_list(kind):
     return items[:LIST_CAPS[kind]]
 
 
+NEEDS_LABELS = ("Approve mockups", "Say go", "Approve effort", "Missing credential", "Decision needed")
+PARKED_REASONS = ("answered", "out_of_scope")
+ISO_Z_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
+
+
+def state_file_for(issue, suffix):  # first line of <pipe-dir>/orch-<issue>.<suffix>, else ""
+    if not pipe_dir:
+        return ""
+    try:
+        with open(os.path.join(pipe_dir, "orch-%s.%s" % (issue, suffix)), encoding="utf-8", errors="replace") as f:
+            return f.readline(64).strip()
+    except OSError:
+        return ""
+
+
 def release_for(issue):  # first line of <pipe-dir>/orch-<issue>.release if it is vX.Y.Z, else ""
     if not pipe_dir:
         return ""
@@ -254,6 +269,16 @@ for raw in sys.stdin:
     milestone = milestone_for(issue)
     if milestone:
         run["milestone"] = milestone
+    # Issue #139: fixed labels / enum / timestamp only, never comment text (re-checked here).
+    needs = state_file_for(issue, "needs")
+    if needs in NEEDS_LABELS:
+        run["needs"] = needs
+    gate_at = state_file_for(issue, "gate_at")
+    if ISO_Z_RE.match(gate_at):
+        run["gate_at"] = gate_at
+    parked_reason = state_file_for(issue, "parked_reason")
+    if parked_reason in PARKED_REASONS:
+        run["parked_reason"] = parked_reason
     activity_epoch = int(last_activity_epoch) if last_activity_epoch.strip().isdigit() else -1
     sort_key = (STATE_PRIORITY[state_code], -activity_epoch)
     runs.append((sort_key, run))

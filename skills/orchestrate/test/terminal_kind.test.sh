@@ -112,6 +112,15 @@ both "neg: operator, body lacks Scope line" no "$OP"
 build "$BODY_OK" "$(c 1 2026-01-01T00:00:00Z "$PLAN_OK")" "$(c 3 2026-01-01T01:00:00Z "$OP"$'\n'"$BLK_SEQ")" "$(c 4 2026-01-01T02:00:00Z "${DEC/${U}3/${U}9}")"
 both "neg: operator, Resolves points elsewhere" no "$OP"
 
+# ---- terminal markers (#118): SPLIT is done; existing done/gate kinds unchanged
+for m in '**[solutions-architect] SPLIT**' '**[deployer] DEPLOYED**' '**[deployer] DEPLOYED TO STAGING**' '**[infra-operator] APPLIED**'; do
+  check_kind "terminal done: $m" done "$m" ''
+done
+check_kind "AWAITING GO still gate" gate '**[infra-operator] AWAITING GO**' ''
+check_kind "MOCKUPS PENDING APPROVAL still gate" gate '**[ui-ux-designer] MOCKUPS PENDING APPROVAL**' ''
+grep -q 'Split into sub-issues' "$SUP" && ok || bad "#118: done branch has SPLIT-specific Slack text" "missing"
+grep -E '^\| `\[solutions-architect\] SPLIT`.*Terminal' "$HERE/../../../agents/orchestrator.md" >/dev/null && ok || bad "#118: orchestrator.md SPLIT row labelled Terminal" "missing"
+
 # ---- docs (AC2, AC4, AC5): mechanical greps on the repo's own files
 ROOT="$HERE/../../.."
 ORCH="$ROOT/agents/orchestrator.md"; CMD="$ROOT/CLAUDE.md"

@@ -143,6 +143,8 @@ except Exception: print('?')
     # Launching consumes agent-go (the shared-dispatch pool) and claims the issue for this machine. Crash restarts are
     # the local supervisor's job, not the label's; the supervisor drops agent-in-progress when the run is done or parked.
     (cd "$REPO" && gh issue edit "$ISSUE" --add-label "$LABEL_IN_PROGRESS" --remove-label "$LABEL_GO" 2>/dev/null) || true
+    # Post the owner claim (same format as shared dispatch) so the other machine's reconcile leaves the label alone.
+    (cd "$REPO" && gh issue comment "$ISSUE" --body "**[supervisor] NOTE** claim: $(hostname -s) $(date -u +%FT%TZ)" >/dev/null 2>&1) || true
     # Clear tombstones and restart state on manual launch
     rm -f "$PIPE/orch-$ISSUE".{stopped,held,done,closed,release,marker,milestone,alert,label-cleared,start,exit} "$PIPE/orch-$ISSUE.restarts"
     # Persist on both the launch and queued paths: supervisor.sh rebuilds the queue JSON from this file.
