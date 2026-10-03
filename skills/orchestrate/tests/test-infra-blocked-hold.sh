@@ -119,7 +119,9 @@ test_ib_ac2_routing_row_resumes_a_dependency_held_ticket() {
   generic=$(printf '%s\n' "$tbl" | grep '^|' | grep -F '[infra-planner] BLOCKED' | grep -F '[infra-reviewer] BLOCKED' | head -1)
   assert_ne "$generic" "" "AC2: the generic infra BLOCKED row remains" || return 1
   ib_text_has "AC2: generic BLOCKED row" "$generic" 'Terminal: report to JP verbatim' || return 1
-  ib_text_lacks "AC2: generic BLOCKED row is not the resume row" "$generic" 'Held: blocked by' || return 1
+  # the generic row now mentions 'Held: blocked by' only to exclude it from the go-resume (1753f8d #90, 77cbe40 #110)
+  ib_text_has "AC2: generic BLOCKED row excludes the Held: blocked by operator BLOCKED from resume" "$generic" 'never an operator `BLOCKED` with a `Held: blocked by` line' || return 1
+  ib_text_lacks "AC2: generic BLOCKED row is not the resume row" "$generic" 'whose body has a `Held: blocked by` line' || return 1
 }
 
 # ---------------------------------------------------------------------------------------- AC3
