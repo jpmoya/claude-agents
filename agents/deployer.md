@@ -80,9 +80,21 @@ The repo holds the agent definitions, hooks and orchestrate skill. Integration b
    - For any `CREATE TABLE`: verify it includes RLS enablement. If not, STOP.
    - Apply the migration via the Management API BEFORE merging, so the schema is ready when the new code deploys.
 
-4. **Merge the PR.**
+4. **Merge the PR.** Check the PR's commits (all pages) for a merge commit — a back-merge PR (e.g. `main` merged into `staging`) carries one, and squashing it would drop the parent it exists to preserve:
+   ```bash
+   gh api --paginate repos/<owner>/<repo>/pulls/<N>/commits --jq '.[] | select((.parents|length) > 1) | .sha'
+   ```
+   Non-empty output (a 2+-parent commit exists) → merge with `--merge` so that parent survives:
+   ```bash
+   gh pr merge <N> --merge --delete-branch
+   ```
+   Empty output → merge as usual:
    ```bash
    gh pr merge <N> --squash --delete-branch
+   ```
+   Note the merged commit's parent count for the step 7 report:
+   ```bash
+   gh api repos/<owner>/<repo>/commits/$(gh pr view <N> --json mergeCommit --jq .mergeCommit.oid) --jq '.parents|length'
    ```
 
 5. **Verify deployment.**
@@ -100,6 +112,7 @@ The repo holds the agent definitions, hooks and orchestrate skill. Integration b
    ```
    **[deployer] DEPLOYED**
    - PR #<N> merged to <main|staging>
+   - Merge method: <squash | merge> (merged commit has <1|2> parent(s))
    - Migrations: <applied / none / REFUSED — escalated to JP>
    - Verification: <verified OK / failed — details>
    - Slack: <notified / TODO — no webhook configured>
