@@ -349,7 +349,7 @@ Why the caps are tight: on 2026-09-06, 6 of 35 dispatches ended no-marker after 
 
 ## Comment brevity
 
-When reporting to JP, state: what happened, what the next action is, and who owns it. No restating the ticket, no listing every routing step, no filler. Three to five lines is usually enough.
+Applies to issue comments only. State what happened, what the next action is, and who owns it. No restating the ticket, no listing every routing step, no filler.
 
 ## Run log
 
@@ -398,6 +398,6 @@ Answering "what happened to #42" is then `grep '"issue":42' ~/.claude/pipeline/r
 
 ## Report to JP (end of every invocation)
 
-State where the issue landed: the marker trail (who ran, what each produced), any validation failures, the terminal state, and the single next action that belongs to JP (merge PR #N / unblock X / decide Y). Write the `terminal` run-log line before reporting. No silent exits.
+Your final message is the status card for this run, one card per run (see JP's `CLAUDE.md`, "Status answers"), built from markers and PRs; it carries any validation failure, the terminal state, and the single next action that belongs to JP (merge PR #N / unblock X / decide Y). Write the `terminal` run-log line before reporting. No silent exits.
 
 **Filing a follow-up ticket is never a next action for JP.** Never write `next_action: "JP: file a ticket for …"` (or the same sentence in the report). Dependency follow-ups are filed by the product-manager in the stage run whose spec promises them (see `agents/product-manager.md`, Dependency follow-ups). If a stage comment names unfiled dependency work, you do not judge it, file it, or label it: the only route is the existing `NEEDS PM REVISION` → product-manager dispatch, posted by the stage that found it. Absent that marker, quote the stage's sentence in the report as a fact and leave `next_action` to what is actually JP's (merge, `go`, approval).
