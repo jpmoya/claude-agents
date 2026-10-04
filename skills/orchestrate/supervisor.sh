@@ -52,12 +52,19 @@ power_ok() {  # Mac: dispatch new work only on AC power (a sleeping laptop stran
 }
 
 latest_marker() {  # the GATE marker: newest real routing marker whose agent is not project-manager (NOTEs and off-vocabulary lines are inert).
+  # Exception (claude-agents#133): a pre-implementation `[test-reviewer] TESTS APPROVED` that is the newest one does not hide a
+  # `[fullstack-developer]` BLOCKED / TEST DEFECT / IMPLEMENTED posted after the latest TESTS WRITTEN: that developer marker (the latest) is the gate marker.
   # When the newest routing marker overall is a `[project-manager]` one (it follows the gate marker), it is printed on a 2nd line.
   # Both come out of the same single `gh issue view` call (claude-agents#59).
-  local repo=$1 issue=$2 last
-  last=$(marker_last_jq)
-  (cd "$repo" 2>/dev/null && gh issue view "$issue" --json comments \
-    --jq "($last) as \$last | ({comments: [.comments[] | select(.body | startswith(\"**[project-manager] \") | not)]} | $last) as \$gate | if \$last == \$gate then \$gate else \$gate + \"\\n\" + \$last end") 2>/dev/null || echo "?"
+  local repo=$1 issue=$2 last list prog
+  last=$(marker_last_jq); list=${last% | last // \"none\"}   # list = the same expression minus its final `last`
+  prog="($last) as \$last | {comments: [.comments[] | select(.body | startswith(\"**[project-manager] \") | not)]} as \$np
+    | (\$np | $last) as \$g0 | (\$np | $list) as \$m | (\$m | length) as \$n | (\$m | to_entries) as \$e
+    | ([\$e[] | select(.value | test(\"^\\\\*\\\\*\\\\[test-writer\\\\] TESTS WRITTEN\")) | .key] | last // -1) as \$w
+    | ([\$e[] | select(.key > \$w and .key < \$n - 1 and (.value | test(\"^\\\\*\\\\*\\\\[fullstack-developer\\\\] (BLOCKED|TEST DEFECT|IMPLEMENTED)\"))) | .value] | last // null) as \$dev
+    | (if (\$g0 | test(\"^\\\\*\\\\*\\\\[test-reviewer\\\\] TESTS APPROVED\")) and \$dev != null then \$dev else \$g0 end) as \$gate
+    | if (\$last | startswith(\"**[project-manager] \") | not) then \$gate else \$gate + \"\\n\" + \$last end"
+  (cd "$repo" 2>/dev/null && gh issue view "$issue" --json comments --jq "$prog") 2>/dev/null || echo "?"
 }
 
 issue_is_closed() {
