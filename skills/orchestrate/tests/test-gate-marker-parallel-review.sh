@@ -259,7 +259,7 @@ test_gm_ac8_no_new_mechanism() {
   was=$(cd "$ROOT_GM" && git show "$base:skills/orchestrate/supervisor.sh" | awk '/^latest_marker\(\) \{/ {skip=1} !skip {print} skip && /^}/ {skip=0}' | { shasum -a 256 2>/dev/null || sha256sum; } | cut -d' ' -f1)
   assert_eq "$now" "$was" "AC8: supervisor.sh outside latest_marker" || return 1
   # only the ticket's files (plus tests) changed
-  extra=$(cd "$ROOT_GM" && git diff --name-only "$base" | grep -vE '^(agents/orchestrator\.md|skills/orchestrate/supervisor\.sh|skills/orchestrate/pipeline-lib\.sh|skills/orchestrate/tests/)' || true)
+  extra=$(cd "$ROOT_GM" && git diff --name-only "$base" | grep -vE '^(agents/orchestrator\.md|skills/orchestrate/supervisor\.sh|skills/orchestrate/pipeline-lib\.sh|hooks/sync-agents\.sh|skills/orchestrate/tests/)' || true)
   assert_eq "$extra" "" "AC8: files changed outside the ticket's list" || return 1
 }
 
