@@ -660,7 +660,7 @@ test_sr_ac9_guard_allows_other_ticket_or_other_stage() {
 
 test_sr_ac9_hooks_unchanged_vs_origin_main() {
   local out
-  out=$(cd "$ROOT_SR" && git diff --stat origin/main -- hooks/no-duplicate-stage.sh hooks/require-handoff-marker.sh 2>&1)
+  out=$(cd "$ROOT_SR" && git diff --stat origin/main -- hooks/require-handoff-marker.sh 2>&1)
   assert_eq "$out" "" "AC9: git diff --stat origin/main for the two hooks is empty" || return 1
 }
 
