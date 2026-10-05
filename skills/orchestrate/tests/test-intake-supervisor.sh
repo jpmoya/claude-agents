@@ -8,12 +8,12 @@
 HERE_SI=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 SUP_SI="$HERE_SI/../supervisor.sh"
 
-# si_env [<DISPATCH entries...>] — sets SI_D (stub dir), SI_HOME, SI_PIPE; default dispatch = project-a/repo-a
+# si_env [<DISPATCH entries...>; @PIPE@ expands to the pipe dir] — sets SI_D (stub dir), SI_HOME, SI_PIPE; default dispatch = project-a/repo-a
 si_env() {
   SI_PIPE=$(new_pipe); SI_HOME=$(new_home); SI_D="$SI_HOME/.local/bin"; mkdir -p "$SI_D"
   fixture_repo "$SI_PIPE/repo-a" "project-a/repo-a"; fixture_repo "$SI_PIPE/repo-b" "project-b/repo-b"
   echo '[]' > "$SI_D/issues.json"; echo '[]' > "$SI_D/comments.json"; : > "$SI_D/gh-calls.log"; : > "$SI_D/claude.log"
-  local d=("project-a/repo-a:$SI_PIPE/repo-a"); [ $# -gt 0 ] && d=("$@")
+  local d=("project-a/repo-a:$SI_PIPE/repo-a"); [ $# -gt 0 ] && d=("${@//@PIPE@/$SI_PIPE}")
   { echo 'MEM_FLOOR_MB=0'; echo 'CLAIM_SETTLE_SECS=0'; printf 'DISPATCH_REPOS=('; printf '"%s" ' "${d[@]}"; echo ')'; } > "$SI_HOME/.claude/pipeline/config.local.sh"
   cat > "$SI_D/pmset" <<'X'
 #!/bin/bash
@@ -102,7 +102,7 @@ test_si_ac2_repo_not_in_dispatch_repos_not_launched() {
 }
 
 test_si_ac2_business_intelligence_never_eligible() {
-  si_env "project-a/repo-a:$SI_PIPE/repo-a" "project-c/Business-Intelligence:$SI_PIPE/repo-b"
+  si_env "project-a/repo-a:@PIPE@/repo-a" "project-c/Business-Intelligence:@PIPE@/repo-b"
   si_issue 9 project-c/Business-Intelligence user-feedback-intake; si_issue 7 project-a/repo-a user-feedback-intake
   si_tick; local n log; n=$(si_launches); log=$(cat "$SI_D/claude.log"); si_cleanup
   assert_eq "$n" "1" "AC2: exactly one launch (#7 — positive control)" || return 1
