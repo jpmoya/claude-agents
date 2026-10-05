@@ -8,8 +8,8 @@ SETSID=$(command -v setsid >/dev/null 2>&1 && echo setsid || true)   # absent on
 
 count_running() {
   local n=0
-  for f in "$PIPE"/orch-*.pid; do
-    [ -e "$f" ] || break
+  for f in "$PIPE"/orch-*.pid "$PIPE"/intake-*.pid; do   # intake runs (#114) count against MAX_CONCURRENT too
+    [ -e "$f" ] || continue
     kill -0 "$(cat "$f")" 2>/dev/null && n=$((n + 1))
   done
   echo "$n"

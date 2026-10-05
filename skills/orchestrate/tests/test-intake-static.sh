@@ -33,12 +33,9 @@ test_in_ac1_untrusted_data_rule() {
 
 test_in_ac1_forbidden_list_and_label_allow_list() {
   assert_file_exists "$AGENT_IN" "AC1: agents/intake.md" || return 1
-  local s
-  for s in "diagnosing" "reading application source" "writing a spec" "proposing a fix" "running code" \
-           "touching any issue other than the one given" \
-           "user-feedback" "bug" "fast-lane" "agent-go" "user-feedback-needs-spec" "user-feedback-intake"; do
-    in_has "$AGENT_IN" "$s" || return 1
-  done
+  in_has "$AGENT_IN" "diagnosing, reading application source, writing a spec, proposing a fix, running code" || return 1
+  in_has "$AGENT_IN" "touching any issue other than the one given" || return 1
+  in_has "$AGENT_IN" "adding any label outside \`user-feedback\`, \`bug\`, \`fast-lane\`, \`agent-go\`, \`user-feedback-needs-spec\`" || return 1
   in_has "$AGENT_IN" "removing any label other than \`user-feedback-intake\`" || return 1
 }
 

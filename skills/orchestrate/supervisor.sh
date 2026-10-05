@@ -4,6 +4,7 @@
 #   2. drain the local launch queue
 #   3. label lifecycle: drop agent-in-progress on issues this machine finished, parked, or abandoned
 #   4. label reconciliation: clear orphaned agent-in-progress labels (no local pid, no queue, stale marker)
+#   3b. intake: triage one user-feedback-intake issue from DISPATCH_REPOS (claim, swap label, launch `--agent intake`)
 #   5. shared dispatch: launch one agent-go issue from DISPATCH_REPOS after winning a claim
 #   7. status reconcile: refresh listed tickets from GitHub (backgrounded, throttled to once per 600 s; issue #51)
 # One launch per tick max. All state is local (/tmp/pipeline); the only shared state is the issue's markers and labels.
@@ -612,6 +613,68 @@ for f in "$PIPE"/orch-*.pid; do
   fi
 done
 
+# 3b. Intake — triage raw staff feedback (#114): one `user-feedback-intake` issue per tick from DISPATCH_REPOS, claimed like
+#     step 5, label swapped to agent-in-progress, `claude --agent intake -p` launched detached. State is separate from the
+#     orchestrator's (PIPE/intake-<owner_repo>-<n>.*) but counts against MAX_CONCURRENT. A run that exits with no [intake]
+#     marker gets one recovery launch; a second failure posts a NOTE, re-adds the label once and parks it locally (.gaveup).
+intake_key() { printf 'intake-%s-%s' "${1//\//_}" "$2"; }
+intake_launch() {  # <owner/repo> <local path> <issue> <prompt>
+  local k; k=$(intake_key "$1" "$3")
+  echo 0 > "$PIPE/$3-intake-before.txt"; rm -f "$PIPE/$k.exit" "$PIPE/$k.exit-seen"
+  ( cd "$2" && PIPELINE_ISSUE="$3" PIPELINE_AGENT=intake PIPELINE_REPO="$1" PIPE="$PIPE" CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 \
+    nohup $SETSID bash -c 'claude --dangerously-skip-permissions --agent intake -p "$1"; echo $? > "$2"' _ "$4" "$PIPE/$k.exit" \
+    >> "$PIPE/$k.log" 2>&1 9>&- & echo $! > "$PIPE/$k.pid" )
+  echo "$2" > "$PIPE/$k.path"; echo "$1 $3" > "$PIPE/$k.id"
+  echo $(( $(cat "$PIPE/$k.attempts" 2>/dev/null || echo 0) + 1 )) > "$PIPE/$k.attempts"
+  slog "[intake] $1#$3 launched (attempt $(cat "$PIPE/$k.attempts"))"
+}
+INTAKE_RE=$(marker_re intake | jq -Rs .)
+for idf in "$PIPE"/intake-*.id; do   # runs that have exited: healthy -> clear state; no marker -> recover once, then give up
+  [ -e "$idf" ] || break
+  k=$(basename "$idf" .id); read -r i_repo i_num < "$idf"; i_path=$(cat "$PIPE/$k.path")
+  kill -0 "$(cat "$PIPE/$k.pid" 2>/dev/null)" 2>/dev/null && continue
+  have=$(gh issue view "$i_num" --repo "$i_repo" --json comments \
+    --jq "[.comments[].body | split(\"\\n\")[0] | select(test($INTAKE_RE))] | length" 2>/dev/null) || continue
+  if [ "${have:-0}" -gt 0 ]; then
+    gh issue edit "$i_num" --repo "$i_repo" --remove-label "$LABEL_IN_PROGRESS" >/dev/null 2>&1
+    rm -f "$PIPE/$k".{id,pid,path,exit,exit-seen,attempts}; slog "[intake] $i_repo#$i_num done"
+  elif [ ! -e "$PIPE/$k.exit-seen" ]; then
+    touch "$PIPE/$k.exit-seen"   # one grace tick: a slow marker or a lagging gh read must not trigger a recovery run
+  elif [ "$(cat "$PIPE/$k.attempts" 2>/dev/null || echo 1)" -lt 2 ]; then
+    [ "$launched" -eq 0 ] && [ "$HAS_CAP" -eq 1 ] || continue
+    intake_launch "$i_repo" "$i_path" "$i_num" "Triage $i_repo#$i_num as the intake agent. A previous run exited without posting an [intake] handoff marker: check the issue state with gh, finish the triage if it is incomplete, and post the handoff marker."
+    launched=1
+  else
+    gh issue comment "$i_num" --repo "$i_repo" --body "**[supervisor] NOTE** intake ran twice without a handoff marker; the issue is back in the intake queue for manual attention." >/dev/null 2>&1
+    gh issue edit "$i_num" --repo "$i_repo" --remove-label "$LABEL_IN_PROGRESS" --add-label user-feedback-intake >/dev/null 2>&1
+    rm -f "$PIPE/$k".{id,pid,path,exit,exit-seen}; touch "$PIPE/$k.gaveup"; slog "[intake] $i_repo#$i_num gave up after 2 runs without a marker"
+  fi
+done
+if [ "$launched" -eq 0 ] && [ "$HAS_CAP" -eq 1 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ] && power_ok; then
+  cutoff=$(python3 -c "import datetime; print((datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(seconds=$CLAIM_WINDOW_SECS)).strftime('%Y-%m-%dT%H:%M:%SZ'))")
+  for entry in "${DISPATCH_REPOS[@]}"; do
+    [ "$launched" -ge 1 ] && break
+    owner_repo="${entry%%:*}"; local_path="${entry#*:}"; local_path="${local_path/#\~/$HOME}"
+    case "$owner_repo" in */Business-Intelligence) continue ;; esac
+    [ -d "$local_path/.git" ] || continue
+    for num in $(gh issue list --repo "$owner_repo" --state open --label user-feedback-intake --limit 50 --json number,labels \
+        --jq ".[] | select([.labels[].name] | index(\"$LABEL_IN_PROGRESS\") | not) | .number" 2>/dev/null); do
+      case "$num" in ''|*[!0-9]*) continue ;; esac
+      k=$(intake_key "$owner_repo" "$num"); [ -e "$PIPE/$k.id" ] || [ -e "$PIPE/$k.gaveup" ] && continue
+      ts=$(date -u +%FT%TZ)
+      gh issue comment "$num" --repo "$owner_repo" --body "**[supervisor] NOTE** claim: $HOST $ts" >/dev/null 2>&1 || continue
+      sleep "$CLAIM_SETTLE_SECS"
+      winner=$(gh issue view "$num" --repo "$owner_repo" --json comments \
+        --jq "[.comments[] | select(.body | startswith(\"**[supervisor] NOTE** claim: \")) | select(.createdAt > \"$cutoff\")] | sort_by(.createdAt) | first | .body" 2>/dev/null | awk '{print $4}')
+      [ "$winner" = "$HOST" ] || { slog "[intake] $owner_repo#$num — lost claim to ${winner:-?}"; continue; }
+      gh issue edit "$num" --repo "$owner_repo" --add-label "$LABEL_IN_PROGRESS" --remove-label user-feedback-intake >/dev/null 2>&1
+      rm -f "$PIPE/$k.attempts"
+      intake_launch "$owner_repo" "$local_path" "$num" "Triage $owner_repo#$num as the intake agent. Repo: $local_path."
+      launched=1; break
+    done
+  done
+fi
+
 # 4. Label reconciliation — catch orphaned agent-in-progress labels that have no local state at all
 #    (e.g. /tmp was cleared, or a run from another machine died). Only clear if no marker movement for 30+ min.
 STALE_LABEL_SECS=1800
@@ -624,6 +687,7 @@ if [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
       # Skip if we have a live process or queue entry
       if [ -f "$PIPE/orch-$num.pid" ] && kill -0 "$(cat "$PIPE/orch-$num.pid" 2>/dev/null)" 2>/dev/null; then continue; fi
       [ -f "$QUEUE/orch-$num.json" ] && continue
+      [ -e "$PIPE/$(intake_key "$owner_repo" "$num").id" ] && continue   # an intake run (3b) owns it
       # Check marker staleness — only clear if no movement for STALE_LABEL_SECS
       # Same call also yields the latest "claim: <host>" comment: a claim naming another machine means it owns the run.
       view=$(cd "$local_path" && gh issue view "$num" --json comments,updatedAt \

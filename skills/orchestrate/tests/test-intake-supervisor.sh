@@ -122,17 +122,13 @@ test_si_ac2_counts_against_max_concurrent() {
   si_env; echo 'MAX_CONCURRENT=1' >> "$SI_HOME/.claude/pipeline/config.local.sh"
   mk_running "$SI_PIPE" 1 "$SI_PIPE/repo-a"
   si_issue 7 project-a/repo-a user-feedback-intake
-  si_tick; local n labels; n=$(si_launches); labels=$(si_labels 7); si_cleanup
-  assert_eq "$n" "0" "AC2: no launch when MAX_CONCURRENT slots are full" || return 1
-  assert_eq "$labels" "user-feedback-intake" "AC2: issue stays queued for intake (label kept)" || return 1
-}
-
-test_si_ac2_launches_once_a_slot_frees_up() {  # positive control for the MAX_CONCURRENT case above
-  si_env; echo 'MAX_CONCURRENT=1' >> "$SI_HOME/.claude/pipeline/config.local.sh"
-  mk_running "$SI_PIPE" 1 "$SI_PIPE/repo-a"; si_issue 7 project-a/repo-a user-feedback-intake
-  si_tick; cleanup_running; rm -f "$SI_PIPE"/orch-1.*; si_tick
-  local n; n=$(si_launches); si_cleanup
-  assert_eq "$n" "1" "AC2: with a free slot the same issue launches" || return 1
+  si_tick; local n_full labels_full; n_full=$(si_launches); labels_full=$(si_labels 7)
+  # positive control in the same test: free the slot, the same issue must now launch
+  cleanup_running; rm -f "$SI_PIPE"/orch-1.*; si_tick
+  local n_free; n_free=$(si_launches); si_cleanup
+  assert_eq "$n_full" "0" "AC2: no launch when MAX_CONCURRENT slots are full" || return 1
+  assert_eq "$labels_full" "user-feedback-intake" "AC2: issue stays queued for intake (label kept)" || return 1
+  assert_eq "$n_free" "1" "AC2: with a free slot the same issue launches" || return 1
 }
 
 test_si_ac2_in_progress_cleared_when_run_exits() {
@@ -167,6 +163,5 @@ run_test test_si_ac2_repo_not_in_dispatch_repos_not_launched
 run_test test_si_ac2_business_intelligence_never_eligible
 run_test test_si_ac2_one_per_tick
 run_test test_si_ac2_counts_against_max_concurrent
-run_test test_si_ac2_launches_once_a_slot_frees_up
 run_test test_si_ac2_in_progress_cleared_when_run_exits
 run_test test_si_no_marker_run_gets_one_recovery_then_note_and_no_loop

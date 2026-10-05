@@ -18,7 +18,9 @@ for entry in ${DISPATCH_REPOS[@]+"${DISPATCH_REPOS[@]}"} ${SCAN_ONLY_REPOS[@]+"$
     --jq '.[] | select(.labels | map(.name) |
       (contains(["'"$LABEL_PROPOSED"'"]) | not) and
       (contains(["'"$LABEL_GO"'"]) | not) and
-      (contains(["'"$LABEL_IN_PROGRESS"'"]) | not)
+      (contains(["'"$LABEL_IN_PROGRESS"'"]) | not) and
+      (contains(["user-feedback-intake"]) | not) and
+      (contains(["user-feedback-needs-spec"]) | not)
     ) | "\(.number)\t\(.title)"' 2>/dev/null) || continue
   [ -n "$issues" ] || continue
   while IFS=$'\t' read -r num title; do
