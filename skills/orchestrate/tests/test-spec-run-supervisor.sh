@@ -5,8 +5,8 @@
 #   * step A is one block in supervisor.sh whose header comment starts `# 3c. Spec` and which ends at its first blank line;
 #   * the file-header step list gets one line starting `#   3c. spec: `;
 #   * an existing "skip, a run owns it" line in the label reconciliation may say `a spec run (3c) owns it`;
-#   * REJECTED handling in terminal_kind / the done branch: single lines mentioning REJECTED or user-feedback are exempt from the
-#     test_gm_ac8 hash; anything longer goes between `# #115 begin` and `# #115 end` comment lines. Nothing else in supervisor.sh may change.
+#   * REJECTED handling in terminal_kind / the done branch: single lines mentioning REJECTED are exempt from the
+#     test_gm_ac8 hash; anything else (e.g. a user-feedback label check) goes between `# #115 begin` and `# #115 end` comment lines. Nothing else in supervisor.sh may change.
 #
 # Stub gh keeps issue state in $D/issues.json ([{number,repo,title,labels:[{name}]}]) and comments in $D/comments.json
 # ([{number,body,createdAt}]); it answers `issue list` (any --json/--jq, --label / --state filters applied) and `issue view`

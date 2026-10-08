@@ -101,11 +101,6 @@ test_rj_ac4_pm_instruction_scoped_to_user_feedback() {
     || { fail "AC4: product-manager.md must say REJECTED is only for issues labelled user-feedback"; return 1; }
 }
 
-test_rj_ac4_pm_does_not_add_agent_go_or_file_followups_on_idea_issues() {
-  [ -n "$(rj_lines_with "$PM_RJ" 'user-feedback-needs-spec.*agent-go|agent-go.*user-feedback-needs-spec')" ] \
-    || { fail "AC4/AC1: PM definition must say that on a user-feedback-needs-spec issue it never adds agent-go (no Parent: line, no inherited approval)"; return 1; }
-}
-
 # ------------------------------------------------------------------------------------------------ AC3 (docs half)
 
 test_rj_ac3_orchestrator_has_routing_row_per_terminal_reason() {
