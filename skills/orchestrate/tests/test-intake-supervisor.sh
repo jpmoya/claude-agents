@@ -102,7 +102,8 @@ test_si_ac2_repo_not_in_dispatch_repos_not_launched() {
 }
 
 test_si_ac2_business_intelligence_never_eligible() {
-  si_env "project-a/repo-a:@PIPE@/repo-a" "project-c/Business-Intelligence:@PIPE@/repo-b"
+  # BI listed FIRST: if it were eligible the loop would pick it before repo-a (#114 F2, mutation-checked)
+  si_env "project-c/Business-Intelligence:@PIPE@/repo-b" "project-a/repo-a:@PIPE@/repo-a"
   si_issue 9 project-c/Business-Intelligence user-feedback-intake; si_issue 7 project-a/repo-a user-feedback-intake
   si_tick; local n log; n=$(si_launches); log=$(cat "$SI_D/claude.log"); si_cleanup
   assert_eq "$n" "1" "AC2: exactly one launch (#7 — positive control)" || return 1

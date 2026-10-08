@@ -51,7 +51,8 @@ test_in_ac1_rewrite_and_log_rules() {
 test_in_ac5_duplicate_handling_is_specified() {
   assert_file_exists "$AGENT_IN" "AC5: agents/intake.md" || return 1
   local s
-  for s in '**[intake] NOTE** +1 from' "reporter count now" "not planned" '**[intake] DUPLICATE** of #' "Reporters: N"; do
+  # #114 AC5 (amended): contiguous phrases, not bare substrings
+  for s in '**[intake] NOTE** +1 from <role> (reporter count now N)' 'close this issue as `not planned`' '**[intake] DUPLICATE** of #<canonical>' 'update its `Reporters: N` body line'; do
     in_has "$AGENT_IN" "$s" || return 1
   done
 }

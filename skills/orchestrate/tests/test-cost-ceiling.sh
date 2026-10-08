@@ -309,10 +309,11 @@ test_cc_ac22_block_classes_contains_cost_ceiling() {
 
 test_cc_ac22_markers_for_is_byte_identical_to_main() {
   local cur base ref
-  cur=$(awk '/^markers_for\(\)/{p=1} p{print} p&&/^}/{exit}' "$MARK_CC" | cksum)
+  # #114: strip only the `intake)` case line (and ` intake` token) from both sides; fallback cksum below is from main, so already free of it
+  cur=$(awk '/^markers_for\(\)/{p=1} p{print} p&&/^}/{exit}' "$MARK_CC" | sed -e '/^ *intake) /d' -e 's/ intake; do/; do/' | cksum)
   ref=$(cd "$ROOT_CC" && git merge-base HEAD origin/main 2>/dev/null)
   if [ -n "$ref" ] && base=$(cd "$ROOT_CC" && git show "$ref:hooks/pipeline-markers.sh" 2>/dev/null) && [ -n "$base" ]; then
-    base=$(printf '%s\n' "$base" | awk '/^markers_for\(\)/{p=1} p{print} p&&/^}/{exit}' | cksum)
+    base=$(printf '%s\n' "$base" | awk '/^markers_for\(\)/{p=1} p{print} p&&/^}/{exit}' | sed -e '/^ *intake) /d' -e 's/ intake; do/; do/' | cksum)
   else
     base="1931356475 1340"   # hand-recorded from main c0e8e6f (2026-10-03) when no origin/main is available
   fi
