@@ -254,16 +254,18 @@ test_gm_ac8_no_new_mechanism() {
   base=$(gm_base); [ -n "$base" ] || { fail "AC8: no merge-base with origin/main"; return 1; }
   # vocabulary untouched
   # #114: the only allowed diff is the `intake)` case line and the ` intake` token in marker_re's agent list
-  extra=$(cd "$ROOT_GM" && git diff -U0 "$base" -- hooks/pipeline-markers.sh | grep -E '^[-+]' | grep -vE '^(\+\+\+|---) ' \
+  # #115: both sides are normalised by stripping only `|REJECTED` / `REJECTED|` (the marker #115 registers) before diffing
+  extra=$(cd "$ROOT_GM" && diff -U0 <(git show "$base:hooks/pipeline-markers.sh" | sed -e 's/|REJECTED//' -e 's/REJECTED|//') <(sed -e 's/|REJECTED//' -e 's/REJECTED|//' hooks/pipeline-markers.sh) | grep -E '^[-+]' | grep -vE '^(\+\+\+|---) ' \
     | grep -vE '^\+ *intake\) +echo ' | grep -vE '^[-+] +infra-planner infra-reviewer infra-operator jp project-manager( intake)?; do ' || true)
   assert_eq "$extra" "" "AC8: hooks/pipeline-markers.sh changed beyond #114's intake line + token" || return 1
   # supervisor.sh: everything except latest_marker is byte-identical
   # #114: also skip exactly the intake additions: the 3b step block (to its first blank line), its header-comment line, and step 5's one-line skip
-  now=$(awk '/^latest_marker\(\) \{/ {skip=1} !skip {print} skip && /^}/ {skip=0}' "$SUP_GM" | sed -e '/^# 3b\. Intake/,/^$/d' -e '/^#   3b\. intake: /d' -e '/an intake run (3b) owns it/d' | { shasum -a 256 2>/dev/null || sha256sum; } | cut -d' ' -f1)
-  was=$(cd "$ROOT_GM" && git show "$base:skills/orchestrate/supervisor.sh" | awk '/^latest_marker\(\) \{/ {skip=1} !skip {print} skip && /^}/ {skip=0}' | sed -e '/^# 3b\. Intake/,/^$/d' -e '/^#   3b\. intake: /d' -e '/an intake run (3b) owns it/d' | { shasum -a 256 2>/dev/null || sha256sum; } | cut -d' ' -f1)
+  now=$(awk '/^latest_marker\(\) \{/ {skip=1} !skip {print} skip && /^}/ {skip=0}' "$SUP_GM" | sed -e '/^# 3b\. Intake/,/^$/d' -e '/^#   3b\. intake: /d' -e '/an intake run (3b) owns it/d' -e '/^# 3c\. Spec/,/^$/d' -e '/^#   3c\. spec: /d' -e '/a spec run (3c) owns it/d' -e '/REJECTED/d' -e '/user-feedback/d' -e '/# #115 begin/,/# #115 end/d' | { shasum -a 256 2>/dev/null || sha256sum; } | cut -d' ' -f1)
+  was=$(cd "$ROOT_GM" && git show "$base:skills/orchestrate/supervisor.sh" | awk '/^latest_marker\(\) \{/ {skip=1} !skip {print} skip && /^}/ {skip=0}' | sed -e '/^# 3b\. Intake/,/^$/d' -e '/^#   3b\. intake: /d' -e '/an intake run (3b) owns it/d' -e '/^# 3c\. Spec/,/^$/d' -e '/^#   3c\. spec: /d' -e '/a spec run (3c) owns it/d' -e '/REJECTED/d' -e '/user-feedback/d' -e '/# #115 begin/,/# #115 end/d' | { shasum -a 256 2>/dev/null || sha256sum; } | cut -d' ' -f1)
   assert_eq "$now" "$was" "AC8: supervisor.sh outside latest_marker" || return 1
+  # #115: also skip exactly the step-A additions: the 3c block (header `# 3c. Spec…` to its first blank line), its header-comment line `#   3c. spec: `, the one-line `a spec run (3c) owns it` skip, the REJECTED / user-feedback done-state lines, and any multi-line REJECTED handling wrapped in `# #115 begin` … `# #115 end` comment lines
   # only the ticket's files (plus tests) changed
-  extra=$(cd "$ROOT_GM" && git diff --name-only "$base" | grep -vE '^(agents/orchestrator\.md|skills/orchestrate/supervisor\.sh|skills/orchestrate/pipeline-lib\.sh|hooks/sync-agents\.sh|hooks/no-duplicate-stage\.sh|skills/orchestrate/tests/)' | grep -vxE 'agents/intake\.md|agents/README\.md|README\.md|hooks/pipeline-markers\.sh|hooks/require-handoff-marker\.sh|skills/orchestrate/(intake-labels|scan-backlog|config|pipeline-lib)\.sh' || true)   # #114: exactly its Files-table paths
+  extra=$(cd "$ROOT_GM" && git diff --name-only "$base" | grep -vE '^(agents/orchestrator\.md|skills/orchestrate/supervisor\.sh|skills/orchestrate/pipeline-lib\.sh|hooks/sync-agents\.sh|hooks/no-duplicate-stage\.sh|skills/orchestrate/tests/)' | grep -vxE 'agents/intake\.md|agents/README\.md|README\.md|hooks/pipeline-markers\.sh|hooks/require-handoff-marker\.sh|skills/orchestrate/(intake-labels|scan-backlog|config|pipeline-lib)\.sh' | grep -vxE 'agents/fullstack-developer\.md|agents/product-manager\.md|skills/orchestrate/test/.*' || true)   # #114 + #115: exactly their Files-table paths
   assert_eq "$extra" "" "AC8: files changed outside the ticket's list" || return 1
 }
 

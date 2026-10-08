@@ -94,7 +94,8 @@ test_fu_ac2_orchestrator_never_hands_filing_a_followup_to_jp() {
   fu_text_has_i "AC2: the only route is the PM via NEEDS PM REVISION" "$report" 'NEEDS PM REVISION' || return 1
   fu_text_has_i "AC2: orchestrator does not judge — it routes to the product-manager" "$report" 'product-manager' || return 1
   # R1: no new routing-table row. Baseline at main = 28 table rows starting with "| `[".
-  rows=$(grep -c '^| `\[' "$ORCH_FU")
+  # #115: rows that name REJECTED are #115's own routing rows (terminal reasons, needs-spec, inert cases) and are not counted
+  rows=$(grep '^| `\[' "$ORCH_FU" | grep -vc 'REJECTED')
   assert_eq "$rows" "28" "R1: orchestrator routing table gains no new row" || return 1
 }
 
@@ -115,7 +116,8 @@ test_fu_ac2_solutions_architect_hygiene_findings_are_new_scope_not_dependency_fo
 test_fu_ac3_pipeline_markers_unchanged_and_note_route_is_used() {
   local got want
   . "$ROOT_FU/hooks/pipeline-markers.sh"
-  got=$(markers_for product-manager)
+  # #115: strip only `|REJECTED` (the marker #115 registers for the product-manager)
+  got=$(markers_for product-manager | sed -e 's/|REJECTED//' -e 's/REJECTED|//')
   want='READY FOR ARCHITECTURE|READY FOR ENGINEERING|EFFORT APPROVAL NEEDED|BLOCKED'
   assert_eq "$got" "$want" "AC3: markers_for product-manager is byte-identical (no new marker)" || return 1
   # The inherited-approval message travels as a NOTE — inert by the marker vocabulary. Control:

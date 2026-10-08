@@ -109,6 +109,8 @@ test_i106_no_new_mechanism_only_doc_files_and_tests_touched() {
       # #114: exactly its Files-table paths
       agents/intake.md|agents/README.md|README.md|hooks/pipeline-markers.sh|hooks/require-handoff-marker.sh) ;;
       skills/orchestrate/intake-labels.sh|skills/orchestrate/scan-backlog.sh|skills/orchestrate/config.sh|skills/orchestrate/pipeline-lib.sh|skills/orchestrate/supervisor.sh) ;;
+      # #115: exactly its Files-table paths not already listed (agents/fullstack-developer.md, skills/orchestrate/test/*)
+      agents/fullstack-developer.md|skills/orchestrate/test/*) ;;
       *) bad="$bad $f" ;;
     esac
   done <<< "$changed"
