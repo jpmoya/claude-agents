@@ -101,6 +101,11 @@ test_rj_ac4_pm_instruction_scoped_to_user_feedback() {
     || { fail "AC4: product-manager.md must say REJECTED is only for issues labelled user-feedback"; return 1; }
 }
 
+test_rj_ac4_pm_never_posts_needs_spec_rejected_on_a_step_a_spec_run() {
+  [ -n "$(rj_lines_with "$PM_RJ" 'never.*REJECTED.*needs-spec|REJECTED.*needs-spec.*never|never.*(post|use).*needs-spec')" ] \
+    || { fail "AC1/DECISION: product-manager.md must say the PM spec run never posts REJECTED with Reason: needs-spec"; return 1; }
+}
+
 # ------------------------------------------------------------------------------------------------ AC3 (docs half)
 
 test_rj_ac3_orchestrator_has_routing_row_per_terminal_reason() {

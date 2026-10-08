@@ -84,7 +84,9 @@ sp_comment() {
   jq --argjson n "$1" --arg b "$2" '. + [{number:$n,body:$b,createdAt:"2026-01-01T00:00:00Z"}]' "$SP_D/comments.json" > "$SP_D/c.tmp" && mv "$SP_D/c.tmp" "$SP_D/comments.json"
 }
 sp_tick() { HOME="$SP_HOME" PATH="$SP_D:/usr/bin:/bin" PIPE="$SP_PIPE" QUEUE="$SP_PIPE/queue" LOGDIR="$SP_HOME/logs/pipeline" \
-  SLACK_BOT_TOKEN="" SLACK_ENGINEERING_CHANNEL="" /bin/bash "$SUP_SP" >/dev/null 2>&1; sleep 1.5; }
+  SLACK_BOT_TOKEN="" SLACK_ENGINEERING_CHANNEL="" /bin/bash "$SUP_SP" >/dev/null 2>&1
+  # poll (max ~15 s) until the detached stub claude has exited, instead of a fixed sleep
+  local i; for i in $(seq 1 150); do pgrep -f "$SP_D/claude" >/dev/null 2>&1 || break; sleep 0.1; done; sleep 0.2; }
 sp_pm_launches() { grep -c -- '--agent product-manager' "$SP_D/claude.log"; }
 sp_labels() { jq -r --argjson n "$1" '.[]|select(.number==$n)|[.labels[].name]|sort|join(",")' "$SP_D/issues.json"; }
 sp_edits_with() { grep '^issue edit' "$SP_D/gh-calls.log" | grep -c -- "$1"; }
@@ -190,6 +192,42 @@ test_sp_ac1_step_a_block_is_small_and_labelled() {
   assert_not_contains "$blk" "--add-label \"\$LABEL_GO\"" "AC1: step A never adds agent-go" || return 1
 }
 
+# ------------------------------------------------------------------------------------------------ AC1 (amended 2026-10-08): REJECTED needs-spec
+
+# A REJECTED marker is not a "PM marker already present" for step A; two needs-spec REJECTEDs stop the loop.
+test_sp_ac1_single_needs_spec_rejected_is_not_a_pm_marker_so_pm_runs_once() {
+  local who
+  for who in product-manager fullstack-developer; do
+    sp_env; touch "$SP_D/claude-mode-ready"; sp_issue 7 project-a/repo-a user-feedback user-feedback-needs-spec
+    sp_comment 7 "**[$who] REJECTED**"$'\nReason: needs-spec'
+    sp_tick; sp_tick; local n log labels; n=$(sp_pm_launches); log=$(cat "$SP_D/claude.log"); labels=$(sp_labels 7); sp_cleanup
+    assert_eq "$n" "1" "AC1: one needs-spec REJECTED [$who] only => step A launches the PM once" || return 1
+    assert_contains "$log" "ISSUE=7 AGENT=product-manager" "AC1: the PM is launched on #7 ([$who] REJECTED)" || return 1
+    assert_eq "$labels" "agent-proposed,user-feedback" "AC1: after the PM's READY, labels become agent-proposed only ([$who])" || return 1
+  done
+}
+
+test_sp_ac1_two_needs_spec_rejected_markers_skip_step_a() {
+  local pair a b
+  for pair in "product-manager fullstack-developer" "fullstack-developer fullstack-developer" "product-manager product-manager"; do
+    set -- $pair; a=$1; b=$2
+    sp_env; sp_issue 7 project-a/repo-a user-feedback user-feedback-needs-spec; sp_issue 8 project-a/repo-a user-feedback user-feedback-needs-spec
+    sp_comment 7 "**[$a] REJECTED**"$'\nReason: needs-spec'; sp_comment 7 "**[$b] REJECTED**"$'\nReason: needs-spec'
+    sp_tick; local n log l7; n=$(sp_pm_launches); log=$(cat "$SP_D/claude.log"); l7=$(sp_labels 7); sp_cleanup
+    assert_eq "$n" "1" "AC1: with two needs-spec REJECTEDs ($a, $b) on #7 only the control #8 launches" || return 1
+    assert_not_contains "$log" "ISSUE=7" "AC1: two REJECTED needs-spec => step A skips (no re-reject loop) ($a, $b)" || return 1
+    assert_eq "$l7" "user-feedback,user-feedback-needs-spec" "AC1: #7 labels untouched ($a, $b)" || return 1
+  done
+}
+
+test_sp_ac1_needs_spec_rejected_plus_other_pm_marker_still_blocks() {
+  sp_env; sp_issue 7 project-a/repo-a user-feedback user-feedback-needs-spec; sp_issue 8 project-a/repo-a user-feedback user-feedback-needs-spec
+  sp_comment 7 $'**[product-manager] REJECTED**\nReason: needs-spec'; sp_comment 7 $'**[product-manager] READY FOR ENGINEERING**\nUI change: no\nLane: full'
+  sp_tick; local n log; n=$(sp_pm_launches); log=$(cat "$SP_D/claude.log"); sp_cleanup
+  assert_eq "$n" "1" "AC1: REJECTED + a PM READY marker on #7 => only control #8 launches" || return 1
+  assert_not_contains "$log" "ISSUE=7" "AC1: any other PM routing marker still blocks step A" || return 1
+}
+
 # ------------------------------------------------------------------------------------------------ AC3 REJECTED done state
 
 # sp_rejected <repo-label-json> <comment body> — issue 42, exited orchestrator, .start 1300 s old (past the BLOCKED grace)
@@ -235,16 +273,18 @@ sp_pos_control() {
   sp_assert_done "positive control (user-feedback + product-manager + not-a-bug)" || return 1
 }
 
-test_sp_ac3_terminal_reasons_on_user_feedback_issue_are_done_without_alert() {
-  local who reason
-  for who in product-manager fullstack-developer; do
-    for reason in 'not-a-bug' 'cannot-reproduce' 'duplicate of #12' 'needs-spec'; do
-      sp_rejected "user-feedback bug fast-lane" "**[$who] REJECTED**"$'\n'"Reason: $reason"
-      sp_tick
-      sp_assert_done "AC3 [$who] Reason: $reason" || return 1
-    done
-  done
+# one test per author x reason (generated), so a failure names the case
+sp_terminal_case() {  # <who> <reason>
+  sp_rejected "user-feedback bug fast-lane" "**[$1] REJECTED**"$'\n'"Reason: $2"
+  sp_tick
+  sp_assert_done "AC3 [$1] Reason: $2" || return 1
 }
+for sp_who in product-manager fullstack-developer; do
+  for sp_reason in 'not-a-bug' 'cannot-reproduce' 'duplicate of #12' 'needs-spec'; do
+    sp_slug=$(printf '%s' "$sp_reason" | tr -c 'a-z0-9\n' '_')
+    eval "test_sp_ac3_terminal_${sp_who//-/_}_${sp_slug}_is_done_without_alert() { sp_terminal_case '$sp_who' '$sp_reason'; }"
+  done
+done
 
 test_sp_ac3_rejected_without_user_feedback_label_is_inert() {
   sp_pos_control || return 1
