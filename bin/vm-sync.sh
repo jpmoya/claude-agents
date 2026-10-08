@@ -30,7 +30,7 @@ FILES=(
   "dev/benjis-hub/gws/.env|benjis-hub/gws/.env"
   "dev/benjis-quoting-tool/app/.env.local|benjis-quoting-tool/app/.env.local"   # Copper
 )
-NPM_TOOLS=(supabase @sentry/cli wrangler vercel firebase-tools neonctl@2)
+NPM_TOOLS=(resend-cli supabase @sentry/cli wrangler vercel firebase-tools neonctl@2)
 
 do_tools() {
   echo "== tools"
@@ -48,11 +48,12 @@ do_creds() {
     rsync -a -e ssh "$HOME/$src" "$VM:~/$dst" && vm "chmod -R go-rwx ~/$dst" && echo "  ok: $dst"
   done
   echo "== derived tokens"
-  local sb se tmp; tmp=$(mktemp); chmod 600 "$tmp"
+  local sb se rs tmp; tmp=$(mktemp); chmod 600 "$tmp"
   sb=$(security find-generic-password -s "Supabase CLI" -w 2>/dev/null)
   case "$sb" in go-keyring-base64:*) sb=$(printf %s "${sb#go-keyring-base64:}" | base64 -d) ;; esac
   se=$(sed -n 's/^token *= *//p' "$HOME/.sentryclirc" 2>/dev/null | head -1)
-  printf 'SB=%s\nSE=%s\n' "$sb" "$se" > "$tmp"
+  rs=$(security find-generic-password -s resend-cli -w 2>/dev/null)   # Resend CLI keeps its key in the keychain
+  printf 'SB=%s\nSE=%s\nRS=%s\n' "$sb" "$se" "$rs" > "$tmp"
   scp -q "$tmp" "$VM:/tmp/.vm-sync-creds" && rm -f "$tmp"
   vm 'python3 - <<"P"
 import json,os,re
@@ -64,6 +65,7 @@ json.dump(d,open(p,"w"),indent=2)
 f=os.path.expanduser("~/.config/vm-sync.env"); o=""
 if c["SB"]: o+="export SUPABASE_ACCESS_TOKEN=%s\n"%c["SB"]
 if c["SE"]: o+="export SENTRY_AUTH_TOKEN=%s\n"%c["SE"]
+if c.get("RS"): o+="export RESEND_API_KEY=%s\n"%c["RS"]
 o+="export GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND=file\n"
 open(f,"w").write(o); os.chmod(f,0o600)
 b=os.path.expanduser("~/.bashrc"); s=re.sub(r"\n# vm-sync tokens.*?# end vm-sync tokens\n","",open(b).read(),flags=re.S)
@@ -89,6 +91,7 @@ do_status() {
       echo "gh:       $(gh auth status 2>&1 | grep -m1 "Logged in" | sed "s/^ *. //")"
       echo "gcloud:   $(gcloud auth list --format="value(account)" 2>&1 | head -1)"
       echo "neon:     $(neonctl me 2>&1 | head -2 | tail -1 | cut -c1-60)"
+      echo "resend:   HTTP $(curl -s -o /dev/null -w %{http_code} -H "Authorization: Bearer $RESEND_API_KEY" https://api.resend.com/domains)"
       echo "gws:      $(cd ~/benjis-hub/gws && ./node_modules/.bin/gws auth status 2>&1 | head -3 | tr "\n" " " | cut -c1-120)"'
 }
 
