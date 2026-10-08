@@ -8,13 +8,13 @@
 
 markers_for() {  # markers_for <agent> → that agent's routing markers, |-separated (empty = unknown agent)
   case "$1" in
-    product-manager)     echo 'READY FOR ARCHITECTURE|READY FOR ENGINEERING|EFFORT APPROVAL NEEDED|BLOCKED' ;;
+    product-manager)     echo 'READY FOR ARCHITECTURE|READY FOR ENGINEERING|EFFORT APPROVAL NEEDED|BLOCKED|REJECTED' ;;
     ux-flow-designer)    echo 'USER FLOW READY|NO UX NEEDED|NEEDS PM REVISION|BLOCKED' ;;
     ui-ux-designer)      echo 'MOCKUPS PENDING APPROVAL|BLOCKED' ;;
     solutions-architect) echo 'READY FOR ENGINEERING|NEEDS PM REVISION|SPEC RESOLVED|SPLIT|BLOCKED' ;;
     test-writer)         echo 'TESTS WRITTEN|TEST UPHELD|BLOCKED' ;;
     test-reviewer)       echo 'TESTS APPROVED|TESTS FAIL|PASS|FAIL|BLOCKED' ;;
-    fullstack-developer) echo 'IMPLEMENTED|TEST DEFECT|BLOCKED' ;;
+    fullstack-developer) echo 'IMPLEMENTED|TEST DEFECT|BLOCKED|REJECTED' ;;
     code-reviewer)       echo 'PASS|FAIL|BLOCKED' ;;
     deployer)            echo 'DEPLOYED TO STAGING|DEPLOYED|BLOCKED' ;;   # 'DEPLOYED TO STAGING' = the deployer's staging phrasing, same terminal state (2026-09-22)
     infra-planner)       echo 'PLAN READY|BLOCKED' ;;

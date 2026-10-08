@@ -5,6 +5,7 @@
 #   3. label lifecycle: drop agent-in-progress on issues this machine finished, parked, or abandoned
 #   4. label reconciliation: clear orphaned agent-in-progress labels (no local pid, no queue, stale marker)
 #   3b. intake: triage one user-feedback-intake issue from DISPATCH_REPOS (claim, swap label, launch `--agent intake`)
+#   3c. spec: PM-only spec run for one `user-feedback-needs-spec` idea from DISPATCH_REPOS (no agent-go, no orchestrator; ends in agent-proposed)
 #   5. shared dispatch: launch one agent-go issue from DISPATCH_REPOS after winning a claim
 #   7. status reconcile: refresh listed tickets from GitHub (backgrounded, throttled to once per 600 s; issue #51)
 # One launch per tick max. All state is local (/tmp/pipeline); the only shared state is the issue's markers and labels.
@@ -75,6 +76,20 @@ issue_is_closed() {
   [ "$state" = "CLOSED" ]
 }
 
+# #115 begin
+# rejected_ok <repo dir> <issue> → 0 when the newest REJECTED is a real terminal outcome; otherwise logs it as inert (routing unchanged).
+rejected_ok() {
+  local repo=$1 issue=$2 why
+  why=$(cd "$repo" 2>/dev/null && gh issue view "$issue" --json labels,comments 2>/dev/null | jq -r '
+    ([.comments[].body | split("\n")] | map(select(.[0] | test("^\\*\\*\\[(product-manager|fullstack-developer)\\] REJECTED(\\*\\*|:| |$)"))) | last) as $r
+    | if ([.labels[].name] | index("user-feedback") | not) then "no user-feedback label"
+      elif $r == null then "no REJECTED from an allowed agent"
+      elif ($r[1] // "" | rtrimstr("\r") | test("^Reason: (not-a-bug|cannot-reproduce|needs-spec|duplicate of #[0-9]+)$") | not) then "unknown or missing Reason"
+      else "ok" end') || why="?"
+  [ "$why" = ok ] && return 0
+  slog "[rejected] #$issue — REJECTED marker inert: $why"; return 1
+}
+# #115 end
 # "done" covers DEPLOYED / DEPLOYED TO STAGING / APPLIED and the architect's SPLIT (children run their own pipelines; #118).
 # terminal_kind <gate marker> <issue> [<project-manager marker posted after it>] [<repo dir>] → prints "done" / "gate" /
 # "grace" (BLOCKED inside the grace window: wait) / "" (not terminal). It judges the GATE marker. A later
@@ -86,6 +101,7 @@ terminal_kind() {
   local marker=$1 issue=${2:-} decision=${3:-} repo=${4:-.}
   marker=${marker%%\*\*}   # markers are bold ("**[deployer] DEPLOYED**"): strip the trailing bold so the $-anchors below match
   [[ "$marker" =~ \]\ (DEPLOYED|DEPLOYED\ TO\ STAGING|APPLIED|SPLIT)$ ]] && { echo done; return; }
+  [[ "$marker" =~ \]\ REJECTED ]] && { rejected_ok "$repo" "$issue" && echo done || echo ""; return; }   # #115: valid only on user-feedback, from PM/developer, with a known Reason
   [[ "$marker" =~ \]\ (MOCKUPS\ PENDING\ APPROVAL|AWAITING\ GO|EFFORT\ APPROVAL\ NEEDED)$ ]] && { echo gate; return; }
   if [[ "$marker" =~ \]\ BLOCKED ]]; then
     # delegated decision recorded after a code-track BLOCKED: not a gate. An infra planner/operator BLOCKED is lifted
@@ -340,6 +356,7 @@ for f in "$PIPE"/orch-*.pid; do
       touch "$PIPE/orch-$issue.done"
       slog "[done] #$issue — terminal marker: $marker"
       done_text="Deployed"; case "$marker" in *"] SPLIT"*) done_text="Split into sub-issues" ;; esac
+      case "$marker" in *"] REJECTED"*) done_text="Rejected" ;; esac
       notify_engineering "$issue" ":white_check_mark:" "$done_text" "$(cd "$repo" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo "unknown")"
       continue ;;
     gate)
@@ -676,6 +693,56 @@ if [ "$launched" -eq 0 ] && [ "$HAS_CAP" -eq 1 ] && [ "${#DISPATCH_REPOS[@]}" -g
   done
 fi
 
+# 3c. Spec — PM-only run (#115) for one `user-feedback-needs-spec` idea: claim, swap in agent-in-progress, launch `claude --agent product-manager -p`.
+#     Never adds agent-go and never starts an orchestrator. When the PM exits, drop agent-in-progress + needs-spec and add agent-proposed (JP's digest).
+#     Any PM routing marker except REJECTED blocks a launch, as do two REJECTED needs-spec (a PM REJECTED needs-spec is how a fix reaches here). State: PIPE/spec-<owner_repo>-<n>.*
+spec_key() { printf 'spec-%s-%s' "${1//\//_}" "$2"; }
+spec_pm_markers() {  # <owner/repo> <issue> → PM routing markers other than REJECTED, +1 once two REJECTED needs-spec are on the issue (re-reject loop stop)
+  gh issue view "$2" --repo "$1" --json comments 2>/dev/null | jq --arg re "$(marker_re product-manager)" '[.comments[].body | split("\n")] as $c
+    | ([$c[] | select(.[0] | test($re) and (test("\\] REJECTED") | not))] | length)
+    + (if ([$c[] | select((.[0] | test("^\\*\\*\\[(product-manager|fullstack-developer)\\] REJECTED")) and ((.[1] // "") | test("^Reason: needs-spec")))] | length) >= 2 then 1 else 0 end)' 2>/dev/null
+}
+for idf in "$PIPE"/spec-*.id; do   # exited PM runs: marker posted -> hand the spec to JP; none -> one retry, then park
+  [ -e "$idf" ] || break
+  k=$(basename "$idf" .id); read -r s_repo s_num < "$idf"
+  kill -0 "$(cat "$PIPE/$k.pid" 2>/dev/null)" 2>/dev/null && continue
+  m=$(spec_pm_markers "$s_repo" "$s_num"); case "$m" in ''|*[!0-9]*) continue ;; esac   # failed gh/jq lookup: act on nothing, retry next tick
+  if [ "$m" != 0 ]; then
+    gh issue edit "$s_num" --repo "$s_repo" --remove-label "$LABEL_IN_PROGRESS" --remove-label user-feedback-needs-spec --add-label "$LABEL_PROPOSED" >/dev/null 2>&1
+    rm -f "$PIPE/$k".{id,pid,path,attempts}; slog "[spec] $s_repo#$s_num spec written, moved to $LABEL_PROPOSED"
+  else
+    gh issue edit "$s_num" --repo "$s_repo" --remove-label "$LABEL_IN_PROGRESS" >/dev/null 2>&1; rm -f "$PIPE/$k".{id,pid,path}
+    [ "$(cat "$PIPE/$k.attempts" 2>/dev/null || echo 1)" -ge 2 ] && { touch "$PIPE/$k.gaveup"; slog "[spec] $s_repo#$s_num gave up: no PM marker after 2 runs"; }
+  fi
+done
+if [ "$launched" -eq 0 ] && [ "$HAS_CAP" -eq 1 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ] && power_ok; then
+  cutoff=$(python3 -c "import datetime; print((datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(seconds=$CLAIM_WINDOW_SECS)).strftime('%Y-%m-%dT%H:%M:%SZ'))")
+  for entry in "${DISPATCH_REPOS[@]}"; do
+    [ "$launched" -ge 1 ] && break
+    owner_repo="${entry%%:*}"; local_path="${entry#*:}"; local_path="${local_path/#\~/$HOME}"
+    case "$owner_repo" in */Business-Intelligence) continue ;; esac
+    [ -d "$local_path/.git" ] || continue
+    for num in $(gh issue list --repo "$owner_repo" --state open --label user-feedback-needs-spec --limit 50 --json number,labels \
+        --jq ".[] | select([.labels[].name] | (index(\"$LABEL_IN_PROGRESS\") or index(\"$LABEL_GO\")) | not) | .number" 2>/dev/null); do
+      case "$num" in ''|*[!0-9]*) continue ;; esac
+      k=$(spec_key "$owner_repo" "$num"); [ -e "$PIPE/$k.id" ] || [ -e "$PIPE/$k.gaveup" ] && continue
+      [ "$(spec_pm_markers "$owner_repo" "$num")" = 0 ] || continue
+      gh issue comment "$num" --repo "$owner_repo" --body "**[supervisor] NOTE** claim: $HOST $(date -u +%FT%TZ)" >/dev/null 2>&1 || continue
+      sleep "$CLAIM_SETTLE_SECS"
+      winner=$(gh issue view "$num" --repo "$owner_repo" --json comments \
+        --jq "[.comments[] | select(.body | startswith(\"**[supervisor] NOTE** claim: \")) | select(.createdAt > \"$cutoff\")] | sort_by(.createdAt) | first | .body" 2>/dev/null | awk '{print $4}')
+      [ "$winner" = "$HOST" ] || { slog "[spec] $owner_repo#$num — lost claim to ${winner:-?}"; continue; }
+      gh issue edit "$num" --repo "$owner_repo" --add-label "$LABEL_IN_PROGRESS" >/dev/null 2>&1
+      ( cd "$PIPE" && PIPELINE_ISSUE="$num" PIPELINE_AGENT=product-manager PIPELINE_REPO="$owner_repo" PIPE="$PIPE" CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 \
+        nohup $SETSID bash -c 'claude --dangerously-skip-permissions --agent product-manager -p "$1"; echo $? > "$2"' _ \
+        "Write the spec for $owner_repo#$num as the product-manager (spec-only run for a user-feedback idea): do not add agent-go; do not file dependency follow-ups on this issue; post your READY marker." "$PIPE/$k.exit" \
+        >> "$PIPE/$k.log" 2>&1 9>&- & echo $! > "$PIPE/$k.pid" )
+      echo "$owner_repo $num" > "$PIPE/$k.id"; echo $(( $(cat "$PIPE/$k.attempts" 2>/dev/null || echo 0) + 1 )) > "$PIPE/$k.attempts"
+      slog "[spec] $owner_repo#$num launched (attempt $(cat "$PIPE/$k.attempts"))"; launched=1; break
+    done
+  done
+fi
+
 # 4. Label reconciliation — catch orphaned agent-in-progress labels that have no local state at all
 #    (e.g. /tmp was cleared, or a run from another machine died). Only clear if no marker movement for 30+ min.
 STALE_LABEL_SECS=1800
@@ -689,6 +756,7 @@ if [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
       if [ -f "$PIPE/orch-$num.pid" ] && kill -0 "$(cat "$PIPE/orch-$num.pid" 2>/dev/null)" 2>/dev/null; then continue; fi
       [ -f "$QUEUE/orch-$num.json" ] && continue
       [ -e "$PIPE/$(intake_key "$owner_repo" "$num").id" ] && continue   # an intake run (3b) owns it
+      [ -e "$PIPE/spec-${owner_repo//\//_}-$num.id" ] && continue   # a spec run (3c) owns it
       # Check marker staleness — only clear if no movement for STALE_LABEL_SECS
       # Same call also yields the latest "claim: <host>" comment: a claim naming another machine means it owns the run.
       view=$(cd "$local_path" && gh issue view "$num" --json comments,updatedAt \

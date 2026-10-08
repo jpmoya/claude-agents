@@ -441,8 +441,9 @@ test_mg_ac7_pipeline_markers_byte_identical() {
   if [ -z "$base" ]; then printf '    (AC7 byte-identity skipped: no origin/main merge-base)\n' >&2; return 0; fi
   # whole-file check narrowed to markers_for/marker_re: #136 AC10 appends block_classes()
   local want got
-  want=$(cd "$ROOT_MG" && git show "$base:hooks/pipeline-markers.sh" | awk '/^(markers_for|marker_re)\(\)/ {p=1} p {print} p && /^}/ {p=0}' | sed -e '/^ *intake) /d' -e 's/ intake; do/; do/')   # #114: strip only intake)/token on both sides
-  got=$(cd "$ROOT_MG" && awk '/^(markers_for|marker_re)\(\)/ {p=1} p {print} p && /^}/ {p=0}' hooks/pipeline-markers.sh | sed -e '/^ *intake) /d' -e 's/ intake; do/; do/')   # #114
+  # #115: also strip only `|REJECTED` from the product-manager/fullstack-developer lines, on both sides (REJECTED is #115's marker)
+  want=$(cd "$ROOT_MG" && git show "$base:hooks/pipeline-markers.sh" | awk '/^(markers_for|marker_re)\(\)/ {p=1} p {print} p && /^}/ {p=0}' | sed -e '/^ *intake) /d' -e 's/ intake; do/; do/' -e 's/|REJECTED//' -e 's/REJECTED|//')   # #114: strip only intake)/token on both sides
+  got=$(cd "$ROOT_MG" && awk '/^(markers_for|marker_re)\(\)/ {p=1} p {print} p && /^}/ {p=0}' hooks/pipeline-markers.sh | sed -e '/^ *intake) /d' -e 's/ intake; do/; do/' -e 's/|REJECTED//' -e 's/REJECTED|//')   # #114
   [ -n "$want" ] || { fail "AC7: markers_for/marker_re not found at merge-base"; return 1; }
   assert_eq "$got" "$want" "AC7: markers_for/marker_re unchanged" || return 1
 }

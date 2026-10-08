@@ -16,10 +16,11 @@ il_ops() {
   IL_OUT=$(printf '%s\n' "$out" | sort | tr '\n' ',')
 }
 
-test_il_config_default_is_zero_and_documented() {
+test_il_config_default_is_one_and_documented() {
   local line
   line=$(grep -E '^INTAKE_AUTO_GO=' "$HERE_IL/../config.sh")
-  assert_eq "${line%%[[:space:]#]*}" "INTAKE_AUTO_GO=0" "AC9: config.sh sets INTAKE_AUTO_GO=0 by default" || return 1
+  # #115 AC6/D: default flipped from 0 to 1
+  assert_eq "${line%%[[:space:]#]*}" "INTAKE_AUTO_GO=1" "#115 AC6: config.sh sets INTAKE_AUTO_GO=1 by default" || return 1
 }
 
 test_il_bug_auto_go_off_adds_proposed_not_go() {
@@ -28,9 +29,10 @@ test_il_bug_auto_go_off_adds_proposed_not_go() {
   assert_eq "$got" "add agent-proposed,add bug,add fast-lane,add user-feedback,remove user-feedback-intake," "AC9: bug with INTAKE_AUTO_GO=0" || return 1
 }
 
-test_il_bug_default_config_behaves_as_auto_go_off() {
+test_il_bug_default_config_behaves_as_auto_go_on() {
   local got; il_ops bug none; got=$IL_OUT
-  assert_eq "$got" "add agent-proposed,add bug,add fast-lane,add user-feedback,remove user-feedback-intake," "AC9: bug with no override = default 0" || return 1
+  # #115 AC6/D: default is now 1 => bug goes straight to agent-go
+  assert_eq "$got" "add agent-go,add bug,add fast-lane,add user-feedback,remove user-feedback-intake," "#115 AC6: bug with no override = default 1" || return 1
 }
 
 test_il_bug_auto_go_on_adds_go_not_proposed() {
@@ -76,9 +78,9 @@ test_il_unknown_or_missing_type_is_rejected() {
   assert_eq "$got" "," "missing type: prints no operations" || return 1
 }
 
-run_test test_il_config_default_is_zero_and_documented
+run_test test_il_config_default_is_one_and_documented
 run_test test_il_bug_auto_go_off_adds_proposed_not_go
-run_test test_il_bug_default_config_behaves_as_auto_go_off
+run_test test_il_bug_default_config_behaves_as_auto_go_on
 run_test test_il_bug_auto_go_on_adds_go_not_proposed
 run_test test_il_idea_never_gets_agent_go
 run_test test_il_unclear_is_treated_as_idea
