@@ -52,8 +52,9 @@ test_bc_ac10_deployer_guide_maps_gate_to_class() {
 
 test_bc_ac18_markers_for_byte_identical_to_main() {
   local ext='/^markers_for\(\)/ {p=1} p {print} p && /^}/ {exit}' now base
-  now=$(awk "$ext" "$ROOT_BC/hooks/pipeline-markers.sh")
-  base=$(cd "$ROOT_BC" && git show origin/main:hooks/pipeline-markers.sh | awk "$ext")
+  # #114: strip only the `intake)` case line (and, in marker_re, the ` intake` token) from both sides
+  now=$(awk "$ext" "$ROOT_BC/hooks/pipeline-markers.sh" | sed -e '/^ *intake) /d' -e 's/ intake; do/; do/')
+  base=$(cd "$ROOT_BC" && git show origin/main:hooks/pipeline-markers.sh | awk "$ext" | sed -e '/^ *intake) /d' -e 's/ intake; do/; do/')
   assert_ne "$base" "" "AC18: markers_for found on origin/main" || return 1
   assert_eq "$now" "$base" "AC18: markers_for unchanged" || return 1
 }

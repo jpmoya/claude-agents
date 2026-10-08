@@ -21,6 +21,9 @@ TRANSIENT_BACKOFF=(300 600 1200 1800 3600)
 RATE_LIMIT_BACKOFF_SECS=3600                # weekly/unrecognised usage limit: wait this long before the restart, not counted toward stalled
 GRACE_PERIOD_SECS=1200                      # BLOCKED younger than this may be a subagent race — wait
 
+# Intake agent (#114): 1 = a triaged bug gets agent-go directly (needs #115's PM-only launch); 0 = bug gets agent-proposed instead
+INTAKE_AUTO_GO=0
+
 # Shared dispatch: "owner/repo:/local/checkout" entries. Empty = this machine never dispatches from labels.
 DISPATCH_REPOS=()
 # Scanned by scan-backlog.sh, never dispatched. "owner/repo" entries; a ":path" suffix is tolerated and ignored.

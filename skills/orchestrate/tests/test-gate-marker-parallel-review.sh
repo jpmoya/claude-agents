@@ -253,13 +253,17 @@ test_gm_ac8_no_new_mechanism() {
   local base now was extra
   base=$(gm_base); [ -n "$base" ] || { fail "AC8: no merge-base with origin/main"; return 1; }
   # vocabulary untouched
-  (cd "$ROOT_GM" && git diff --quiet "$base" -- hooks/pipeline-markers.sh) || { fail "AC8: hooks/pipeline-markers.sh changed"; return 1; }
+  # #114: the only allowed diff is the `intake)` case line and the ` intake` token in marker_re's agent list
+  extra=$(cd "$ROOT_GM" && git diff -U0 "$base" -- hooks/pipeline-markers.sh | grep -E '^[-+]' | grep -vE '^(\+\+\+|---) ' \
+    | grep -vE '^\+ *intake\) +echo ' | grep -vE '^[-+] +infra-planner infra-reviewer infra-operator jp project-manager( intake)?; do ' || true)
+  assert_eq "$extra" "" "AC8: hooks/pipeline-markers.sh changed beyond #114's intake line + token" || return 1
   # supervisor.sh: everything except latest_marker is byte-identical
-  now=$(awk '/^latest_marker\(\) \{/ {skip=1} !skip {print} skip && /^}/ {skip=0}' "$SUP_GM" | { shasum -a 256 2>/dev/null || sha256sum; } | cut -d' ' -f1)
-  was=$(cd "$ROOT_GM" && git show "$base:skills/orchestrate/supervisor.sh" | awk '/^latest_marker\(\) \{/ {skip=1} !skip {print} skip && /^}/ {skip=0}' | { shasum -a 256 2>/dev/null || sha256sum; } | cut -d' ' -f1)
+  # #114: also skip exactly the intake additions: the 3b step block (to its first blank line), its header-comment line, and step 5's one-line skip
+  now=$(awk '/^latest_marker\(\) \{/ {skip=1} !skip {print} skip && /^}/ {skip=0}' "$SUP_GM" | sed -e '/^# 3b\. Intake/,/^$/d' -e '/^#   3b\. intake: /d' -e '/an intake run (3b) owns it/d' | { shasum -a 256 2>/dev/null || sha256sum; } | cut -d' ' -f1)
+  was=$(cd "$ROOT_GM" && git show "$base:skills/orchestrate/supervisor.sh" | awk '/^latest_marker\(\) \{/ {skip=1} !skip {print} skip && /^}/ {skip=0}' | sed -e '/^# 3b\. Intake/,/^$/d' -e '/^#   3b\. intake: /d' -e '/an intake run (3b) owns it/d' | { shasum -a 256 2>/dev/null || sha256sum; } | cut -d' ' -f1)
   assert_eq "$now" "$was" "AC8: supervisor.sh outside latest_marker" || return 1
   # only the ticket's files (plus tests) changed
-  extra=$(cd "$ROOT_GM" && git diff --name-only "$base" | grep -vE '^(agents/orchestrator\.md|skills/orchestrate/supervisor\.sh|skills/orchestrate/pipeline-lib\.sh|hooks/sync-agents\.sh|hooks/no-duplicate-stage\.sh|skills/orchestrate/tests/)' || true)
+  extra=$(cd "$ROOT_GM" && git diff --name-only "$base" | grep -vE '^(agents/orchestrator\.md|skills/orchestrate/supervisor\.sh|skills/orchestrate/pipeline-lib\.sh|hooks/sync-agents\.sh|hooks/no-duplicate-stage\.sh|skills/orchestrate/tests/)' | grep -vxE 'agents/intake\.md|agents/README\.md|README\.md|hooks/pipeline-markers\.sh|hooks/require-handoff-marker\.sh|skills/orchestrate/(intake-labels|scan-backlog|config|pipeline-lib)\.sh' || true)   # #114: exactly its Files-table paths
   assert_eq "$extra" "" "AC8: files changed outside the ticket's list" || return 1
 }
 
