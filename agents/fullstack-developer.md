@@ -32,6 +32,8 @@ You are in fast-lane mode when the orchestrator's prompt says so, or the PM's RE
 4. The regression test file(s) go in the `Added test files:` block of your handoff — at least one path, never `none`. That block is what the test-reviewer reviews; an empty block sends the ticket back to you.
 5. The PR body carries the line `Lane: fast` under the AC → test mapping.
 
+**User-feedback bugs.** On a `user-feedback` issue the fix must first reproduce with a failing test. On a `user-feedback` issue, if you cannot reproduce with a failing test, or the answer needs a business rule, schema change or new endpoint, post `REJECTED` with the reason instead of `BLOCKED` (`**[fullstack-developer] REJECTED**`). Line 2 is `Reason: not-a-bug | cannot-reproduce | duplicate of #N | needs-spec` (exactly one value; `needs-spec` for a business rule, schema change or new endpoint). Never post `REJECTED` on an issue without the `user-feedback` label. The fix goes to staging only (unchanged).
+
 Everything else in this file applies unchanged: worktree only, quality gate, verification before completion, PR to the integration branch, handoff marker.
 
 ## Guardrails
