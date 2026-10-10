@@ -652,7 +652,7 @@ for idf in "$PIPE"/intake-*.id; do   # runs that have exited: healthy -> clear s
   kill -0 "$(cat "$PIPE/$k.pid" 2>/dev/null)" 2>/dev/null && continue
   # done = a terminal marker (a NEEDS INFO-only run that died before labelling is not done) or the issue already carries user-feedback
   have=$(gh issue view "$i_num" --repo "$i_repo" --json comments,labels \
-    --jq "([.comments[].body | split(\"\\n\")[0] | select(test(\"^\\\\*\\\\*\\\\[intake\\\\] (TRIAGED BUG|TRIAGED IDEA|DUPLICATE|BLOCKED)\"))] | length) + ([(.labels // [])[].name | select(. == \"user-feedback\")] | length)" 2>/dev/null) || continue
+    --jq "([.comments[].body | split(\"\\n\")[0] | select(test(\"^\\\\*\\\\*\\\\[intake\\\\] (TRIAGED BUG|TRIAGED IDEA|DUPLICATE|NOISE|BLOCKED)\"))] | length) + ([(.labels // [])[].name | select(. == \"user-feedback\")] | length)" 2>/dev/null) || continue
   if [ "${have:-0}" -gt 0 ]; then
     gh issue edit "$i_num" --repo "$i_repo" --remove-label "$LABEL_IN_PROGRESS" >/dev/null 2>&1
     rm -f "$PIPE/$k".{id,pid,path,exit,exit-seen,attempts}; slog "[intake] $i_repo#$i_num done"
@@ -723,7 +723,7 @@ if [ "$launched" -eq 0 ] && [ "$HAS_CAP" -eq 1 ] && [ "${#DISPATCH_REPOS[@]}" -g
     case "$owner_repo" in */Business-Intelligence) continue ;; esac
     [ -d "$local_path/.git" ] || continue
     for num in $(gh issue list --repo "$owner_repo" --state open --label user-feedback-needs-spec --limit 50 --json number,labels \
-        --jq ".[] | select([.labels[].name] | (index(\"$LABEL_IN_PROGRESS\") or index(\"$LABEL_GO\")) | not) | .number" 2>/dev/null); do
+        --jq ".[] | select([.labels[].name] | (index(\"$LABEL_IN_PROGRESS\") or index(\"$LABEL_GO\") or index(\"source:sentry\")) | not) | .number" 2>/dev/null); do
       case "$num" in ''|*[!0-9]*) continue ;; esac
       k=$(spec_key "$owner_repo" "$num"); [ -e "$PIPE/$k.id" ] || [ -e "$PIPE/$k.gaveup" ] && continue
       [ "$(spec_pm_markers "$owner_repo" "$num")" = 0 ] || continue
