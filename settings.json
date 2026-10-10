@@ -125,7 +125,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "INPUT=$(cat); FILE=$(echo \"$INPUT\" | python3 -c \"import sys, json; data = json.load(sys.stdin); ti = data.get('tool_input', {}); print(ti.get('file_path', ''))\"); if [[ \"$FILE\" =~ \\.(js|jsx|ts|tsx|css|json)$ ]]; then DIR=$(dirname \"$FILE\"); while [ \"$DIR\" != \"/\" ]; do if [ -f \"$DIR/node_modules/.bin/prettier\" ]; then \"$DIR/node_modules/.bin/prettier\" --write \"$FILE\" 2>/dev/null || true; break; fi; DIR=$(dirname \"$DIR\"); done; fi; exit 0"
+            "command": "INPUT=$(cat); FILE=$(echo \"$INPUT\" | python3 -c \"import sys, json; data = json.load(sys.stdin); ti = data.get('tool_input', {}); print(ti.get('file_path', ''))\"); case \"$FILE\" in *.js|*.jsx|*.ts|*.tsx|*.css|*.json) DIR=$(dirname \"$FILE\"); while [ \"$DIR\" != \"/\" ]; do if [ -f \"$DIR/node_modules/.bin/prettier\" ]; then \"$DIR/node_modules/.bin/prettier\" --write \"$FILE\" 2>/dev/null || true; break; fi; DIR=$(dirname \"$DIR\"); done ;; esac; exit 0"
           }
         ]
       }
