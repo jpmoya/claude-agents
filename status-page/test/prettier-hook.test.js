@@ -15,6 +15,7 @@ const run = (shell, file) =>
   spawnSync(shell, ['-c', command], {
     input: JSON.stringify({ tool_input: { file_path: file } }),
     encoding: 'utf8',
+    env: { ...process.env, PH_SHELL: shell },
   });
 
 let root;
@@ -25,7 +26,7 @@ beforeAll(() => {
   // stub prettier: records the file it was asked to write
   writeFileSync(
     join(root, 'node_modules/.bin/prettier'),
-    `#!/bin/sh\necho "$2" > "${root}/ran-$(basename "$2")"\n`,
+    `#!/bin/sh\necho "$2" > "${root}/ran-$PH_SHELL-$(basename "$2")"\n`,
     { mode: 0o755 },
   );
 });
@@ -43,15 +44,16 @@ describe('prettier PostToolUse hook', () => {
     for (const ext of ['js', 'jsx', 'ts', 'tsx', 'css', 'json']) {
       it(`${sh}: runs prettier on .${ext}`, () => {
         const f = join(root, 'src', `a.${ext}`);
+        rmSync(join(root, `ran-${sh}-a.${ext}`), { force: true });
         const r = run(sh, f);
         expect(r.status).toBe(0);
-        expect(existsSync(join(root, `ran-a.${ext}`))).toBe(true);
+        expect(existsSync(join(root, `ran-${sh}-a.${ext}`))).toBe(true);
       });
     }
     it(`${sh}: ignores other extensions and exits 0`, () => {
       const r = run(sh, join(root, 'src', 'notes.md'));
       expect(r.status).toBe(0);
-      expect(existsSync(join(root, 'ran-notes.md'))).toBe(false);
+      expect(existsSync(join(root, `ran-${sh}-notes.md`))).toBe(false);
     });
   }
 });
