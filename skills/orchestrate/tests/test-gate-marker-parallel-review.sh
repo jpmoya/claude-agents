@@ -255,7 +255,8 @@ test_gm_ac8_no_new_mechanism() {
   # vocabulary untouched
   # #114: the only allowed diff is the `intake)` case line and the ` intake` token in marker_re's agent list
   # #115: both sides are normalised by stripping only `|REJECTED` / `REJECTED|` (the marker #115 registers) before diffing
-  extra=$(cd "$ROOT_GM" && diff -U0 <(git show "$base:hooks/pipeline-markers.sh" | sed -e 's/|REJECTED//' -e 's/REJECTED|//') <(sed -e 's/|REJECTED//' -e 's/REJECTED|//' hooks/pipeline-markers.sh) | grep -E '^[-+]' | grep -vE '^(\+\+\+|---) ' \
+  # #176: also strip `|NOISE` (the marker #176 registers in the intake vocabulary) from both sides, same technique as #115
+  extra=$(cd "$ROOT_GM" && diff -U0 <(git show "$base:hooks/pipeline-markers.sh" | sed -e 's/|REJECTED//' -e 's/REJECTED|//' -e 's/|NOISE//') <(sed -e 's/|REJECTED//' -e 's/REJECTED|//' -e 's/|NOISE//' hooks/pipeline-markers.sh) | grep -E '^[-+]' | grep -vE '^(\+\+\+|---) ' \
     | grep -vE '^\+ *intake\) +echo ' | grep -vE '^[-+] +infra-planner infra-reviewer infra-operator jp project-manager( intake)?; do ' || true)
   assert_eq "$extra" "" "AC8: hooks/pipeline-markers.sh changed beyond #114's intake line + token" || return 1
   # supervisor.sh: everything except latest_marker is byte-identical
