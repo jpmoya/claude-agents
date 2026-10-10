@@ -59,7 +59,7 @@ test_in_ac5_duplicate_handling_is_specified() {
 
 test_in_ac4_markers_registered() {
   . "$ROOT_IN/hooks/pipeline-markers.sh"
-  assert_eq "$(markers_for intake)" "TRIAGED BUG|TRIAGED IDEA|DUPLICATE|NEEDS INFO|BLOCKED" "AC4: markers_for intake" || return 1
+  assert_eq "$(markers_for intake)" "TRIAGED BUG|TRIAGED IDEA|DUPLICATE|NEEDS INFO|NOISE|BLOCKED" "AC4: markers_for intake" || return 1
 }
 
 # in_match <first line> → 0 if marker_re (any agent) accepts it as a first line
