@@ -207,6 +207,8 @@ If the design exceeds **3 workstreams** or **~400 lines non-test code**, split. 
 ### How to split
 
 ```bash
+# Milestone: inherit the parent's (omit --milestone if the parent has none)
+MS=$(gh issue view <parent> --json milestone --jq '.milestone.title // empty')
 # Create each child issue with its own ACs and design section
 gh issue create --title "<parent-title>: <slice-name>" \
   --body "$(cat <<'EOF'
@@ -218,7 +220,7 @@ Parent: #<N>
 ## Design
 (relevant subset of the parent's architecture)
 EOF
-)" --label "sub-issue"
+)" --label "sub-issue" ${MS:+--milestone "$MS"}
 
 # Post READY FOR ENGINEERING on each child
 gh issue comment <child-N> --body "**[solutions-architect] READY FOR ENGINEERING**

@@ -111,6 +111,8 @@ test_i106_no_new_mechanism_only_doc_files_and_tests_touched() {
       skills/orchestrate/intake-labels.sh|skills/orchestrate/scan-backlog.sh|skills/orchestrate/config.sh|skills/orchestrate/pipeline-lib.sh|skills/orchestrate/supervisor.sh) ;;
       # #115: exactly its Files-table paths not already listed (agents/fullstack-developer.md, agents/product-manager.md, skills/orchestrate/test/*)
       agents/fullstack-developer.md|agents/product-manager.md|skills/orchestrate/test/*) ;;
+      # #188: exactly its Files-table paths not already listed
+      agents/solutions-architect.md|agents/pipeline-adjudicator.md) ;;
       *) bad="$bad $f" ;;
     esac
   done <<< "$changed"
