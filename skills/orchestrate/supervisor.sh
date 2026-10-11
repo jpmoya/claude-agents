@@ -53,19 +53,19 @@ power_ok() {  # Mac: dispatch new work only on AC power (a sleeping laptop stran
   pmset -g batt 2>/dev/null | grep -q "AC Power"
 }
 
-latest_marker() {  # the GATE marker: newest real routing marker whose agent is not project-manager (NOTEs and off-vocabulary lines are inert).
+latest_marker() {  # the GATE marker: newest real routing marker whose agent is not delivery-lead (or its legacy alias project-manager) (NOTEs and off-vocabulary lines are inert).
   # Exception (claude-agents#133): a pre-implementation `[test-reviewer] TESTS APPROVED` that is the newest one does not hide a
   # `[fullstack-developer]` BLOCKED / TEST DEFECT / IMPLEMENTED posted after the latest TESTS WRITTEN: that developer marker (the latest) is the gate marker.
-  # When the newest routing marker overall is a `[project-manager]` one (it follows the gate marker), it is printed on a 2nd line.
+  # When the newest routing marker overall is a `[delivery-lead]` (or legacy `[project-manager]`) one (it follows the gate marker), it is printed on a 2nd line.
   # Both come out of the same single `gh issue view` call (claude-agents#59).
   local repo=$1 issue=$2 last list prog
   last=$(marker_last_jq); list=${last% | last // \"none\"}   # list = the same expression minus its final `last`
-  prog="($last) as \$last | {comments: [.comments[] | select(.body | startswith(\"**[project-manager] \") | not)]} as \$np
+  prog="($last) as \$last | {comments: [.comments[] | select(.body | test(\"^\\\\*\\\\*\\\\[(delivery-lead|project-manager)\\\\] \") | not)]} as \$np  # legacy alias
     | (\$np | $last) as \$g0 | (\$np | $list) as \$m | (\$m | length) as \$n | (\$m | to_entries) as \$e
     | ([\$e[] | select(.value | test(\"^\\\\*\\\\*\\\\[test-writer\\\\] TESTS WRITTEN\")) | .key] | last // -1) as \$w
     | ([\$e[] | select(.key > \$w and .key < \$n - 1 and (.value | test(\"^\\\\*\\\\*\\\\[fullstack-developer\\\\] (BLOCKED|TEST DEFECT|IMPLEMENTED)\"))) | .value] | last // null) as \$dev
     | (if (\$g0 | test(\"^\\\\*\\\\*\\\\[test-reviewer\\\\] TESTS APPROVED\")) and \$dev != null then \$dev else \$g0 end) as \$gate
-    | if (\$last | startswith(\"**[project-manager] \") | not) then \$gate else \$gate + \"\\n\" + \$last end"
+    | if (\$last | test(\"^\\\\*\\\\*\\\\[(delivery-lead|project-manager)\\\\] \") | not) then \$gate else \$gate + \"\\n\" + \$last end  # legacy alias"
   (cd "$repo" 2>/dev/null && gh issue view "$issue" --json comments --jq "$prog") 2>/dev/null || echo "?"
 }
 
@@ -91,9 +91,9 @@ rejected_ok() {
 }
 # #115 end
 # "done" covers DEPLOYED / DEPLOYED TO STAGING / APPLIED and the architect's SPLIT (children run their own pipelines; #118).
-# terminal_kind <gate marker> <issue> [<project-manager marker posted after it>] [<repo dir>] → prints "done" / "gate" /
+# terminal_kind <gate marker> <issue> [<delivery-lead marker posted after it>] [<repo dir>] → prints "done" / "gate" /
 # "grace" (BLOCKED inside the grace window: wait) / "" (not terminal). It judges the GATE marker. A later
-# `[project-manager] DECISION` / `JP CONFIRMED` lifts exactly one gate — a code-track BLOCKED — so the run takes the
+# `[delivery-lead] DECISION` / `JP CONFIRMED` (legacy spelling `[project-manager]` accepted) lifts exactly one gate — a code-track BLOCKED — so the run takes the
 # normal restart path and the orchestrator validates and relays the decision. It never lifts MOCKUPS PENDING APPROVAL,
 # AWAITING GO, EFFORT APPROVAL NEEDED or an infra-reviewer BLOCKED. An infra planner/operator BLOCKED is lifted only when
 # infra_staging_only holds (staging-only ticket, no JP-only item; claude-agents#89); otherwise it stays with JP.
@@ -132,7 +132,7 @@ terminal_kind() {
 # infra_staging_only <owner/repo> <issue> <blocked-comment-url> → 0 when a staging-only infra BLOCKED may be resumed by a
 # delegated decision, 1 otherwise (claude-agents#89). All must hold: the BLOCKED is an infra-planner/operator one (not
 # "Held: blocked by", not JP-only: prod/spend/secret/external comms); the issue body has a line exactly
-# `Scope: staging-only`; the latest PLAN READY has no prod target step; a later `[project-manager] DECISION`/`JP CONFIRMED`
+# `Scope: staging-only`; the latest PLAN READY has no prod target step; a later `[delivery-lead]` (or legacy `[project-manager]`) `DECISION`/`JP CONFIRMED`
 # has line 2 `Resolves: <that url>`.
 infra_staging_only() {
   local owner_repo=$1 issue=$2 url=$3 json
@@ -147,7 +147,8 @@ infra_staging_only() {
       | ($b.body | test("held: blocked by|\\bprod(uction)?\\b|\\bspend|\\bsecret|who gets access|external communication"; "i") | not) as $safe
       | ([.comments[] | select(l1 | test("\\[infra-planner\\] PLAN READY"))] | last) as $plan
       | (($plan == null) or ($plan.body | test("(target|environment|env)\\s*:\\s*prod|prod step"; "i") | not)) as $planok
-      | ([.comments[] | select((l1 == "**[project-manager] DECISION**" or l1 == "**[project-manager] JP CONFIRMED**")
+      | ([.comments[] | select((l1 == "**[delivery-lead] DECISION**" or l1 == "**[delivery-lead] JP CONFIRMED**"
+               or l1 == "**[project-manager] DECISION**" or l1 == "**[project-manager] JP CONFIRMED**")   # legacy spelling
             and l2 == ("Resolves: " + $url) and .createdAt > $b.createdAt)] | length > 0) as $dec
       | $kind and $safe and $planok and $dec end' >/dev/null 2>&1
 }
@@ -350,7 +351,7 @@ for f in "$PIPE"/orch-*.pid; do
 
   marker=$(latest_marker "$repo" "$issue")
   decision=""
-  case "$marker" in *$'\n'*) decision=${marker#*$'\n'}; marker=${marker%%$'\n'*} ;; esac   # line 2 = [project-manager] marker after the gate marker
+  case "$marker" in *$'\n'*) decision=${marker#*$'\n'}; marker=${marker%%$'\n'*} ;; esac   # line 2 = [delivery-lead] (or legacy [project-manager]) marker after the gate marker
   case "$(terminal_kind "$marker" "$issue" "$decision" "$repo")" in
     done)
       touch "$PIPE/orch-$issue.done"
@@ -361,8 +362,8 @@ for f in "$PIPE"/orch-*.pid; do
       continue ;;
     gate)
       # Human gate (mockups, infra go, BLOCKED with no delegated decision after it): park it; JP relaunches (or re-adds
-      # agent-go) after acting. $marker is the gate marker, never a [project-manager] one. A run that is already .held is
-      # skipped above and stays held — held runs are not polled; the project-manager relaunches with orchestrate.sh,
+      # agent-go) after acting. $marker is the gate marker, never a [delivery-lead] (or legacy [project-manager]) one. A run that is already .held is
+      # skipped above and stays held — held runs are not polled; the delivery lead relaunches with orchestrate.sh,
       # which clears .held (claude-agents#59).
       touch "$PIPE/orch-$issue.held"
       rm -f "$QUEUE/orch-$issue.json"
