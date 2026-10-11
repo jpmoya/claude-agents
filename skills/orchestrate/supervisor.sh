@@ -658,9 +658,11 @@ for idf in "$PIPE"/intake-*.id; do   # runs that have exited: healthy -> clear s
     # unless SENTRY_AUTO_GO=1, whatever the agent did
     if [ "${SENTRY_AUTO_GO:-0}" != 1 ]; then
       i_lbls=$(gh issue view "$i_num" --repo "$i_repo" --json labels --jq '[.labels[].name] | join(" ")' 2>/dev/null) || i_lbls=""
-      case " $i_lbls " in *" source:sentry "*" $LABEL_GO "*|*" $LABEL_GO "*" source:sentry "*)
-        gh issue edit "$i_num" --repo "$i_repo" --remove-label "$LABEL_GO" >/dev/null 2>&1
-        slog "[intake] $i_repo#$i_num source:sentry carried $LABEL_GO with SENTRY_AUTO_GO=0 — removed" ;;
+      case " $i_lbls " in *" source:sentry "*)
+        case " $i_lbls " in *" $LABEL_GO "*)
+          gh issue edit "$i_num" --repo "$i_repo" --remove-label "$LABEL_GO" >/dev/null 2>&1
+          slog "[intake] $i_repo#$i_num source:sentry carried $LABEL_GO with SENTRY_AUTO_GO=0 — removed" ;;
+        esac ;;
       esac
     fi
     gh issue edit "$i_num" --repo "$i_repo" --remove-label "$LABEL_IN_PROGRESS" >/dev/null 2>&1
@@ -797,8 +799,10 @@ if [ "$launched" -eq 0 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
       [ "$launched" -ge 1 ] && break
       owner_repo="${entry%%:*}"; local_path="${entry#*:}"; local_path="${local_path/#\~/$HOME}"
       if [ ! -d "$local_path/.git" ]; then slog "[dispatch] $owner_repo — no local checkout at $local_path, skipping"; continue; fi
+      # code-enforced gate (#176): a source:sentry issue is never dispatched unless SENTRY_AUTO_GO=1
+      sentry_excl=true; [ "${SENTRY_AUTO_GO:-0}" = 1 ] && sentry_excl=false
       candidates=$(gh issue list --repo "$owner_repo" --state open --label "$LABEL_GO" --limit 50 --json number,labels \
-        --jq ".[] | select([.labels[].name] | index(\"$LABEL_IN_PROGRESS\") | not) | .number" 2>/dev/null) || continue
+        --jq ".[] | select([.labels[].name] | ((index(\"$LABEL_IN_PROGRESS\") != null) or ($sentry_excl and (index(\"source:sentry\") != null))) | not) | .number" 2>/dev/null) || continue
       for num in $candidates; do
         # local state: alive or queued here → not a candidate
         if [ -f "$PIPE/orch-$num.pid" ] && kill -0 "$(cat "$PIPE/orch-$num.pid")" 2>/dev/null; then continue; fi
