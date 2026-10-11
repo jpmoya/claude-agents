@@ -405,8 +405,8 @@ test_dd_ac18_project_manager_sections_and_untouched_parts_byte_identical() {
 
 test_dd_ac19_readme_paragraph() {
   local p s
-  p=$(grep -F '**Project manager (delivery lead).**' "$README_DD" | grep '^\*\*Project manager (delivery lead)\.\*\*' | head -1)
-  assert_ne "$p" "" "AC19: README has a paragraph starting **Project manager (delivery lead).**" || return 1
+  p=$(grep -F '**Delivery lead.**' "$README_DD" | grep '^\*\*Delivery lead\.\*\*' | head -1)
+  assert_ne "$p" "" "AC19: README has a paragraph starting **Delivery lead.**" || return 1
   for s in 'main agent of its own session' '[project-manager] DECISION' 'JP CONFIRMED' 'Resolves:' 'AWAITING GO'; do
     dd_text_has "AC19: README paragraph" "$p" "$s" || return 1
   done
@@ -414,8 +414,8 @@ test_dd_ac19_readme_paragraph() {
 
 test_dd_ac19_claude_md_paragraph() {
   local p s
-  p=$(grep '^\*\*Project manager (delivery lead)\.\*\*' "$CLAUDE_DD" | head -1)
-  assert_ne "$p" "" "AC19: CLAUDE.md has a paragraph starting **Project manager (delivery lead).**" || return 1
+  p=$(grep '^\*\*Delivery lead\.\*\*' "$CLAUDE_DD" | head -1)
+  assert_ne "$p" "" "AC19: CLAUDE.md has a paragraph starting **Delivery lead.**" || return 1
   for s in 'main agent of its own session' '[project-manager] DECISION'; do
     dd_text_has "AC19: CLAUDE.md paragraph" "$p" "$s" || return 1
   done
@@ -648,3 +648,82 @@ run_test test_dd_i76_ac5_staleness_wording_present
 run_test test_dd_i76_ac6_go_clause_covers_the_773_shape
 run_test test_dd_i76_ac7_run_log_names_fail_before_terminal_and_reason
 run_test test_dd_i76_ac8_no_new_mechanisms
+
+# ---------------------------------------------------------------------------------------- #192 delivery-lead spelling
+# Parallel to AC3-AC7 with the marker spelling swapped to `[delivery-lead]`; the `[project-manager]` cases above stay unchanged.
+# Expected: the supervisor treats both spellings identically; NOTE / BLOCKED / misspellings are inert.
+
+test_dd_i192_blocked_then_delivery_lead_decision_is_not_a_gate() {
+  dd_thread '**[deployer] BLOCKED**' $'**[delivery-lead] DECISION**\nResolves: https://example.test/c/1\nDo X.'
+  dd_tick
+  dd_assert_not_gate "i192 DECISION" || return 1
+}
+
+test_dd_i192_blocked_then_delivery_lead_jp_confirmed_is_not_a_gate() {
+  dd_thread '**[deployer] BLOCKED**' $'**[delivery-lead] JP CONFIRMED**\nResolves: https://example.test/c/1\nDo X.'
+  dd_tick
+  dd_assert_not_gate "i192 JP CONFIRMED" || return 1
+}
+
+test_dd_i192_awaiting_go_then_delivery_lead_decision_stays_a_gate() {
+  dd_thread '**[infra-operator] AWAITING GO**' $'**[delivery-lead] DECISION**\nResolves: https://example.test/c/1'
+  dd_tick
+  dd_assert_gate "i192 AWAITING GO" "AWAITING GO" "DECISION" || return 1
+}
+
+test_dd_i192_mockups_pending_then_delivery_lead_jp_confirmed_stays_a_gate() {
+  dd_thread '**[ui-ux-designer] MOCKUPS PENDING APPROVAL**' $'**[delivery-lead] JP CONFIRMED**\nResolves: https://example.test/c/1'
+  dd_tick
+  dd_assert_gate "i192 MOCKUPS" "MOCKUPS PENDING APPROVAL" "JP CONFIRMED" || return 1
+}
+
+test_dd_i192_infra_operator_blocked_then_delivery_lead_decision_stays_a_gate() {
+  dd_thread '**[infra-operator] BLOCKED**' $'**[delivery-lead] DECISION**\nResolves: https://example.test/c/1'
+  dd_tick
+  dd_assert_gate "i192 infra-operator" "BLOCKED" "DECISION" || return 1
+}
+
+test_dd_i192_delivery_lead_decision_older_than_the_block_stays_a_gate() {
+  dd_thread $'**[delivery-lead] DECISION**\nResolves: https://example.test/c/1' '**[deployer] BLOCKED**'
+  dd_tick
+  dd_assert_gate "i192 older decision" "BLOCKED" || return 1
+}
+
+test_dd_i192_delivery_lead_note_after_blocked_is_inert() {
+  dd_thread '**[deployer] BLOCKED**' $'**[delivery-lead] NOTE**\nstatus: still looking'
+  dd_tick
+  dd_assert_gate "i192 NOTE" "BLOCKED" || return 1
+}
+
+test_dd_i192_delivery_lead_blocked_is_not_a_valid_marker() {
+  dd_thread '**[deployer] BLOCKED**' $'**[delivery-lead] BLOCKED**\nResolves: https://example.test/c/1'
+  dd_tick
+  dd_assert_gate "i192 [delivery-lead] BLOCKED" "BLOCKED" || return 1
+}
+
+test_dd_i192_delivery_leader_misspelling_is_inert() {
+  dd_thread '**[deployer] BLOCKED**' $'**[delivery-leader] DECISION**\nResolves: https://example.test/c/1'
+  dd_tick
+  dd_assert_gate "i192 [delivery-leader]" "BLOCKED" || return 1
+}
+
+test_dd_i192_deployed_then_delivery_lead_decision_is_done() {
+  dd_thread '**[deployer] DEPLOYED**' $'**[delivery-lead] DECISION**\nResolves: https://example.test/c/1'
+  dd_tick
+  local done_f held
+  done_f=$(dd_present "$DD_PIPE/orch-42.done"); held=$(dd_present "$DD_PIPE/orch-42.held")
+  dd_cleanup
+  assert_eq "$done_f" "present" "i192: DEPLOYED then delivery-lead DECISION -> .done" || return 1
+  assert_eq "$held" "absent" "i192: not held" || return 1
+}
+
+run_test test_dd_i192_blocked_then_delivery_lead_decision_is_not_a_gate
+run_test test_dd_i192_blocked_then_delivery_lead_jp_confirmed_is_not_a_gate
+run_test test_dd_i192_awaiting_go_then_delivery_lead_decision_stays_a_gate
+run_test test_dd_i192_mockups_pending_then_delivery_lead_jp_confirmed_stays_a_gate
+run_test test_dd_i192_infra_operator_blocked_then_delivery_lead_decision_stays_a_gate
+run_test test_dd_i192_delivery_lead_decision_older_than_the_block_stays_a_gate
+run_test test_dd_i192_delivery_lead_note_after_blocked_is_inert
+run_test test_dd_i192_delivery_lead_blocked_is_not_a_valid_marker
+run_test test_dd_i192_delivery_leader_misspelling_is_inert
+run_test test_dd_i192_deployed_then_delivery_lead_decision_is_done
