@@ -654,6 +654,15 @@ for idf in "$PIPE"/intake-*.id; do   # runs that have exited: healthy -> clear s
   have=$(gh issue view "$i_num" --repo "$i_repo" --json comments,labels \
     --jq "([.comments[].body | split(\"\\n\")[0] | select(test(\"^\\\\*\\\\*\\\\[intake\\\\] (TRIAGED BUG|TRIAGED IDEA|DUPLICATE|NOISE|BLOCKED)\"))] | length) + ([(.labels // [])[].name | select(. == \"user-feedback\")] | length)" 2>/dev/null) || continue
   if [ "${have:-0}" -gt 0 ]; then
+    # code-enforced gate (#176): the intake agent reads attacker-influenced text, so a source:sentry issue never keeps agent-go
+    # unless SENTRY_AUTO_GO=1, whatever the agent did
+    if [ "${SENTRY_AUTO_GO:-0}" != 1 ]; then
+      i_lbls=$(gh issue view "$i_num" --repo "$i_repo" --json labels --jq '[.labels[].name] | join(" ")' 2>/dev/null) || i_lbls=""
+      case " $i_lbls " in *" source:sentry "*" $LABEL_GO "*|*" $LABEL_GO "*" source:sentry "*)
+        gh issue edit "$i_num" --repo "$i_repo" --remove-label "$LABEL_GO" >/dev/null 2>&1
+        slog "[intake] $i_repo#$i_num source:sentry carried $LABEL_GO with SENTRY_AUTO_GO=0 — removed" ;;
+      esac
+    fi
     gh issue edit "$i_num" --repo "$i_repo" --remove-label "$LABEL_IN_PROGRESS" >/dev/null 2>&1
     rm -f "$PIPE/$k".{id,pid,path,exit,exit-seen,attempts}; slog "[intake] $i_repo#$i_num done"
   elif [ ! -e "$PIPE/$k.exit-seen" ]; then
