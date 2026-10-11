@@ -15,6 +15,9 @@ if [ "${PIPELINE_AGENT:-}" = intake ]; then
     jq --arg b $'**[intake] TRIAGED BUG**\nok' '. + [{body:$b,createdAt:"2099-01-01T00:00:00Z"}]' "$D/comments.json" > "$D/c.tmp" && mv "$D/c.tmp" "$D/comments.json"
   fi
   jq --argjson n "$PIPELINE_ISSUE" 'map(if .number==$n then .labels += [{name:"agent-go"}] else . end)' "$D/issues.json" > "$D/i.tmp" && mv "$D/i.tmp" "$D/issues.json"
+  if [ -f "$D/drop-ip" ]; then   # the agent also drops agent-in-progress, so only the strip stands between agent-go and dispatch
+    jq --argjson n "$PIPELINE_ISSUE" 'map(if .number==$n then .labels |= map(select(.name != "agent-in-progress")) else . end)' "$D/issues.json" > "$D/i.tmp" && mv "$D/i.tmp" "$D/issues.json"
+  fi
   [ -f "$D/hang" ] && sleep 20   # keeps the intake run alive across ticks
 fi
 exit 0
@@ -117,6 +120,18 @@ test_s176g_giveup_strip_failure_keeps_state_and_retries() {
   assert_eq "$gave" "1" "parked as gave-up once the strip succeeded" || return 1
 }
 
+test_s176g_failed_strip_blocks_same_tick_dispatch() {
+  s176g_env || return 1
+  touch "$SI_D/drop-ip"
+  si_issue 7 project-a/repo-a user-feedback-intake source:sentry
+  si_tick                       # launch; the run adds agent-go + marker and drops agent-in-progress
+  touch "$SI_D/strip-fail"
+  si_tick; si_tick              # done branch: the strip fails; step 5 must not claim the still-agent-go issue
+  local claims; claims=$(grep -c -- 'issue comment 7 ' "$SI_D/gh-calls.log")
+  si_cleanup
+  assert_eq "$claims" "1" "only the intake claim: a failed strip must not let step 5 dispatch the sentry issue" || return 1
+}
+
 # s176g_tick_noflock — one supervisor tick with the file-lock binary absent from PATH, so the mkdir lock (the macOS path) is used. A live
 # intake run's backgrounding subshell keeps the supervisor lock fd open (pre-existing, out of scope), which would make the next
 # tick exit at the lock before it ever reaches the intake loop.
@@ -152,3 +167,4 @@ run_test test_s176g_giveup_branch_strips_agent_go_from_sentry_issue
 run_test test_s176g_label_read_failure_keeps_state_and_retries
 run_test test_s176g_giveup_strip_failure_keeps_state_and_retries
 run_test test_s176g_live_intake_run_is_stripped_and_nothing_dispatched
+run_test test_s176g_failed_strip_blocks_same_tick_dispatch
