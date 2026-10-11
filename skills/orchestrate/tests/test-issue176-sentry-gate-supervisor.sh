@@ -15,6 +15,7 @@ if [ "${PIPELINE_AGENT:-}" = intake ]; then
     jq --arg b $'**[intake] TRIAGED BUG**\nok' '. + [{body:$b,createdAt:"2099-01-01T00:00:00Z"}]' "$D/comments.json" > "$D/c.tmp" && mv "$D/c.tmp" "$D/comments.json"
   fi
   jq --argjson n "$PIPELINE_ISSUE" 'map(if .number==$n then .labels += [{name:"agent-go"}] else . end)' "$D/issues.json" > "$D/i.tmp" && mv "$D/i.tmp" "$D/issues.json"
+  [ -f "$D/hang" ] && sleep 20   # keeps the intake run alive across ticks
 fi
 exit 0
 X
@@ -25,6 +26,8 @@ X
 #!/bin/bash
 D="$(cd "$(dirname "$0")" && pwd)"
 case "$*" in
+  "issue edit "*"--remove-label agent-go"*)
+    [ -f "$D/strip-fail" ] && { echo "$*" >> "$D/gh-calls.log"; exit 1; };;
   "issue view "*"--json labels --jq"*)
     echo "$*" >> "$D/gh-calls.log"
     n=$3; jqx=${@: -1}
@@ -68,11 +71,15 @@ test_s176g_giveup_branch_strips_agent_go_from_sentry_issue() {
   touch "$SI_D/no-marker"   # the agent adds agent-go but never posts a marker -> two runs, then give-up
   si_issue 7 project-a/repo-a user-feedback-intake source:sentry
   local i; for i in 1 2 3 4 5 6; do si_tick; done
-  local labels gave n; labels=$(si_labels 7); n=$(si_launches)
+  local labels gave n calls other; labels=$(si_labels 7); n=$(si_launches); calls=$(cat "$SI_D/gh-calls.log")
+  other=$(grep -vc -- '--agent intake' "$SI_D/claude.log")
   gave=0; ls "$SI_PIPE"/intake-*.gaveup >/dev/null 2>&1 && gave=1
   si_cleanup
   assert_eq "$n" "2" "two intake runs before giving up" || return 1
   assert_eq "$gave" "1" "run parked as gave-up" || return 1
+  assert_contains "$calls" "issue edit 7 --repo project-a/repo-a --remove-label agent-go" "give-up branch itself issues the agent-go strip" || return 1
+  assert_eq "$other" "0" "no dispatch launch happened (agent-go was stripped, not consumed by a claim)" || return 1
+  assert_not_contains "$labels" "agent-in-progress" "issue was not claimed for dispatch" || return 1
   assert_not_contains "$labels" "agent-go" "give-up branch must strip agent-go from a source:sentry issue" || return 1
   assert_contains "$labels" "user-feedback-intake" "give-up re-queues for manual attention" || return 1
 }
@@ -92,8 +99,56 @@ test_s176g_label_read_failure_keeps_state_and_retries() {
   assert_not_contains "$labels" "agent-go" "strip retried and applied once the read works" || return 1
 }
 
+test_s176g_giveup_strip_failure_keeps_state_and_retries() {
+  s176g_env || return 1
+  touch "$SI_D/no-marker"
+  si_issue 7 project-a/repo-a user-feedback-intake source:sentry
+  local i; for i in 1 2 3 4; do si_tick; done   # two runs, both exited; the next tick is the give-up
+  touch "$SI_D/strip-fail"; si_tick; si_tick
+  local kept=0 gave=0 note; ls "$SI_PIPE"/intake-*.id >/dev/null 2>&1 && kept=1
+  ls "$SI_PIPE"/intake-*.gaveup >/dev/null 2>&1 && gave=1
+  note=$(jq -r '.[].body' "$SI_D/comments.json")
+  assert_eq "$kept" "1" "state kept while the give-up strip fails" || { si_cleanup; return 1; }
+  assert_eq "$gave" "0" "not parked as gave-up while the strip fails" || { si_cleanup; return 1; }
+  assert_not_contains "$note" "ran twice" "no give-up NOTE before the strip succeeded" || { si_cleanup; return 1; }
+  rm -f "$SI_D/strip-fail"; si_tick
+  local labels; labels=$(si_labels 7); gave=0; ls "$SI_PIPE"/intake-*.gaveup >/dev/null 2>&1 && gave=1; si_cleanup
+  assert_not_contains "$labels" "agent-go" "strip retried and applied" || return 1
+  assert_eq "$gave" "1" "parked as gave-up once the strip succeeded" || return 1
+}
+
+# s176g_tick_noflock — one supervisor tick with no flock on PATH, so the mkdir lock (the macOS path) is used. A live
+# intake run's backgrounding subshell keeps the flock fd open (pre-existing, out of scope), which would make the next
+# tick exit at the lock before it ever reaches the intake loop.
+s176g_tick_noflock() {
+  if [ ! -d "$SI_D/nof" ]; then
+    mkdir -p "$SI_D/nof"; local f
+    for f in /usr/bin/* /bin/*; do [ "${f##*/}" = flock ] || ln -sf "$f" "$SI_D/nof/${f##*/}" 2>/dev/null; done
+  fi
+  HOME="$SI_HOME" PATH="$SI_D:$SI_D/nof" PIPE="$SI_PIPE" QUEUE="$SI_PIPE/queue" LOGDIR="$SI_HOME/logs/pipeline" \
+    SLACK_BOT_TOKEN="" SLACK_ENGINEERING_CHANNEL="" /bin/bash "$SUP_SI" >/dev/null 2>&1; sleep 1.5
+}
+
+test_s176g_live_intake_run_is_stripped_and_nothing_dispatched() {
+  # tradeoff (stated in the handoff): a hand-added agent-go on a live-intake source:sentry issue is stripped too
+  s176g_env || return 1
+  touch "$SI_D/hang"
+  si_issue 7 project-a/repo-a user-feedback-intake source:sentry
+  s176g_tick_noflock           # launches intake; the run adds agent-go then stays alive
+  local before; before=$(si_labels 7)
+  s176g_tick_noflock           # run is live: the strip must still fire
+  local labels calls other; labels=$(si_labels 7); calls=$(cat "$SI_D/gh-calls.log"); other=$(grep -vc -- '--agent intake' "$SI_D/claude.log")
+  si_cleanup
+  assert_contains "$before" "agent-go" "precondition: the live run added agent-go" || return 1
+  assert_contains "$calls" "issue edit 7 --repo project-a/repo-a --remove-label agent-go" "live run: strip issued" || return 1
+  assert_not_contains "$labels" "agent-go" "agent-go stripped while intake is still running" || return 1
+  assert_eq "$other" "0" "the tick dispatched nothing" || return 1
+}
+
 run_test test_s176g_strip_removes_adjacent_agent_go_from_sentry_issue
 run_test test_s176g_dispatch_launches_sentry_agent_go_issue_labelled_after_intake
 run_test test_s176g_dispatch_launches_sentry_agent_go_issue_when_auto_go_one
 run_test test_s176g_giveup_branch_strips_agent_go_from_sentry_issue
 run_test test_s176g_label_read_failure_keeps_state_and_retries
+run_test test_s176g_giveup_strip_failure_keeps_state_and_retries
+run_test test_s176g_live_intake_run_is_stripped_and_nothing_dispatched

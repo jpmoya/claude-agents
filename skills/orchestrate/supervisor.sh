@@ -667,7 +667,10 @@ INTAKE_RE=$(marker_re intake | jq -Rs .)
 for idf in "$PIPE"/intake-*.id; do   # runs that have exited: healthy -> clear state; no marker -> recover once, then give up
   [ -e "$idf" ] || break
   k=$(basename "$idf" .id); read -r i_repo i_num < "$idf"; i_path=$(cat "$PIPE/$k.path")
-  kill -0 "$(cat "$PIPE/$k.pid" 2>/dev/null)" 2>/dev/null && continue
+  if kill -0 "$(cat "$PIPE/$k.pid" 2>/dev/null)" 2>/dev/null; then
+    sentry_strip_go "$i_repo" "$i_num" || true   # live run: strip an injected agent-go before step 5 can dispatch it (also strips a hand-added one until intake finishes)
+    continue
+  fi
   # done = a terminal marker (a NEEDS INFO-only run that died before labelling is not done) or the issue already carries user-feedback
   have=$(gh issue view "$i_num" --repo "$i_repo" --json comments,labels \
     --jq "([.comments[].body | split(\"\\n\")[0] | select(test(\"^\\\\*\\\\*\\\\[intake\\\\] (TRIAGED BUG|TRIAGED IDEA|DUPLICATE|NOISE|BLOCKED)\"))] | length) + ([(.labels // [])[].name | select(. == \"user-feedback\")] | length)" 2>/dev/null) || continue
@@ -682,8 +685,8 @@ for idf in "$PIPE"/intake-*.id; do   # runs that have exited: healthy -> clear s
     intake_launch "$i_repo" "$i_path" "$i_num" "Triage $i_repo#$i_num as the intake agent. A previous run exited without posting an [intake] handoff marker: check the issue state with gh, finish the triage if it is incomplete, and post the handoff marker."
     launched=1
   else
+    sentry_strip_go "$i_repo" "$i_num" || continue   # keep state (no .gaveup) so the next tick retries the strip
     gh issue comment "$i_num" --repo "$i_repo" --body "**[supervisor] NOTE** intake ran twice without a handoff marker; the issue is back in the intake queue for manual attention." >/dev/null 2>&1
-    sentry_strip_go "$i_repo" "$i_num" || true
     gh issue edit "$i_num" --repo "$i_repo" --remove-label "$LABEL_IN_PROGRESS" --add-label user-feedback-intake >/dev/null 2>&1
     rm -f "$PIPE/$k".{id,pid,path,exit,exit-seen}; touch "$PIPE/$k.gaveup"; slog "[intake] $i_repo#$i_num gave up after 2 runs without a marker"
   fi
