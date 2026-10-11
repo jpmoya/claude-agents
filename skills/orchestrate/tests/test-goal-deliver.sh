@@ -374,7 +374,7 @@ test_dg_unknown_milestone_title_refused() {
   local rc=0
   dg_run "example-owner/project-a:milestone:No such milestone"
   assert_eq "$DG_RC" "1" "AC2: unknown title exits 1" \
-    && assert_ne "$DG_ERR" "" "AC2: a reason on stderr" \
+    && assert_contains "$DG_ERR" "No such milestone" "AC2: refusal names the unresolvable title (wording unpinned by ticket; a gh error would not name it)" \
     && assert_eq "$(dg_reg_count)" "0" "AC2: no registry issue" \
     && assert_eq "$(dg_goal_files)" "0" "AC2: no goal-* files" \
     && assert_eq "$(dg_writes)" "0" "AC2: no GitHub write at all" || rc=1
@@ -383,11 +383,13 @@ test_dg_unknown_milestone_title_refused() {
 
 # ---------------------------------------------------------------- AC3: every negative input is refused ------
 
-# dg_check_refused <spec> — exit 1, reason on stderr, nothing created anywhere
+# dg_check_refused <spec> <reason-fragment> — exit 1, the named reason on stderr, nothing created anywhere
+# (fragments are the ticket's / SA contract's refusal wording: malformed | DISPATCH_REPOS | empty scope)
 dg_check_refused() {
   dg_run "$1"
   assert_eq "$DG_RC" "1" "AC3: [$1] must exit 1 (stderr: $DG_ERR)" || return 1
   assert_ne "$DG_ERR" "" "AC3: [$1] must print a reason on stderr" || return 1
+  assert_contains "$DG_ERR" "$2" "AC3: [$1] must refuse for the right reason ($2)" || return 1
   assert_not_contains "$DG_OUT" "registered" "AC3: [$1] must not claim registration" || return 1
   assert_eq "$(dg_reg_count)" "0" "AC3: [$1] no registry issue" || return 1
   assert_eq "$(dg_goal_files)" "0" "AC3: [$1] no goal-* files" || return 1
@@ -395,17 +397,17 @@ dg_check_refused() {
   assert_eq "$(dg_claude_count)" "0" "AC3: [$1] nothing launched" || return 1
 }
 
-test_dg_refuse_repo_outside_dispatch_repos() { dg_setup; dg_check_refused "example-owner/not-dispatched:milestone:1"; local rc=$?; dg_teardown; return $rc; }
-test_dg_refuse_empty_milestone_ref()         { dg_setup; dg_check_refused "example-owner/project-a:milestone:"; local rc=$?; dg_teardown; return $rc; }
-test_dg_refuse_bogus_kind()                  { dg_setup; dg_check_refused "example-owner/project-a:bogus:1"; local rc=$?; dg_teardown; return $rc; }
-test_dg_refuse_non_numeric_ticket()          { dg_setup; dg_check_refused "example-owner/project-a#abc"; local rc=$?; dg_teardown; return $rc; }
-test_dg_refuse_milestone_with_zero_issues()  { dg_setup; dg_check_refused "example-owner/project-a:milestone:20"; local rc=$?; dg_teardown; return $rc; }
-test_dg_refuse_ticket_that_is_a_pr()         { dg_setup; dg_check_refused "example-owner/project-a#103"; local rc=$?; dg_teardown; return $rc; }
-test_dg_refuse_missing_ticket()              { dg_setup; dg_check_refused "example-owner/project-a#999"; local rc=$?; dg_teardown; return $rc; }
+test_dg_refuse_repo_outside_dispatch_repos() { dg_setup; dg_check_refused "example-owner/not-dispatched:milestone:1" "not in DISPATCH_REPOS"; local rc=$?; dg_teardown; return $rc; }
+test_dg_refuse_empty_milestone_ref()         { dg_setup; dg_check_refused "example-owner/project-a:milestone:" "malformed"; local rc=$?; dg_teardown; return $rc; }
+test_dg_refuse_bogus_kind()                  { dg_setup; dg_check_refused "example-owner/project-a:bogus:1" "malformed"; local rc=$?; dg_teardown; return $rc; }
+test_dg_refuse_non_numeric_ticket()          { dg_setup; dg_check_refused "example-owner/project-a#abc" "malformed"; local rc=$?; dg_teardown; return $rc; }
+test_dg_refuse_milestone_with_zero_issues()  { dg_setup; dg_check_refused "example-owner/project-a:milestone:20" "empty scope"; local rc=$?; dg_teardown; return $rc; }
+test_dg_refuse_ticket_that_is_a_pr()         { dg_setup; dg_check_refused "example-owner/project-a#103" "empty scope"; local rc=$?; dg_teardown; return $rc; }
+test_dg_refuse_missing_ticket()              { dg_setup; dg_check_refused "example-owner/project-a#999" "empty scope"; local rc=$?; dg_teardown; return $rc; }
 test_dg_refuse_repo_with_empty_milestones_all() {
   dg_setup
   # project-b has no milestones at all → milestones:all has an empty scope
-  dg_check_refused "example-owner/project-b:milestones:all"; local rc=$?
+  dg_check_refused "example-owner/project-b:milestones:all" "empty scope"; local rc=$?
   dg_teardown; return $rc
 }
 
