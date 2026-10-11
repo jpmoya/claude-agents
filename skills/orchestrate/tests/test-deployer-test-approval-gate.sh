@@ -20,6 +20,9 @@
 #   and no `**[test-reviewer] TESTS FAIL...` comment is newer than that approval. An approval posted BEFORE
 #   `IMPLEMENTED` counts (the review runs in parallel with the build) — position relative to IMPLEMENTED is irrelevant.
 #
+#   Full lane only: the rows (and the gate paragraph) must say the gate applies to the full lane and that the fast lane
+#   (no pre-implementation review, no lock, hence no TESTS WRITTEN) is exempt — otherwise the fast lane deadlocks.
+#
 # Expected values hand-written from the ticket. Helpers/vars prefixed da_ / DA_.
 
 HERE_DA=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -90,9 +93,26 @@ test_da_ac1_older_commit_fail_or_no_verdict_do_not_satisfy() {
 
 test_da_ac2_missing_approval_uses_only_existing_routes() {
   local r; r=$(da_routing_row)
-  assert_contains "$r" 'poll' "AC2: still-running pre-implementation reviewer is polled" || return 1
-  assert_contains "$r" 'pre-implementation' "AC2: no reviewer + no verdict -> test-reviewer in pre-implementation mode" || return 1
-  assert_contains "$r" 'reviewer cap' "AC2: poll under the existing reviewer cap" || return 1
+  # route 1: reviewer still running -> poll it under the existing reviewer cap (same sentence/clause as the cap)
+  echo "$r" | grep -qiE 'running[^.;|]*poll[^.;|]*reviewer cap|poll[^.;|]*running[^.;|]*reviewer cap|poll[^.;|]*reviewer cap' \
+    || { fail "AC2: a still-running pre-implementation reviewer must be polled under the existing reviewer cap"; return 1; }
+  # route 2: no reviewer and no verdict on the latest commit -> test-reviewer, pre-implementation mode, on that commit
+  echo "$r" | grep -qiE 'no (verdict|reviewer)[^|]*test-reviewer[^|]*pre-implementation|test-reviewer[^|]*pre-implementation[^|]*(that|the latest|TESTS WRITTEN)[^|]*commit' \
+    || { fail "AC2: no reviewer + no verdict -> dispatch test-reviewer in pre-implementation mode on that commit"; return 1; }
+  # route 3: latest verdict TESTS FAIL -> the existing TESTS FAIL row (test-writer re-dispatch), not a new path
+  echo "$r" | grep -qE 'TESTS FAIL[^|]*(existing|\`\[test-reviewer\] TESTS FAIL)|(existing|TESTS FAIL: n findings)[^|]*TESTS FAIL' \
+    || { fail "AC2: latest verdict TESTS FAIL must route to the existing TESTS FAIL row"; return 1; }
+  # no new mechanism named in the row
+  assert_not_contains "$r" 'state file' "AC2: no new state file" || true
+}
+
+test_da_ac2_gate_applies_to_full_lane_only() {
+  local r v g
+  r=$(da_routing_row); v=$(da_validation_row)
+  g=$(awk '/^\*\*Test approval gate\*\*/ {on=1} on && /^```/ && c++ {exit} on {print}' "$ORCH_DA")
+  assert_contains "$r" 'full lane' "AC1/AC5: routing row scopes the gate to the full lane" || return 1
+  assert_contains "$v" 'full lane' "AC1/AC5: validation row scopes the gate to the full lane" || return 1
+  echo "$r$v$g" | grep -qi 'fast lane' || { fail "AC5: fast lane must be named as exempt (no TESTS WRITTEN ever exists there)"; return 1; }
 }
 
 # ------------------------------------------------------------------ AC3
@@ -118,19 +138,24 @@ test_da_ac4_deployer_md_input_wording_names_the_test_approval() {
 }
 
 test_da_ac4_deployer_md_has_no_marker_check_of_its_own() {
-  local d; d=$(cd "$ROOT_DA" && git diff "$(git merge-base HEAD origin/main)" -- agents/deployer.md | grep '^+' | grep -v '^+++' | grep -iE 'gh issue view|jq|--json|latest .*TESTS WRITTEN' || true)
-  assert_eq "$d" "" "AC4: deployer.md must not gain its own marker check" || return 1
-  # and the wording change must exist (this test fails until deployer.md is touched)
-  local n; n=$(cd "$ROOT_DA" && git diff --name-only "$(git merge-base HEAD origin/main)" -- agents/deployer.md)
-  assert_eq "$n" "agents/deployer.md" "AC4: deployer.md wording aligned" || return 1
+  # static: the aligned input line states what must be received, with no marker query of its own
+  local l; l=$(grep -n 'Validate inputs' "$DEPL_DA")
+  assert_contains "$l" 'TESTS APPROVED' "AC4: deployer.md names TESTS APPROVED" || return 1
+  assert_contains "$l" 'code-reviewer' "AC4: deployer.md names the code-reviewer PASS" || return 1
+  assert_not_contains "$l" 'gh issue view' "AC4: no gh issue view in the inputs line" || return 1
+  assert_not_contains "$l" 'jq' "AC4: no jq in the inputs line" || return 1
+  assert_not_contains "$l" '--json' "AC4: no --json query in the inputs line" || return 1
+  assert_not_contains "$l" 'latest `TESTS WRITTEN`' "AC4: deployer does not resolve the latest TESTS WRITTEN itself" || return 1
 }
 
 # ------------------------------------------------------------------ AC5 (characterisation)
 
 test_da_ac5_developer_still_starts_in_parallel_on_tests_written() {
   local r; r=$(da_written_row)
-  assert_contains "$r" 'dispatch **both** in parallel' "AC5: parallel dispatch kept" || return 1
-  assert_contains "$r" 'no longer gates the build' "AC5: review does not gate the build" || return 1
+  echo "$r" | grep -qi 'parallel' || { fail "AC5: TESTS WRITTEN row must keep the developer and reviewer parallel"; return 1; }
+  assert_contains "$r" 'fullstack-developer' "AC5: developer still dispatched on TESTS WRITTEN" || return 1
+  assert_contains "$r" 'test-reviewer' "AC5: test-reviewer still dispatched on TESTS WRITTEN" || return 1
+  echo "$r" | grep -qiE 'no longer gates|does not gate|not gate|never gates' || { fail "AC5: the review must still not gate the build"; return 1; }
 }
 
 test_da_ac5_first_dispatch_row_does_not_require_approval() {
@@ -204,10 +229,22 @@ test_da_ac7_non_marker_comment_quoting_the_sha_is_not_an_approval() {
   assert_eq "$g" "NOT APPROVED" "AC7: only a first-line-exact TESTS APPROVED counts" || return 1
 }
 
+test_da_ac7_old_commit_tests_fail_then_new_commit_approved_releases() {
+  local F_OLD=$'**[test-reviewer] TESTS FAIL: 1 finding**\nReviewed commit: '"$DA_SHA_OLD"
+  local g; g=$(da_gate "$DA_W_OLD" "$F_OLD" "$DA_W_NEW" "$DA_A_NEW" "$DA_IMPL" "$DA_CR")
+  assert_eq "$g" "APPROVED" "AC7: a TESTS FAIL on the superseded commit does not block the approval of the latest" || return 1
+}
+
+test_da_ac7_short_sha_approval_is_not_released() {
+  local g; g=$(da_gate "$DA_W_NEW" "$DA_IMPL" "$DA_CR" $'**[test-reviewer] TESTS APPROVED**\nReviewed commit: 9929cb87')
+  assert_eq "$g" "NOT APPROVED" "AC7: approval must carry the full sha of the latest TESTS WRITTEN" || return 1
+}
+
 run_test test_da_ac1_routing_row_requires_commit_pinned_approval
 run_test test_da_ac1_validation_row_requires_commit_pinned_approval
 run_test test_da_ac1_older_commit_fail_or_no_verdict_do_not_satisfy
 run_test test_da_ac2_missing_approval_uses_only_existing_routes
+run_test test_da_ac2_gate_applies_to_full_lane_only
 run_test test_da_ac3_tests_written_row_reviews_a_commit_with_no_verdict
 run_test test_da_ac4_deployer_prompt_names_the_approval_url
 run_test test_da_ac4_deployer_md_input_wording_names_the_test_approval
@@ -225,3 +262,5 @@ run_test test_da_ac7_approval_of_the_latest_commit_releases_even_before_implemen
 run_test test_da_ac7_approval_of_latest_commit_after_code_review_releases
 run_test test_da_ac7_tests_fail_after_the_approval_is_not_released
 run_test test_da_ac7_non_marker_comment_quoting_the_sha_is_not_an_approval
+run_test test_da_ac7_old_commit_tests_fail_then_new_commit_approved_releases
+run_test test_da_ac7_short_sha_approval_is_not_released
