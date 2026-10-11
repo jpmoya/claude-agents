@@ -100,10 +100,11 @@ test_da_ac2_missing_approval_uses_only_existing_routes() {
   echo "$r" | grep -qiE 'no (verdict|reviewer)[^|]*test-reviewer[^|]*pre-implementation|test-reviewer[^|]*pre-implementation[^|]*(that|the latest|TESTS WRITTEN)[^|]*commit' \
     || { fail "AC2: no reviewer + no verdict -> dispatch test-reviewer in pre-implementation mode on that commit"; return 1; }
   # route 3: latest verdict TESTS FAIL -> the existing TESTS FAIL row (test-writer re-dispatch), not a new path
-  echo "$r" | grep -qE 'TESTS FAIL[^|]*(existing|\`\[test-reviewer\] TESTS FAIL)|(existing|TESTS FAIL: n findings)[^|]*TESTS FAIL' \
+  echo "$r" | grep -qE 'TESTS FAIL[^|]*(existing|`\[test-reviewer\] TESTS FAIL)|(existing|TESTS FAIL: n findings)[^|]*TESTS FAIL' \
     || { fail "AC2: latest verdict TESTS FAIL must route to the existing TESTS FAIL row"; return 1; }
   # no new mechanism named in the row
-  assert_not_contains "$r" 'state file' "AC2: no new state file" || true
+  assert_not_contains "$r" 'state file' "AC2: no new state file" || return 1
+  assert_not_contains "$r" 'new mechanism' "AC2: no new mechanism named" || return 1
 }
 
 test_da_ac2_gate_applies_to_full_lane_only() {
@@ -122,14 +123,25 @@ test_da_ac3_tests_written_row_reviews_a_commit_with_no_verdict() {
   [ -n "$r" ] || { fail "AC3: TESTS WRITTEN row not found"; return 1; }
   case "$r" in *"no verdict"*|*"has no verdict"*|*"without a verdict"*) ;;
     *) fail "AC3: TESTS WRITTEN row must say a commit with no verdict gets its own review once the running reviewer (older commit) has finished"; return 1 ;; esac
-  case "$r" in *"older commit"*) ;; *) fail "AC3: row must mention the reviewer running on the older commit"; return 1 ;; esac
+  # The ":56/:59 contradiction": the "never dispatched again" clause must be qualified by commit. Accept the
+  # exemption in the same sentence or the sentence immediately after it (which must name the older commit AND no verdict).
+  local s; s=$(printf '%s' "$r" | sed 's/\. /.\n/g' | awk '
+    /never dispatched again/ {print "A: " $0; getline nxt; print "B: " nxt; exit}')
+  [ -n "$s" ] || { fail "AC3: row no longer has the 'never dispatched again' clause to qualify (expected it kept, with an older-commit exemption)"; return 1; }
+  local a b; a=$(printf '%s\n' "$s" | grep '^A: '); b=$(printf '%s\n' "$s" | grep '^B: ')
+  case "$a" in *"older commit"*) return 0 ;; esac
+  case "$b" in *"older commit"*"no verdict"*|*"no verdict"*"older commit"*) return 0 ;; esac
+  fail "AC3: 'never dispatched again' must be qualified by an older-commit exemption (same or next sentence); got: $a / $b"
+  return 1
 }
 
 # ------------------------------------------------------------------ AC4
 
 test_da_ac4_deployer_prompt_names_the_approval_url() {
-  local t; t=$(grep -nE 'deployer' "$ORCH_DA" | grep -F 'TESTS APPROVED' | grep -iE 'url|link' || true)
-  [ -n "$t" ] || { fail "AC4: no orchestrator.md line puts the TESTS APPROVED comment URL in the deployer prompt"; return 1; }
+  # TESTS APPROVED must sit next to "URL" / "comment URL" on a deployer-dispatch line. The pre-existing
+  # "...with both review links" wording and the AC1 edit alone must NOT satisfy this.
+  local t; t=$(grep -E 'deployer' "$ORCH_DA" | grep -E 'TESTS APPROVED[^|.]{0,40}URL' || true)
+  [ -n "$t" ] || { fail "AC4: no orchestrator.md deployer line puts 'TESTS APPROVED ... (comment) URL' in the deployer prompt"; return 1; }
 }
 
 test_da_ac4_deployer_md_input_wording_names_the_test_approval() {
