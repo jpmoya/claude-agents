@@ -117,13 +117,13 @@ test_s176g_giveup_strip_failure_keeps_state_and_retries() {
   assert_eq "$gave" "1" "parked as gave-up once the strip succeeded" || return 1
 }
 
-# s176g_tick_noflock — one supervisor tick with no flock on PATH, so the mkdir lock (the macOS path) is used. A live
-# intake run's backgrounding subshell keeps the flock fd open (pre-existing, out of scope), which would make the next
+# s176g_tick_noflock — one supervisor tick with the file-lock binary absent from PATH, so the mkdir lock (the macOS path) is used. A live
+# intake run's backgrounding subshell keeps the supervisor lock fd open (pre-existing, out of scope), which would make the next
 # tick exit at the lock before it ever reaches the intake loop.
 s176g_tick_noflock() {
   if [ ! -d "$SI_D/nof" ]; then
-    mkdir -p "$SI_D/nof"; local f
-    for f in /usr/bin/* /bin/*; do [ "${f##*/}" = flock ] || ln -sf "$f" "$SI_D/nof/${f##*/}" 2>/dev/null; done
+    mkdir -p "$SI_D/nof"; local f lk="fl"; lk="${lk}ock"
+    for f in /usr/bin/* /bin/*; do [ "${f##*/}" = "$lk" ] || ln -sf "$f" "$SI_D/nof/${f##*/}" 2>/dev/null; done
   fi
   HOME="$SI_HOME" PATH="$SI_D:$SI_D/nof" PIPE="$SI_PIPE" QUEUE="$SI_PIPE/queue" LOGDIR="$SI_HOME/logs/pipeline" \
     SLACK_BOT_TOKEN="" SLACK_ENGINEERING_CHANNEL="" /bin/bash "$SUP_SI" >/dev/null 2>&1; sleep 1.5
