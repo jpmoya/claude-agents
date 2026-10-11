@@ -4,6 +4,11 @@ HERE_188=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT_188=$(cd "$HERE_188/../../.." && pwd)
 PM_188="$ROOT_188/agents/product-manager.md"
 
+# ms188_has <file> <literal> — self-contained (run-tests.sh sources files alphabetically).
+ms188_has() {
+  grep -qF -- "$2" "$1" || { fail "$(basename "$1"): missing [$2]"; return 1; }
+}
+
 # AC3: SA slice creation carries --milestone derived from the parent.
 test_ms188_ac3_sa_slice_milestone_from_parent() {
   local snip
@@ -33,7 +38,7 @@ test_ms188_ac4_title_rule_limit_and_charset() {
 test_ms188_ac1_pm_rule_elements() {
   local s
   for s in '--milestone' 'gh api repos/<o>/<r>/milestones' 'gh release list'; do
-    rm_has "$PM_188" "$s" || return 1
+    ms188_has "$PM_188" "$s" || return 1
   done
 }
 
@@ -54,7 +59,7 @@ test_ms188_docs_claude_md_planning_vs_shipped() {
 test_ms188_docs_readme_cites_children() {
   local s
   for s in 'Benjis-Plants/scheduler#1321' 'Benjis-Plants/benjis-quoting-tool#661' 'Benjis-Plants/scheduler#653' 'issue #37'; do
-    rm_has "$ROOT_188/README.md" "$s" || return 1
+    ms188_has "$ROOT_188/README.md" "$s" || return 1
   done
 }
 
