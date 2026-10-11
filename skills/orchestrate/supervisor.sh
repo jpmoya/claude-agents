@@ -638,6 +638,9 @@ intake_key() { printf 'intake-%s-%s' "${1//\//_}" "$2"; }
 intake_launch() {  # <owner/repo> <local path> <issue> <prompt>
   local k; k=$(intake_key "$1" "$3")
   echo 0 > "$PIPE/$3-intake-before.txt"; rm -f "$PIPE/$k.exit" "$PIPE/$k.exit-seen"
+  # #176: remember a source:sentry issue at launch, so the agent removing the label cannot turn the agent-go strip into a no-op
+  case " $(gh issue view "$3" --repo "$1" --json labels --jq '[.labels[].name] | join(" ")' 2>/dev/null) " in
+    *" source:sentry "*) touch "$PIPE/$k.sentry" ;; esac
   ( cd "$PIPE" && PIPELINE_ISSUE="$3" PIPELINE_AGENT=intake PIPELINE_REPO="$1" PIPE="$PIPE" CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 \
     nohup $SETSID bash -c 'claude --dangerously-skip-permissions --agent intake -p "$1"; echo $? > "$2"' _ "$4" "$PIPE/$k.exit" \
     >> "$PIPE/$k.log" 2>&1 9>&- & echo $! > "$PIPE/$k.pid" )
@@ -649,9 +652,11 @@ intake_launch() {  # <owner/repo> <local path> <issue> <prompt>
 # unless SENTRY_AUTO_GO=1, whatever the agent did. Returns 1 when the label read fails (caller retries next tick), else 0.
 sentry_strip_go() {  # <owner/repo> <issue>
   [ "${SENTRY_AUTO_GO:-0}" = 1 ] && return 0
-  local lbls
+  local lbls k; k=$(intake_key "$1" "$2")
   lbls=$(gh issue view "$2" --repo "$1" --json labels --jq '[.labels[].name] | join(" ")' 2>/dev/null) || {
     slog "[intake] $1#$2 label read failed — will retry the source:sentry $LABEL_GO strip next tick"; return 1; }
+  # sentry = recorded at launch (survives the agent removing the label) OR labelled now
+  if [ -e "$PIPE/$k.sentry" ]; then lbls="$lbls source:sentry"; fi
   case " $lbls " in *" source:sentry "*)
     case " $lbls " in *" $LABEL_GO "*)
       if gh issue edit "$2" --repo "$1" --remove-label "$LABEL_GO" >/dev/null 2>&1; then
@@ -677,7 +682,7 @@ for idf in "$PIPE"/intake-*.id; do   # runs that have exited: healthy -> clear s
   if [ "${have:-0}" -gt 0 ]; then
     sentry_strip_go "$i_repo" "$i_num" || { launched=1; continue; }   # keep state so the next tick retries the strip; hold dispatch this tick
     gh issue edit "$i_num" --repo "$i_repo" --remove-label "$LABEL_IN_PROGRESS" >/dev/null 2>&1
-    rm -f "$PIPE/$k".{id,pid,path,exit,exit-seen,attempts}; slog "[intake] $i_repo#$i_num done"
+    rm -f "$PIPE/$k".{id,pid,path,exit,exit-seen,attempts,sentry}; slog "[intake] $i_repo#$i_num done"
   elif [ ! -e "$PIPE/$k.exit-seen" ]; then
     touch "$PIPE/$k.exit-seen"   # one grace tick: a slow marker or a lagging gh read must not trigger a recovery run
   elif [ "$(cat "$PIPE/$k.attempts" 2>/dev/null || echo 1)" -lt 2 ]; then
@@ -688,7 +693,7 @@ for idf in "$PIPE"/intake-*.id; do   # runs that have exited: healthy -> clear s
     sentry_strip_go "$i_repo" "$i_num" || { launched=1; continue; }   # keep state (no .gaveup) so the next tick retries the strip; hold dispatch this tick
     gh issue comment "$i_num" --repo "$i_repo" --body "**[supervisor] NOTE** intake ran twice without a handoff marker; the issue is back in the intake queue for manual attention." >/dev/null 2>&1
     gh issue edit "$i_num" --repo "$i_repo" --remove-label "$LABEL_IN_PROGRESS" --add-label user-feedback-intake >/dev/null 2>&1
-    rm -f "$PIPE/$k".{id,pid,path,exit,exit-seen}; touch "$PIPE/$k.gaveup"; slog "[intake] $i_repo#$i_num gave up after 2 runs without a marker"
+    rm -f "$PIPE/$k".{id,pid,path,exit,exit-seen,sentry}; touch "$PIPE/$k.gaveup"; slog "[intake] $i_repo#$i_num gave up after 2 runs without a marker"
   fi
 done
 if [ "$launched" -eq 0 ] && [ "$HAS_CAP" -eq 1 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ] && power_ok; then
@@ -709,7 +714,7 @@ if [ "$launched" -eq 0 ] && [ "$HAS_CAP" -eq 1 ] && [ "${#DISPATCH_REPOS[@]}" -g
         --jq "[.comments[] | select(.body | startswith(\"**[supervisor] NOTE** claim: \")) | select(.createdAt > \"$cutoff\")] | sort_by(.createdAt) | first | .body" 2>/dev/null | awk '{print $4}')
       [ "$winner" = "$HOST" ] || { slog "[intake] $owner_repo#$num — lost claim to ${winner:-?}"; continue; }
       gh issue edit "$num" --repo "$owner_repo" --add-label "$LABEL_IN_PROGRESS" --remove-label user-feedback-intake >/dev/null 2>&1
-      rm -f "$PIPE/$k.attempts"
+      rm -f "$PIPE/$k.attempts" "$PIPE/$k.sentry"
       intake_launch "$owner_repo" "$local_path" "$num" "Triage $owner_repo#$num as the intake agent."
       launched=1; break
     done

@@ -18,6 +18,9 @@ if [ "${PIPELINE_AGENT:-}" = intake ]; then
   if [ -f "$D/drop-ip" ]; then   # the agent also drops agent-in-progress, so only the strip stands between agent-go and dispatch
     jq --argjson n "$PIPELINE_ISSUE" 'map(if .number==$n then .labels |= map(select(.name != "agent-in-progress")) else . end)' "$D/issues.json" > "$D/i.tmp" && mv "$D/i.tmp" "$D/issues.json"
   fi
+  if [ -f "$D/drop-sentry" ]; then   # the agent also removes source:sentry, so a label-keyed strip would no-op
+    jq --argjson n "$PIPELINE_ISSUE" 'map(if .number==$n then .labels |= map(select(.name != "source:sentry")) else . end)' "$D/issues.json" > "$D/i.tmp" && mv "$D/i.tmp" "$D/issues.json"
+  fi
   [ -f "$D/hang" ] && sleep 20   # keeps the intake run alive across ticks
 fi
 exit 0
@@ -62,11 +65,25 @@ test_s176g_dispatch_launches_sentry_agent_go_issue_labelled_after_intake() {
 }
 
 test_s176g_dispatch_launches_sentry_agent_go_issue_when_auto_go_one() {
+  # a finished intake run with SENTRY_AUTO_GO=1: agent-go is kept and no strip is issued
   s176g_env 1 || return 1
-  si_issue 7 project-a/repo-a agent-go source:sentry
-  si_tick
+  si_issue 7 project-a/repo-a user-feedback-intake source:sentry
+  local i; for i in 1 2 3; do si_tick; done   # launch (agent adds agent-go + marker), then the done branch
   local calls; calls=$(cat "$SI_D/gh-calls.log"); si_cleanup
-  assert_contains "$calls" "issue comment 7" "SENTRY_AUTO_GO=1: sentry agent-go issue is dispatched" || return 1
+  assert_not_contains "$calls" "issue edit 7 --repo project-a/repo-a --remove-label agent-go" "SENTRY_AUTO_GO=1: no agent-go strip is issued" || return 1
+  # agent-go survived to dispatch: step 5 claimed the issue (its claim edit is what consumes the label)
+  assert_contains "$calls" "issue edit 7 --add-label agent-in-progress --remove-label agent-go" "SENTRY_AUTO_GO=1: agent-go kept, issue dispatched" || return 1
+}
+
+test_s176g_strip_survives_agent_removing_source_sentry_label() {
+  s176g_env || return 1
+  touch "$SI_D/drop-sentry" "$SI_D/drop-ip"   # the agent adds agent-go and removes source:sentry
+  si_issue 7 project-a/repo-a user-feedback-intake source:sentry
+  local i; for i in 1 2 3; do si_tick; done
+  local labels calls; labels=$(si_labels 7); calls=$(cat "$SI_D/gh-calls.log"); si_cleanup
+  assert_not_contains "$labels" "source:sentry" "precondition: the agent removed source:sentry" || return 1
+  assert_contains "$calls" "issue edit 7 --repo project-a/repo-a --remove-label agent-go" "strip keyed on the launch-time record, not the label" || return 1
+  assert_not_contains "$labels" "agent-go" "agent-go stripped though source:sentry was removed" || return 1
 }
 
 test_s176g_giveup_branch_strips_agent_go_from_sentry_issue() {
@@ -163,6 +180,7 @@ test_s176g_live_intake_run_is_stripped_and_nothing_dispatched() {
 run_test test_s176g_strip_removes_adjacent_agent_go_from_sentry_issue
 run_test test_s176g_dispatch_launches_sentry_agent_go_issue_labelled_after_intake
 run_test test_s176g_dispatch_launches_sentry_agent_go_issue_when_auto_go_one
+run_test test_s176g_strip_survives_agent_removing_source_sentry_label
 run_test test_s176g_giveup_branch_strips_agent_go_from_sentry_issue
 run_test test_s176g_label_read_failure_keeps_state_and_retries
 run_test test_s176g_giveup_strip_failure_keeps_state_and_retries
