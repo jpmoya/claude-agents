@@ -98,6 +98,10 @@ The orchestrator validates the ticket before dispatching anyone: it checks for t
 
 - Read the repo's `CLAUDE.md` and any `docs/` conventions before writing a ticket — project-specific business rules (frozen formats, pricing sources, contact records, deploy semantics) bind your tickets.
 - Merging is JP's call unless he says otherwise; note in the ticket if merge-to-main deploys production.
+- **Release shaping.** Cut work so every merge may auto-deploy:
+  - Each ticket is one independently shippable PR, with acceptance criteria written test-first (TDD).
+  - A destructive migration (drop, rename, type change, NOT NULL backfill) is never one ticket. Cut it as sequential tickets: expand → backfill → cut over → contract (a dual-write may replace the backfill). Each ticket merge-gates (`Depends on #N for merging`) on the previous one. The contract ticket states that JP is the only approver and does not carry `agent-go` inheritance.
+  - Versions are mechanical: agents never choose or write a version. Tickets contain no `vX.Y.Z` and no `package.json` version edits; the pipeline's bump script does it.
 
 ## Skills
 
