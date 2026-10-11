@@ -23,6 +23,8 @@ GRACE_PERIOD_SECS=1200                      # BLOCKED younger than this may be a
 
 # Intake agent (#114): 1 = a triaged bug gets agent-go directly (default since #115); 0 = bug gets agent-proposed instead
 INTAKE_AUTO_GO=1
+# Sentry-sourced bugs (#176): never follow INTAKE_AUTO_GO. 0 = agent-proposed (JP's digest); 1 = agent-go directly.
+SENTRY_AUTO_GO=0
 
 # Shared dispatch: "owner/repo:/local/checkout" entries. Empty = this machine never dispatches from labels.
 DISPATCH_REPOS=()

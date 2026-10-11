@@ -20,7 +20,7 @@ markers_for() {  # markers_for <agent> → that agent's routing markers, |-separ
     infra-planner)       echo 'PLAN READY|BLOCKED' ;;
     infra-reviewer)      echo 'PLAN PASS|PLAN FAIL|BLOCKED' ;;
     infra-operator)      echo 'APPLIED|AWAITING GO|BLOCKED' ;;
-    intake)              echo 'TRIAGED BUG|TRIAGED IDEA|DUPLICATE|NEEDS INFO|BLOCKED' ;;   # raw-feedback triage, launched by the supervisor, never by the orchestrator (#114)
+    intake)              echo 'TRIAGED BUG|TRIAGED IDEA|DUPLICATE|NEEDS INFO|NOISE|BLOCKED' ;;   # raw-feedback triage, launched by the supervisor, never by the orchestrator (#114)
     jp)                  echo 'GO|MOCKUPS APPROVED' ;;
     project-manager)     echo 'DECISION|JP CONFIRMED' ;;  # JP's delegate: resumes a code-track BLOCKED and the two caps only — never jp's gates (claude-agents#59)
   esac
