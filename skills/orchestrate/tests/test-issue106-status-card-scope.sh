@@ -7,7 +7,7 @@ HERE_106=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT_106=$(cd "$HERE_106/../../.." && pwd)
 CLAUDE_106="$ROOT_106/CLAUDE.md"
 ORCH_106="$ROOT_106/agents/orchestrator.md"
-PMGR_106="$ROOT_106/agents/project-manager.md"
+PMGR_106="$ROOT_106/agents/delivery-lead.md"   # #192: content moved from project-manager.md (now a thin alias)
 
 # i106_section <file> <exact heading line> — body up to the next "## " heading
 i106_section() { awk -v h="$2" '$0==h{on=1;next} /^## /{on=0} on' "$1"; }
@@ -80,7 +80,7 @@ test_i106_orchestrator_comment_brevity_is_issue_comments_only() {
 
 test_i106_project_manager_every_status_is_one_card_per_run() {
   local l
-  l=$(grep -E '^(Status requests mid-run|Every status the project-manager writes)' "$PMGR_106" | head -1)
+  l=$(grep -E '^(Status requests mid-run|Every status the project-manager writes|Every status the delivery-lead writes)' "$PMGR_106" | head -1)
   assert_ne "$l" "" "AC4: PM status-card line exists" || return 1
   assert_not_contains "$l" 'Status requests mid-run' "AC4: no longer limited to mid-run requests" || return 1
   i106_has_i "AC4: every status the PM writes" "$l" 'every status' || return 1
@@ -109,6 +109,8 @@ test_i106_no_new_mechanism_only_doc_files_and_tests_touched() {
       # #114: exactly its Files-table paths
       agents/intake.md|agents/README.md|README.md|hooks/pipeline-markers.sh|hooks/require-handoff-marker.sh) ;;
       skills/orchestrate/intake-labels.sh|skills/orchestrate/scan-backlog.sh|skills/orchestrate/config.sh|skills/orchestrate/pipeline-lib.sh|skills/orchestrate/supervisor.sh) ;;
+      # #192: exactly its Files-table paths not already listed (agents/project-manager.md, agents/orchestrator.md, CLAUDE.md, README.md, agents/README.md, hooks/pipeline-markers.sh, supervisor.sh listed above)
+      agents/delivery-lead.md|status-page/README.md|skills/orchestrate/reconcile-status.sh) ;;
       # #115: exactly its Files-table paths not already listed (agents/fullstack-developer.md, agents/product-manager.md, skills/orchestrate/test/*)
       agents/fullstack-developer.md|agents/product-manager.md|skills/orchestrate/test/*) ;;
       *) bad="$bad $f" ;;

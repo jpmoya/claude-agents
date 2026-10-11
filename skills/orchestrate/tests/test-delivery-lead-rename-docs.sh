@@ -188,27 +188,39 @@ test_dlr_ac4_latest_marker_delivery_lead_alone_is_never_the_gate() {
   assert_eq "$(printf '%s' "$out" | head -1)" '**[deployer] BLOCKED**' "AC4: gate stays the BLOCKED" || return 1
 }
 
-# dlr_facts <body>... — rc_gate_facts from reconcile-status.sh; prints the "answered" field
-dlr_answered() {
-  local arr='[]' b i=0 json out
+# dlr_facts <body>... — full rc_gate_facts TSV line from reconcile-status.sh (comments dated 1 minute apart, oldest first)
+dlr_facts() {
+  local arr='[]' b i=0 json
   for b in "$@"; do
     i=$((i + 1))
     arr=$(printf '%s' "$arr" | jq --arg b "$b" --arg t "$(printf '2026-10-01T12:%02d:00Z' "$i")" '. + [{body: $b, createdAt: $t}]')
   done
   json=$(jq -n --argjson c "$arr" '{comments: $c}')
-  out=$(
+  (
     . "$MARKERS_DLR"
     eval "$(dlr_fn "$RECON_DLR" rc_gate_facts)"
     rc_gate_facts "$json"
   )
-  printf '%s' "$out" | cut -f2
 }
 
+# dlr_answered <body>... — the "answered" field of dlr_facts
+dlr_answered() { dlr_facts "$@" | cut -f2; }
+
+# #192 (architect SPEC RESOLVED): a routing marker (DECISION, JP CONFIRMED, [jp] GO) posted after the gate becomes the gate
+# itself on main, so answered detection is exercised with free-text replies, as test-status-needs-jp does.
 test_dlr_ac4_reconcile_answered_by_delivery_lead_and_legacy() {
-  assert_eq "$(dlr_answered '**[deployer] BLOCKED**' "$DLR_DEC")" "1" "AC4: delivery-lead DECISION answers the gate" || return 1
-  assert_eq "$(dlr_answered '**[deployer] BLOCKED**' $'**[delivery-lead] JP CONFIRMED**\nResolves: x')" "1" "AC4: delivery-lead JP CONFIRMED answers" || return 1
-  assert_eq "$(dlr_answered '**[deployer] BLOCKED**' $'**[project-manager] DECISION**\nResolves: x')" "1" "AC4: legacy still answers" || return 1
-  assert_eq "$(dlr_answered '**[deployer] BLOCKED**' '**[jp] GO**')" "1" "AC4: jp still answers" || return 1
+  assert_eq "$(dlr_answered '**[deployer] BLOCKED**' '**[delivery-lead] we wait, not urgent**')" "1" "AC4: delivery-lead free-text reply answers the gate" || return 1
+  assert_eq "$(dlr_answered '**[deployer] BLOCKED**' '**[project-manager] we wait, not urgent**')" "1" "AC4: legacy project-manager free-text reply answers" || return 1
+  assert_eq "$(dlr_answered '**[deployer] BLOCKED**' '**[jp] looks fine**')" "1" "AC4: jp free-text reply still answers" || return 1
+}
+
+# parity: rc_gate_facts output (gate time, answered, gate line 2) is identical for the two spellings
+test_dlr_ac4_reconcile_gate_facts_parity_delivery_lead_vs_legacy() {
+  local dl pm
+  dl=$(dlr_facts '**[deployer] BLOCKED**' $'**[delivery-lead] DECISION**\nResolves: x')
+  pm=$(dlr_facts '**[deployer] BLOCKED**' $'**[project-manager] DECISION**\nResolves: x')
+  assert_ne "$dl" "" "AC4: rc_gate_facts produced output for the delivery-lead thread" || return 1
+  assert_eq "$dl" "$pm" "AC4: rc_gate_facts identical for [delivery-lead] and [project-manager] DECISION" || return 1
 }
 
 test_dlr_ac4_reconcile_notes_are_not_answers() {

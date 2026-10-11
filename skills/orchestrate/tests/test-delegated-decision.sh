@@ -47,7 +47,7 @@ ROOT_DD=$(cd "$HERE_DD/../../.." && pwd)
 SUP_DD="$HERE_DD/../supervisor.sh"
 MARKERS_DD="$ROOT_DD/hooks/pipeline-markers.sh"
 ORCH_DD="$ROOT_DD/agents/orchestrator.md"
-PMGR_DD="$ROOT_DD/agents/project-manager.md"
+PMGR_DD="$ROOT_DD/agents/delivery-lead.md"   # #192: content moved from project-manager.md (now a thin alias)
 README_DD="$ROOT_DD/README.md"
 CLAUDE_DD="$ROOT_DD/CLAUDE.md"
 AGREADME_DD="$ROOT_DD/agents/README.md"
@@ -376,8 +376,8 @@ test_dd_ac17_project_manager_agent_contents() {
   local s
   (cd "$ROOT_DD" && git ls-files --error-unmatch agents/project-manager.md >/dev/null 2>&1) \
     || { fail "AC17: agents/project-manager.md must exist and be tracked"; return 1; }
-  dd_has "$PMGR_DD" 'name: project-manager' || return 1
-  for s in '**[project-manager] DECISION**' '**[project-manager] JP CONFIRMED**' 'Resolves:' '**[project-manager] NOTE**' \
+  dd_has "$PMGR_DD" 'name: delivery-lead' || return 1   # #192: content lives in delivery-lead.md; alias file existence checked above
+  for s in '**[delivery-lead] DECISION**' '**[delivery-lead] JP CONFIRMED**' 'Resolves:' '**[delivery-lead] NOTE**' \
            'AWAITING GO' 'orchestrate.sh' 'VM cannot read'; do
     dd_has "$PMGR_DD" "$s" || return 1
   done
@@ -388,7 +388,7 @@ test_dd_ac17_project_manager_agent_contents() {
 
 test_dd_ac18_project_manager_sections_and_untouched_parts_byte_identical() {
   local n head tail
-  [ -f "$PMGR_DD" ] || { fail "AC18: agents/project-manager.md missing"; return 1; }
+  [ -f "$PMGR_DD" ] || { fail "AC18: agents/delivery-lead.md missing"; return 1; }
   for n in 1 2 3 4 5 6 7 8; do
     grep -q "^## $n\\. " "$PMGR_DD" || { fail "AC18: heading '## $n.' missing"; return 1; }
   done
@@ -397,8 +397,9 @@ test_dd_ac18_project_manager_sections_and_untouched_parts_byte_identical() {
   tail=$(awk '/^## 3\. Start-up/{f=1} f' "$PMGR_DD" | dd_sha)
   # re-pinned for #98 (model line only)
   # re-pinned for #106 (tail hash: project-manager.md line 104 only)
-  assert_eq "$head" "48559acd3e9f4a55feb1f8938d40b5afc0e1c3f4a6d9da9a8436f5348d8b826d" "AC18: frontmatter + section 1 (re-pinned for a9439aa, model line only)" || return 1
-  assert_eq "$tail" "36af9d3a6397ced3418815c18e0cd16e70efc4464b2b380fbb6abd7592b1dc79" "AC18: sections 3-8 (re-pinned for #106, line 104 only)" || return 1
+  # re-pinned for #192 (delivery-lead.md: name, intro sentence, DECISION marker spelling; tail: status-card sentence only)
+  assert_eq "$head" "81b0a7fddfc1e8a62b71d8e7fde7c1c0f025cdfb7bf9c0a1fed01aa9d1c56847" "AC18: frontmatter + section 1 (re-pinned for #192, rename only)" || return 1
+  assert_eq "$tail" "44c97882b664348d888473238c987acff6d5f12c98482b0be3c3796de6347ca9" "AC18: sections 3-8 (re-pinned for #192, status-card sentence only)" || return 1
 }
 
 # ---------------------------------------------------------------------------------------- AC19-AC20 docs
@@ -595,9 +596,10 @@ test_dd_i76_ac8_no_new_mechanisms() {   # characterisation
   # orchestrate.sh dropped: #94 AC3 must edit it (launch writes the marker file)
   # whole-file check narrowed to markers_for/marker_re: #136 AC10 appends block_classes()
   local want got
+  # #192: also strip only the `delivery-lead)` case line and the ` delivery-lead` token, on both sides
   # #115: also strip only `|REJECTED` from the product-manager/fullstack-developer lines, on both sides (REJECTED is #115's marker)
-  want=$(cd "$ROOT_DD" && git show "$base:hooks/pipeline-markers.sh" | awk '/^(markers_for|marker_re)\(\)/ {p=1} p {print} p && /^}/ {p=0}' | sed -e '/^ *intake) /d' -e 's/ intake; do/; do/' -e 's/|REJECTED//' -e 's/REJECTED|//')   # #114: strip only intake)/token on both sides
-  got=$(cd "$ROOT_DD" && awk '/^(markers_for|marker_re)\(\)/ {p=1} p {print} p && /^}/ {p=0}' hooks/pipeline-markers.sh | sed -e '/^ *intake) /d' -e 's/ intake; do/; do/' -e 's/|REJECTED//' -e 's/REJECTED|//')   # #114
+  want=$(cd "$ROOT_DD" && git show "$base:hooks/pipeline-markers.sh" | awk '/^(markers_for|marker_re)\(\)/ {p=1} p {print} p && /^}/ {p=0}' | sed -e '/^ *intake) /d' -e '/^ *delivery-lead) /d' -e 's/ delivery-lead project-manager/ project-manager/' -e 's/ intake; do/; do/' -e 's/|REJECTED//' -e 's/REJECTED|//')   # #114: strip only intake)/token on both sides
+  got=$(cd "$ROOT_DD" && awk '/^(markers_for|marker_re)\(\)/ {p=1} p {print} p && /^}/ {p=0}' hooks/pipeline-markers.sh | sed -e '/^ *intake) /d' -e '/^ *delivery-lead) /d' -e 's/ delivery-lead project-manager/ project-manager/' -e 's/ intake; do/; do/' -e 's/|REJECTED//' -e 's/REJECTED|//')   # #114
   [ -n "$want" ] || { fail "i76 AC8: markers_for/marker_re not found at merge-base"; return 1; }
   assert_eq "$got" "$want" "i76 AC8: markers_for/marker_re unchanged" || return 1
   dd_has "$MARKERS_DD" 'GO|MOCKUPS APPROVED' || return 1
