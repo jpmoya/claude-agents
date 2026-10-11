@@ -645,6 +645,24 @@ intake_launch() {  # <owner/repo> <local path> <issue> <prompt>
   echo $(( $(cat "$PIPE/$k.attempts" 2>/dev/null || echo 0) + 1 )) > "$PIPE/$k.attempts"
   slog "[intake] $1#$3 launched (attempt $(cat "$PIPE/$k.attempts"))"
 }
+# code-enforced gate (#176): the intake agent reads attacker-influenced text, so a source:sentry issue never keeps agent-go
+# unless SENTRY_AUTO_GO=1, whatever the agent did. Returns 1 when the label read fails (caller retries next tick), else 0.
+sentry_strip_go() {  # <owner/repo> <issue>
+  [ "${SENTRY_AUTO_GO:-0}" = 1 ] && return 0
+  local lbls
+  lbls=$(gh issue view "$2" --repo "$1" --json labels --jq '[.labels[].name] | join(" ")' 2>/dev/null) || {
+    slog "[intake] $1#$2 label read failed — will retry the source:sentry $LABEL_GO strip next tick"; return 1; }
+  case " $lbls " in *" source:sentry "*)
+    case " $lbls " in *" $LABEL_GO "*)
+      if gh issue edit "$2" --repo "$1" --remove-label "$LABEL_GO" >/dev/null 2>&1; then
+        slog "[intake] $1#$2 source:sentry carried $LABEL_GO with SENTRY_AUTO_GO=0 — removed"
+      else
+        slog "[intake] $1#$2 failed to remove $LABEL_GO from source:sentry issue — will retry next tick"; return 1
+      fi ;;
+    esac ;;
+  esac
+  return 0
+}
 INTAKE_RE=$(marker_re intake | jq -Rs .)
 for idf in "$PIPE"/intake-*.id; do   # runs that have exited: healthy -> clear state; no marker -> recover once, then give up
   [ -e "$idf" ] || break
@@ -654,17 +672,7 @@ for idf in "$PIPE"/intake-*.id; do   # runs that have exited: healthy -> clear s
   have=$(gh issue view "$i_num" --repo "$i_repo" --json comments,labels \
     --jq "([.comments[].body | split(\"\\n\")[0] | select(test(\"^\\\\*\\\\*\\\\[intake\\\\] (TRIAGED BUG|TRIAGED IDEA|DUPLICATE|NOISE|BLOCKED)\"))] | length) + ([(.labels // [])[].name | select(. == \"user-feedback\")] | length)" 2>/dev/null) || continue
   if [ "${have:-0}" -gt 0 ]; then
-    # code-enforced gate (#176): the intake agent reads attacker-influenced text, so a source:sentry issue never keeps agent-go
-    # unless SENTRY_AUTO_GO=1, whatever the agent did
-    if [ "${SENTRY_AUTO_GO:-0}" != 1 ]; then
-      i_lbls=$(gh issue view "$i_num" --repo "$i_repo" --json labels --jq '[.labels[].name] | join(" ")' 2>/dev/null) || i_lbls=""
-      case " $i_lbls " in *" source:sentry "*)
-        case " $i_lbls " in *" $LABEL_GO "*)
-          gh issue edit "$i_num" --repo "$i_repo" --remove-label "$LABEL_GO" >/dev/null 2>&1
-          slog "[intake] $i_repo#$i_num source:sentry carried $LABEL_GO with SENTRY_AUTO_GO=0 — removed" ;;
-        esac ;;
-      esac
-    fi
+    sentry_strip_go "$i_repo" "$i_num" || continue   # keep state so the next tick retries the strip
     gh issue edit "$i_num" --repo "$i_repo" --remove-label "$LABEL_IN_PROGRESS" >/dev/null 2>&1
     rm -f "$PIPE/$k".{id,pid,path,exit,exit-seen,attempts}; slog "[intake] $i_repo#$i_num done"
   elif [ ! -e "$PIPE/$k.exit-seen" ]; then
@@ -675,6 +683,7 @@ for idf in "$PIPE"/intake-*.id; do   # runs that have exited: healthy -> clear s
     launched=1
   else
     gh issue comment "$i_num" --repo "$i_repo" --body "**[supervisor] NOTE** intake ran twice without a handoff marker; the issue is back in the intake queue for manual attention." >/dev/null 2>&1
+    sentry_strip_go "$i_repo" "$i_num" || true
     gh issue edit "$i_num" --repo "$i_repo" --remove-label "$LABEL_IN_PROGRESS" --add-label user-feedback-intake >/dev/null 2>&1
     rm -f "$PIPE/$k".{id,pid,path,exit,exit-seen}; touch "$PIPE/$k.gaveup"; slog "[intake] $i_repo#$i_num gave up after 2 runs without a marker"
   fi
@@ -799,10 +808,8 @@ if [ "$launched" -eq 0 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
       [ "$launched" -ge 1 ] && break
       owner_repo="${entry%%:*}"; local_path="${entry#*:}"; local_path="${local_path/#\~/$HOME}"
       if [ ! -d "$local_path/.git" ]; then slog "[dispatch] $owner_repo — no local checkout at $local_path, skipping"; continue; fi
-      # code-enforced gate (#176): a source:sentry issue is never dispatched unless SENTRY_AUTO_GO=1
-      sentry_excl=true; [ "${SENTRY_AUTO_GO:-0}" = 1 ] && sentry_excl=false
       candidates=$(gh issue list --repo "$owner_repo" --state open --label "$LABEL_GO" --limit 50 --json number,labels \
-        --jq ".[] | select([.labels[].name] | ((index(\"$LABEL_IN_PROGRESS\") != null) or ($sentry_excl and (index(\"source:sentry\") != null))) | not) | .number" 2>/dev/null) || continue
+        --jq ".[] | select([.labels[].name] | index(\"$LABEL_IN_PROGRESS\") | not) | .number" 2>/dev/null) || continue
       for num in $candidates; do
         # local state: alive or queued here → not a candidate
         if [ -f "$PIPE/orch-$num.pid" ] && kill -0 "$(cat "$PIPE/orch-$num.pid")" 2>/dev/null; then continue; fi
