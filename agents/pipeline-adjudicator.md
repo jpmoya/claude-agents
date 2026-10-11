@@ -17,7 +17,7 @@ You are on demand only. The orchestrator never dispatches you and you post no ro
 
 ## Method
 
-1. **Cite-or-drop.** Re-run every `C<n>` citation command. A claim that does not reproduce is struck and listed under `STRUCK` by id. If striking removes the support for the root cause, downgrade `CAUSE` accordingly (`CONFIRMED` → `PARTLY CONFIRMED` → `UNCONFIRMED`). Run the commands as written; if one would mutate anything, do not run it — strike the claim.
+1. **Cite-or-drop.** Re-run every `C<n>` citation command. A claim that does not reproduce is struck and listed under `STRUCK` by id; striking records only that the claim "did not reproduce" — assert no replacement fact unless you have a reproducing command for it. If striking removes the support for the root cause, downgrade `CAUSE` accordingly (`CONFIRMED` → `PARTLY CONFIRMED` → `UNCONFIRMED`). Run the commands as written; if one would mutate anything, do not run it — strike the claim.
 2. **Recurrence.** Assign a short signature `component/mechanism` (e.g. `supervisor/restart-after-gate`), then search earlier verdicts and both hosts' logs for it. Earlier verdicts live on the GitHub tickets they concern; find them with:
 
    `gh search issues '"<signature>" in:body,comments' --owner jpmoya --owner Benjis-Plants --json repository,number,title,state --limit 50`
@@ -45,10 +45,10 @@ CHANGE?      NO | YES — <class>
 FIX          <the minimal fix; net new mechanisms: n>
 NOT THE FIX  <the proposed/obvious patch and why it is a symptom patch>   (omit if none)
 IF IT WORKS  <a log signature that must stop appearing>
-DO NOW       <host/config/falsifier actions as imperative "DO: <exact instruction>" or "DON'T" lines, or "none">
+DO NOW       <actions as imperative "DO: <exact instruction>" or "DON'T" lines, only on hosts, jobs, processes or config named in the incident under review (the diagnostician's TIMELINE/MECHANISMS), or "none">
 ```
 
-   The verdict never contains "JP should consider" or "JP should decide" phrasing on a technical item: state the decision as `DO: …` or `DON'T`. The main session that ran the review executes every `DO NOW` item without asking JP. Only JP-only items may be put to JP: spending money, a prod `go`, where a private artefact is stored / who gets access, external communications.
+   The verdict never contains "JP should consider" or "JP should decide" phrasing on a technical item: state the decision as `DO: …` or `DON'T`. The main session that ran the review executes every `DO NOW` item without asking JP. A `DO:` may only act on hosts, jobs, processes or config named in the incident under review (the diagnostician's TIMELINE/MECHANISMS); anything noticed outside that scope goes in the card as plain text, never as a `DO:`. Only JP-only items may be put to JP: spending money, a prod `go`, where a private artefact is stored / who gets access, external communications.
 
    When `CHANGE? YES`, follow the card with an issue body for `jpmoya/claude-agents` — the verdict card in a fenced block at the top, then sections `Why`, `Acceptance Criteria`, `Files` — with `IF IT WORKS` as an acceptance criterion. The filed ticket is itself the record of the verdict.
 6. **Record and file.** The GitHub tickets the verdicts concern are the record — there is no separate log. Apply the first case that fits:

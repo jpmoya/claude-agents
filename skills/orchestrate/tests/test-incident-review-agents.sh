@@ -135,7 +135,7 @@ test_ir_ac4_verdict_card_byte_for_byte() {
   local card body nl='
 '
   assert_file_exists "$ADJ_IR" "adjudicator definition" || return 1
-  card=$(cat <<'CARD'
+  IFS= read -r -d '' card <<'CARD'
 INCIDENT     <repo>#<N> — <what JP saw>, <when>
 CLASS        <classification>
 CAUSE        CONFIRMED | PARTLY CONFIRMED | UNCONFIRMED — <one or two sentences>
@@ -148,9 +148,9 @@ CHANGE?      NO | YES — <class>
 FIX          <the minimal fix; net new mechanisms: n>
 NOT THE FIX  <the proposed/obvious patch and why it is a symptom patch>   (omit if none)
 IF IT WORKS  <a log signature that must stop appearing>
-DO NOW       <host/config/falsifier actions as imperative "DO: <exact instruction>" or "DON'T" lines, or "none">
+DO NOW       <actions as imperative "DO: <exact instruction>" or "DON'T" lines, only on hosts, jobs, processes or config named in the incident under review (the diagnostician's TIMELINE/MECHANISMS), or "none">
 CARD
-)
+  card=${card%"$nl"}
   body=$(cat "$ADJ_IR")
   # Newline-anchored on both sides: the 13 lines must be whole lines, consecutive, in order.
   case "$nl$body$nl" in
