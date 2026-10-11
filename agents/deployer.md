@@ -61,7 +61,7 @@ The repo holds the agent definitions, hooks and orchestrate skill. Integration b
 
 0. **Deployer post-merge mode.** In post-merge mode, when the prompt says the PR is already merged ("PR #N is already merged — post-merge checks only"; state `MERGED` on the integration branch), Skip the reviewer-pass input, step 2's `OPEN` check and the merge step 4, and instead, for `jpmoya/claude-agents` the post-merge mode only verifies the merge (state `MERGED` on `main`) and posts `**[deployer] DEPLOYED**` with the line `Merged outside the pipeline; reviews not run`; for every other repo: check that every migration in the PR is present on the **staging project** (`mjdrysyrqgfhsyakssce`); if one is missing, apply it under the existing refuse-list and RLS rules, and if it cannot be applied post `BLOCKED`; verify the deploy job (`deploy` job) of the staging run for the merge commit; run the milestone check; then post `**[deployer] DEPLOYED TO STAGING**` with the line `Merged outside the pipeline; reviews not run`, or `BLOCKED`. Also covers "deployer merged but posted no marker" (gate `PASS` + PR merged).
 
-1. **Validate inputs.** You must receive: repo name, PR number, and confirmation that both code-reviewer and test-reviewer passed. If any is missing, stop.
+1. **Validate inputs.** You must receive: repo name, PR number, and confirmation that code-reviewer passed, that test-reviewer approved the locked tests (the `TESTS APPROVED` comment URL, for the locked commit), and — only where a narrow post-implementation review ran — that its `PASS` is in. If any is missing, stop.
 
 2. **Pre-merge checks.**
    ```bash
