@@ -46,7 +46,7 @@ check_overlap() {
     IFS=$'\t' read -r o_repo o_kind _ <<< "$(goal_parse "$o_spec" 2>/dev/null || true)"
     [ "$o_repo" = "$new_repo" ] || continue
     if [ "$new_kind" = msall ] || [ "$o_kind" = msall ]; then die "overlaps live goal $o_id (milestones:all on $new_repo)"; fi
-    other=$(goal_scope "$o_spec" 2>/dev/null) || continue
+    other=$(goal_scope "$o_spec" 2>/dev/null) || die "cannot read the scope of $o_id; refusing to go on blind"
     while IFS= read -r row; do
       [ -n "$row" ] || continue
       if printf '%s\n' "$new_rows" | grep -qxF -- "$row"; then die "overlaps live goal $o_id (shares $row)"; fi
@@ -96,7 +96,11 @@ cmd_register() {
   n=$(printf '%s' "$resp" | jq -r .number)
   mkdir -p "$LOGDIR/goals"
   write_cache "$id" "$block" "$n"
-  goal_launch "$id" || die "registered $id (issue #$n) but the launch failed"
+  if ! goal_launch "$id"; then
+    # don't leave a ghost active goal behind
+    { add_label "$n" goal-stopped && set_state "$n" closed; } 2>/dev/null || true
+    die "registered $id (issue #$n) but the launch failed; closed it as stopped"
+  fi
   echo "registered $id (issue #$n)"
   echo "log=$PIPE/goal-$id.log"
 }
@@ -125,6 +129,11 @@ cmd_stop() {
   id=$(_goal_resolve "${1:?goal or id required}") || die "goal not found: $1"
   g=$(_goal_find "$id") || die "goal not found: $id"
   issue=$(printf '%s' "$g" | jq -r .issue); st=$(printf '%s' "$g" | jq -r .st); host=$(printf '%s' "$g" | jq -r .host)
+  # kill locally first: the kill switch must work even when a GitHub write fails
+  if [ "$st" != delivered ] && [ "$host" = "$THIS_HOST" ]; then
+    goal_kill "$id"
+    mkdir -p "$PIPE"; touch "$PIPE/goal-$id.stopped"
+  fi
   if [ "$st" != stopped ] && [ "$st" != delivered ]; then
     ensure_label goal-stopped
     add_label "$issue" goal-stopped
@@ -133,10 +142,6 @@ cmd_stop() {
     echo "stopped $id (issue #$issue)"
   else
     echo "$id is already $st"
-  fi
-  if [ "$st" != delivered ] && [ "$host" = "$THIS_HOST" ]; then
-    goal_kill "$id"
-    mkdir -p "$PIPE"; touch "$PIPE/goal-$id.stopped"
   fi
 }
 

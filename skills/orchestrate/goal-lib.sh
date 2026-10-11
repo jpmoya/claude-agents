@@ -70,7 +70,10 @@ _goal_scope_rows() {
       ms=$(_goal_get_all "repos/$repo/milestones?state=open&per_page=100") || return 1
       for n in $(printf '%s' "$ms" | jq -r '.[].number'); do _goal_ms_rows "$repo" "$n" || return 1; done ;;
     t)
-      one=$(gh api "repos/$repo/issues/$ref" 2>/dev/null) || return 0   # missing ticket = empty scope
+      # only a 404 is an empty scope; any other failure (rate limit, 5xx, network) must not read as "no tickets"
+      one=$(gh api "repos/$repo/issues/$ref" 2>&1) || {
+        case "$one" in *"HTTP 404"*|*"Not Found"*) return 0 ;; *) return 1 ;; esac
+      }
       printf '%s' "$one" | jq -r --arg r "$repo" 'select(has("pull_request") | not) | "\($r)#\(.number)\t\(.state)"' ;;
   esac
 }
@@ -98,6 +101,7 @@ _goal_registry_json() {
           | {issue: $i.number, id: $b.id, spec: $b.spec, host: ($b.host // ""), instructions: ($b.instructions // ""),
              state: $i.state, closed_at: $i.closed_at, block: $b,
              st: (if $i.state == "closed" then (if ($l | index("goal-stopped")) then "stopped" else "delivered" end)
+                  elif ($l | index("goal-stopped")) then "stopped"
                   elif ($l | index("goal-held")) then "held"
                   elif ($l | index("goal-waiting-jp")) then "waiting_jp"
                   else "active" end)})'
