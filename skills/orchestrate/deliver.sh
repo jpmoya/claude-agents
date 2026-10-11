@@ -36,17 +36,22 @@ check_overlap() {
   local spec="$1" id="$2" skip="${3:-}" reg new_repo new_kind new_rows other row o_issue o_id o_spec o_st o_repo o_kind
   reg=$(_goal_registry_json) || die "cannot read the goal registry ($GOAL_REGISTRY_REPO); refusing to go on blind"
   IFS=$'\t' read -r new_repo new_kind _ <<< "$(goal_parse "$spec")"
-  new_rows=$(goal_scope "$spec") || die "cannot read the scope of $spec"
+  new_rows=$(goal_scope "$spec" "$id") || die "cannot read the scope of $spec"
   while IFS=$'\t' read -r o_issue o_id o_spec o_st; do
     [ -n "$o_issue" ] || continue
     [ "$o_issue" = "$skip" ] && continue
-    case "$o_st" in active|held|waiting_jp) ;; *) continue ;; esac
+    case "$o_st" in
+      active|held|waiting_jp) ;;
+      unreadable) die "cannot read the registry block of $o_id (issue #$o_issue); refusing to go on blind" ;;
+      *) continue ;;
+    esac
     [ "$o_id" = "$id" ] && die "overlaps live goal $o_id (same goal)"
     o_repo=""; o_kind=""
     IFS=$'\t' read -r o_repo o_kind _ <<< "$(goal_parse "$o_spec" 2>/dev/null || true)"
+    [ -n "$o_repo" ] || die "cannot read the stored spec of live goal $o_id; refusing to go on blind"
     [ "$o_repo" = "$new_repo" ] || continue
     if [ "$new_kind" = msall ] || [ "$o_kind" = msall ]; then die "overlaps live goal $o_id (milestones:all on $new_repo)"; fi
-    other=$(goal_scope "$o_spec" 2>/dev/null) || die "cannot read the scope of $o_id; refusing to go on blind"
+    other=$(goal_scope "$o_spec" "$o_id" 2>/dev/null) || die "cannot read the scope of $o_id; refusing to go on blind"
     while IFS= read -r row; do
       [ -n "$row" ] || continue
       if printf '%s\n' "$new_rows" | grep -qxF -- "$row"; then die "overlaps live goal $o_id (shares $row)"; fi
@@ -63,7 +68,7 @@ goal_state_label() {  # <registry goal json> -> status word
   local g="$1" st host pid
   st=$(printf '%s' "$g" | jq -r .st); host=$(printf '%s' "$g" | jq -r .host)
   case "$st" in
-    stopped|delivered|held) echo "$st" ;;
+    stopped|delivered|held|unreadable) echo "$st" ;;
     waiting_jp) echo "waiting on JP" ;;
     *)
       if [ "$host" = "$THIS_HOST" ]; then
@@ -98,8 +103,10 @@ cmd_register() {
   write_cache "$id" "$block" "$n"
   if ! goal_launch "$id"; then
     # don't leave a ghost active goal behind
-    { add_label "$n" goal-stopped && set_state "$n" closed; } 2>/dev/null || true
-    die "registered $id (issue #$n) but the launch failed; closed it as stopped"
+    if { add_label "$n" goal-stopped && set_state "$n" closed; } 2>/dev/null; then
+      die "registered $id (issue #$n) but the launch failed; closed it as stopped"
+    fi
+    die "registered $id (issue #$n) but the launch failed and I could not close it; run 'deliver.sh stop $id'"
   fi
   echo "registered $id (issue #$n)"
   echo "log=$PIPE/goal-$id.log"
@@ -115,9 +122,12 @@ cmd_status() {
     id=$(printf '%s' "$g" | jq -r .id)
     if [ -n "$want" ] && [ "$id" != "$want" ]; then continue; fi
     spec=$(printf '%s' "$g" | jq -r .spec)
-    rows=$(_goal_scope_rows "$spec" 2>/dev/null || true)
-    total=$(printf '%s\n' "$rows" | grep -c . || true)
-    closed=$(printf '%s\n' "$rows" | grep -c "$(printf '\t')closed\$" || true)
+    if rows=$(_goal_scope_rows "$spec" "$id" 2>/dev/null); then
+      total=$(printf '%s\n' "$rows" | grep -c . || true)
+      closed=$(printf '%s\n' "$rows" | grep -c "$(printf '\t')closed\$" || true)
+    else
+      total="?"; closed="?"
+    fi
     printf '%s  %s  host=%s  %s  %s/%s\n' "$id" "$spec" "$(printf '%s' "$g" | jq -r .host)" "$(goal_state_label "$g")" "$closed" "$total"
     n=$((n + 1))
   done <<< "$(printf '%s' "$reg" | jq -c '.[]')"
@@ -125,16 +135,18 @@ cmd_status() {
 }
 
 cmd_stop() {
-  local id g issue st host
+  local id g issue st host istate
   id=$(_goal_resolve "${1:?goal or id required}") || die "goal not found: $1"
   g=$(_goal_find "$id") || die "goal not found: $id"
   issue=$(printf '%s' "$g" | jq -r .issue); st=$(printf '%s' "$g" | jq -r .st); host=$(printf '%s' "$g" | jq -r .host)
+  istate=$(printf '%s' "$g" | jq -r .state)
   # kill locally first: the kill switch must work even when a GitHub write fails
   if [ "$st" != delivered ] && [ "$host" = "$THIS_HOST" ]; then
     goal_kill "$id"
     mkdir -p "$PIPE"; touch "$PIPE/goal-$id.stopped"
   fi
-  if [ "$st" != stopped ] && [ "$st" != delivered ]; then
+  # gate the writes on the registry issue's own state: it is closed last, so open means the stop is not finished
+  if [ "$istate" = open ]; then
     ensure_label goal-stopped
     add_label "$issue" goal-stopped
     post_note "$issue" "**[deliver] NOTE** stopped by $THIS_HOST"
@@ -155,6 +167,7 @@ cmd_resume() {
   host=$(printf '%s' "$g" | jq -r .host); spec=$(printf '%s' "$g" | jq -r .spec); block=$(printf '%s' "$g" | jq -c .block)
   case "$st" in
     delivered) die "$id is delivered; register a new goal instead" ;;
+    unreadable) die "cannot read the registry block of $id; fix or close its issue by hand" ;;
     active|waiting_jp) echo "$id is already $st"; return 0 ;;
   esac
   check_overlap "$spec" "$id" "$issue"
@@ -171,7 +184,13 @@ cmd_resume() {
   if [ "$host" = "$THIS_HOST" ]; then
     write_cache "$id" "$block" "$issue"
     mkdir -p "$LOGDIR/goals"
-    goal_launch "$id" || die "resumed $id but the launch failed"
+    if ! goal_launch "$id"; then
+      # same rollback as register: don't leave a reopened goal reading active with nothing running
+      if { add_label "$issue" goal-stopped && set_state "$issue" closed; } 2>/dev/null; then
+        die "resumed $id but the launch failed; closed it as stopped"
+      fi
+      die "resumed $id but the launch failed and I could not close it; run 'deliver.sh stop $id'"
+    fi
     echo "log=$PIPE/goal-$id.log"
   else
     echo "pinned to $host; run 'deliver.sh resume $id --here' to run it here"

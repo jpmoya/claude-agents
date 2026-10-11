@@ -59,27 +59,35 @@ _goal_ms_rows() {  # <repo> <milestone number> -> owner/repo#N<TAB>state, issues
   printf '%s' "$all" | jq -r --arg r "$1" '.[] | select(has("pull_request") | not) | "\($r)#\(.number)\t\(.state)"'
 }
 
-# _goal_scope_rows <spec> -> owner/repo#N<TAB>open|closed, one set of live REST calls
+# _goal_scope_rows <spec> [id] -> owner/repo#N<TAB>open|closed, one set of live REST calls.
+# With the id of an already-registered milestone goal, scope by the number in the id (ms-<n>): the title is only
+# resolved at register time, so a milestone renamed at ship does not break resume, brief or the overlap guard.
 _goal_scope_rows() {
   local line repo kind ref n ms one
   line=$(goal_parse "$1") || return 1
   IFS=$'\t' read -r repo kind ref <<< "$line"
   case "$kind" in
-    ms) n=$(_goal_ms_number "$repo" "$ref") || return 1; _goal_ms_rows "$repo" "$n" ;;
+    ms)
+      case "${2:-}" in
+        *-ms-[0-9]*) n="${2##*-ms-}"; case "$n" in *[!0-9]*) n="" ;; esac ;;
+        *) n="" ;;
+      esac
+      [ -n "$n" ] || n=$(_goal_ms_number "$repo" "$ref") || return 1
+      _goal_ms_rows "$repo" "$n" ;;
     msall)
       ms=$(_goal_get_all "repos/$repo/milestones?state=open&per_page=100") || return 1
       for n in $(printf '%s' "$ms" | jq -r '.[].number'); do _goal_ms_rows "$repo" "$n" || return 1; done ;;
     t)
       # only a 404 is an empty scope; any other failure (rate limit, 5xx, network) must not read as "no tickets"
       one=$(gh api "repos/$repo/issues/$ref" 2>&1) || {
-        case "$one" in *"HTTP 404"*|*"Not Found"*) return 0 ;; *) return 1 ;; esac
+        case "$one" in *"HTTP 404"*|*"Not Found"*|*"HTTP 410"*|*"Gone"*) return 0 ;; *) return 1 ;; esac
       }
       printf '%s' "$one" | jq -r --arg r "$repo" 'select(has("pull_request") | not) | "\($r)#\(.number)\t\(.state)"' ;;
   esac
 }
 
-# goal_scope <spec> -> one owner/repo#N per line (issues only, open and closed), read live every call
-goal_scope() { _goal_scope_rows "$1" | cut -f1; }
+# goal_scope <spec> [id] -> one owner/repo#N per line (issues only, open and closed), read live every call
+goal_scope() { local r; r=$(_goal_scope_rows "$@") || return 1; [ -z "$r" ] || printf '%s\n' "$r" | cut -f1; }
 
 # _goal_registry_json [all] -> JSON array of registry goals: open ones plus those closed within GOAL_RECENT_DAYS
 # (`all`: every closed one). state: active | held | waiting_jp | stopped | delivered.
@@ -96,15 +104,20 @@ _goal_registry_json() {
           | select(.state == "open" or (.closed_at != null and .closed_at >= $cut)))
     | map(. as $i
           | (try (($i.body // "") | capture("```json\\n(?<j>[^\\n]*)\\n```") | .j | fromjson) catch null) as $b
-          | select($b != null)
           | ([$i.labels[].name]) as $l
-          | {issue: $i.number, id: $b.id, spec: $b.spec, host: ($b.host // ""), instructions: ($b.instructions // ""),
+          | if $b == null then
+              (select($i.state == "open")
+               | {issue: $i.number, id: "registry-issue-\($i.number)", spec: "", host: "", instructions: "",
+                  state: $i.state, closed_at: $i.closed_at, block: null, st: "unreadable"})
+            else
+            {issue: $i.number, id: $b.id, spec: $b.spec, host: ($b.host // ""), instructions: ($b.instructions // ""),
              state: $i.state, closed_at: $i.closed_at, block: $b,
              st: (if $i.state == "closed" then (if ($l | index("goal-stopped")) then "stopped" else "delivered" end)
                   elif ($l | index("goal-stopped")) then "stopped"
                   elif ($l | index("goal-held")) then "held"
                   elif ($l | index("goal-waiting-jp")) then "waiting_jp"
-                  else "active" end)})'
+                  else "active" end)}
+            end)'
 }
 
 # goal_registry_list -> <registry issue number>\t<id>\t<state>
@@ -146,7 +159,7 @@ goal_brief() {
   spec=$(printf '%s' "$g" | jq -r .spec); instr=$(printf '%s' "$g" | jq -r .instructions)
   repo=$(goal_parse "$spec" | cut -f1)
   checkout=$(_goal_checkout "$repo") || checkout="(not in DISPATCH_REPOS)"
-  rows=$(_goal_scope_rows "$spec") || { echo "cannot read the scope of $spec" >&2; return 1; }
+  rows=$(_goal_scope_rows "$spec" "$id") || { echo "cannot read the scope of $spec" >&2; return 1; }
   _goal_have_marker_re
   printf 'You are the delivery lead for goal %s.\n' "$id"
   printf 'Goal: %s\nGoal id: %s\n' "$spec" "$id"
