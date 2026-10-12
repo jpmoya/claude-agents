@@ -342,6 +342,8 @@ goal_sync() {  # registry -> local: rebuild missing caches, propagate stop/close
     case "$st" in
       stopped|delivered)
         ls "$PIPE"/goal-"$id".* >/dev/null 2>&1 || continue
+        # act only on the issue the cache tracks: an old closed issue sharing the id must not kill a re-registered goal
+        [ "$(jq -r '.issue // empty' "$PIPE/goal-$id.json" 2>/dev/null)" = "$n" ] || continue
         goal_kill "$id"
         echo registry > "$PIPE/goal-$id.stopped"   # confirmed by the registry
         slog "[goal] $id closed in the registry ($st) — stopped" ;;
@@ -533,6 +535,7 @@ goal_tick_one() {  # <id>
   echo "$np" > "$PIPE/goal-$id.np"; echo "$new" > "$PIPE/goal-$id.snap"
   if [ "$np" -ge "$GOAL_MAX_NO_PROGRESS" ]; then goal_park "$id" "$issue"; return 0; fi
 
+  [ -f "$PIPE/goal-$id.stopped" ] && return 0   # a stop that landed during the scope reads
   if goal_launch "$id" >/dev/null 2>&1; then
     echo "$((restarts + 1 - clean))" > "$PIPE/goal-$id.restarts"
     slog "[goal] $id launched pid=$(cat "$PIPE/goal-$id.pid" 2>/dev/null) restarts=$(cat "$PIPE/goal-$id.restarts") np=$np mem=$(mem_available_mb)MB"
