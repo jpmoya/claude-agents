@@ -105,7 +105,7 @@ test_i106_no_new_mechanism_only_doc_files_and_tests_touched() {
   while IFS= read -r f; do
     [ -z "$f" ] && continue
     case "$f" in
-      CLAUDE.md|agents/orchestrator.md|agents/project-manager.md|skills/orchestrate/tests/*) ;;
+      CLAUDE.md|agents/orchestrator.md|agents/project-manager.md|agents/deployer.md|status-page/test/deployer-ci-wait.test.js|skills/orchestrate/tests/*) ;;
       # #114: exactly its Files-table paths
       agents/intake.md|agents/README.md|README.md|hooks/pipeline-markers.sh|hooks/require-handoff-marker.sh) ;;
       skills/orchestrate/intake-labels.sh|skills/orchestrate/scan-backlog.sh|skills/orchestrate/config.sh|skills/orchestrate/pipeline-lib.sh|skills/orchestrate/supervisor.sh) ;;
@@ -113,6 +113,14 @@ test_i106_no_new_mechanism_only_doc_files_and_tests_touched() {
       agents/delivery-lead.md|status-page/README.md|skills/orchestrate/reconcile-status.sh) ;;
       # #115: exactly its Files-table paths not already listed (agents/fullstack-developer.md, agents/product-manager.md, skills/orchestrate/test/*)
       agents/fullstack-developer.md|agents/product-manager.md|skills/orchestrate/test/*) ;;
+      # #193: exactly its new Files-table paths
+      skills/orchestrate/deliver.sh|skills/orchestrate/goal-lib.sh) ;;
+      # #188: exactly its Files-table paths not already listed
+      agents/solutions-architect.md|agents/pipeline-adjudicator.md) ;;
+      # #196: exactly its Files-table path not already listed
+      skills/orchestrate/config.local.example.sh) ;;
+      # #198: exactly its Files-table path not already listed
+      skills/orchestrate/SKILL.md) ;;
       *) bad="$bad $f" ;;
     esac
   done <<< "$changed"
@@ -123,7 +131,8 @@ test_i106_no_new_mechanism_only_doc_files_and_tests_touched() {
 test_i106_no_runtime_script_parses_final_report() {
   local hits
   hits=$(grep -lE 'Report to JP|STATUS: +<|NEEDED FROM YOU|SELF-HEAL TICKETS|marker trail' \
-    "$ROOT_106"/skills/orchestrate/*.sh "$ROOT_106"/hooks/* 2>/dev/null)
+    "$ROOT_106"/skills/orchestrate/*.sh "$ROOT_106"/hooks/* 2>/dev/null \
+    | grep -vxF "$ROOT_106/skills/orchestrate/goal-lib.sh")   # #195: goal-lib.sh composes (never parses) the standard card in its delivered/waiting comments
   assert_eq "$hits" "" "AC6: no runtime script/hook parses the final report" || return 1
 }
 

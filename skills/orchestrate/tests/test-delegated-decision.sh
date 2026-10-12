@@ -397,9 +397,10 @@ test_dd_ac18_project_manager_sections_and_untouched_parts_byte_identical() {
   tail=$(awk '/^## 3\. Start-up/{f=1} f' "$PMGR_DD" | dd_sha)
   # re-pinned for #98 (model line only)
   # re-pinned for #106 (tail hash: project-manager.md line 104 only)
-  # re-pinned for #192 (delivery-lead.md: name, intro sentence, DECISION marker spelling; tail: status-card sentence only)
+  # re-pinned for #168 (promotion-PR exception, §1 only) and #192 (delivery-lead.md: name, intro sentence, DECISION marker spelling)
   assert_eq "$head" "81b0a7fddfc1e8a62b71d8e7fde7c1c0f025cdfb7bf9c0a1fed01aa9d1c56847" "AC18: frontmatter + section 1 (re-pinned for #192, rename only)" || return 1
-  assert_eq "$tail" "44c97882b664348d888473238c987acff6d5f12c98482b0be3c3796de6347ca9" "AC18: sections 3-8 (re-pinned for #192, status-card sentence only)" || return 1
+  # re-pinned for #198 (§3 pacing sentence and §4 headless line) and #192 (status-card sentence rename only)
+  assert_eq "$tail" "fb03617fc4fc31263c4d51d527dce5901ce363312c0a7ffb09ce6b201cccae3e" "AC18: sections 3-8 (re-pinned for #198 + #192, rename only)" || return 1
 }
 
 # ---------------------------------------------------------------------------------------- AC19-AC20 docs

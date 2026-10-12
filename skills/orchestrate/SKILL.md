@@ -41,6 +41,22 @@ Label rule: `agent-go` = "approved, not launched anywhere yet"; launching anywhe
 - A manual `orchestrate.sh <repo> <issue>` clears tombstones and restart state and supersedes a queued entry.
 - `status` shows the state: `running`, `exited (will auto-restart)`, `stopped (manual)`, `held (needs JP)`, or `done`; `!! ALERT` lines say why something is held.
 
+## deliver.sh (goal-bound delivery lead)
+
+`skills/orchestrate/deliver.sh` registers a goal (a registry issue on GitHub) and starts one cycle of the delivery lead (`project-manager`). Keep-alive and completion belong to the supervisor, not to the agent.
+
+```bash
+~/.claude/skills/orchestrate/deliver.sh <goal> [instructions...]   # register + launch one cycle
+~/.claude/skills/orchestrate/deliver.sh status [goal|id]           # one line per goal (open, plus closed within 7 days)
+~/.claude/skills/orchestrate/deliver.sh stop <goal|id>             # label goal-stopped, close the registry issue, kill the local cycle (idempotent)
+~/.claude/skills/orchestrate/deliver.sh resume <goal|id> [--here]  # reopen a stopped/held goal; --here re-pins it to this host
+```
+
+- **Goal kinds:** `owner/repo:milestone:<number|exact title>`, `owner/repo:milestones:all`, `owner/repo#N`.
+- **Overlap refusal:** a new goal that shares a ticket, or a repo with a `milestones:all` goal, with a live goal (open registry entry: active, held or waiting on JP) is refused, and the error names the live conflicting goal. It fails closed when the registry is unreadable.
+- **Host pin:** a goal is pinned to the host that registered it; another host's supervisor does not run it. `resume <goal> --here` re-pins it to this host.
+- **State words in `status`:** running, between cycles, held, waiting on JP, stopped, delivered.
+
 ## Check on a run
 
 ```bash

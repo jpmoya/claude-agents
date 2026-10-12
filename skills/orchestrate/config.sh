@@ -11,7 +11,7 @@ LABEL_GO="agent-go"                 # JP: launch this anywhere — consumed at l
 LABEL_IN_PROGRESS="agent-in-progress"  # an orchestrator owns this issue on some machine; removed when terminal/held
 
 MAX_CONCURRENT=3
-MAX_CLAUDE_PROCS=8                          # orchestrator pre-dispatch gate ceiling: counts `--agent` processes only (orchestrators + their stages, minus the caller). Must stay above what MAX_CONCURRENT orchestrators produce (each runs up to 2 stages in parallel) — raise it whenever MAX_CONCURRENT is raised.
+MAX_CLAUDE_PROCS=10                         # orchestrator pre-dispatch gate ceiling: counts pipeline-launched claude processes (orchestrators, their stages, delivery-lead goal runs and supervisor-launched intake/product-manager runs, minus the caller; a rough bound). must stay ≥ 3 × (1 + 2 stages) − 1 + MAX_GOALS — raise it whenever MAX_CONCURRENT or MAX_GOALS is raised.
 MEM_FLOOR_MB=1200
 MAX_NO_PROGRESS=3
 MAX_TOTAL=6
@@ -38,6 +38,16 @@ ROTATE_MIN_BYTES=1048576   # rotate supervisor.log / report-status.log / runs.js
 ROTATE_KEEP=12             # rotations kept per log
 RUNS_KEEP_DAYS=14          # runs.jsonl lines newer than this stay in the live file
 COST_CEILING_USD=40        # refuse a new fix-cycle developer/test-writer stage once a ticket's logged cost passes this; 0 = off
+
+# Goal-bound delivery lead (#193): the agent deliver.sh launches (claude-agents#192 flips the default) and the repo that
+# hosts the goal registry issues (label delivery-goal) — one registry for every goal, whatever repo the goal is on.
+GOAL_AGENT=project-manager
+GOAL_REGISTRY_REPO=jpmoya/claude-agents
+# Supervisor goal step (#195)
+MAX_GOALS=2                 # goal (delivery-lead) pids alive at once on this host; not counted in count_running
+GOAL_CYCLE_SECS=1200        # a cleanly ended cycle is relaunched only this long after its launch
+GOAL_SYNC_SECS=300          # registry sync + live-goal re-evaluation throttle, per host
+GOAL_MAX_NO_PROGRESS=3      # relaunch decisions with an unchanged scope snapshot before a goal is parked
 
 [ -f "$HOME/.claude/pipeline/config.local.sh" ] && source "$HOME/.claude/pipeline/config.local.sh"
 

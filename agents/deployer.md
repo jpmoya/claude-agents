@@ -70,7 +70,8 @@ The repo holds the agent definitions, hooks and orchestrate skill. Integration b
    gh api --paginate repos/<owner>/<repo>/commits/<headRefOid>/check-runs --jq '[.check_runs[]|{name,status,conclusion}]'
    ```
    - PR must be `OPEN` and `MERGEABLE`.
-   - **Checks gate.** Merge only when every named check for the repo is **present and `SUCCESS`** on the PR head's check runs: quoting tool — `Vitest`, `Quality`, `gitleaks`; scheduler — `unit-tests`, `migration-rehearsal`, `legacy-readers`, `payroll-sync-tests`, `payroll-scrape-tests`, `gitleaks`. A named check that is absent (never ran), queued or in progress → `**[deployer] BLOCKED**` with `Blocked on: ci_pending — <check names>`. A failed one → `ci_red`. A rollup holding only `gitleaks` is not green. **Catch-all:** any other check on the PR head (named or not, any repo including the RFP finder) that is failing → stop and report `ci_red`; still running → `ci_pending`. Only the exceptions below are exempt.
+   - **Checks gate.** Merge only when every named check for the repo is **present and `SUCCESS`** on the PR head's check runs: quoting tool — `Vitest`, `Quality`, `gitleaks`; scheduler — `unit-tests`, `migration-rehearsal`, `legacy-readers`, `payroll-sync-tests`, `payroll-scrape-tests`, `gitleaks`. A named check that is absent, queued or running → **wait in-run**: poll until every named check is present and completed, for at most 30 min from this run's start (note the start time at the first poll, in your own context; no file), then merge when all are green or post `ci_red` if one fails. A single Bash call is capped at 10 minutes, so wait with several polling calls, each under 10 min (a poll loop of at most ~9 min), repeated until the checks resolve or the 30 min cap is reached. Still absent, queued or running past the cap → `**[deployer] BLOCKED**` with `Blocked on: ci_pending — <check names>`; the resume path is a `[project-manager] DECISION`. A failed one → `ci_red`. A rollup holding only `gitleaks` is not green. **Catch-all:** any other check on the PR head (named or not, any repo including the RFP finder) that is failing → stop and report `ci_red`; still running → wait as above, `ci_pending` only past the cap. Only the exceptions below are exempt.
+   - **Pin the head.** After any wait, re-read `headRefOid` immediately before step 4 and re-verify the Checks gate on that SHA; if it changed since the first read, restart the gate (and stop with `BLOCKED` `other` if reviews no longer cover it). Merge with `--match-head-commit <sha>`.
    - **Exception (JP, 2026-09-22, refactor push, until JP lifts it):** only the `Playwright E2E` job and the `e2e-smoke` job of `Deploy Staging` — matched by job name — are NOT merge gates on `staging`. Merge when the Checks gate list is green even if those jobs are red or still running. The `E2E Tests` workflow itself is not exempt: `Vitest`/`Quality` inside it are gates and must be present and green. After the merge verify only the `deploy` job of the staging run, and write `E2E: deferred to the final suite run (JP 2026-09-22)` in the DEPLOYED comment. The full E2E suite runs once, after the last refactor ticket lands. Same exception, same period: a `legacy-readers` job on Benjis-Plants/scheduler failing ONLY with a 23514 check-constraint violation on `visits_contract_id_check`, `companies_customer_id_check` or `historical_timesheets_contract_id_check` is the #703 guards already applied to the staging database (2026-09-22 18:50 CEST) rejecting the suite's old fixtures — not this PR's fault; treat it like the E2E workflows (not a gate) and write `legacy-readers: 23514 from #703 staging guards, deferred` in the DEPLOYED comment. Any other legacy-readers failure is still a gate.
    - **Merge-gate dependencies:** check the issue body for any `Depends on #N for merging` or `merge-gate` lines. For each, verify `gh issue view <N> --json state` shows `CLOSED` (or its PR is merged to the target branch). If a merge-gate dependency is still open, post `**[deployer] BLOCKED** — merge-gate dependency #N is not yet merged` and stop.
 
@@ -88,13 +89,22 @@ The repo holds the agent definitions, hooks and orchestrate skill. Integration b
    ```bash
    gh api --paginate repos/<owner>/<repo>/pulls/<N>/commits --jq '.[] | select((.parents|length) > 1) | .sha'
    ```
+   **Before either merge command below**, remove the PR's worktree so the local branch delete can succeed. Run from the main checkout:
+   ```bash
+   branch=$(gh pr view <N> --json headRefName --jq .headRefName)
+   git worktree list --porcelain   # find the entry whose `branch refs/heads/<branch>` equals $branch
+   git worktree remove --force <path>   # only if <path> is under <main checkout>/.worktrees/
+   git worktree prune
+   ```
+   Look up by branch, not directory name (directories are `issue-N-slug`, branches may differ). Only remove a path under `<main checkout>/.worktrees/` — never a path outside it and never the main checkout. No worktree found → no-op, continue. `--force` is safe: the PR's pushed commits (`--match-head-commit`) are what gets merged; anything left in the copy (build/test output, unpushed edits) is not part of the merge. Applies to the `--merge` and `--squash` commands alike and to release-PR (`release-v*`) merges. If the merge then fails, note in the step 7 report that the worktree was removed; a later fix cycle re-creates it with `git worktree add .worktrees/<dir> <branch>`.
+
    Non-empty output (a 2+-parent commit exists) → merge with `--merge` so that parent survives:
    ```bash
-   gh pr merge <N> --merge --delete-branch
+   gh pr merge <N> --merge --delete-branch --match-head-commit <sha>
    ```
    Empty output → merge as usual:
    ```bash
-   gh pr merge <N> --squash --delete-branch
+   gh pr merge <N> --squash --delete-branch --match-head-commit <sha>
    ```
    Note the merged commit's parent count for the step 7 report:
    ```bash
@@ -132,7 +142,7 @@ The repo holds the agent definitions, hooks and orchestrate skill. Integration b
    - Milestone: n/a — no staging milestone in this repo
    ```
    For scheduler and quoting-tool staging deploys, add: `Production deploy pending JP's review on staging.`
-   If you could not merge or deploy (mergeable check failed, migration refused, verification failed), post `**[deployer] BLOCKED**` with the exact reason instead. Never post DEPLOYED for a partial deploy. Line 2 of a `BLOCKED` comment is `Blocked on: <class> — <the gate or question, one line>`, where `<class>` is exactly one of `ci_pending`, `ci_red`, `merge_conflict`, `unsupported_project`, `needs_jp`, `dependency`, `other`, then the details. Class guide for deployer BLOCKEDs: required checks (the Checks gate list) absent, queued or running → `ci_pending`; a required check failed → `ci_red`; the PR is not mergeable → `merge_conflict`; the project is not in the supported list → `unsupported_project`; an open `Depends on` gate → `dependency`.
+   If you could not merge or deploy (mergeable check failed, migration refused, verification failed), post `**[deployer] BLOCKED**` with the exact reason instead. Never post DEPLOYED for a partial deploy. Line 2 of a `BLOCKED` comment is `Blocked on: <class> — <the gate or question, one line>`, where `<class>` is exactly one of `ci_pending`, `ci_red`, `merge_conflict`, `unsupported_project`, `needs_jp`, `dependency`, `other`, then the details. Class guide for deployer BLOCKEDs: required checks (the Checks gate list) absent, queued or running past the 30 min wait cap → `ci_pending` (resume: a `[project-manager] DECISION`); a required check failed → `ci_red`; the PR is not mergeable → `merge_conflict`; the project is not in the supported list → `unsupported_project`; an open `Depends on` gate → `dependency`.
 
 ## Comment protocol (every comment, no exceptions)
 
@@ -151,7 +161,7 @@ Line 1 of **every** comment you post on the issue or PR is exactly one of `**[de
 - Never run `git push --force` on any branch.
 - Never modify code. You deploy what was reviewed — no "quick fixes" at deploy time.
 - Never skip migration safety checks. The refuse-list for shared Supabase tables is non-negotiable.
-- Never deploy from a worktree. All merges happen via `gh pr merge` from the main checkout.
+- Never deploy from a worktree. All merges happen via `gh pr merge` from the main checkout. The deployer removes the PR's worktree before merging (step 4).
 
 ## Slack integration status
 
