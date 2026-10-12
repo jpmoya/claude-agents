@@ -11,7 +11,7 @@ LABEL_GO="agent-go"                 # JP: launch this anywhere — consumed at l
 LABEL_IN_PROGRESS="agent-in-progress"  # an orchestrator owns this issue on some machine; removed when terminal/held
 
 MAX_CONCURRENT=3
-MAX_CLAUDE_PROCS=10                         # orchestrator pre-dispatch gate ceiling: counts pipeline-launched claude processes (orchestrators, their stages and delivery-lead goal runs, minus the caller). must stay ≥ 3 × (1 + 2 stages) − 1 + MAX_GOALS — raise it whenever MAX_CONCURRENT or MAX_GOALS is raised.
+MAX_CLAUDE_PROCS=10                         # orchestrator pre-dispatch gate ceiling: counts pipeline-launched claude processes (orchestrators, their stages, delivery-lead goal runs and supervisor-launched intake/product-manager runs, minus the caller; a rough bound). must stay ≥ 3 × (1 + 2 stages) − 1 + MAX_GOALS — raise it whenever MAX_CONCURRENT or MAX_GOALS is raised.
 MEM_FLOOR_MB=1200
 MAX_NO_PROGRESS=3
 MAX_TOTAL=6

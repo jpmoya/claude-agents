@@ -223,7 +223,7 @@ On any cap hit (pre-impl, post-impl, or the second TEST DEFECT round), before th
 
 ## Concurrency gate (before every dispatch)
 
-Before launching any agent, check how many pipeline Claude Code processes (`claude --agent …`: orchestrators, their stages and delivery-lead goal runs) are already running. Too many concurrent sessions hit the account's API rate limit and cause agents to stall with zero output. JP's interactive sessions are not counted — the pipeline cannot drain them (claude-agents#40). The ceiling is `MAX_CLAUDE_PROCS` in `skills/orchestrate/config.sh` (per-machine override in `~/.claude/pipeline/config.local.sh`).
+Before launching any agent, check how many pipeline Claude Code processes (`claude --dangerously-skip-permissions --agent …`: orchestrators, their stages and delivery-lead goal runs) are already running. Too many concurrent sessions hit the account's API rate limit and cause agents to stall with zero output. JP's interactive sessions are not counted — the pipeline cannot drain them (claude-agents#40). The ceiling is `MAX_CLAUDE_PROCS` in `skills/orchestrate/config.sh` (per-machine override in `~/.claude/pipeline/config.local.sh`).
 
 ```bash
 wait_for_capacity() {
