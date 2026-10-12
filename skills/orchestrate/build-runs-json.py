@@ -15,6 +15,9 @@
 #   staging | approved: emit the payload's "staging" / "approved" array (issue #65) from
 #               <pipe-dir>/status-staging.json / status-approved.json (written by reconcile-status.sh);
 #               no stdin, `[]` when the file is missing or unreadable.
+#   goals:      emit the payload's "goals" array (issue #197) from <pipe-dir>/goal-<id>.json (+ .pid,
+#               .held, .stopped); no stdin, `[]` when none. Local files only; spec is NOT sanitised
+#               here (validate.js does that).
 import sys
 import json
 import subprocess
@@ -229,6 +232,75 @@ if completed_mode:
 
 if mode in LIST_CAPS:
     print(json.dumps(build_list(mode)))
+    sys.exit(0)
+
+GOALS_MAX = 50
+GOAL_STATES = ("active", "waiting_jp", "held")
+
+
+def _pid_alive(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            pid = int(f.readline(32).strip())
+        if pid <= 0:
+            return False
+        os.kill(pid, 0)
+    except PermissionError:
+        return True
+    except (OSError, ValueError, OverflowError):
+        return False
+    return True
+
+
+def build_goals():
+    if not pipe_dir:
+        return []
+    try:
+        names = sorted(n for n in os.listdir(pipe_dir) if n.startswith("goal-") and n.endswith(".json"))
+    except OSError:
+        return []
+    out = []
+    for name in names:
+        stem = name[:-5]
+        base = os.path.join(pipe_dir, stem)
+        try:
+            with open(base + ".json", encoding="utf-8") as f:
+                d = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(d, dict):
+            continue
+        if not all(isinstance(d.get(k), str) and d.get(k) for k in ("id", "spec", "host")):
+            continue
+        if os.path.exists(base + ".stopped"):
+            continue
+        held_file = os.path.exists(base + ".held")
+        raw_state = d.get("state")
+        if raw_state is None:
+            raw_state = "held" if held_file else "active"
+        if raw_state not in GOAL_STATES:
+            continue
+        if held_file or raw_state == "held":
+            state = "held"
+        elif raw_state == "waiting_jp":
+            state = "waiting_jp"
+        else:
+            state = "running" if _pid_alive(base + ".pid") else "between_cycles"
+        entry = {"id": d["id"], "spec": d["spec"], "host": d["host"], "state": state}
+        for k in ("scope_total", "scope_delivered"):
+            v = d.get(k)
+            if isinstance(v, int) and not isinstance(v, bool):
+                entry[k] = v
+        if isinstance(d.get("last_cycle_at"), str) and ISO_Z_RE.match(d["last_cycle_at"]):
+            entry["last_cycle_at"] = d["last_cycle_at"]
+        out.append(entry)
+        if len(out) >= GOALS_MAX:
+            break
+    return out
+
+
+if mode == "goals":
+    print(json.dumps(build_goals()))
     sys.exit(0)
 
 # A non-running row whose ticket is already on this host's staging list is not "in flight" (#65).

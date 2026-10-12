@@ -70,6 +70,10 @@ _rs_build_list_json() {  # <staging|approved>: the payload's host-published GitH
   python3 "$RS_HERE/build-runs-json.py" "$(_rs_aliases_arg)" "$HOME/.claude/pipeline/runs.jsonl" "$PIPE" "$1" </dev/null
 }
 
+_rs_build_goals_json() {  # the payload's goals array (issue #197), local goal-<id>.* files only
+  python3 "$RS_HERE/build-runs-json.py" "$(_rs_aliases_arg)" "$HOME/.claude/pipeline/runs.jsonl" "$PIPE" goals </dev/null
+}
+
 _rs_supervisor_last_tick() {  # mtime of the supervisor's own log, else "now" (no supervisor has run yet)
   local log="$LOGDIR/supervisor.log" epoch
   if [ -e "$log" ]; then
@@ -84,7 +88,7 @@ print(datetime.datetime.fromtimestamp(int(sys.argv[1]), tz=datetime.timezone.utc
 }
 
 build_payload() {
-  local runs_tsv running queued runs_json completed_json staging_json approved_json
+  local runs_tsv running queued runs_json completed_json staging_json approved_json goals_json
   runs_tsv=$(derive_runs)
   running=$(printf '%s\n' "$runs_tsv" | awk -F'\t' '$3=="running"{c++} END{print c+0}')
   queued=$(printf '%s\n' "$runs_tsv" | awk -F'\t' '$3=="queued"{c++} END{print c+0}')
@@ -94,7 +98,9 @@ build_payload() {
   [ -n "$completed_json" ] || completed_json='[]'
   staging_json=$(_rs_build_list_json staging);   [ -n "$staging_json" ] || staging_json='[]'
   approved_json=$(_rs_build_list_json approved); [ -n "$approved_json" ] || approved_json='[]'
+  goals_json=$(_rs_build_goals_json); [ -n "$goals_json" ] || goals_json='[]'
   jq -n \
+    --argjson goals "$goals_json" \
     --arg sent_at "$SENT_AT" \
     --arg tick "$SUPERVISOR_LAST_TICK" \
     --argjson running "$running" \
@@ -106,7 +112,7 @@ build_payload() {
     --argjson approved "$approved_json" \
     '{v: 1, sent_at: $sent_at, supervisor_last_tick: $tick,
       capacity: {running: $running, max: $max, queued: $queued}, runs: $runs, completed: $completed,
-      staging: $staging, approved: $approved}'
+      staging: $staging, approved: $approved} + (if ($goals | length) > 0 then {goals: $goals} else {} end)'
 }
 
 SENT_AT=$(python3 -c "import datetime; print(datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))")
