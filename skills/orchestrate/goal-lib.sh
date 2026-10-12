@@ -2,7 +2,7 @@
 # Goal-bound delivery lead library (#193), sourced by deliver.sh (and supervisor.sh from #195).
 # A goal is a registry issue on GitHub (label delivery-goal); $PIPE/goal-<id>.* is only a host-local cache.
 # GitHub calls here are REST (`gh api`, writes included) — the GraphQL budget is the one that ran out in #57 —
-# except the per-ticket marker read (latest_marker, `gh issue view --json`, GraphQL), once per ticket per sync.
+# except the per-ticket marker read (latest_marker via supervisor.sh, a GraphQL call), once per ticket per sync.
 # Needs config.sh + pipeline-lib.sh (pipeline_host, SETSID) sourced first; bash 3.2 compatible.
 
 _GOAL_LIB_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
