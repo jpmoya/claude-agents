@@ -354,7 +354,7 @@ done
 When the wait ends without a marker:
 
 1. **Process exited** → go straight to the handoff recovery below (once), then the no-marker report. No further waiting. Log the dispatch with `"outcome":"stall"` (or `recovered`) and `"nag_mtime":"<epoch-or-none>"` (`stat -f %m /tmp/pipeline/<N>-<agent>-nags.txt`, read at log time, informational only).
-2. **Cap hit, process alive** → stop polling. `tail -3 /tmp/pipeline/run-<issue>-<agent>.log` (reporting only), log the dispatch with `"outcome":"no-marker"`, and report to JP that the stage is still running and unreported. Do not kill it, do not dispatch anything else: headless stages are one-shot and exit on their own, and the supervisor's relaunch picks up the result.
+2. **Cap hit, process alive** → stop polling. `tail -3 /tmp/pipeline/run-<issue>-<agent>.log` (reporting only), log the dispatch with `"outcome":"no-marker"`, then `log_run '"event":"terminal","repo":"<owner/repo>","issue":<N>,"state":"stage running at cap","next_action":"supervisor relaunch picks up result"'` (the supervisor reads this exact row to tell a cap exit from a silent one), and report to JP that the stage is still running and unreported. Do not kill it, do not dispatch anything else: headless stages are one-shot and exit on their own, and the supervisor's relaunch picks up the result.
 
 Why the caps are tight: on 2026-09-06, 6 of 35 dispatches ended no-marker after 10–45 min of waiting each, and the old 45-minute loop waited that long even for processes that had already died. Since 2026-09-08 the launchers lift the 600s background-task ceiling that used to kill headless sessions mid-stage, so a stage alive at its cap is left running and reported, never killed.
 
