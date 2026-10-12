@@ -259,7 +259,11 @@ test_dlr_ac6_no_project_manager_outside_allowlist() {
   local hits
   hits=$(cd "$ROOT_DLR" && git grep -inI "project[- ]manager" -- . \
           ':(exclude)agents/project-manager.md' ':(exclude)skills/orchestrate/tests' ':(exclude)skills/orchestrate/test' \
-          ':(exclude)status-page/test' | grep -viE 'legacy|deprecated' || true)
+          ':(exclude)status-page/test' | grep -viE 'legacy|deprecated' \
+          | grep -vE "^hooks/pipeline-markers\.sh:[0-9]+:[[:space:]]*project-manager\)[[:space:]]+echo 'DECISION\|JP CONFIRMED'" \
+          | grep -vE "^hooks/pipeline-markers\.sh:[0-9]+:.*[[:space:]]jp delivery-lead project-manager intake; do" || true)
+  # hooks/pipeline-markers.sh is exempt on exactly two lines, by content (#192 DECISION 6132261664): the
+  # alias case-pattern line and the marker_re token list. Any other mention there still fails.
   assert_eq "$hits" "" "AC6: project-manager/project manager outside allowlist:
 $hits" || return 1
 }
