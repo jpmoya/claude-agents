@@ -89,6 +89,15 @@ The repo holds the agent definitions, hooks and orchestrate skill. Integration b
    ```bash
    gh api --paginate repos/<owner>/<repo>/pulls/<N>/commits --jq '.[] | select((.parents|length) > 1) | .sha'
    ```
+   **Before either merge command below**, remove the PR's worktree so the local branch delete can succeed. Run from the main checkout:
+   ```bash
+   branch=$(gh pr view <N> --json headRefName --jq .headRefName)
+   git worktree list --porcelain   # find the entry whose `branch refs/heads/<branch>` equals $branch
+   git worktree remove --force <path>   # only if <path> is under <main checkout>/.worktrees/
+   git worktree prune
+   ```
+   Look up by branch, not directory name (directories are `issue-N-slug`, branches may differ). Only remove a path under `<main checkout>/.worktrees/` — never a path outside it and never the main checkout. No worktree found → no-op, continue. `--force` is safe: the PR's pushed commits (`--match-head-commit`) are what gets merged; anything left in the copy (build/test output, unpushed edits) is not part of the merge. Applies to the `--merge` and `--squash` commands alike and to release-PR (`release-v*`) merges. If the merge then fails, note in the step 7 report that the worktree was removed; a later fix cycle re-creates it with `git worktree add .worktrees/<dir> <branch>`.
+
    Non-empty output (a 2+-parent commit exists) → merge with `--merge` so that parent survives:
    ```bash
    gh pr merge <N> --merge --delete-branch --match-head-commit <sha>
@@ -152,7 +161,7 @@ Line 1 of **every** comment you post on the issue or PR is exactly one of `**[de
 - Never run `git push --force` on any branch.
 - Never modify code. You deploy what was reviewed — no "quick fixes" at deploy time.
 - Never skip migration safety checks. The refuse-list for shared Supabase tables is non-negotiable.
-- Never deploy from a worktree. All merges happen via `gh pr merge` from the main checkout.
+- Never deploy from a worktree. All merges happen via `gh pr merge` from the main checkout. The deployer removes the PR's worktree before merging (step 4).
 
 ## Slack integration status
 
