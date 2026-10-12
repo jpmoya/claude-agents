@@ -8,6 +8,7 @@
 # Exercised through `report-status.sh --print` (build + print the v1 payload; no lock, no network,
 # no state write — the design says ACs 1/2/5 test against exactly this entry point).
 
+FX_OWNER_REPO=project-a/repo-a   # run-key owner/repo of this file's fixtures (#213)
 HERE_AC12P=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 RS_AC12P="$HERE_AC12P/.."
 
@@ -92,8 +93,8 @@ test_ac2_held_then_stopped_omitted_from_next_payload() {
   assert_eq "$(run_field "$out1" 207 state)" "held" "AC2: first payload carries #207 as held" || { rm -rf "$pipe" "$home"; return 1; }
 
   # advance the SAME fixture directory: held -> stopped (a manual `orchestrate.sh stop`)
-  rm -f "$pipe/orch-207.held"
-  touch "$pipe/orch-207.stopped"
+  rm -f "$pipe/$(fx_key 207).held"
+  touch "$pipe/$(fx_key 207).stopped"
 
   out2=$(print_payload "$pipe" "$home")
   rm -rf "$pipe" "$home"

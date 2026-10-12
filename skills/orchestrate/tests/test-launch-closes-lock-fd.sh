@@ -6,6 +6,7 @@
 # PIPE + HOME (config.sh prepends $HOME/.local/bin to PATH, so the fake gh/claude installed there win
 # over any real binary). Placeholder repo names only.
 
+FX_OWNER_REPO=project-a/repo-a   # run-key owner/repo of this file's fixtures (#213)
 HERE_LFD=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ORCH_LFD="$HERE_LFD/../orchestrate.sh"
 
@@ -60,11 +61,11 @@ test_lfd_launch_without_fd9_is_unchanged() {
   out=$(HOME="$LFD_HOME" PATH="$LFD_HOME/.local/bin:/usr/bin:/bin" PIPE="$LFD_PIPE" QUEUE="$LFD_PIPE/queue" \
     "$ORCH_LFD" "$LFD_REPO" 42 2>&1 9>&-); rc=$?
   lfd_wait_for "$LFD_OUT" && state=$(cat "$LFD_OUT")
-  [ -s "$LFD_PIPE/orch-42.pid" ] && pidfile=present
+  [ -s "$LFD_PIPE/$(fx_key 42).pid" ] && pidfile=present
   lfd_cleanup
   assert_exit0 "$rc" "#56/AC3: hand launch with no fd 9 open exits 0" || return 1
   assert_contains "$out" "launched orchestrator" "#56/AC3: took the launch path" || return 1
-  assert_eq "$pidfile" "present" "#56/AC3: orch-42.pid written" || return 1
+  assert_eq "$pidfile" "present" "#56/AC3: $(fx_key 42).pid written" || return 1
   assert_eq "$state" "closed" "#56/AC3: the stub ran and saw no fd 9" || return 1
 }
 

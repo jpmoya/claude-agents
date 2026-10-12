@@ -2,6 +2,7 @@
 # A `date` stub that rejects -d sits first on PATH; the structural-hold branch must still hold / still restart.
 # Reuses the sq_* / ms_* helpers (same load trick as test-merged-pr-structural-hold.sh).
 
+FX_OWNER_REPO=project-a/repo-a   # run-key owner/repo of this file's fixtures (#213)
 HERE_BD=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT_BD=$(cd "$HERE_BD/../../.." && pwd)
 
@@ -29,12 +30,12 @@ bd_run() {
   sq_env open
   bd_install_date_stub
   mk_restarting "$SQ_PIPE" 42 "$SQ_REPO"
-  sq_iso_ago 600 > "$SQ_PIPE/orch-42.launched-at"
+  sq_iso_ago 600 > "$SQ_PIPE/$(fx_key 42).launched-at"
   sq_marker "$MS_IMPL"
   ms_seed_run_line "$1" "$2"
   sq_tick
   BD_LOG=$(sq_log)
-  BD_HELD=$(sq_present "$SQ_PIPE/orch-42.held")
+  BD_HELD=$(sq_present "$SQ_PIPE/$(fx_key 42).held")
   sq_cleanup
 }
 

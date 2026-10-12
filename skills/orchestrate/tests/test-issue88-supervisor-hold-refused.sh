@@ -6,6 +6,7 @@
 #   doc pins    supervisor stage tuple; orchestrator Loop cap + Run log; CLAUDE.md wording
 # Prefixed i88_ (all test files share one shell). Placeholder repos only.
 
+FX_OWNER_REPO=project-a/repo-a   # run-key owner/repo of this file's fixtures (#213)
 HERE_I88=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT_I88=$(cd "$HERE_I88/../../.." && pwd)
 
@@ -22,15 +23,15 @@ i88_run() {
   local stage="$1" result="$2" ago="$3" line_issue="$4" gate="${5:-**[fullstack-developer] IMPLEMENTED**}"
   sq_env open
   mk_restarting "$SQ_PIPE" 42 "$SQ_REPO"
-  sq_iso_ago 600 > "$SQ_PIPE/orch-42.launched-at"
+  sq_iso_ago 600 > "$SQ_PIPE/$(fx_key 42).launched-at"
   sq_marker "$gate"
   mkdir -p "$SQ_HOME/.claude/pipeline"
   printf '{"ts":"%s","host":"h","event":"validate","repo":"project-a/repo-a","issue":%s,"stage":"%s","result":"%s","reason":"x"}\n' \
     "$(sq_iso_ago "$ago")" "$line_issue" "$stage" "$result" >> "$SQ_HOME/.claude/pipeline/runs.jsonl"
   sq_tick
   I88_LOG=$(sq_log)
-  I88_HELD=$(sq_present "$SQ_PIPE/orch-42.held")
-  I88_QUEUED=$(sq_present "$SQ_PIPE/queue/orch-42.json")
+  I88_HELD=$(sq_present "$SQ_PIPE/$(fx_key 42).held")
+  I88_QUEUED=$(sq_present "$SQ_PIPE/queue/$(fx_key 42).json")
   sq_cleanup
 }
 

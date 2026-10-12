@@ -9,6 +9,7 @@
 # alphabetically, so that file is not loaded yet when this one is: source it here with run_test
 # neutralised (its cases must run once, from the runner, not twice). Issue 42 / placeholder repos only.
 
+FX_OWNER_REPO=project-a/repo-a   # run-key owner/repo of this file's fixtures (#213)
 HERE_FD=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 if ! declare -f sq_env >/dev/null 2>&1; then
   eval "fd_real_$(declare -f run_test)"
@@ -20,8 +21,8 @@ ORCH_FD="$HERE_FD/../orchestrate.sh"
 
 # fd_fast_tick — reset .launched-at to now (this "run" lived 0s), drop the queue entry, tick.
 fd_fast_tick() {
-  sq_iso_ago 0 > "$SQ_PIPE/orch-42.launched-at"
-  rm -f "$SQ_PIPE/queue/orch-42.json"
+  sq_iso_ago 0 > "$SQ_PIPE/$(fx_key 42).launched-at"
+  rm -f "$SQ_PIPE/queue/$(fx_key 42).json"
   sq_tick
 }
 
@@ -36,9 +37,9 @@ test_fd_1a_sixth_fast_exit_escalates_fifth_does_not() {
   fd_fast_fixture
   local i held5 held6 total5 log calls
   for i in 1 2 3 4 5; do fd_fast_tick; done
-  held5=$(sq_present "$SQ_PIPE/orch-42.held"); total5=$(sq_restarts_field total)
+  held5=$(sq_present "$SQ_PIPE/$(fx_key 42).held"); total5=$(sq_restarts_field total)
   fd_fast_tick
-  held6=$(sq_present "$SQ_PIPE/orch-42.held"); log=$(sq_log); calls=$(gh_calls "$SQ_GH")
+  held6=$(sq_present "$SQ_PIPE/$(fx_key 42).held"); log=$(sq_log); calls=$(gh_calls "$SQ_GH")
   sq_cleanup
   assert_eq "$total5" "5" "#38/1a: total=5 after five fast exits" || return 1
   assert_eq "$held5" "absent" "#38/1a: not held after five fast exits" || return 1
@@ -53,7 +54,7 @@ test_fd_1b_three_fast_exits_count_total_and_backoff() {
   fd_fast_tick; fd_fast_tick; fd_fast_tick
   local total count log lines held
   total=$(sq_restarts_field total); count=$(sq_restarts_field count)
-  held=$(sq_present "$SQ_PIPE/orch-42.held")
+  held=$(sq_present "$SQ_PIPE/$(fx_key 42).held")
   log=$(sq_log)
   lines=$(printf '%s\n' "$log" | grep -F "[queue-restart] #42" | grep -o 'backoff=[0-9]*s' | tr '\n' ' ')
   sq_cleanup
@@ -70,12 +71,12 @@ test_fd_1b_three_fast_exits_count_total_and_backoff() {
 test_fd_1c_non_transient_run_still_escalates_at_no_progress_cap() {
   sq_env open
   mk_restarting "$SQ_PIPE" 42 "$SQ_REPO"
-  sq_iso_ago 600 > "$SQ_PIPE/orch-42.launched-at"
+  sq_iso_ago 600 > "$SQ_PIPE/$(fx_key 42).launched-at"
   sq_marker "$SQ_READY"
   sq_seed_restarts 2 2 "$SQ_READY"   # count 2 -> this exit makes 3 = MAX_NO_PROGRESS
   sq_tick
   local held log
-  held=$(sq_present "$SQ_PIPE/orch-42.held"); log=$(sq_log)
+  held=$(sq_present "$SQ_PIPE/$(fx_key 42).held"); log=$(sq_log)
   sq_cleanup
   assert_eq "$held" "present" "#38/1c: held on the third no-progress non-transient exit" || return 1
   assert_contains "$log" "[escalate] #42" "#38/1c: escalation logged" || return 1
@@ -102,10 +103,10 @@ fd_launch_then_die() {
   sq_free_slots
   printf '#!/bin/bash\n%s\n' "$1" > "$SQ_GH/claude"; chmod +x "$SQ_GH/claude"
   sq_marker "$SQ_READY"
-  echo 0 > "$SQ_PIPE/orch-42.exit"
+  echo 0 > "$SQ_PIPE/$(fx_key 42).exit"
   mk_queued "$SQ_PIPE" 42 "$SQ_REPO"
   sq_tick
-  local pid; pid=$(cat "$SQ_PIPE/orch-42.pid" 2>/dev/null)
+  local pid; pid=$(cat "$SQ_PIPE/$(fx_key 42).pid" 2>/dev/null)
   [ -n "$pid" ] || return 1
   fd_wait_dead "$pid" || return 1
   sq_tick
@@ -115,7 +116,7 @@ test_fd_2a_killed_run_logs_unknown_exit_not_stale_zero() {
   fd_launch_then_die 'kill -9 $PPID' || { sq_cleanup; fail "#38/2a: fixture failed to launch/kill"; return 1; }
   local line last
   line=$(sq_log | grep -F "[queue-restart] #42")
-  last=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['history'][-1]['exit'])" "$SQ_PIPE/orch-42.restarts" 2>/dev/null)
+  last=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['history'][-1]['exit'])" "$SQ_PIPE/$(fx_key 42).restarts" 2>/dev/null)
   sq_cleanup
   assert_contains "$line" "exit=?" "#38/2a: killed run logs exit=?" || return 1
   assert_not_contains "$line" "exit=0" "#38/2a: stale exit=0 not reported" || return 1
@@ -132,14 +133,14 @@ test_fd_2b_real_exit_status_is_reported() {
 test_fd_2c_manual_relaunch_clears_stale_exit_file() {
   sq_env full
   mk_held "$SQ_PIPE" 42 "$SQ_REPO"
-  echo 0 > "$SQ_PIPE/orch-42.exit"
+  echo 0 > "$SQ_PIPE/$(fx_key 42).exit"
   local out rc
   out=$(sq_run "$ORCH_FD" "$SQ_REPO" 42 2>&1); rc=$?
-  local exit_state; exit_state=$(sq_present "$SQ_PIPE/orch-42.exit")
+  local exit_state; exit_state=$(sq_present "$SQ_PIPE/$(fx_key 42).exit")
   sq_cleanup
   assert_exit0 "$rc" "#38/2c: manual relaunch exits 0" || return 1
   assert_contains "$out" "queued #42" "#38/2c: relaunch queued (full capacity)" || return 1
-  assert_eq "$exit_state" "absent" "#38/2c: stale orch-42.exit removed" || return 1
+  assert_eq "$exit_state" "absent" "#38/2c: stale $(fx_key 42).exit removed" || return 1
 }
 
 run_test test_fd_1a_sixth_fast_exit_escalates_fifth_does_not

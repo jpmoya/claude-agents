@@ -14,6 +14,7 @@
 # actual diff/PR/issue text) is a separate obligation, called out in the handoff — this test can
 # only scan the working tree it has.
 
+FX_OWNER_REPO=project-a/repo-a   # run-key owner/repo of this file's fixtures (#213)
 HERE_AC17=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 RS_AC17="$HERE_AC17/.."
 ROOT_AC17=$(cd "$HERE_AC17/../../.." && pwd)

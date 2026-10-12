@@ -4,6 +4,7 @@
 # anywhere. (The alias-mapping correctness itself is asserted in test-ac1-ac2-payload.sh; this
 # file is the leak grep.)
 
+FX_OWNER_REPO=project-a/repo-a   # run-key owner/repo of this file's fixtures (#213)
 HERE_AC5=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 RS_AC5="$HERE_AC5/.."
 

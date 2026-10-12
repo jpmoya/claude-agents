@@ -3,6 +3,7 @@
 # agent-in-progress issue by its updatedAt instead of clearing the label at once.
 # Isolated HOME/PIPE/QUEUE/LOGDIR. Own gh stub (the shared fake has no updatedAt). Placeholder names only.
 
+FX_OWNER_REPO=project-a/repo-a   # run-key owner/repo of this file's fixtures (#213)
 HERE_Z=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ORCH_Z="$HERE_Z/../orchestrate.sh"
 SUP_Z="$HERE_Z/../supervisor.sh"
@@ -49,16 +50,16 @@ z_tick() {
 
 test_z_a_stop_queued_only_ticket_writes_tombstone() {
   z_env
-  echo '{"issue":"917"}' > "$Z_PIPE/queue/orch-917.json"   # queued, never launched: no orch-917.pid
+  echo '{"issue":"917"}' > "$Z_PIPE/queue/$(fx_key 917).json"   # queued, never launched: no $(fx_key 917).pid
   local out rc
-  out=$(z_run "$ORCH_Z" stop 917 2>&1); rc=$?
+  out=$(z_run "$ORCH_Z" stop "$FX_OWNER_REPO" 917 2>&1); rc=$?
   local tomb=absent queued=present
-  [ -f "$Z_PIPE/orch-917.stopped" ] && tomb=present
-  [ -f "$Z_PIPE/queue/orch-917.json" ] || queued=absent
+  [ -f "$Z_PIPE/$(fx_key 917).stopped" ] && tomb=present
+  [ -f "$Z_PIPE/queue/$(fx_key 917).json" ] || queued=absent
   z_cleanup
   assert_exit0 "$rc" "#93/a: stop exits 0 with no pid file" || return 1
-  assert_contains "$out" "orchestrator for #917 not running" "#93/a: says not running" || return 1
-  assert_eq "$tomb" "present" "#93/a: orch-917.stopped written" || return 1
+  assert_contains "$out" "orchestrator for $FX_OWNER_REPO#917 not running" "#93/a: says not running" || return 1
+  assert_eq "$tomb" "present" "#93/a: $(fx_key 917).stopped written" || return 1
   assert_eq "$queued" "absent" "#93/a: queue entry removed" || return 1
 }
 

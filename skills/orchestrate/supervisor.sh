@@ -580,8 +580,8 @@ except Exception:
     if do_launch "$q_repo" "$best_issue" "$q_extra" "$restart_n" "$q_reason" "$q_wait"; then
       rm -f "$best_qf"
       launched=1
-    else   # owner/repo unresolved: keep the entry, retry after the rate-limit backoff instead of re-posting every tick
-      python3 - "$best_qf" "$(( $(date +%s) + RATE_LIMIT_BACKOFF_SECS ))" <<'PY' 2>/dev/null
+    else   # owner/repo unresolved: keep the entry, retry after the first restart backoff step instead of re-posting every tick
+      python3 - "$best_qf" "$(( $(date +%s) + ${BACKOFF[0]} ))" <<'PY' 2>/dev/null
 import json, sys
 d = json.load(open(sys.argv[1])); d['not_before'] = int(sys.argv[2]); json.dump(d, open(sys.argv[1], 'w'))
 PY

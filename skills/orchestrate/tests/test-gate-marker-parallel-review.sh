@@ -13,6 +13,7 @@
 #
 # Expected values are hand-written from the ticket. Every function/variable is prefixed gm_ / GM_. Placeholder repo names only.
 
+FX_OWNER_REPO=project-a/repo-a   # run-key owner/repo of this file's fixtures (#213)
 HERE_GM=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT_GM=$(cd "$HERE_GM/../../.." && pwd)
 SUP_GM="$HERE_GM/../supervisor.sh"
@@ -106,13 +107,13 @@ test_gm_ac1_latest_marker_prints_the_developer_blocked() {
 test_gm_ac1_tick_holds_for_jp_and_does_not_restart() {
   gm_env
   mk_restarting "$GM_PIPE" 42 "$GM_REPO"
-  gm_iso_ago 1300 > "$GM_PIPE/orch-42.start"   # past GRACE_PERIOD_SECS
+  gm_iso_ago 1300 > "$GM_PIPE/$(fx_key 42).start"   # past GRACE_PERIOD_SECS
   gm_thread "$GM_WRITTEN" "$GM_BLOCKED" "$GM_APPROVED"
   HOME="$GM_HOME" PATH="$GM_GH:/usr/bin:/bin" PIPE="$GM_PIPE" QUEUE="$GM_PIPE/queue" LOGDIR="$GM_HOME/logs/pipeline" \
     SLACK_BOT_TOKEN="" SLACK_ENGINEERING_CHANNEL="" "$SUP_GM" >/dev/null 2>&1
   local held log queued
-  held=$([ -e "$GM_PIPE/orch-42.held" ] && echo present || echo absent)
-  queued=$([ -e "$GM_PIPE/queue/orch-42.json" ] && echo present || echo absent)
+  held=$([ -e "$GM_PIPE/$(fx_key 42).held" ] && echo present || echo absent)
+  queued=$([ -e "$GM_PIPE/queue/$(fx_key 42).json" ] && echo present || echo absent)
   log=$(cat "$GM_HOME/logs/pipeline/supervisor.log" 2>/dev/null)
   gm_cleanup
   assert_eq "$held" "present" "AC1: .held" || return 1
@@ -132,12 +133,12 @@ test_gm_ac2_blocked_then_approved_then_decision_prints_blocked_and_decision() {
 test_gm_ac2_tick_with_decision_takes_the_restart_path() {
   gm_env
   mk_restarting "$GM_PIPE" 42 "$GM_REPO"
-  gm_iso_ago 1300 > "$GM_PIPE/orch-42.start"
+  gm_iso_ago 1300 > "$GM_PIPE/$(fx_key 42).start"
   gm_thread "$GM_WRITTEN" "$GM_BLOCKED" "$GM_APPROVED" "$GM_DECISION"
   HOME="$GM_HOME" PATH="$GM_GH:/usr/bin:/bin" PIPE="$GM_PIPE" QUEUE="$GM_PIPE/queue" LOGDIR="$GM_HOME/logs/pipeline" \
     SLACK_BOT_TOKEN="" SLACK_ENGINEERING_CHANNEL="" "$SUP_GM" >/dev/null 2>&1
   local held log
-  held=$([ -e "$GM_PIPE/orch-42.held" ] && echo present || echo absent)
+  held=$([ -e "$GM_PIPE/$(fx_key 42).held" ] && echo present || echo absent)
   log=$(cat "$GM_HOME/logs/pipeline/supervisor.log" 2>/dev/null)
   gm_cleanup
   assert_eq "$held" "absent" "AC2: not held" || return 1
@@ -249,6 +250,22 @@ test_gm_ac6_definition_names_the_exception_once() {
 
 # ------------------------------------------------------------------------------------------ AC8
 
+# #213: run state is keyed by repo + number, so supervisor.sh changes throughout (per-run paths, the key plumbing through
+# terminal_kind/clear_in_progress/do_launch/log_run_exit/escalate, queue order by queued_at) and slack_thread_for /
+# notify_engineering moved to pipeline-lib.sh. Both sides are normalised by deleting exactly those lines/blocks, so every
+# other byte of supervisor.sh must still match the base. Same technique as #114/#115/#176 above, applied symmetrically.
+gm_213_filter() {
+  sed -e '/^    q_\(key\|order\)=\$(python3 -c "$/,/^" 2>\/dev\/null)$/d' -e '/^    else   # owner\/repo unresolved/,/^    fi$/d' \
+    -e '/orch-\$/d' -e '/\$key/d' -e '/\${key/d' -e '/\$q_key/d' -e '/\$best_key/d' -e '/run_key/d' -e '/#213/d' \
+    -e '/^slack_thread_for() {/,/^}/d' -e '/^notify_engineering() {/,/^}/d' -e '/^clear_in_progress() {/,/^}/d' \
+    -e '/^do_launch() {/,/^}/d' -e '/^escalate() {/,/^}/d' -e '/^terminal_kind() {/,/^}/d' -e '/^log_run_exit() {/,/^}/d' \
+    -e '/^# \(terminal_kind\|log_run_exit\) </d' -e '/log_run_exit "\$repo" "\$issue"/d' -e '/terminal_kind "\$marker" "\$issue"/d' \
+    -e '/escalate "\$repo" "\$issue" "\$restarts_file"/d' -e '/clear_in_progress "\$repo" "\$issue"/d' \
+    -e '/best_order/d' -e '/\$q_order/d' -e '/best_key=""/d' -e '/^  *issue=\$(basename "\$f" \.pid); issue=\${issue#orch-}$/d' \
+    -e '/^    q_key=\$(basename "\$qf" \.json)$/d' -e '/do_launch "\$q_repo"/d' -e '/rm -f "\$best_qf"/d' -e '/^ *launched=1$/d' \
+    -e '/\$k\.\(pid\|json\)/d' -e '/"\$PIPE\/\$k"\.{/d' -e '/^$/d'
+}
+
 test_gm_ac8_no_new_mechanism() {
   local base now was extra
   base=$(gm_base); [ -n "$base" ] || { fail "AC8: no merge-base with origin/main"; return 1; }
@@ -261,12 +278,12 @@ test_gm_ac8_no_new_mechanism() {
   assert_eq "$extra" "" "AC8: hooks/pipeline-markers.sh changed beyond #114's intake line + token" || return 1
   # supervisor.sh: everything except latest_marker is byte-identical
   # #114: also skip exactly the intake additions: the 3b step block (to its first blank line), its header-comment line, and step 5's one-line skip
-  now=$(awk '/^latest_marker\(\) \{/ {skip=1} !skip {print} skip && /^}/ {skip=0}' "$SUP_GM" | sed -e '/^# 3b\. Intake/,/^$/d' -e '/^#   3b\. intake: /d' -e '/an intake run (3b) owns it/d' -e '/^# 3c\. Spec/,/^$/d' -e '/^#   3c\. spec: /d' -e '/a spec run (3c) owns it/d' -e '/REJECTED/d' -e '/# #115 begin/,/# #115 end/d' | { shasum -a 256 2>/dev/null || sha256sum; } | cut -d' ' -f1)
-  was=$(cd "$ROOT_GM" && git show "$base:skills/orchestrate/supervisor.sh" | awk '/^latest_marker\(\) \{/ {skip=1} !skip {print} skip && /^}/ {skip=0}' | sed -e '/^# 3b\. Intake/,/^$/d' -e '/^#   3b\. intake: /d' -e '/an intake run (3b) owns it/d' -e '/^# 3c\. Spec/,/^$/d' -e '/^#   3c\. spec: /d' -e '/a spec run (3c) owns it/d' -e '/REJECTED/d' -e '/# #115 begin/,/# #115 end/d' | { shasum -a 256 2>/dev/null || sha256sum; } | cut -d' ' -f1)
+  now=$(awk '/^latest_marker\(\) \{/ {skip=1} !skip {print} skip && /^}/ {skip=0}' "$SUP_GM" | sed -e '/^# 3b\. Intake/,/^$/d' -e '/^#   3b\. intake: /d' -e '/an intake run (3b) owns it/d' -e '/^# 3c\. Spec/,/^$/d' -e '/^#   3c\. spec: /d' -e '/a spec run (3c) owns it/d' -e '/REJECTED/d' -e '/# #115 begin/,/# #115 end/d' | gm_213_filter | { shasum -a 256 2>/dev/null || sha256sum; } | cut -d' ' -f1)
+  was=$(cd "$ROOT_GM" && git show "$base:skills/orchestrate/supervisor.sh" | awk '/^latest_marker\(\) \{/ {skip=1} !skip {print} skip && /^}/ {skip=0}' | sed -e '/^# 3b\. Intake/,/^$/d' -e '/^#   3b\. intake: /d' -e '/an intake run (3b) owns it/d' -e '/^# 3c\. Spec/,/^$/d' -e '/^#   3c\. spec: /d' -e '/a spec run (3c) owns it/d' -e '/REJECTED/d' -e '/# #115 begin/,/# #115 end/d' | gm_213_filter | { shasum -a 256 2>/dev/null || sha256sum; } | cut -d' ' -f1)
   assert_eq "$now" "$was" "AC8: supervisor.sh outside latest_marker" || return 1
   # #115: also skip exactly the step-A additions: the 3c block (header `# 3c. Spec…` to its first blank line), its header-comment line `#   3c. spec: `, the one-line `a spec run (3c) owns it` skip, single lines mentioning REJECTED, and any multi-line REJECTED handling wrapped in `# #115 begin` … `# #115 end` comment lines
   # only the ticket's files (plus tests) changed
-  extra=$(cd "$ROOT_GM" && git diff --name-only "$base" | grep -vE '^(agents/orchestrator\.md|skills/orchestrate/supervisor\.sh|skills/orchestrate/pipeline-lib\.sh|hooks/sync-agents\.sh|hooks/no-duplicate-stage\.sh|skills/orchestrate/tests/)' | grep -vxE 'agents/intake\.md|agents/README\.md|README\.md|hooks/pipeline-markers\.sh|hooks/require-handoff-marker\.sh|skills/orchestrate/(intake-labels|scan-backlog|config|pipeline-lib)\.sh' | grep -vxE 'agents/fullstack-developer\.md|agents/product-manager\.md|agents/deployer\.md|status-page/test/deployer-ci-wait\.test\.js|skills/orchestrate/test/.*' | grep -vxE 'CLAUDE\.md|agents/pipeline-adjudicator\.md|agents/solutions-architect\.md' || true)   # #114 + #115: exactly their Files-table paths; #188 adds its Files-table docs/agent paths
+  extra=$(cd "$ROOT_GM" && git diff --name-only "$base" | grep -vE '^(agents/orchestrator\.md|skills/orchestrate/supervisor\.sh|skills/orchestrate/pipeline-lib\.sh|hooks/sync-agents\.sh|hooks/no-duplicate-stage\.sh|skills/orchestrate/tests/)' | grep -vxE 'agents/intake\.md|agents/README\.md|README\.md|hooks/pipeline-markers\.sh|hooks/require-handoff-marker\.sh|skills/orchestrate/(intake-labels|scan-backlog|config|pipeline-lib)\.sh' | grep -vxE 'agents/fullstack-developer\.md|agents/product-manager\.md|agents/deployer\.md|status-page/test/deployer-ci-wait\.test\.js|skills/orchestrate/test/.*' | grep -vxE 'CLAUDE\.md|agents/pipeline-adjudicator\.md|agents/solutions-architect\.md' | grep -vxE 'skills/orchestrate/(install|orchestrate|run-state|reconcile-status|pipeline-bridge-dispatch)\.sh|skills/orchestrate/build-runs-json\.py|skills/orchestrate/SKILL\.md' || true)   # #213: the run-key Files table   # #114 + #115: exactly their Files-table paths; #188 adds its Files-table docs/agent paths
   assert_eq "$extra" "" "AC8: files changed outside the ticket's list" || return 1
 }
 

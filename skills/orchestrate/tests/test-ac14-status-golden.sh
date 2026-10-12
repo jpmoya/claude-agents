@@ -37,22 +37,22 @@ build_golden_fixture() {
   sleep 300 &
   local pid101=$!
   AC14_PIDS="$AC14_PIDS $pid101"
-  echo "$pid101" > "$pipe/orch-101.pid"
-  echo "$repo_a" > "$pipe/orch-101.repo"
+  echo "$pid101" > "$pipe/orch-project-a_repo-a-101.pid"
+  echo "$repo_a" > "$pipe/orch-project-a_repo-a-101.repo"
 
   ( : ) & local pid102=$!; wait "$pid102" 2>/dev/null
-  echo "$pid102" > "$pipe/orch-102.pid"
-  echo "$repo_b" > "$pipe/orch-102.repo"
+  echo "$pid102" > "$pipe/orch-project-a_repo-a-102.pid"
+  echo "$repo_b" > "$pipe/orch-project-a_repo-a-102.repo"
 
   ( : ) & local pid103=$!; wait "$pid103" 2>/dev/null
-  echo "$pid103" > "$pipe/orch-103.pid"
-  echo "$repo_a" > "$pipe/orch-103.repo"
-  touch "$pipe/orch-103.held"
-  printf '2026-09-17T00:00:00Z Pipeline #103 waiting on JP\n' > "$pipe/orch-103.alert"
+  echo "$pid103" > "$pipe/orch-project-a_repo-a-103.pid"
+  echo "$repo_a" > "$pipe/orch-project-a_repo-a-103.repo"
+  touch "$pipe/orch-project-a_repo-a-103.held"
+  printf '2026-09-17T00:00:00Z Pipeline #103 waiting on JP\n' > "$pipe/orch-project-a_repo-a-103.alert"
 
   python3 -c "
 import json
-json.dump({'issue':'104','repo':'$repo_b','extra':'','reason':'queued','queued_at':'2026-09-17T00:00:00Z','not_before':0}, open('$pipe/queue/orch-104.json','w'))
+json.dump({'issue':'104','repo':'$repo_b','extra':'','reason':'queued','queued_at':'2026-09-17T00:00:00Z','not_before':0}, open('$pipe/queue/orch-project-a_repo-a-104.json','w'))
 "
 }
 

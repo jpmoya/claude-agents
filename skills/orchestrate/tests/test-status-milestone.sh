@@ -13,6 +13,7 @@ HERE_MS=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 RS_MS="$HERE_MS/.."
 
 MS_A="example-owner/project-a"
+FX_OWNER_REPO="$MS_A"   # run-key owner/repo of this file's fixtures (#213)
 
 ms_env() {
   MS_PIPE=$(new_pipe); MS_HOME=$(new_home)
@@ -40,7 +41,7 @@ ms_print() {
   HOME="$MS_HOME" PATH="$MS_BIN:/usr/bin:/bin" PIPE="$MS_PIPE" QUEUE="$MS_PIPE/queue" LOGDIR="$MS_HOME/logs/pipeline" \
     "$RS_MS/report-status.sh" --print 2>/dev/null
 }
-ms_file() { head -n1 "$MS_PIPE/orch-$1.milestone" 2>/dev/null || echo ABSENT; }
+ms_file() { head -n1 "$MS_PIPE/$(fx_key "$1").milestone" 2>/dev/null || echo ABSENT; }
 ms_json() {  # ms_json <json> <issue> -> the run's milestone, or MISSING_FIELD / NORUN
   printf '%s' "$1" | jq -r --arg n "$2" \
     '[.runs[] | select((.issue|tostring)==$n)] | if length==0 then "NORUN" else (.[0] | if has("milestone") then .milestone else "MISSING_FIELD" end) end' 2>/dev/null || echo INVALID_JSON
@@ -55,7 +56,7 @@ test_ms_writes_milestone_file_and_payload_key() {
   local f701 f702 f703 out
   f701=$(ms_file 701); f702=$(ms_file 702); f703=$(ms_file 703)
   out=$(ms_print)
-  local rel702; rel702=$(head -n1 "$MS_PIPE/orch-702.release" 2>/dev/null || echo ABSENT)
+  local rel702; rel702=$(head -n1 "$MS_PIPE/$(fx_key 702).release" 2>/dev/null || echo ABSENT)
   ms_cleanup
   assert_eq "$f701" "Release 3" "non-version milestone -> .milestone = title" || return 1
   assert_eq "$f702" "ABSENT" "vX.Y.Z milestone -> no .milestone" || return 1
@@ -83,9 +84,9 @@ test_ms_truncates_to_60_and_collapses_whitespace() {
 
 test_ms_removes_stale_file_when_milestone_gone_or_version_only() {
   ms_env
-  mk_held "$MS_PIPE" 721 "$MS_REPO"; echo "Old" > "$MS_PIPE/orch-721.milestone"                      # gh: no milestone
-  mk_held "$MS_PIPE" 722 "$MS_REPO"; echo "Old" > "$MS_PIPE/orch-722.milestone"; echo "v2.0.0" > "$MS_BIN/gh-issue-milestone-722"
-  mk_held "$MS_PIPE" 723 "$MS_REPO"; echo "Old" > "$MS_PIPE/orch-723.milestone"; echo "New" > "$MS_BIN/gh-issue-milestone-723"
+  mk_held "$MS_PIPE" 721 "$MS_REPO"; echo "Old" > "$MS_PIPE/$(fx_key 721).milestone"                      # gh: no milestone
+  mk_held "$MS_PIPE" 722 "$MS_REPO"; echo "Old" > "$MS_PIPE/$(fx_key 722).milestone"; echo "v2.0.0" > "$MS_BIN/gh-issue-milestone-722"
+  mk_held "$MS_PIPE" 723 "$MS_REPO"; echo "Old" > "$MS_PIPE/$(fx_key 723).milestone"; echo "New" > "$MS_BIN/gh-issue-milestone-723"
   ms_run "$RS_MS/reconcile-status.sh" --force
   local a b c; a=$(ms_file 721); b=$(ms_file 722); c=$(ms_file 723)
   ms_cleanup
@@ -96,7 +97,7 @@ test_ms_removes_stale_file_when_milestone_gone_or_version_only() {
 
 test_ms_building_payload_makes_no_gh_call() {
   ms_env
-  mk_held "$MS_PIPE" 731 "$MS_REPO"; echo "Release 3" > "$MS_PIPE/orch-731.milestone"
+  mk_held "$MS_PIPE" 731 "$MS_REPO"; echo "Release 3" > "$MS_PIPE/$(fx_key 731).milestone"
   local out; out=$(ms_print)
   local calls; calls=$(gh_call_count "$MS_BIN" "")
   ms_cleanup

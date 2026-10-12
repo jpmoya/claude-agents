@@ -42,6 +42,7 @@
 # entirely in orchestrator.md prose, read by the orchestrator agent itself, so it is only testable as doc-contract.
 # Comment IDs named in the ticket (5771446275, 5771399990, 5771497848, 5771588228) are cited here only, not fetched.
 
+FX_OWNER_REPO=project-a/repo-a   # run-key owner/repo of this file's fixtures (#213)
 HERE_DD=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT_DD=$(cd "$HERE_DD/../../.." && pwd)
 SUP_DD="$HERE_DD/../supervisor.sh"
@@ -140,7 +141,7 @@ dd_thread() {
   local arr='[]' b i=0
   dd_env
   mk_restarting "$DD_PIPE" 42 "$DD_REPO"
-  dd_iso_ago 1300 > "$DD_PIPE/orch-42.start"
+  dd_iso_ago 1300 > "$DD_PIPE/$(fx_key 42).start"
   for b in "$@"; do
     i=$((i + 1))
     arr=$(printf '%s' "$arr" | jq --arg b "$b" --arg t "2026-09-21T0$i:00:00Z" '. + [{body: $b, createdAt: $t}]')
@@ -151,7 +152,7 @@ dd_thread() {
 # dd_assert_not_gate <label> — after a tick: no .held/.alert/[held], restart path taken
 dd_assert_not_gate() {
   local held alert log
-  held=$(dd_present "$DD_PIPE/orch-42.held"); alert=$(dd_present "$DD_PIPE/orch-42.alert"); log=$(dd_log)
+  held=$(dd_present "$DD_PIPE/$(fx_key 42).held"); alert=$(dd_present "$DD_PIPE/$(fx_key 42).alert"); log=$(dd_log)
   dd_cleanup
   assert_eq "$held" "absent" "$1: .held" || return 1
   assert_eq "$alert" "absent" "$1: .alert" || return 1
@@ -162,8 +163,8 @@ dd_assert_not_gate() {
 # dd_assert_gate <label> <expected-name-in-alert> [<name-that-must-not-be-in-alert>]
 dd_assert_gate() {
   local held alert log queued
-  held=$(dd_present "$DD_PIPE/orch-42.held"); alert=$(cat "$DD_PIPE/orch-42.alert" 2>/dev/null); log=$(dd_log)
-  queued=$(dd_present "$DD_PIPE/queue/orch-42.json")
+  held=$(dd_present "$DD_PIPE/$(fx_key 42).held"); alert=$(cat "$DD_PIPE/$(fx_key 42).alert" 2>/dev/null); log=$(dd_log)
+  queued=$(dd_present "$DD_PIPE/queue/$(fx_key 42).json")
   dd_cleanup
   assert_eq "$held" "present" "$1: .held" || return 1
   assert_contains "$alert" "waiting on JP" "$1: alert says waiting on JP" || return 1
@@ -250,7 +251,7 @@ test_dd_ac7_deployed_then_decision_is_done() {   # characterisation
   dd_thread '**[deployer] DEPLOYED**' $'**[project-manager] DECISION**\nResolves: https://example.test/c/1'
   dd_tick
   local done_f held
-  done_f=$(dd_present "$DD_PIPE/orch-42.done"); held=$(dd_present "$DD_PIPE/orch-42.held")
+  done_f=$(dd_present "$DD_PIPE/$(fx_key 42).done"); held=$(dd_present "$DD_PIPE/$(fx_key 42).held")
   dd_cleanup
   assert_eq "$done_f" "present" "AC7: DEPLOYED then DECISION -> .done" || return 1
   assert_eq "$held" "absent" "AC7: not held" || return 1
@@ -433,6 +434,7 @@ test_dd_ac21_untouched_paths_have_no_diff() {
   base=$(dd_base)
   if [ -z "$base" ]; then printf '    (AC21 skipped: no origin/main merge-base)\n' >&2; return 0; fi
   d=$(cd "$ROOT_DD" && git diff --name-only "$base" -- skills/orchestrate/tests/fixtures/golden)
+  d=$(printf '%s\n' "$d" | grep -vE '^skills/orchestrate/tests/fixtures/golden/status-(full|single-match)\.txt$' || true)   # #213 AC9: only their log= field changes; the #213 golden guard test pins that
   assert_eq "$d" "" "AC21: golden fixtures unchanged" || return 1
 }
 

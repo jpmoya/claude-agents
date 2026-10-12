@@ -6,6 +6,7 @@
 # forbidden constructs, so this file spells them with a bracket in the middle (a one-character
 # class) and only ever greps the uppercase SETSID= assignment.
 
+FX_OWNER_REPO=project-a/repo-a   # run-key owner/repo of this file's fixtures (#213)
 HERE_SL=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 RS_SL="$HERE_SL/.."
 ROOT_SL=$(cd "$HERE_SL/../../.." && pwd)

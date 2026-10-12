@@ -13,6 +13,7 @@
 # $HOME/.local/bin to PATH). "Tick" = one run of supervisor.sh. DISPATCH_REPOS stays empty.
 # Placeholder repo names only.
 
+FX_OWNER_REPO=project-a/repo-a   # run-key owner/repo of this file's fixtures (#213)
 HERE_SQ=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ORCH_SQ="$HERE_SQ/../orchestrate.sh"
 SUP_SQ="$HERE_SQ/../supervisor.sh"
@@ -69,7 +70,7 @@ import json, sys
 json.dump({'count': int(sys.argv[1]), 'total': int(sys.argv[2]), 'transient_count': 0, 'last_marker': sys.argv[3],
            'history': [{'ts': '2026-01-01T00:00:00Z', 'exit': '0', 'marker': sys.argv[3], 'transient': False, 'run_secs': 600}]},
           open(sys.argv[4], 'w'))
-" "$1" "$2" "$3" "$SQ_PIPE/orch-42.restarts"
+" "$1" "$2" "$3" "$SQ_PIPE/$(fx_key 42).restarts"
 }
 
 # sq_seed_auto_restart_queue — an auto-restart queue entry step 2 cannot drain yet (not_before = now + 3600)
@@ -78,12 +79,12 @@ sq_seed_auto_restart_queue() {
 import json, sys, time
 json.dump({'issue': '42', 'repo': sys.argv[1], 'extra': '', 'reason': 'auto-restart',
            'queued_at': '2026-01-01T00:00:00Z', 'not_before': int(time.time()) + 3600}, open(sys.argv[2], 'w'))
-" "$SQ_REPO" "$SQ_PIPE/queue/orch-42.json"
+" "$SQ_REPO" "$SQ_PIPE/queue/$(fx_key 42).json"
 }
 
-sq_restarts_field() { python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get(sys.argv[2],'MISSING'))" "$SQ_PIPE/orch-42.restarts" "$1" 2>/dev/null || echo "NO-RESTARTS-FILE"; }
-sq_history_len()    { python3 -c "import json,sys; print(len(json.load(open(sys.argv[1])).get('history',[])))" "$SQ_PIPE/orch-42.restarts" 2>/dev/null || echo "NO-RESTARTS-FILE"; }
-sq_queue_field()    { python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get(sys.argv[2],'MISSING'))" "$SQ_PIPE/queue/orch-42.json" "$1" 2>/dev/null || echo "NO-QUEUE-ENTRY"; }
+sq_restarts_field() { python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get(sys.argv[2],'MISSING'))" "$SQ_PIPE/$(fx_key 42).restarts" "$1" 2>/dev/null || echo "NO-RESTARTS-FILE"; }
+sq_history_len()    { python3 -c "import json,sys; print(len(json.load(open(sys.argv[1])).get('history',[])))" "$SQ_PIPE/$(fx_key 42).restarts" 2>/dev/null || echo "NO-RESTARTS-FILE"; }
+sq_queue_field()    { python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get(sys.argv[2],'MISSING'))" "$SQ_PIPE/queue/$(fx_key 42).json" "$1" 2>/dev/null || echo "NO-QUEUE-ENTRY"; }
 sq_present()        { if [ -e "$1" ]; then echo present; else echo absent; fi; }
 
 # sq_queued_fixture <count> <total> — tests 1a/1b: an exited run (a real, non-transient exit 600 s ago)
@@ -91,20 +92,20 @@ sq_present()        { if [ -e "$1" ]; then echo present; else echo absent; fi; }
 sq_queued_fixture() {
   sq_env open
   mk_restarting "$SQ_PIPE" 42 "$SQ_REPO"
-  sq_iso_ago 600 > "$SQ_PIPE/orch-42.launched-at"
+  sq_iso_ago 600 > "$SQ_PIPE/$(fx_key 42).launched-at"
   sq_seed_restarts "$1" "$2" "$SQ_READY"
   sq_seed_auto_restart_queue
   sq_marker "$SQ_READY"
-  cp "$SQ_PIPE/orch-42.restarts" "$SQ_PIPE/restarts.before"
-  cp "$SQ_PIPE/queue/orch-42.json" "$SQ_PIPE/queue.before"
+  cp "$SQ_PIPE/$(fx_key 42).restarts" "$SQ_PIPE/restarts.before"
+  cp "$SQ_PIPE/queue/$(fx_key 42).json" "$SQ_PIPE/queue.before"
 }
 
 test_sq_1a_queued_run_tick_leaves_restart_state_untouched() {
   sq_queued_fixture 1 1
   sq_tick
   local restarts_same=no queue_same=no log
-  cmp -s "$SQ_PIPE/orch-42.restarts" "$SQ_PIPE/restarts.before" && restarts_same=yes
-  cmp -s "$SQ_PIPE/queue/orch-42.json" "$SQ_PIPE/queue.before" && queue_same=yes
+  cmp -s "$SQ_PIPE/$(fx_key 42).restarts" "$SQ_PIPE/restarts.before" && restarts_same=yes
+  cmp -s "$SQ_PIPE/queue/$(fx_key 42).json" "$SQ_PIPE/queue.before" && queue_same=yes
   log=$(sq_log)
   sq_cleanup
   assert_eq "$restarts_same" "yes" "#22/1a: .restarts byte-identical after a tick on a queued run" || return 1
@@ -117,8 +118,8 @@ test_sq_1b_three_ticks_on_queued_run_never_escalate() {
   sq_queued_fixture 2 2
   sq_tick; sq_tick; sq_tick
   local restarts_same=no held log calls
-  cmp -s "$SQ_PIPE/orch-42.restarts" "$SQ_PIPE/restarts.before" && restarts_same=yes
-  held=$(sq_present "$SQ_PIPE/orch-42.held")
+  cmp -s "$SQ_PIPE/$(fx_key 42).restarts" "$SQ_PIPE/restarts.before" && restarts_same=yes
+  held=$(sq_present "$SQ_PIPE/$(fx_key 42).held")
   log=$(sq_log); calls=$(gh_calls "$SQ_GH")
   sq_cleanup
   assert_eq "$held" "absent" "#22/1b: no .held after three ticks on a queued run" || return 1
@@ -135,17 +136,17 @@ test_sq_2_queued_manual_relaunch_survives_gate_marker_then_launches() {
   # 2a — the no-capacity branch queues and drops the stale pid (.repo stays for the cross-machine guard)
   assert_exit0 "$rc" "#22/2a: queued relaunch exits 0" || { sq_cleanup; return 1; }
   assert_contains "$out" "queued #42" "#22/2a: relaunch was queued" || { sq_cleanup; return 1; }
-  assert_file_absent "$SQ_PIPE/orch-42.pid" "#22/2a: stale orch-42.pid removed" || { sq_cleanup; return 1; }
-  assert_file_exists "$SQ_PIPE/queue/orch-42.json" "#22/2a: queue entry written" || { sq_cleanup; return 1; }
-  assert_file_exists "$SQ_PIPE/orch-42.repo" "#22/2a: .repo kept" || { sq_cleanup; return 1; }
+  assert_file_absent "$SQ_PIPE/$(fx_key 42).pid" "#22/2a: stale $(fx_key 42).pid removed" || { sq_cleanup; return 1; }
+  assert_file_exists "$SQ_PIPE/queue/$(fx_key 42).json" "#22/2a: queue entry written" || { sq_cleanup; return 1; }
+  assert_file_exists "$SQ_PIPE/$(fx_key 42).repo" "#22/2a: .repo kept" || { sq_cleanup; return 1; }
 
   # 2b — the scheduler#625 reproduction: latest marker is a gate, capacity still full
   sq_marker "$SQ_AWAITING_GO"
   sq_tick
   local log; log=$(sq_log)
-  assert_file_exists "$SQ_PIPE/queue/orch-42.json" "#22/2b: queued relaunch survives the tick" || { sq_cleanup; return 1; }
-  assert_file_absent "$SQ_PIPE/orch-42.held" "#22/2b: not parked" || { sq_cleanup; return 1; }
-  assert_file_absent "$SQ_PIPE/orch-42.restarts" "#22/2b: no restart state" || { sq_cleanup; return 1; }
+  assert_file_exists "$SQ_PIPE/queue/$(fx_key 42).json" "#22/2b: queued relaunch survives the tick" || { sq_cleanup; return 1; }
+  assert_file_absent "$SQ_PIPE/$(fx_key 42).held" "#22/2b: not parked" || { sq_cleanup; return 1; }
+  assert_file_absent "$SQ_PIPE/$(fx_key 42).restarts" "#22/2b: no restart state" || { sq_cleanup; return 1; }
   assert_not_contains "$log" "[held] #42" "#22/2b: no held log line" || { sq_cleanup; return 1; }
   assert_not_contains "$log" "[queue-restart] #42" "#22/2b: no restart log line" || { sq_cleanup; return 1; }
 
@@ -155,10 +156,10 @@ test_sq_2_queued_manual_relaunch_survives_gate_marker_then_launches() {
   log=$(sq_log)
   local launch_line pid queued
   launch_line=$(printf '%s\n' "$log" | grep -F "[launch] #42")
-  pid=$(sq_present "$SQ_PIPE/orch-42.pid"); queued=$(sq_present "$SQ_PIPE/queue/orch-42.json")
+  pid=$(sq_present "$SQ_PIPE/$(fx_key 42).pid"); queued=$(sq_present "$SQ_PIPE/queue/$(fx_key 42).json")
   sq_cleanup
   assert_contains "$launch_line" "reason=queued" "#22/2c: drained with reason=queued" || return 1
-  assert_eq "$pid" "present" "#22/2c: orch-42.pid written by the launch" || return 1
+  assert_eq "$pid" "present" "#22/2c: $(fx_key 42).pid written by the launch" || return 1
   assert_eq "$queued" "absent" "#22/2c: queue entry consumed" || return 1
 }
 
@@ -169,19 +170,19 @@ test_sq_3_blocked_inside_grace_waits_then_parks_past_window() {
   sq_tick
   local log; log=$(sq_log)
   # 3a
-  assert_file_absent "$SQ_PIPE/orch-42.restarts" "#22/3a: no restart counted inside grace" || { sq_cleanup; return 1; }
-  assert_file_absent "$SQ_PIPE/queue/orch-42.json" "#22/3a: nothing queued inside grace" || { sq_cleanup; return 1; }
-  assert_file_absent "$SQ_PIPE/orch-42.held" "#22/3a: not parked inside grace" || { sq_cleanup; return 1; }
+  assert_file_absent "$SQ_PIPE/$(fx_key 42).restarts" "#22/3a: no restart counted inside grace" || { sq_cleanup; return 1; }
+  assert_file_absent "$SQ_PIPE/queue/$(fx_key 42).json" "#22/3a: nothing queued inside grace" || { sq_cleanup; return 1; }
+  assert_file_absent "$SQ_PIPE/$(fx_key 42).held" "#22/3a: not parked inside grace" || { sq_cleanup; return 1; }
   assert_contains "$log" "[grace] #42" "#22/3a: grace logged" || { sq_cleanup; return 1; }
   assert_not_contains "$log" "[queue-restart] #42" "#22/3a: no restart logged" || { sq_cleanup; return 1; }
 
   # 3b — past the 1200 s window
-  sq_iso_ago 1300 > "$SQ_PIPE/orch-42.start"
+  sq_iso_ago 1300 > "$SQ_PIPE/$(fx_key 42).start"
   sq_tick
   log=$(sq_log)
   local held alert restarts
-  held=$(sq_present "$SQ_PIPE/orch-42.held"); restarts=$(sq_present "$SQ_PIPE/orch-42.restarts")
-  alert=$(cat "$SQ_PIPE/orch-42.alert" 2>/dev/null)
+  held=$(sq_present "$SQ_PIPE/$(fx_key 42).held"); restarts=$(sq_present "$SQ_PIPE/$(fx_key 42).restarts")
+  alert=$(cat "$SQ_PIPE/$(fx_key 42).alert" 2>/dev/null)
   sq_cleanup
   assert_eq "$held" "present" "#22/3b: parked past the grace window" || return 1
   assert_contains "$alert" "waiting on JP" "#22/3b: alert says waiting on JP" || return 1
@@ -193,7 +194,7 @@ test_sq_3_blocked_inside_grace_waits_then_parks_past_window() {
 sq_exited_fixture() {
   sq_env open
   mk_restarting "$SQ_PIPE" 42 "$SQ_REPO"
-  sq_iso_ago "$1" > "$SQ_PIPE/orch-42.launched-at"
+  sq_iso_ago "$1" > "$SQ_PIPE/$(fx_key 42).launched-at"
   sq_marker "$SQ_READY"
 }
 
@@ -236,7 +237,7 @@ test_sq_4c_third_real_exit_without_progress_escalates() {
   sq_seed_restarts 2 2 "$SQ_READY"
   sq_tick
   local held queued log calls
-  held=$(sq_present "$SQ_PIPE/orch-42.held"); queued=$(sq_present "$SQ_PIPE/queue/orch-42.json")
+  held=$(sq_present "$SQ_PIPE/$(fx_key 42).held"); queued=$(sq_present "$SQ_PIPE/queue/$(fx_key 42).json")
   log=$(sq_log); calls=$(gh_calls "$SQ_GH")
   sq_cleanup
   assert_eq "$held" "present" "#22/4c: held after the third no-progress exit" || return 1

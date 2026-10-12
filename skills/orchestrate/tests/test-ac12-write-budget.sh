@@ -12,6 +12,7 @@
 # The discriminating assertions are the boundary ones on the per-host daily counter, which is
 # exactly what enforces that ceiling regardless of event volume.
 
+FX_OWNER_REPO=project-a/repo-a   # run-key owner/repo of this file's fixtures (#213)
 HERE_AC12=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 RS_AC12="$HERE_AC12/.."
 

@@ -5,6 +5,7 @@
 # derive_runs() record shape (design): issue, repo_path, state_code, pid, started_at,
 # last_activity_at, restarts, stage — tab-separated, one line per recorded orchestrator.
 
+FX_OWNER_REPO=project-a/repo-a   # run-key owner/repo of this file's fixtures (#213)
 HERE_RST=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 RS_RST="$HERE_RST/.."
 
@@ -22,7 +23,7 @@ test_state_table_running_precedes_stopped_when_pid_is_alive() {
   local pipe out
   pipe=$(new_pipe)
   mk_running "$pipe" 801 "$pipe/repo-a"
-  touch "$pipe/orch-801.stopped"   # stale marker from a previous lifecycle; must not win
+  touch "$pipe/$(fx_key 801).stopped"   # stale marker from a previous lifecycle; must not win
   out=$(derive_runs_lines "$pipe")
   cleanup_running; rm -rf "$pipe"
   assert_eq "$(field_for_issue "$out" 801 3)" "running" "state-table: pid-alive beats a stale .stopped marker (order matters)" || return 1
@@ -32,8 +33,8 @@ test_state_table_stopped_precedes_held_when_both_files_present() {
   local pipe out
   pipe=$(new_pipe)
   mk_dead_pid "$pipe" 802
-  echo "$pipe/repo-a" > "$pipe/orch-802.repo"
-  touch "$pipe/orch-802.stopped" "$pipe/orch-802.held"
+  echo "$pipe/repo-a" > "$pipe/$(fx_key 802).repo"
+  touch "$pipe/$(fx_key 802).stopped" "$pipe/$(fx_key 802).held"
   out=$(derive_runs_lines "$pipe")
   rm -rf "$pipe"
   assert_eq "$(field_for_issue "$out" 802 3)" "stopped" "state-table: .stopped is checked before .held" || return 1
@@ -43,8 +44,8 @@ test_state_table_held_precedes_done_when_both_files_present() {
   local pipe out
   pipe=$(new_pipe)
   mk_dead_pid "$pipe" 803
-  echo "$pipe/repo-a" > "$pipe/orch-803.repo"
-  touch "$pipe/orch-803.held" "$pipe/orch-803.done"
+  echo "$pipe/repo-a" > "$pipe/$(fx_key 803).repo"
+  touch "$pipe/$(fx_key 803).held" "$pipe/$(fx_key 803).done"
   out=$(derive_runs_lines "$pipe")
   rm -rf "$pipe"
   assert_eq "$(field_for_issue "$out" 803 3)" "held" "state-table: .held is checked before .done" || return 1
@@ -217,7 +218,7 @@ test_stage_real_process_table_on_linux_reads_agent_and_pipeline_issue() {
   pipe=$(new_pipe); tmp=$(mktemp -d)
   cp "$(command -v bash)" "$tmp/claude"
   mk_running "$pipe" 890 "$pipe/repo-a"
-  PIPELINE_ISSUE=890 "$tmp/claude" -c 'sleep 30; :' _ --agent deployer -p "Deploy" >/dev/null 2>&1 &
+  PIPELINE_ISSUE=890 PIPELINE_REPO=project-a/repo-a "$tmp/claude" -c 'sleep 30; :' _ --agent deployer -p "Deploy" >/dev/null 2>&1 &
   pid=$!
   got=""
   for i in $(seq 1 50); do   # poll (up to 5s) until the process shows the stage, no fixed sleep
@@ -240,7 +241,7 @@ test_stage_macos_ps_eww_lookup_reads_agent_and_pipeline_issue() {
 #!/bin/bash
 cat <<'OUT'
   4001 /opt/homebrew/bin/claude --agent test-writer -p Work on ticket #8900 HOME=/Users/jp PIPELINE_ISSUE=8900 PIPELINE_AGENT=test-writer TERM=dumb
-  4002 /opt/homebrew/bin/claude --agent deployer -p Deploy, mention PIPELINE_ISSUE=891 in prose HOME=/Users/jp PIPELINE_ISSUE=890 PIPELINE_AGENT=deployer TERM=dumb
+  4002 /opt/homebrew/bin/claude --agent deployer -p Deploy, mention PIPELINE_ISSUE=891 in prose HOME=/Users/jp PIPELINE_ISSUE=890 PIPELINE_REPO=project-a/repo-a PIPELINE_AGENT=deployer TERM=dumb
   4003 /usr/bin/vim notes.txt HOME=/Users/jp PIPELINE_ISSUE=890 TERM=dumb
 OUT
 PSEOF
@@ -274,7 +275,7 @@ test_last_activity_at_is_newest_mtime_among_orch_and_run_logs() {
   mk_stage_log "$pipe" 807 "fullstack-developer" 100
   local newer_ts
   newer_ts=$(python3 -c "import time; print(int(time.time()))")
-  python3 -c "import os; os.utime('$pipe/orch-807.log', ($newer_ts, $newer_ts))"
+  python3 -c "import os; os.utime('$pipe/$(fx_key 807).log', ($newer_ts, $newer_ts))"
   out=$(derive_runs_lines "$pipe")
   cleanup_running
   expected=$newer_ts

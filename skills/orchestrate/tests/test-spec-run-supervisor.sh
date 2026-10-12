@@ -15,6 +15,7 @@
 # flattened) to $D/claude.log; if $D/claude-mode-ready exists it first posts `**[product-manager] READY FOR ENGINEERING**`.
 # Every function/variable is prefixed sp_ / SP_. Placeholder repo names only.
 
+FX_OWNER_REPO=project-a/repo-a   # run-key owner/repo of this file's fixtures (#213)
 HERE_SP=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 SUP_SP="$HERE_SP/../supervisor.sh"
 
@@ -123,7 +124,7 @@ test_sp_ac1_after_pm_ready_labels_become_agent_proposed_and_never_agent_go() {
   assert_eq "$n3" "1" "AC1: a further tick launches nothing" || return 1
   assert_eq "$labels3" "agent-proposed,user-feedback" "AC1: labels stable on the third tick" || return 1
   assert_eq "$edits_go" "0" "AC1: no issue edit ever mentions agent-go" || return 1
-  assert_eq "$orch_pid" "0" "AC1: no orchestrator run state (orch-7.pid) is created" || return 1
+  assert_eq "$orch_pid" "0" "AC1: no orchestrator run state ($(fx_key 7).pid) is created" || return 1
   assert_eq "$orch_log" "0" "AC1: the orchestrator is never launched" || return 1
 }
 
@@ -234,7 +235,7 @@ test_sp_ac1_needs_spec_rejected_plus_other_pm_marker_still_blocks() {
 sp_rejected() {
   sp_env
   mk_restarting "$SP_PIPE" 42 "$SP_PIPE/repo-a"
-  python3 -c "import datetime; print((datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(seconds=1300)).strftime('%Y-%m-%dT%H:%M:%SZ'))" > "$SP_PIPE/orch-42.start"
+  python3 -c "import datetime; print((datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(seconds=1300)).strftime('%Y-%m-%dT%H:%M:%SZ'))" > "$SP_PIPE/$(fx_key 42).start"
   echo "project-a/repo-a" > "$SP_D/gh-name-with-owner"
   SP_LBL="$1"; shift
   local labels; labels=$(printf '%s\n' $SP_LBL | jq -R . | jq -sc 'map({name:.})')
@@ -245,7 +246,7 @@ sp_present() { if [ -e "$1" ]; then echo present; else echo absent; fi; }
 sp_slog() { cat "$SP_HOME/logs/pipeline/supervisor.log" 2>/dev/null; }
 
 sp_assert_done() {  # after a tick: .done, no .alert/.held, no restart
-  local done_ alert held log; done_=$(sp_present "$SP_PIPE/orch-42.done"); alert=$(sp_present "$SP_PIPE/orch-42.alert"); held=$(sp_present "$SP_PIPE/orch-42.held"); log=$(sp_slog)
+  local done_ alert held log; done_=$(sp_present "$SP_PIPE/$(fx_key 42).done"); alert=$(sp_present "$SP_PIPE/$(fx_key 42).alert"); held=$(sp_present "$SP_PIPE/$(fx_key 42).held"); log=$(sp_slog)
   sp_cleanup
   assert_eq "$done_" "present" "$1: run marked done" || return 1
   assert_eq "$alert" "absent" "$1: no .alert file (no alert to JP)" || return 1
@@ -256,7 +257,7 @@ sp_assert_done() {  # after a tick: .done, no .alert/.held, no restart
 }
 
 sp_assert_inert() {  # after a tick: REJECTED changed nothing — not done, not held, no alert; normal restart path
-  local done_ alert held log; done_=$(sp_present "$SP_PIPE/orch-42.done"); alert=$(sp_present "$SP_PIPE/orch-42.alert"); held=$(sp_present "$SP_PIPE/orch-42.held"); log=$(sp_slog)
+  local done_ alert held log; done_=$(sp_present "$SP_PIPE/$(fx_key 42).done"); alert=$(sp_present "$SP_PIPE/$(fx_key 42).alert"); held=$(sp_present "$SP_PIPE/$(fx_key 42).held"); log=$(sp_slog)
   sp_cleanup
   assert_eq "$done_" "absent" "$1: not marked done" || return 1
   assert_eq "$alert" "absent" "$1: no alert" || return 1

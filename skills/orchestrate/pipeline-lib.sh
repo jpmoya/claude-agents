@@ -150,7 +150,10 @@ PL_CHECKOUT=$(cd -P "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd -P
 pipeline_error() {
   local route=$1 issue=${2:-} owner_repo=${3:-} msg=${4:-} sha
   sha=$(git -C "$PL_CHECKOUT" rev-parse HEAD 2>/dev/null) || sha=unknown
-  pipeline_event error --arg route "$route" --arg release "$sha" --arg repo "$owner_repo" --arg issue "$issue" --arg message "$msg"
+  case "$issue" in
+    ''|*[!0-9]*) pipeline_event error --arg route "$route" --arg release "$sha" --arg repo "$owner_repo" --arg message "$msg" ;;
+    *) pipeline_event error --arg route "$route" --arg release "$sha" --arg repo "$owner_repo" --argjson issue "$issue" --arg message "$msg" ;;
+  esac
   notify_engineering "$issue" ":rotating_light:" "$msg" "$owner_repo" || true
   return 0
 }

@@ -4,6 +4,12 @@
 # Repo names used anywhere in these fixtures MUST be placeholders (project-a, project-b, ...) —
 # this repo is public (AC5/AC17).
 
+# fx_key <issue> — the run key (orch-<owner>_<repo>-<issue>, #213) every mk_* helper below names its files by.
+# FX_OWNER_REPO is the owner/repo the fixture's runs belong to; a test file whose fake gh resolves a different
+# nameWithOwner sets FX_OWNER_REPO to it at the top of the file. Hand-written format, independent of run_key.
+FX_OWNER_REPO=project-a/repo-a
+fx_key() { printf 'orch-%s-%s' "${FX_OWNER_REPO//\//_}" "$1"; }
+
 # new_pipe — creates an isolated PIPE + QUEUE dir pair, sets PIPE/QUEUE, prints the PIPE path.
 new_pipe() {
   local d
@@ -36,11 +42,11 @@ mk_running() {
   sleep 300 &
   local pid=$!
   RUNNING_PIDS="$RUNNING_PIDS $pid"
-  echo "$pid" > "$pipe/orch-$issue.pid"
-  echo "$repo" > "$pipe/orch-$issue.repo"
-  date -u +%FT%TZ > "$pipe/orch-$issue.start"
-  date -u +%FT%TZ > "$pipe/orch-$issue.launched-at"
-  : > "$pipe/orch-$issue.log"
+  echo "$pid" > "$pipe/$(fx_key "$issue").pid"
+  echo "$repo" > "$pipe/$(fx_key "$issue").repo"
+  date -u +%FT%TZ > "$pipe/$(fx_key "$issue").start"
+  date -u +%FT%TZ > "$pipe/$(fx_key "$issue").launched-at"
+  : > "$pipe/$(fx_key "$issue").log"
 }
 
 # mk_dead_pid <pipe> <issue> — a .pid file pointing at a pid that is guaranteed not to be alive.
@@ -50,46 +56,46 @@ mk_running() {
 mk_dead_pid() {
   local pipe=$1 issue=$2 p=99999
   while kill -0 "$p" 2>/dev/null; do p=$((p - 1)); done
-  echo "$p" > "$pipe/orch-$issue.pid"
+  echo "$p" > "$pipe/$(fx_key "$issue").pid"
 }
 
 # mk_held <pipe> <issue> <repo_path>
 mk_held() {
   local pipe=$1 issue=$2 repo=$3
   mk_dead_pid "$pipe" "$issue"
-  echo "$repo" > "$pipe/orch-$issue.repo"
-  date -u +%FT%TZ > "$pipe/orch-$issue.start"
-  touch "$pipe/orch-$issue.held"
-  : > "$pipe/orch-$issue.log"
+  echo "$repo" > "$pipe/$(fx_key "$issue").repo"
+  date -u +%FT%TZ > "$pipe/$(fx_key "$issue").start"
+  touch "$pipe/$(fx_key "$issue").held"
+  : > "$pipe/$(fx_key "$issue").log"
 }
 
 # mk_stopped <pipe> <issue> <repo_path>
 mk_stopped() {
   local pipe=$1 issue=$2 repo=$3
   mk_dead_pid "$pipe" "$issue"
-  echo "$repo" > "$pipe/orch-$issue.repo"
-  date -u +%FT%TZ > "$pipe/orch-$issue.start"
-  touch "$pipe/orch-$issue.stopped"
-  : > "$pipe/orch-$issue.log"
+  echo "$repo" > "$pipe/$(fx_key "$issue").repo"
+  date -u +%FT%TZ > "$pipe/$(fx_key "$issue").start"
+  touch "$pipe/$(fx_key "$issue").stopped"
+  : > "$pipe/$(fx_key "$issue").log"
 }
 
 # mk_done <pipe> <issue> <repo_path>
 mk_done() {
   local pipe=$1 issue=$2 repo=$3
   mk_dead_pid "$pipe" "$issue"
-  echo "$repo" > "$pipe/orch-$issue.repo"
-  date -u +%FT%TZ > "$pipe/orch-$issue.start"
-  touch "$pipe/orch-$issue.done"
-  : > "$pipe/orch-$issue.log"
+  echo "$repo" > "$pipe/$(fx_key "$issue").repo"
+  date -u +%FT%TZ > "$pipe/$(fx_key "$issue").start"
+  touch "$pipe/$(fx_key "$issue").done"
+  : > "$pipe/$(fx_key "$issue").log"
 }
 
 # mk_restarting <pipe> <issue> <repo_path> — exited, no terminal marker file at all.
 mk_restarting() {
   local pipe=$1 issue=$2 repo=$3
   mk_dead_pid "$pipe" "$issue"
-  echo "$repo" > "$pipe/orch-$issue.repo"
-  date -u +%FT%TZ > "$pipe/orch-$issue.start"
-  : > "$pipe/orch-$issue.log"
+  echo "$repo" > "$pipe/$(fx_key "$issue").repo"
+  date -u +%FT%TZ > "$pipe/$(fx_key "$issue").start"
+  : > "$pipe/$(fx_key "$issue").log"
 }
 
 # mk_queued <pipe> <issue> <repo_path> — a queue entry with no live pid and no orch-<issue>.pid at all.
@@ -99,7 +105,7 @@ mk_queued() {
 import json, datetime
 json.dump({'issue': '$issue', 'repo': '$repo', 'extra': '', 'reason': 'queued',
            'queued_at': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'), 'not_before': 0},
-          open('$pipe/queue/orch-$issue.json', 'w'))
+          open('$pipe/queue/$(fx_key "$issue").json', 'w'))
 "
 }
 

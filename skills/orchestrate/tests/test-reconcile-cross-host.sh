@@ -10,6 +10,7 @@
 # Isolated HOME/PIPE/QUEUE/LOGDIR. Placeholder repo names only. Own gh stub for reconcile: applies whatever --jq the
 # supervisor passes to a full issue JSON, so the tests do not pin the query shape. Bash 3.2 portable.
 
+FX_OWNER_REPO=project-a/repo-a   # run-key owner/repo of this file's fixtures (#213)
 HERE_RH=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ORCH_RH="$HERE_RH/../orchestrate.sh"
 SUP_RH="$HERE_RH/../supervisor.sh"
@@ -195,7 +196,7 @@ GH_EOF
   chmod +x "$RO_BIN/gh"
   rh_o_launch 43
   local out="$RO_OUT" rc="$RO_RC" started=no
-  [ -f "$RO_PIPE/orch-43.pid" ] && started=yes
+  [ -f "$RO_PIPE/$(fx_key 43).pid" ] && started=yes
   rh_o_cleanup
   assert_exit0 "$rc" "#119/AC1: launch still exits 0 when the claim comment fails" || return 1
   assert_contains "$out" "launched orchestrator" "#119/AC1: still launched" || return 1

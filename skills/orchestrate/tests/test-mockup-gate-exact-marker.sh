@@ -59,6 +59,7 @@
 # Doc-contract cases read tracked files only (fixed-string / literal grep). Helpers/vars are
 # prefixed mg_ / MG_ (all test files share one shell).
 
+FX_OWNER_REPO=project-a/repo-a   # run-key owner/repo of this file's fixtures (#213)
 HERE_MG=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT_MG=$(cd "$HERE_MG/../../.." && pwd)
 SUP_MG="$HERE_MG/../supervisor.sh"
@@ -352,7 +353,7 @@ mg_thread() {
   python3 -c "
 import datetime
 print((datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(seconds=1300)).strftime('%Y-%m-%dT%H:%M:%SZ'))
-" > "$MG_PIPE/orch-74.start"
+" > "$MG_PIPE/$(fx_key 74).start"
   for b in "$@"; do
     i=$((i + 1))
     arr=$(printf '%s' "$arr" | jq --arg b "$b" --arg t "2026-09-21T0$i:00:00Z" '. + [{body: $b, createdAt: $t}]')
@@ -363,8 +364,8 @@ print((datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(seconds=1
 # mg_assert_gate <label> — after a tick: still held (gate stands), MOCKUPS PENDING APPROVAL named
 mg_assert_gate() {
   local held alert log
-  held=$(if [ -e "$MG_PIPE/orch-74.held" ]; then echo present; else echo absent; fi)
-  alert=$(cat "$MG_PIPE/orch-74.alert" 2>/dev/null)
+  held=$(if [ -e "$MG_PIPE/$(fx_key 74).held" ]; then echo present; else echo absent; fi)
+  alert=$(cat "$MG_PIPE/$(fx_key 74).alert" 2>/dev/null)
   log=$(cat "$MG_HOME/logs/pipeline/supervisor.log" 2>/dev/null)
   mg_cleanup
   assert_eq "$held" "present" "$1: .held" || return 1
@@ -375,7 +376,7 @@ mg_assert_gate() {
 # mg_assert_not_gate <label> — after a tick: no .held, normal restart path (gate lifted)
 mg_assert_not_gate() {
   local held log
-  held=$(if [ -e "$MG_PIPE/orch-74.held" ]; then echo present; else echo absent; fi)
+  held=$(if [ -e "$MG_PIPE/$(fx_key 74).held" ]; then echo present; else echo absent; fi)
   log=$(cat "$MG_HOME/logs/pipeline/supervisor.log" 2>/dev/null)
   mg_cleanup
   assert_eq "$held" "absent" "$1: .held" || return 1

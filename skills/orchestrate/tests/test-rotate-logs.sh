@@ -7,6 +7,7 @@
 # Settings are put in the isolated HOME's config.local.sh (the documented override), not in the environment.
 # Bash 3.2 compatible (see the portability test for the banned tools); big files and timestamps come from python3.
 
+FX_OWNER_REPO=project-a/repo-a   # run-key owner/repo of this file's fixtures (#213)
 HERE_RL=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT_RL=$(cd "$HERE_RL/../../.." && pwd)
 ROT_RL="$ROOT_RL/skills/orchestrate/rotate-logs.sh"
@@ -214,7 +215,7 @@ fi
 rl_hold_after() {
   sq_env open
   mk_restarting "$SQ_PIPE" 42 "$SQ_REPO"
-  sq_iso_ago 10800 > "$SQ_PIPE/orch-42.launched-at"
+  sq_iso_ago 10800 > "$SQ_PIPE/$(fx_key 42).launched-at"
   sq_marker "$RL_IMPL"
   rl_runs_fixture "$SQ_HOME/.claude/pipeline/runs.jsonl"
   RL_ROTATED=no
@@ -225,7 +226,7 @@ rl_hold_after() {
     rm -f "$SQ_HOME/.claude/pipeline/config.local.sh"
   fi
   sq_tick
-  echo "$(sq_present "$SQ_PIPE/orch-42.held") $RL_ROTATED"   # runs in a $(...) subshell: report both through stdout
+  echo "$(sq_present "$SQ_PIPE/$(fx_key 42).held") $RL_ROTATED"   # runs in a $(...) subshell: report both through stdout
   sq_cleanup
 }
 

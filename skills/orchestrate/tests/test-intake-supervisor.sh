@@ -5,6 +5,7 @@
 # $D/gh-calls.log. Stub claude logs "<argv> | ISSUE=.. AGENT=.. REPO=.." to $D/claude.log and exits 0 (CLAUDE_MODE=marker
 # first posts a `**[intake] TRIAGED BUG**` comment, as a healthy run would). Placeholder repo names only.
 
+FX_OWNER_REPO=project-a/repo-a   # run-key owner/repo of this file's fixtures (#213)
 HERE_SI=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 SUP_SI="$HERE_SI/../supervisor.sh"
 
@@ -125,7 +126,7 @@ test_si_ac2_counts_against_max_concurrent() {
   si_issue 7 project-a/repo-a user-feedback-intake
   si_tick; local n_full labels_full; n_full=$(si_launches); labels_full=$(si_labels 7)
   # positive control in the same test: free the slot, the same issue must now launch
-  cleanup_running; rm -f "$SI_PIPE"/orch-1.*; si_tick
+  cleanup_running; rm -f "$SI_PIPE"/$(fx_key 1).*; si_tick
   local n_free; n_free=$(si_launches); si_cleanup
   assert_eq "$n_full" "0" "AC2: no launch when MAX_CONCURRENT slots are full" || return 1
   assert_eq "$labels_full" "user-feedback-intake" "AC2: issue stays queued for intake (label kept)" || return 1

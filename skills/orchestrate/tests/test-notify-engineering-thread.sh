@@ -31,7 +31,9 @@
 # the issue's comments — otherwise a stub that never looks anything up would pass the negative.
 
 HERE_NET=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-SUPERVISOR_NET="$HERE_NET/../supervisor.sh"
+# #213: slack_thread_for / notify_engineering moved to pipeline-lib.sh (orchestrate.sh and install.sh post through
+# the same path); they are still column-0 definitions, so the extractor reads the lib first, then supervisor.sh (slog).
+SUPERVISOR_NET="$HERE_NET/../pipeline-lib.sh $HERE_NET/../supervisor.sh"
 
 NET_REPO="example-owner/project-a"
 NET_ISSUE=42
@@ -50,7 +52,7 @@ net_fn_defs() {
       next
     }
     infn { if (emit) print; if ($0 ~ /^\}/) infn = 0 }
-  ' "$SUPERVISOR_NET"
+  ' $SUPERVISOR_NET
 }
 
 # net_mk_gh <dir> — fake gh. `gh issue view ... [--json ...] [--jq|-q expr]` answers from

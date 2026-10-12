@@ -24,6 +24,7 @@ RS_SC="$HERE_SC/.."
 ROOT_SC=$(cd "$HERE_SC/../../.." && pwd)
 
 SC_REPO_ALIAS="example-owner/project-a"
+FX_OWNER_REPO="$SC_REPO_ALIAS"   # run-key owner/repo of this file's fixtures (#213)
 
 # ---- helpers ----------------------------------------------------------------------------------
 
@@ -74,7 +75,7 @@ sc_gh_marker() {  # sc_gh_marker <n> <first line of the issue's only comment>
   printf '%s\n' "$2" > "$SC_BIN/gh-issue-latest-marker-$1"
 }
 
-sc_title() { printf 'Title of %s\n' "$1" > "$SC_PIPE/orch-$1.title"; }
+sc_title() { printf 'Title of %s\n' "$1" > "$SC_PIPE/$(fx_key "$1").title"; }
 
 # sc_run <script> [args] -> SC_OUT (stdout+stderr), SC_RC. The isolated env; fake gh wins on PATH.
 sc_run() {
@@ -108,12 +109,12 @@ sc_runs_issues()      { printf '%s' "$1" | jq -r '[.runs[].issue|tostring]|join(
 # .repo, .title, .closed (first line = closedAt). No gh involved.
 sc_mk_closed_record() {
   mk_dead_pid "$SC_PIPE" "$1"
-  echo "$SC_REPO" > "$SC_PIPE/orch-$1.repo"
-  date -u +%FT%TZ > "$SC_PIPE/orch-$1.start"
-  : > "$SC_PIPE/orch-$1.log"
-  touch "$SC_PIPE/orch-$1.done"
+  echo "$SC_REPO" > "$SC_PIPE/$(fx_key "$1").repo"
+  date -u +%FT%TZ > "$SC_PIPE/$(fx_key "$1").start"
+  : > "$SC_PIPE/$(fx_key "$1").log"
+  touch "$SC_PIPE/$(fx_key "$1").done"
   sc_title "$1"
-  sc_iso_ago "$2" > "$SC_PIPE/orch-$1.closed"
+  sc_iso_ago "$2" > "$SC_PIPE/$(fx_key "$1").closed"
 }
 
 sc_derive_state() {  # sc_derive_state <issue> -> state_code from derive_runs()
@@ -169,7 +170,7 @@ test_sc_derive_dead_pid_with_closed_file_is_closed() {
 test_sc_derive_closed_is_checked_before_stopped_held_done() {
   sc_env
   sc_mk_closed_record 302 3600
-  touch "$SC_PIPE/orch-302.stopped" "$SC_PIPE/orch-302.held" "$SC_PIPE/orch-302.done"
+  touch "$SC_PIPE/$(fx_key 302).stopped" "$SC_PIPE/$(fx_key 302).held" "$SC_PIPE/$(fx_key 302).done"
   local s; s=$(sc_derive_state 302)
   sc_cleanup
   assert_eq "$s" "closed" "EB3: closed wins over stopped/held/done" || return 1
@@ -178,7 +179,7 @@ test_sc_derive_closed_is_checked_before_stopped_held_done() {
 test_sc_derive_live_pid_with_closed_file_is_still_running() {
   sc_env
   mk_running "$SC_PIPE" 303 "$SC_REPO"
-  sc_iso_ago 60 > "$SC_PIPE/orch-303.closed"
+  sc_iso_ago 60 > "$SC_PIPE/$(fx_key 303).closed"
   sc_mk_closed_record 304 60                            # positive control: same files, dead pid -> closed
   local live dead
   live=$(sc_derive_state 303); dead=$(sc_derive_state 304)
@@ -194,14 +195,14 @@ test_sc_derive_live_pid_with_closed_file_is_still_running() {
 test_sc_ac1_closed_held_ticket_moves_to_completed() {
   sc_env
   local closed_at; closed_at=$(sc_iso_ago 3600)
-  mk_held "$SC_PIPE" 201 "$SC_REPO"; sc_title 201; touch "$SC_PIPE/orch-201.alert"
+  mk_held "$SC_PIPE" 201 "$SC_REPO"; sc_title 201; touch "$SC_PIPE/$(fx_key 201).alert"
   sc_gh_closed 201 "$closed_at"
   local before; before=$(sc_print)                       # positive control: it IS in runs[] beforehand
   sc_reconcile --force
   local out; out=$(sc_print)
   local closed_first held alert done_f log
-  closed_first=$(head -n1 "$SC_PIPE/orch-201.closed" 2>/dev/null)
-  held=$(sc_present "$SC_PIPE/orch-201.held"); alert=$(sc_present "$SC_PIPE/orch-201.alert"); done_f=$(sc_present "$SC_PIPE/orch-201.done")
+  closed_first=$(head -n1 "$SC_PIPE/$(fx_key 201).closed" 2>/dev/null)
+  held=$(sc_present "$SC_PIPE/$(fx_key 201).held"); alert=$(sc_present "$SC_PIPE/$(fx_key 201).alert"); done_f=$(sc_present "$SC_PIPE/$(fx_key 201).done")
   log=$(cat "$SC_HOME/logs/pipeline/supervisor.log" 2>/dev/null)
   local rc=$SC_RC o=$SC_OUT
   local runs completed_issue c_closed c_title c_url
@@ -211,7 +212,7 @@ test_sc_ac1_closed_held_ticket_moves_to_completed() {
   assert_eq "$(sc_run_field "$before" 201 state)" "held" "AC1: control — #201 is a held run before the pass" || return 1
   assert_exit0 "$rc" "AC1: reconcile exits 0" || return 1
   assert_eq "$o" "" "AC1: a normal pass prints nothing" || return 1
-  assert_eq "$closed_first" "$closed_at" "AC1: orch-201.closed first line = GitHub's closedAt" || return 1
+  assert_eq "$closed_first" "$closed_at" "AC1: $(fx_key 201).closed first line = GitHub's closedAt" || return 1
   assert_eq "$held" "absent" "AC1: .held removed" || return 1
   assert_eq "$alert" "absent" "AC1: .alert removed" || return 1
   assert_eq "$done_f" "present" "AC1: .done touched" || return 1
@@ -231,13 +232,13 @@ test_sc_ac1_closed_stopped_restarting_and_queue_entry_tickets_move_to_completed(
   mk_restarting "$SC_PIPE" 204 "$SC_REPO"; sc_title 204; sc_gh_closed 204 "$closed_at"
   python3 -c "
 import json
-json.dump({'issue': '204', 'repo': '$SC_REPO', 'extra': '', 'reason': 'auto-restart', 'queued_at': '2026-01-01T00:00:00Z', 'not_before': 0}, open('$SC_PIPE/queue/orch-204.json', 'w'))"
+json.dump({'issue': '204', 'repo': '$SC_REPO', 'extra': '', 'reason': 'auto-restart', 'queued_at': '2026-01-01T00:00:00Z', 'not_before': 0}, open('$SC_PIPE/queue/$(fx_key 204).json', 'w'))"
   local before; before=$(sc_print)
   sc_reconcile --force
   local out; out=$(sc_print)
   local n runs states="" queue stopped
   runs=$(sc_runs_issues "$out")
-  queue=$(sc_present "$SC_PIPE/queue/orch-204.json"); stopped=$(sc_present "$SC_PIPE/orch-202.stopped")
+  queue=$(sc_present "$SC_PIPE/queue/$(fx_key 204).json"); stopped=$(sc_present "$SC_PIPE/$(fx_key 202).stopped")
   local completed; completed=$(sc_completed_issues "$out")
   local rc=$SC_RC
   local calls_202 calls_203 calls_204
@@ -258,9 +259,9 @@ test_sc_ac1_live_pid_closed_issue_stays_running_until_pid_dies() {
   sc_env
   local closed_at; closed_at=$(sc_iso_ago 600)
   mk_running "$SC_PIPE" 205 "$SC_REPO"; sc_title 205; sc_gh_closed 205 "$closed_at"
-  local pid; pid=$(cat "$SC_PIPE/orch-205.pid")
+  local pid; pid=$(cat "$SC_PIPE/$(fx_key 205).pid")
   sc_reconcile --force
-  local out1 closed_file; out1=$(sc_print); closed_file=$(sc_present "$SC_PIPE/orch-205.closed")
+  local out1 closed_file; out1=$(sc_print); closed_file=$(sc_present "$SC_PIPE/$(fx_key 205).closed")
   kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
   local out2; out2=$(sc_print)
   sc_cleanup
@@ -282,10 +283,10 @@ test_sc_ac1_completed_carries_final_marker_from_github() {
   local m206 m207 f206
   m206=$(sc_completed_field "$out" 0 marker)          # newest closed first: 206 (300 s ago)
   m207=$(sc_completed_field "$out" 1 marker)
-  f206=$(cat "$SC_PIPE/orch-206.marker" 2>/dev/null)
+  f206=$(cat "$SC_PIPE/$(fx_key 206).marker" 2>/dev/null)
   sc_cleanup
   assert_eq "$(sc_completed_field "$out" 0 issue)" "206" "EB4: newest closed first" || return 1
-  assert_eq "$f206" "DEPLOYED" "EB1: orch-206.marker = marker name without the **[agent] prefix and trailing **" || return 1
+  assert_eq "$f206" "DEPLOYED" "EB1: $(fx_key 206).marker = marker name without the **[agent] prefix and trailing **" || return 1
   assert_eq "$m206" "DEPLOYED" "EB1/4: completed[].marker = the last routing marker" || return 1
   assert_eq "$(sc_completed_field "$out" 1 issue)" "207" "EB4: second entry is #207" || return 1
   assert_eq "$m207" "MISSING_FIELD" "EB4: NOTE-only comments -> no marker key on the completed item" || return 1
@@ -305,12 +306,12 @@ test_sc_ac3_open_held_ticket_keeps_state_and_marker_comes_from_github() {
   sc_reconcile --force
   local out; out=$(sc_print)
   local mfile closed
-  mfile=$(cat "$SC_PIPE/orch-208.marker" 2>/dev/null); closed=$(sc_present "$SC_PIPE/orch-208.closed")
+  mfile=$(cat "$SC_PIPE/$(fx_key 208).marker" 2>/dev/null); closed=$(sc_present "$SC_PIPE/$(fx_key 208).closed")
   local rc=$SC_RC
   sc_cleanup
   assert_eq "$(sc_run_field "$before" 208 marker)" "MISSING_FIELD" "AC3 (#94): control — runs.jsonl's marker_after is never read; no marker file -> no marker before the pass" || return 1
   assert_exit0 "$rc" "AC3: exit 0" || return 1
-  assert_eq "$mfile" "TESTS APPROVED" "AC3: orch-208.marker = latest routing marker name" || return 1
+  assert_eq "$mfile" "TESTS APPROVED" "AC3: $(fx_key 208).marker = latest routing marker name" || return 1
   assert_eq "$(sc_run_field "$out" 208 marker)" "TESTS APPROVED" "AC3: runs[].marker = GitHub's marker, not runs.jsonl's" || return 1
   assert_eq "$(sc_run_field "$out" 208 state)" "held" "AC3: an OPEN held ticket stays held" || return 1
   assert_eq "$closed" "absent" "AC3: an OPEN ticket gets no .closed" || return 1
@@ -323,14 +324,14 @@ test_sc_94_marker_is_file_only_runs_jsonl_never_consulted() {
   sc_env
   mk_held "$SC_PIPE" 231 "$SC_REPO"; sc_title 231     # runs.jsonl marker only -> no marker
   mk_held "$SC_PIPE" 232 "$SC_REPO"; sc_title 232     # marker file AND a different runs.jsonl value -> file wins
-  echo "SPEC RESOLVED" > "$SC_PIPE/orch-232.marker"
+  echo "SPEC RESOLVED" > "$SC_PIPE/$(fx_key 232).marker"
   mkdir -p "$SC_HOME/.claude/pipeline"
   printf '{"event":"dispatch","repo":"%s","issue":231,"marker_after":"TESTS WRITTEN"}\n{"event":"dispatch","repo":"%s","issue":232,"marker_after":"TESTS WRITTEN"}\n' \
     "$SC_REPO_ALIAS" "$SC_REPO_ALIAS" > "$SC_HOME/.claude/pipeline/runs.jsonl"
   local out; out=$(sc_print)
   sc_cleanup
-  assert_eq "$(sc_run_field "$out" 231 marker)" "MISSING_FIELD" "#94 AC4: no orch-231.marker -> no marker (runs.jsonl marker_after ignored)" || return 1
-  assert_eq "$(sc_run_field "$out" 232 marker)" "SPEC RESOLVED" "#94 AC4: marker = orch-232.marker contents" || return 1
+  assert_eq "$(sc_run_field "$out" 231 marker)" "MISSING_FIELD" "#94 AC4: no $(fx_key 231).marker -> no marker (runs.jsonl marker_after ignored)" || return 1
+  assert_eq "$(sc_run_field "$out" 232 marker)" "SPEC RESOLVED" "#94 AC4: marker = $(fx_key 232).marker contents" || return 1
 }
 
 test_sc_ac3_latest_real_marker_wins_and_notes_are_inert() {
@@ -342,7 +343,7 @@ test_sc_ac3_latest_real_marker_wins_and_notes_are_inert() {
  {"body":"**[test-writer] NOTE** later, but inert","createdAt":"2026-01-03T00:00:00Z"}]
 EOF
   sc_reconcile --force
-  local mfile; mfile=$(cat "$SC_PIPE/orch-209.marker" 2>/dev/null)
+  local mfile; mfile=$(cat "$SC_PIPE/$(fx_key 209).marker" 2>/dev/null)
   sc_cleanup
   assert_eq "$mfile" "TESTS WRITTEN" "EB1: newest REAL routing marker wins; a later NOTE is inert" || return 1
 }
@@ -350,13 +351,13 @@ EOF
 test_sc_ac3_no_routing_marker_removes_a_stale_marker_file() {
   sc_env
   mk_held "$SC_PIPE" 210 "$SC_REPO"; sc_title 210
-  echo "TESTS WRITTEN" > "$SC_PIPE/orch-210.marker"           # stale from an earlier pass
+  echo "TESTS WRITTEN" > "$SC_PIPE/$(fx_key 210).marker"           # stale from an earlier pass
   mk_held "$SC_PIPE" 211 "$SC_REPO"; sc_title 211               # control: has a marker -> file written
   sc_gh_marker 211 '**[product-manager] READY FOR ENGINEERING**'
   sc_gh_marker 210 '**[supervisor] NOTE** only a note here'
   sc_reconcile --force
   local f210 f211
-  f210=$(sc_present "$SC_PIPE/orch-210.marker"); f211=$(cat "$SC_PIPE/orch-211.marker" 2>/dev/null)
+  f210=$(sc_present "$SC_PIPE/$(fx_key 210).marker"); f211=$(cat "$SC_PIPE/$(fx_key 211).marker" 2>/dev/null)
   sc_cleanup
   assert_eq "$f211" "READY FOR ENGINEERING" "EB1: control — #211's marker file written" || return 1
   assert_eq "$f210" "absent" "EB1: none/empty marker -> orch-<n>.marker removed" || return 1
@@ -371,13 +372,13 @@ test_sc_ac4_gh_failure_is_a_silent_noop_exit_0() {
   # positive control first: with a working gh the same fixture DOES change state
   mk_held "$SC_PIPE" 212 "$SC_REPO"; sc_title 212; sc_gh_closed 212 "$(sc_iso_ago 60)"
   sc_reconcile --force
-  local ctl_closed; ctl_closed=$(sc_present "$SC_PIPE/orch-212.closed")
+  local ctl_closed; ctl_closed=$(sc_present "$SC_PIPE/$(fx_key 212).closed")
   # now the failing gh
   mk_held "$SC_PIPE" 213 "$SC_REPO"; sc_title 213; sc_gh_closed 213 "$(sc_iso_ago 60)"
   echo 1 > "$SC_BIN/gh-issue-view-rc"
   sc_reconcile --force
   local rc=$SC_RC o=$SC_OUT closed held state
-  closed=$(sc_present "$SC_PIPE/orch-213.closed"); held=$(sc_present "$SC_PIPE/orch-213.held")
+  closed=$(sc_present "$SC_PIPE/$(fx_key 213).closed"); held=$(sc_present "$SC_PIPE/$(fx_key 213).held")
   state=$(sc_derive_state 213)
   sc_cleanup
   assert_eq "$ctl_closed" "present" "AC4: control — a working gh closes #212" || return 1
@@ -415,10 +416,10 @@ test_sc_ac4_throttle_one_pass_per_600_seconds_force_bypasses() {
 
 test_sc_ac4_scope_is_open_states_plus_finished_within_48h_and_skips_already_closed() {
   sc_env
-  mk_done "$SC_PIPE" 215 "$SC_REPO"; sc_title 215; sc_touch_ago "$SC_PIPE/orch-215.log" $((72*3600))   # 3 days: out
-  mk_done "$SC_PIPE" 216 "$SC_REPO"; sc_title 216; sc_touch_ago "$SC_PIPE/orch-216.log" $((47*3600))   # 47 h: in
-  mk_stopped "$SC_PIPE" 217 "$SC_REPO"; sc_title 217; sc_touch_ago "$SC_PIPE/orch-217.log" $((49*3600)) # 49 h: out
-  mk_held "$SC_PIPE" 218 "$SC_REPO"; sc_title 218; sc_touch_ago "$SC_PIPE/orch-218.log" $((100*3600))   # held: always in
+  mk_done "$SC_PIPE" 215 "$SC_REPO"; sc_title 215; sc_touch_ago "$SC_PIPE/$(fx_key 215).log" $((72*3600))   # 3 days: out
+  mk_done "$SC_PIPE" 216 "$SC_REPO"; sc_title 216; sc_touch_ago "$SC_PIPE/$(fx_key 216).log" $((47*3600))   # 47 h: in
+  mk_stopped "$SC_PIPE" 217 "$SC_REPO"; sc_title 217; sc_touch_ago "$SC_PIPE/$(fx_key 217).log" $((49*3600)) # 49 h: out
+  mk_held "$SC_PIPE" 218 "$SC_REPO"; sc_title 218; sc_touch_ago "$SC_PIPE/$(fx_key 218).log" $((100*3600))   # held: always in
   sc_mk_closed_record 219 3600                                                                          # already closed: out
   sc_reconcile --force
   local c215 c216 c217 c218 c219 rc=$SC_RC
@@ -463,7 +464,7 @@ test_sc_ac4_reconcile_asks_for_one_push_and_only_when_something_changed() {
   sc_gh_marker 226 '**[solutions-architect] SPEC RESOLVED**'
   sc_run "$SC_ROOT/skills/orchestrate/reconcile-status.sh" --force
   local third; third=$(sc_report_calls 2)
-  local mfile; mfile=$(cat "$SC_PIPE/orch-226.marker" 2>/dev/null)
+  local mfile; mfile=$(cat "$SC_PIPE/$(fx_key 226).marker" 2>/dev/null)
   sc_cleanup
   assert_exit0 "$rc1" "AC4: exit 0" || return 1
   assert_eq "$first" "1" "EB1: one report_status_async for the whole pass" || return 1
@@ -529,7 +530,7 @@ test_sc_ac4_supervisor_reconcile_call_is_backgrounded_fd9_closed_after_dispatch_
 test_sc_ac9_orchestrate_status_closed_record_is_not_reported_as_restarting() {
   sc_env
   sc_mk_closed_record 401 3600                                  # .closed + .done (as reconcile leaves it), gh says OPEN
-  sc_mk_closed_record 402 3600; rm -f "$SC_PIPE/orch-402.done"  # .closed alone, gh says OPEN
+  sc_mk_closed_record 402 3600; rm -f "$SC_PIPE/$(fx_key 402).done"  # .closed alone, gh says OPEN
   sc_mk_closed_record 403 3600; sc_gh_closed 403 "$(sc_iso_ago 3600)"   # gh works and says CLOSED
   sc_gh_marker 403 '**[deployer] DEPLOYED**'                   # (the fake gh only returns comments when it has some)
   mk_restarting "$SC_PIPE" 404 "$SC_REPO"                       # control: a genuinely restarting record still says so
@@ -559,15 +560,15 @@ test_sc_ac5_orchestrate_relaunch_clears_closed_and_marker_and_ticket_returns_to_
   sc_reconcile --force
   local out1; out1=$(sc_print)
   local closed_before marker_before
-  closed_before=$(sc_present "$SC_PIPE/orch-301.closed"); marker_before=$(sc_present "$SC_PIPE/orch-301.marker")
+  closed_before=$(sc_present "$SC_PIPE/$(fx_key 301).closed"); marker_before=$(sc_present "$SC_PIPE/$(fx_key 301).marker")
   # JP reopens it and relaunches
   rm -f "$SC_BIN/gh-issue-state-301" "$SC_BIN/gh-issue-closed-at-301"
   sc_run "$RS_SC/orchestrate.sh" "$SC_REPO" 301
   local launch_out=$SC_OUT
   local out2; out2=$(sc_print)
   local closed_after marker_after
-  closed_after=$(sc_present "$SC_PIPE/orch-301.closed"); marker_after=$(sc_present "$SC_PIPE/orch-301.marker")
-  local marker_content; marker_content=$(cat "$SC_PIPE/orch-301.marker" 2>/dev/null)
+  closed_after=$(sc_present "$SC_PIPE/$(fx_key 301).closed"); marker_after=$(sc_present "$SC_PIPE/$(fx_key 301).marker")
+  local marker_content; marker_content=$(cat "$SC_PIPE/$(fx_key 301).marker" 2>/dev/null)
   sc_cleanup
   assert_eq "$closed_before:$marker_before" "present:present" "AC5: control — reconcile wrote .closed and .marker" || return 1
   assert_eq "$(sc_completed_issues "$out1")" "301" "AC5: control — the closed ticket was in completed[]" || return 1
@@ -582,7 +583,7 @@ test_sc_ac5_orchestrate_relaunch_clears_closed_and_marker_and_ticket_returns_to_
 
 test_sc_ac5_supervisor_redispatch_rm_list_also_clears_closed_and_marker() {
   local line
-  line=$(grep -n 'rm -f "\$PIPE/orch-\$num"' "$RS_SC/supervisor.sh" | grep 'label-cleared' | head -n1)
+  line=$(grep -n 'rm -f "\$PIPE/\$k"' "$RS_SC/supervisor.sh" | grep 'label-cleared' | head -n1)
   assert_ne "$line" "" "AC5: the re-dispatch tombstone rm -f line exists in supervisor.sh (scenario sanity)" || return 1
   assert_contains "$line" "closed" "AC5: supervisor re-dispatch rm -f list includes closed" || return 1
   assert_contains "$line" "marker" "AC5: supervisor re-dispatch rm -f list includes marker" || return 1
@@ -634,7 +635,7 @@ test_sc_eb4_seven_day_boundary_6d23h_shown_7d1h_hidden() {
 test_sc_eb4_completed_item_shape_only_allowed_keys_and_repo_alias() {
   sc_env; sc_alias_config
   sc_mk_closed_record 531 3600
-  sc_mk_closed_record 532 7200; rm -f "$SC_PIPE/orch-532.title"        # no title -> neither title nor url
+  sc_mk_closed_record 532 7200; rm -f "$SC_PIPE/$(fx_key 532).title"        # no title -> neither title nor url
   local out; out=$(sc_print)
   local extra stripped
   extra=$(printf '%s' "$out" | jq -r '[.completed[]|keys[]] | unique - ["repo","issue","title","url","closed_at","marker"] | join(",")' 2>/dev/null)
