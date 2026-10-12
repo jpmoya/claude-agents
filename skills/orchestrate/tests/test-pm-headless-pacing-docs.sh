@@ -20,8 +20,8 @@ pm_forbidden_headless() {
 pm_check_one_cycle() {  # AC1
   pm_sections "$1" | grep -iw 'headless' | grep -iE 'one (loop )?cycle per launch' | grep -q . \
     || { fail "§3/§4 must say a headless run does one cycle per launch"; return 1; }
-  pm_sections "$1" | grep -iE 'launcher|relaunch|cron' | grep -iE 'pac(e|ing)|interval|cadence' | grep -q . \
-    || { fail "§3/§4 must say pacing belongs to the launcher"; return 1; }
+  pm_sections "$1" | grep -iE 'supervisor|launcher|relaunch|cron' | grep -iE 'pac(e|ing)|interval|cadence' | grep -q . \
+    || { fail "§3/§4 must say pacing belongs to the supervisor"; return 1; }
 }
 pm_check_forbids() {  # AC2
   local tok
@@ -41,8 +41,8 @@ pm_check_loop_interactive() {  # AC2 (/loop stays interactive-only)
     || { fail "/loop self-pacing must be stated as interactive-only"; return 1; }
 }
 pm_check_cadence() {  # AC3
-  pm_sections "$1" | grep -E '20.{1,3}30' | grep -iE 'launcher|relaunch|cron' | grep -q . \
-    || { fail "20–30 minute cadence must be described as the launcher's interval"; return 1; }
+  pm_sections "$1" | grep -E '20.{1,3}30' | grep -iE 'supervisor|launcher|relaunch|cron' | grep -q . \
+    || { fail "20–30 minute cadence must be described as the supervisor's interval"; return 1; }
 }
 pm_check_all() {
   pm_check_one_cycle "$1" && pm_check_forbids "$1" && pm_check_loop_interactive "$1" && pm_check_cadence "$1"

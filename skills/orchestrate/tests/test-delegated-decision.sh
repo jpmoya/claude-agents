@@ -398,7 +398,8 @@ test_dd_ac18_project_manager_sections_and_untouched_parts_byte_identical() {
   # re-pinned for #98 (model line only)
   # re-pinned for #106 (tail hash: project-manager.md line 104 only)
   assert_eq "$head" "48559acd3e9f4a55feb1f8938d40b5afc0e1c3f4a6d9da9a8436f5348d8b826d" "AC18: frontmatter + section 1 (re-pinned for a9439aa, model line only)" || return 1
-  assert_eq "$tail" "36af9d3a6397ced3418815c18e0cd16e70efc4464b2b380fbb6abd7592b1dc79" "AC18: sections 3-8 (re-pinned for #106, line 104 only)" || return 1
+  # re-pinned for #198 (tail hash: project-manager.md §3 pacing sentence and §4 headless line only)
+  assert_eq "$tail" "bdc58db1c46ef0ad794b19f612110ed5d1eeb0c01d2f41ebda8a1a11e3097a5b" "AC18: sections 3-8 (re-pinned for #198, §3/§4 pacing text)" || return 1
 }
 
 # ---------------------------------------------------------------------------------------- AC19-AC20 docs
