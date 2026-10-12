@@ -215,7 +215,17 @@ do_launch() {
 
   if [ "$restart_n" -gt 0 ]; then
     preamble="AUTO-RESTART #$restart_n: a previous orchestrator process exited without reaching a terminal state. Verify branch/PR/comment state with gh before dispatching anything. Never redo a completed stage. "
+    # #178 begin
+    # .cap-exit is written only by the stage-wait deferral in the main tick, which requires exit 0, a live stage
+    # and the orchestrator's own cap-exit terminal row. A silent exit 0 has no such row and keeps the fault wording.
+    if [ -f "$PIPE/orch-$issue.cap-exit" ]; then
+      preamble="AUTO-RESTART #$restart_n: the previous orchestrator process stopped waiting at a stage's time cap (normal, not a fault; do not report it as a technical problem). Verify branch/PR/comment state with gh before dispatching anything. Never redo a completed stage. "
+    fi
+    # #178 end
   fi
+  # #178 begin
+  rm -f "$PIPE/orch-$issue.cap-exit"   # every launch consumes the signal
+  # #178 end
 
   # Same launch shape as orchestrate.sh: the headless session IS the orchestrator (--agent), no Agent() call.
   prompt="Drive $owner_repo#$issue through the pipeline. Repo: $repo. Read the latest marker on the issue and continue from there. ${preamble}${extra}"
@@ -316,6 +326,28 @@ EOC
   notify_engineering "$issue" ":rotating_light:" "Stalled — restarted multiple times without progress. Needs investigation." "$owner_repo"
 }
 
+# #178 begin
+# cap_exit_row <repo dir> <issue> — 0 when runs.jsonl holds a terminal row for this repo+issue, written at or after
+# this launch, whose next_action is the orchestrator's stage-cap hand-off. Any read/parse problem -> 1 (counted).
+cap_exit_row() {
+  local repo=$1 issue=$2 since owner_repo
+  since=$(cat "$PIPE/orch-$issue.launched-at" 2>/dev/null || cat "$PIPE/orch-$issue.start" 2>/dev/null)
+  [ -n "$since" ] && [ -f "$HOME/.claude/pipeline/runs.jsonl" ] || return 1
+  owner_repo=$(cd "$repo" 2>/dev/null && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null </dev/null) || return 1
+  [ -n "$owner_repo" ] || return 1
+  python3 - "$HOME/.claude/pipeline/runs.jsonl" "$issue" "$since" "$owner_repo" <<'PY' 2>/dev/null
+import json, sys
+path, issue, since, repo = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
+for line in open(path):
+    try: r = json.loads(line)
+    except ValueError: continue
+    if (r.get("event") == "terminal" and r.get("issue") == issue and r.get("repo") == repo
+            and r.get("next_action") == "supervisor relaunch picks up result" and str(r.get("ts", "")) >= since):
+        sys.exit(0)
+sys.exit(1)
+PY
+}
+# #178 end
 # --- Main tick ---
 
 launched=0
@@ -330,6 +362,22 @@ for f in "$PIPE"/orch-*.pid; do
 
   # Skip if alive
   kill -0 "$pid" 2>/dev/null && continue
+  # #178 begin
+  # The orchestrator exits by design at a stage's time cap while the stage keeps running (#178). It is a cap exit
+  # only when ALL hold: exit code 0, the stage process is alive, and runs.jsonl has a terminal row for this
+  # repo+issue written after this launch with next_action "supervisor relaunch picks up result" (the row the
+  # orchestrator writes at the cap). Then wait like for a live orchestrator: no count, no requeue, no relaunch.
+  # Anything else (silent exit 0, non-zero exit, no stage, unreadable process table) is counted as before.
+  live_stage=$(_rs_live_stage "$issue" 0 2>/dev/null)
+  if [ -n "$live_stage" ] && [ "$(cat "$PIPE/orch-$issue.exit" 2>/dev/null)" = 0 ] && cap_exit_row "$repo" "$issue"; then
+    [ -f "$PIPE/orch-$issue.cap-exit" ] || slog "[stage-wait] #$issue — orchestrator exited at a stage cap, stage $live_stage still running; deferring"
+    touch "$PIPE/orch-$issue.cap-exit" 2>/dev/null || true
+    continue
+  fi
+  # A live stage that is not a cap exit (silent exit 0, crash) clears any stale signal; a gone stage keeps the
+  # signal a prior deferral wrote, for the relaunch to consume.
+  [ -n "$live_stage" ] && rm -f "$PIPE/orch-$issue.cap-exit"
+  # #178 end
 
   # First tick that sees a launched run gone: one run_exit row (runs without a run-id predate #138 and log nothing)
   if [ -f "$PIPE/orch-$issue.run-id" ] && [ ! -f "$PIPE/orch-$issue.exit-logged" ]; then
@@ -494,11 +542,23 @@ PY
     slog "[progress] #$issue marker advanced: $last_marker -> $marker"
   fi
 
-  total=$((total + 1))
-  if $transient; then
-    slog "[transient] #$issue ran ${run_duration}s (<${MIN_RUN_SECS}s) — treating as transient"
-  else
-    count=$((count + 1))
+  # #178 begin
+  # A cap exit (the deferral signal is set, exit 0, and the orchestrator's own terminal row for this launch) is the
+  # orchestrator waiting by design: it increments neither count nor total, now that its stage has ended too.
+  cap_exit_now=false
+  if [ -f "$PIPE/orch-$issue.cap-exit" ] && [ "$exit_code" = 0 ] && cap_exit_row "$repo" "$issue"; then
+    cap_exit_now=true
+    slog "[cap-exit] #$issue — stage ended after a cap exit; relaunching without counting"
+  fi
+  # #178 end
+
+  if ! $cap_exit_now; then
+    total=$((total + 1))
+    if $transient; then
+      slog "[transient] #$issue ran ${run_duration}s (<${MIN_RUN_SECS}s) — treating as transient"
+    else
+      count=$((count + 1))
+    fi
   fi
 
   # One ceiling for every exit, fast or slow
@@ -522,7 +582,9 @@ json.dump(d, open('$restarts_file','w'))
   fi
 
   # Calculate backoff — transient exits use longer backoff
-  if $transient; then
+  if $cap_exit_now; then
+    backoff_val=${BACKOFF[0]}
+  elif $transient; then
     idx=$((total - 1))
     [ "$idx" -ge "${#TRANSIENT_BACKOFF[@]}" ] && idx=$(( ${#TRANSIENT_BACKOFF[@]} - 1 ))
     backoff_val=${TRANSIENT_BACKOFF[$idx]}
@@ -607,6 +669,8 @@ try:
 except Exception:
     pass
 " 2>/dev/null)
+    # #178: a cap exit is not counted, so count may be 0; the relaunch still needs its (cap) preamble
+    [ "$q_reason" = "auto-restart" ] && [ "$restart_n" -eq 0 ] && [ -f "$PIPE/orch-$best_issue.cap-exit" ] && restart_n=1
     do_launch "$q_repo" "$best_issue" "$q_extra" "$restart_n" "$q_reason" "$q_wait"
     rm -f "$best_qf"
     launched=1
