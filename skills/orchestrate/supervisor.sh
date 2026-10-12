@@ -214,7 +214,14 @@ do_launch() {
   fi
 
   if [ "$restart_n" -gt 0 ]; then
-    preamble="AUTO-RESTART #$restart_n: a previous orchestrator process exited without reaching a terminal state. Verify branch/PR/comment state with gh before dispatching anything. Never redo a completed stage. "
+    # exit 0 + class normal = the orchestrator stopped waiting at a stage's time cap (orchestrator.md): not a fault (#178)
+    prev_exit=$(cat "$PIPE/orch-$issue.exit" 2>/dev/null || echo "?")
+    prev_class=$(cut -d' ' -f1 "$PIPE/orch-$issue.exit-class" 2>/dev/null)
+    if [ "$prev_exit" = 0 ] && [ "$prev_class" = normal ]; then
+      preamble="AUTO-RESTART #$restart_n: the previous orchestrator process stopped waiting at a stage's time cap (normal, not a fault; do not report it as a technical problem). Verify branch/PR/comment state with gh before dispatching anything. Never redo a completed stage. "
+    else
+      preamble="AUTO-RESTART #$restart_n: a previous orchestrator process exited without reaching a terminal state. Verify branch/PR/comment state with gh before dispatching anything. Never redo a completed stage. "
+    fi
   fi
 
   # Same launch shape as orchestrate.sh: the headless session IS the orchestrator (--agent), no Agent() call.
@@ -330,6 +337,15 @@ for f in "$PIPE"/orch-*.pid; do
 
   # Skip if alive
   kill -0 "$pid" 2>/dev/null && continue
+
+  # The orchestrator exits by design at a stage's time cap while the stage keeps running (#178): wait for the
+  # stage like for a live orchestrator — no count, no requeue, no relaunch. An unreadable process table yields
+  # no stage, so a real dead run is still counted below.
+  live_stage=$(_rs_live_stage "$issue" 0 2>/dev/null)
+  if [ -n "$live_stage" ]; then
+    slog "[stage-wait] #$issue — orchestrator exited, stage $live_stage still running; deferring"
+    continue
+  fi
 
   # First tick that sees a launched run gone: one run_exit row (runs without a run-id predate #138 and log nothing)
   if [ -f "$PIPE/orch-$issue.run-id" ] && [ ! -f "$PIPE/orch-$issue.exit-logged" ]; then
