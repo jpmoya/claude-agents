@@ -103,7 +103,7 @@ _goal_registry_json() {
           | select(any(.labels[]; .name == "delivery-goal"))
           | select(.state == "open" or (.closed_at != null and .closed_at >= $cut)))
     | map(. as $i
-          | (try (($i.body // "") | capture("```json\\n(?<j>[^\\n]*)\\n```") | .j | fromjson) catch null) as $b
+          | ([try (($i.body // "") | capture("```json\\n(?<j>[^\\n]*)\\n```") | .j | fromjson) catch null] | .[0]) as $b
           | ([$i.labels[].name]) as $l
           | if $b == null then
               (select($i.state == "open")

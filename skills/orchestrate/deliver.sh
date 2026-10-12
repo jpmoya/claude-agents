@@ -56,7 +56,7 @@ check_overlap() {
       [ -n "$row" ] || continue
       if printf '%s\n' "$new_rows" | grep -qxF -- "$row"; then die "overlaps live goal $o_id (shares $row)"; fi
     done <<< "$other"
-  done <<< "$(printf '%s' "$reg" | jq -r '.[] | "\(.issue)\t\(.id)\t\(.spec)\t\(.st)"')"
+  done <<< "$(printf '%s' "$reg" | jq -r '.[] | "\(.issue)\t\(.id)\t\(.spec // "" | if . == "" then "-" else . end)\t\(.st)"')"
 }
 
 write_cache() {  # <id> <block json> <issue number>
