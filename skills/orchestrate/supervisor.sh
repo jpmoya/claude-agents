@@ -345,7 +345,13 @@ for f in "$PIPE"/orch-*.pid; do
   live_stage=$(_rs_live_stage "$issue" 0 2>/dev/null)
   if [ -n "$live_stage" ]; then
     slog "[stage-wait] #$issue — orchestrator exited, stage $live_stage still running; deferring"
-    touch "$PIPE/orch-$issue.cap-exit" 2>/dev/null || true
+    # Only a clean exit 0 is a cap exit; a crash or limit exit with a live stage keeps the fault wording and
+    # clears any stale signal from an earlier run.
+    if [ "$(cat "$PIPE/orch-$issue.exit" 2>/dev/null)" = 0 ]; then
+      touch "$PIPE/orch-$issue.cap-exit" 2>/dev/null || true
+    else
+      rm -f "$PIPE/orch-$issue.cap-exit"
+    fi
     continue
   fi
   # #178 end

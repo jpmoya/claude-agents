@@ -7,6 +7,8 @@
 #   3  no live stage at all -> counted as today
 #   4  stage gone -> the next tick logs exactly one [queue-restart]
 #   5  the process table cannot be read -> falls through to today's counting
+#   9/10  end to end: deferral tick (live stage, .exit 0 / 1) then release + launch ticks; the cap wording
+#         appears only for exit 0, and the signal is gone after the launch
 #   6  cap-exit relaunch preamble does not claim the previous run "exited without reaching a terminal state"
 #
 # RS_PS_CMD (run-state.sh) stands in for the process table. Reuses the sq_* helpers of
@@ -108,8 +110,10 @@ json.dump({'issue': '42', 'repo': sys.argv[1], 'extra': '', 'reason': 'auto-rest
 }
 
 test_ls_6_preamble_not_a_fault_on_cap_exit() {
-  local p; p=$(ls_launch_prompt 0 normal cap)
+  local p gone; p=$(ls_launch_prompt 0 normal cap)
+  gone=$(sq_present "$SQ_PIPE/orch-42.cap-exit")
   sq_cleanup
+  assert_eq "$gone" "absent" "#178/6: signal cleared at launch" || return 1
   assert_contains "$p" "AUTO-RESTART #1" "#178/6: relaunched with a preamble" || return 1
   assert_not_contains "$p" "exited without reaching a terminal state" "#178/6: cap exit not described as a fault" || return 1
   assert_contains "$p" "stage's time cap" "#178/6: cap wording present" || return 1
@@ -127,6 +131,46 @@ test_ls_8_silent_exit0_keeps_fault_wording() {
   assert_contains "$p" "exited without reaching a terminal state" "#178/8: silent exit 0 (no cap signal) keeps the fault wording" || return 1
 }
 
+# ls_e2e_prompt <exit-code> -> launch prompt after: deferral tick (live stage), release tick, launch tick.
+# Nothing is hand-written: the cap-exit signal can only come from the deferral.
+ls_e2e_prompt() {
+  sq_env open
+  sq_free_slots
+  printf '#!/bin/bash\nprintf "%%s\\n" "$*" > "%s/prompt.out"\n' "$SQ_PIPE" > "$SQ_GH/claude"; chmod +x "$SQ_GH/claude"
+  mk_restarting "$SQ_PIPE" 42 "$SQ_REPO"
+  sq_iso_ago 600 > "$SQ_PIPE/orch-42.launched-at"
+  echo "$1" > "$SQ_PIPE/orch-42.exit"
+  sq_marker "$SQ_READY"
+  ls_tick "$LS_STAGE_42"
+  local sig; sig=$(sq_present "$SQ_PIPE/orch-42.cap-exit")
+  ls_tick "true"
+  # only the backoff clock is stepped; the queue entry itself is the supervisor's own
+  python3 -c "
+import json, sys
+d = json.load(open(sys.argv[1])); d['not_before'] = 0; json.dump(d, open(sys.argv[1], 'w'))
+" "$SQ_PIPE/queue/orch-42.json" 2>/dev/null
+  sq_tick
+  local i; for i in $(seq 1 30); do [ -s "$SQ_PIPE/prompt.out" ] && break; sleep 0.1; done
+  echo "after-deferral-signal=$sig after-launch-signal=$(sq_present "$SQ_PIPE/orch-42.cap-exit")"
+  cat "$SQ_PIPE/prompt.out" 2>/dev/null
+}
+
+test_ls_9_deferral_then_release_not_reported_as_fault() {
+  local p; p=$(ls_e2e_prompt 0)
+  sq_cleanup
+  assert_contains "$p" "after-deferral-signal=present" "#178/9: deferral wrote the cap-exit signal" || return 1
+  assert_contains "$p" "stage's time cap" "#178/9: cap wording on the real relaunch" || return 1
+  assert_not_contains "$p" "exited without reaching a terminal state" "#178/9: not described as a fault" || return 1
+  assert_contains "$p" "after-launch-signal=absent" "#178/9: signal cleared after launch" || return 1
+}
+
+test_ls_10_crash_with_live_stage_keeps_fault_wording() {
+  local p; p=$(ls_e2e_prompt 1)
+  sq_cleanup
+  assert_contains "$p" "after-deferral-signal=absent" "#178/10: no cap-exit signal for a non-zero exit" || return 1
+  assert_contains "$p" "exited without reaching a terminal state" "#178/10: fault wording kept" || return 1
+}
+
 run_test test_ls_1_live_stage_defers_three_ticks
 run_test test_ls_2_other_issue_stage_does_not_defer
 run_test test_ls_3_no_live_stage_counts
@@ -135,3 +179,5 @@ run_test test_ls_5_unreadable_process_table_falls_through
 run_test test_ls_6_preamble_not_a_fault_on_cap_exit
 run_test test_ls_7_preamble_keeps_fault_wording_on_abnormal_exit
 run_test test_ls_8_silent_exit0_keeps_fault_wording
+run_test test_ls_9_deferral_then_release_not_reported_as_fault
+run_test test_ls_10_crash_with_live_stage_keeps_fault_wording
