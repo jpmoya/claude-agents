@@ -36,7 +36,27 @@ test_dgu_live_goal_with_empty_spec_field_blocks_registration() {
   dg_teardown; return $rc
 }
 
+test_dgu_live_goal_with_empty_id_blocks_overlapping_goal() {
+  dg_setup
+  local rc=0
+  dg_raw_registry_issue 902 "$(printf 'Goal: x\n\n```json\n%s\n```\n' '{"v":1,"id":"","spec":"example-owner/project-a:milestone:12","host":"host-a"}')"
+  dg_run "$DG_SPEC_MS"
+  dg_check_blind_refused "empty id" || rc=1
+  dg_teardown; return $rc
+}
+
+test_dgu_live_goal_with_missing_id_blocks_overlapping_goal() {
+  dg_setup
+  local rc=0
+  dg_raw_registry_issue 903 "$(printf 'Goal: x\n\n```json\n%s\n```\n' '{"v":1,"spec":"example-owner/project-a:milestone:12","host":"host-a"}')"
+  dg_run "$DG_SPEC_MS"
+  dg_check_blind_refused "missing id" || rc=1
+  dg_teardown; return $rc
+}
+
 for t in test_dgu_live_goal_without_json_block_blocks_registration \
-         test_dgu_live_goal_with_empty_spec_field_blocks_registration; do
+         test_dgu_live_goal_with_empty_spec_field_blocks_registration \
+         test_dgu_live_goal_with_empty_id_blocks_overlapping_goal \
+         test_dgu_live_goal_with_missing_id_blocks_overlapping_goal; do
   run_test "$t"
 done

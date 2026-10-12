@@ -38,8 +38,11 @@ check_overlap() {
   IFS=$'\t' read -r new_repo new_kind _ <<< "$(goal_parse "$spec")"
   new_rows=$(goal_scope "$spec" "$id") || die "cannot read the scope of $spec"
   while IFS=$'\t' read -r o_issue o_id o_spec o_st; do
-    [ -n "$o_issue" ] || continue
     [ "$o_issue" = "$skip" ] && continue
+    # empty fields arrive as "-" (a tab split would collapse them); an unreadable id/state/issue fails closed
+    if [ "$o_issue" = "-" ] || [ "$o_id" = "-" ] || [ "$o_st" = "-" ] || [ -z "$o_st" ]; then
+      die "cannot read a live registry entry (issue #${o_issue}); refusing to go on blind"
+    fi
     case "$o_st" in
       active|held|waiting_jp) ;;
       unreadable) die "cannot read the registry block of $o_id (issue #$o_issue); refusing to go on blind" ;;
@@ -56,7 +59,7 @@ check_overlap() {
       [ -n "$row" ] || continue
       if printf '%s\n' "$new_rows" | grep -qxF -- "$row"; then die "overlaps live goal $o_id (shares $row)"; fi
     done <<< "$other"
-  done <<< "$(printf '%s' "$reg" | jq -r '.[] | "\(.issue)\t\(.id)\t\(.spec // "" | if . == "" then "-" else . end)\t\(.st)"')"
+  done <<< "$(printf '%s' "$reg" | jq -r 'def f: if . == null or . == "" then "-" else tostring end; .[] | "\(.issue | f)\t\(.id | f)\t\(.spec | f)\t\(.st | f)"')"
 }
 
 write_cache() {  # <id> <block json> <issue number>
