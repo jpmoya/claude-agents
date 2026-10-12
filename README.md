@@ -33,7 +33,7 @@ skills/orchestrate/deliver.sh resume <goal|id> [--here]  # reopen a stopped/held
 
 ## Migrating the old relaunchers (issue #198)
 
-Retire each hand-rolled relauncher once its plan is covered by a goal. Docs only: run these by hand on the named host, one at a time. Register the replacing goal first, then remove the old job, then verify.
+Retire each hand-rolled relauncher once its plan is covered by a goal. Docs only: run these by hand on the named host, one at a time. Before registering, check `ps` on that host for `--agent project-manager`: registration launches a cycle at once and the old relauncher keeps running until removed, so two delivery leads can overlap on the same plan. Register the replacing goal first, then remove the old job, then verify. The concrete `<spec>` for each plan is in that host's plan file (the repo and milestone the old relauncher script drives); read it from the script named below.
 
 - **Mac launchd `com.jp.pm-cd`** (and `~/logs/pipeline/pm-cd-relaunch.sh`): register the replacing goal with `skills/orchestrate/deliver.sh <spec>` (the repo/milestone that plan drives), then `launchctl bootout gui/$(id -u)/com.jp.pm-cd`, delete `~/Library/LaunchAgents/com.jp.pm-cd.plist` and `~/logs/pipeline/pm-cd-relaunch.sh`. Verify: `launchctl list | grep pm-cd` prints nothing, and `skills/orchestrate/deliver.sh status` shows the goal.
 - **Mac sales-3.1.1 `cycle.sh`**: register `skills/orchestrate/deliver.sh <owner/repo>:milestone:<sales-3.1.1 milestone>` for the sales repo, then stop the `cycle.sh` loop and remove its start entry. Verify: `skills/orchestrate/deliver.sh status` shows the goal and `ps` shows no `cycle.sh`.
