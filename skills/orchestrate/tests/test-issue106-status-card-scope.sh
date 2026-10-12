@@ -105,7 +105,7 @@ test_i106_no_new_mechanism_only_doc_files_and_tests_touched() {
   while IFS= read -r f; do
     [ -z "$f" ] && continue
     case "$f" in
-      CLAUDE.md|agents/orchestrator.md|agents/project-manager.md|skills/orchestrate/tests/*) ;;
+      CLAUDE.md|agents/orchestrator.md|agents/project-manager.md|agents/deployer.md|status-page/test/deployer-ci-wait.test.js|skills/orchestrate/tests/*) ;;
       # #114: exactly its Files-table paths
       agents/intake.md|agents/README.md|README.md|hooks/pipeline-markers.sh|hooks/require-handoff-marker.sh) ;;
       skills/orchestrate/intake-labels.sh|skills/orchestrate/scan-backlog.sh|skills/orchestrate/config.sh|skills/orchestrate/pipeline-lib.sh|skills/orchestrate/supervisor.sh) ;;
@@ -113,6 +113,10 @@ test_i106_no_new_mechanism_only_doc_files_and_tests_touched() {
       agents/fullstack-developer.md|agents/product-manager.md|skills/orchestrate/test/*) ;;
       # #193: exactly its new Files-table paths
       skills/orchestrate/deliver.sh|skills/orchestrate/goal-lib.sh) ;;
+      # #188: exactly its Files-table paths not already listed
+      agents/solutions-architect.md|agents/pipeline-adjudicator.md) ;;
+      # #196: exactly its Files-table path not already listed
+      skills/orchestrate/config.local.example.sh) ;;
       *) bad="$bad $f" ;;
     esac
   done <<< "$changed"
