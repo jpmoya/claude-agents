@@ -42,10 +42,14 @@ test_ms188_ac1_pm_rule_elements() {
   done
 }
 
-# AC5: deployer.md byte-unchanged vs the base commit af55e3e (blob sha pinned).
+# AC5: #188 did not touch deployer.md. Scoped to #188's own squash commit (df5be07), not to the
+# file's current content, so later legitimate deployer edits (#156, #158, #171) stay green.
 test_ms188_ac5_deployer_byte_unchanged() {
-  local got; got=$(git hash-object "$ROOT_188/agents/deployer.md")
-  assert_eq "$got" "0a2eddf5abb144a5736e009b8b8ac15aa63addff" "agents/deployer.md blob sha" || return 1
+  local c=df5be07ae942dc6941b557bc9e335c40d9e27e2f
+  # Shallow/partial clone without that commit: nothing to inspect.
+  git -C "$ROOT_188" cat-file -e "$c^{commit}" 2>/dev/null || return 0
+  local touched; touched=$(git -C "$ROOT_188" diff-tree --no-commit-id --name-only -r "$c" -- agents/deployer.md)
+  assert_eq "$touched" "" "#188 commit $c must not touch agents/deployer.md" || return 1
 }
 
 # Docs (ticket "Docs" section): CLAUDE.md and README cite planning milestones and the child tickets.
