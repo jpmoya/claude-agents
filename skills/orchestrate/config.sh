@@ -39,6 +39,11 @@ ROTATE_KEEP=12             # rotations kept per log
 RUNS_KEEP_DAYS=14          # runs.jsonl lines newer than this stay in the live file
 COST_CEILING_USD=40        # refuse a new fix-cycle developer/test-writer stage once a ticket's logged cost passes this; 0 = off
 
+# Goal-bound delivery lead (#193): the agent deliver.sh launches (claude-agents#192 flips the default) and the repo that
+# hosts the goal registry issues (label delivery-goal) — one registry for every goal, whatever repo the goal is on.
+GOAL_AGENT=project-manager
+GOAL_REGISTRY_REPO=jpmoya/claude-agents
+
 [ -f "$HOME/.claude/pipeline/config.local.sh" ] && source "$HOME/.claude/pipeline/config.local.sh"
 
 export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:/opt/homebrew/bin:$PATH"
