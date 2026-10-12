@@ -95,6 +95,7 @@ ls_launch_prompt() {
   sq_seed_restarts 1 1 "$SQ_READY"
   echo "$1" > "$SQ_PIPE/orch-42.exit"
   echo "$2 -" > "$SQ_PIPE/orch-42.exit-class"
+  [ "${3:-}" = cap ] && touch "$SQ_PIPE/orch-42.cap-exit"
   python3 -c "
 import json, sys
 json.dump({'issue': '42', 'repo': sys.argv[1], 'extra': '', 'reason': 'auto-restart',
@@ -107,7 +108,7 @@ json.dump({'issue': '42', 'repo': sys.argv[1], 'extra': '', 'reason': 'auto-rest
 }
 
 test_ls_6_preamble_not_a_fault_on_cap_exit() {
-  local p; p=$(ls_launch_prompt 0 normal)
+  local p; p=$(ls_launch_prompt 0 normal cap)
   sq_cleanup
   assert_contains "$p" "AUTO-RESTART #1" "#178/6: relaunched with a preamble" || return 1
   assert_not_contains "$p" "exited without reaching a terminal state" "#178/6: cap exit not described as a fault" || return 1
@@ -120,6 +121,12 @@ test_ls_7_preamble_keeps_fault_wording_on_abnormal_exit() {
   assert_contains "$p" "exited without reaching a terminal state" "#178/7: abnormal exit keeps the wording" || return 1
 }
 
+test_ls_8_silent_exit0_keeps_fault_wording() {
+  local p; p=$(ls_launch_prompt 0 normal)
+  sq_cleanup
+  assert_contains "$p" "exited without reaching a terminal state" "#178/8: silent exit 0 (no cap signal) keeps the fault wording" || return 1
+}
+
 run_test test_ls_1_live_stage_defers_three_ticks
 run_test test_ls_2_other_issue_stage_does_not_defer
 run_test test_ls_3_no_live_stage_counts
@@ -127,3 +134,4 @@ run_test test_ls_4_release_after_stage_exits
 run_test test_ls_5_unreadable_process_table_falls_through
 run_test test_ls_6_preamble_not_a_fault_on_cap_exit
 run_test test_ls_7_preamble_keeps_fault_wording_on_abnormal_exit
+run_test test_ls_8_silent_exit0_keeps_fault_wording

@@ -216,12 +216,12 @@ do_launch() {
   if [ "$restart_n" -gt 0 ]; then
     preamble="AUTO-RESTART #$restart_n: a previous orchestrator process exited without reaching a terminal state. Verify branch/PR/comment state with gh before dispatching anything. Never redo a completed stage. "
     # #178 begin
-    # exit 0 + class normal = the orchestrator stopped waiting at a stage's time cap (orchestrator.md): not a fault
-    prev_exit=$(cat "$PIPE/orch-$issue.exit" 2>/dev/null || echo "?")
-    prev_class=$(cut -d' ' -f1 "$PIPE/orch-$issue.exit-class" 2>/dev/null)
-    if [ "$prev_exit" = 0 ] && [ "$prev_class" = normal ]; then
+    # .cap-exit is written only by the stage-wait deferral below: the orchestrator exited at a stage's time cap
+    # (orchestrator.md), not a fault. A silent exit 0 never writes it and keeps the fault wording.
+    if [ -f "$PIPE/orch-$issue.cap-exit" ]; then
       preamble="AUTO-RESTART #$restart_n: the previous orchestrator process stopped waiting at a stage's time cap (normal, not a fault; do not report it as a technical problem). Verify branch/PR/comment state with gh before dispatching anything. Never redo a completed stage. "
     fi
+    rm -f "$PIPE/orch-$issue.cap-exit"
     # #178 end
   fi
 
@@ -345,6 +345,7 @@ for f in "$PIPE"/orch-*.pid; do
   live_stage=$(_rs_live_stage "$issue" 0 2>/dev/null)
   if [ -n "$live_stage" ]; then
     slog "[stage-wait] #$issue — orchestrator exited, stage $live_stage still running; deferring"
+    touch "$PIPE/orch-$issue.cap-exit" 2>/dev/null || true
     continue
   fi
   # #178 end
