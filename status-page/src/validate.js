@@ -22,6 +22,10 @@ const MAX_STAGING = 60;
 const MAX_APPROVED = 20;
 const MILESTONE = /^[\w .,()&/+:-]{1,60}$/;
 const RELEASE = /^v\d+\.\d+\.\d+$/;
+const MAX_GOALS = 50;
+const GOAL_STATES = ['running', 'between_cycles', 'waiting_jp', 'held'];
+const GOAL_HOSTS = ['mac', 'vm'];
+const GOAL_UNSAFE = /[<>&"`]/;
 
 /** True iff `value` is a string that is exactly a GitHub issue URL. render.js re-checks with it. */
 export function isIssueUrl(value) {
@@ -161,6 +165,28 @@ function sanitiseListItem(rawItem) {
   return item;
 }
 
+/** Safe-text rule for goal id/spec: collapsed + capped like titles, and no <, >, &, " or `. Else null. */
+function sanitiseGoalText(value) {
+  const text = sanitiseTitle(value);
+  return text === null || GOAL_UNSAFE.test(text) ? null : text;
+}
+
+/** Sanitises one goals[] entry (issue #197). Returns null to drop it. */
+function sanitiseGoal(raw) {
+  if (!isPlainObject(raw)) return null;
+  const id = sanitiseGoalText(raw.id);
+  const spec = sanitiseGoalText(raw.spec);
+  if (id === null || spec === null) return null;
+  if (!GOAL_HOSTS.includes(raw.host) || !GOAL_STATES.includes(raw.state)) return null;
+  const goal = { id, spec, host: raw.host, state: raw.state };
+  const total = clampInt(raw.scope_total, 0, 9999);
+  if (total !== null) goal.scope_total = total;
+  const delivered = clampInt(raw.scope_delivered, 0, 9999);
+  if (delivered !== null) goal.scope_delivered = delivered;
+  if (isIsoTimestamp(raw.last_cycle_at)) goal.last_cycle_at = raw.last_cycle_at;
+  return goal;
+}
+
 function sanitiseList(raw, max) {
   return Array.isArray(raw) ? raw.map(sanitiseListItem).filter((item) => item !== null).slice(0, max) : [];
 }
@@ -210,6 +236,12 @@ export function validateBeatPayload(parsedBody) {
   // Optional (issue #62): absent or non-array -> []; never a rejection.
   value.staging = sanitiseList(parsedBody.staging, MAX_STAGING);
   value.approved = sanitiseList(parsedBody.approved, MAX_APPROVED);
+
+  // Optional (issue #197): absent or non-array -> no key. First 50 entries, then filtered.
+  if (Array.isArray(parsedBody.goals)) {
+    const goals = parsedBody.goals.slice(0, MAX_GOALS).map(sanitiseGoal).filter((g) => g !== null);
+    if (goals.length > 0) value.goals = goals;
+  }
 
   return { ok: true, value };
 }

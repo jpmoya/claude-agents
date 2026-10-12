@@ -140,6 +140,58 @@ function renderGroupSection(group) {
   </section>`;
 }
 
+const GOAL_STATE_LABELS = { waiting_jp: 'waiting on JP', held: 'held', running: 'running', between_cycles: 'between cycles' };
+const GOAL_STATE_ORDER = ['waiting_jp', 'held', 'running', 'between_cycles'];
+const GOAL_COLUMNS = ['Goal', 'Host', 'State', 'Delivered', 'Last cycle'];
+
+/** Merges both hosts' goals: one entry per id — the goal's own host's report wins, else the newer received_at. */
+function mergeGoals(hosts) {
+  const winners = new Map();
+  for (const hostKey of ['mac', 'vm']) {
+    const rec = hosts[hostKey];
+    if (!rec || !Array.isArray(rec.goals)) continue;
+    const at = Date.parse(rec.received_at);
+    const receivedMs = Number.isNaN(at) ? 0 : at;
+    for (const g of rec.goals) {
+      if (!g || typeof g !== 'object' || typeof g.id !== 'string') continue;
+      const cand = { goal: g, own: g.host === hostKey, receivedMs };
+      const cur = winners.get(g.id);
+      if (!cur || (cand.own && !cur.own) || (cand.own === cur.own && cand.receivedMs > cur.receivedMs)) {
+        winners.set(g.id, cand);
+      }
+    }
+  }
+  const rank = (g) => {
+    const i = GOAL_STATE_ORDER.indexOf(g.state);
+    return i === -1 ? GOAL_STATE_ORDER.length : i;
+  };
+  return [...winners.values()]
+    .map((w) => w.goal)
+    .sort((a, b) => rank(a) - rank(b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+}
+
+function renderGoalsSection(hosts) {
+  const goals = mergeGoals(hosts);
+  if (goals.length === 0) return '';
+  const delivered = (g) =>
+    Number.isInteger(g.scope_delivered) && Number.isInteger(g.scope_total) ? `${g.scope_delivered}/${g.scope_total}` : '–';
+  const cells = (g) => [
+    esc(g.spec),
+    esc(HOST_LABELS[g.host] || g.host),
+    `<span class="badge goal-${esc(g.state)}">${esc(GOAL_STATE_LABELS[g.state] || g.state)}</span>`,
+    esc(delivered(g)),
+    esc(formatCet(g.last_cycle_at) || '–'),
+  ];
+  const rows = goals.map((g) => `<tr>${cells(g).map((c) => `<td>${c}</td>`).join('')}</tr>`).join('');
+  return `<section class="group">
+    <h2>Goals</h2>
+    <table>
+      <tr>${GOAL_COLUMNS.map((c) => `<th>${esc(c)}</th>`).join('')}</tr>
+      <tbody>${rows}</tbody>
+    </table>
+  </section>`;
+}
+
 function renderHostSection(key, host, thresholds, nowEpochSecs) {
   const label = HOST_LABELS[key] || key;
   if (!host) {
@@ -172,7 +224,7 @@ export function renderPage(hosts, thresholds, nowEpochSecs) {
 
   const body = bothEmpty
     ? '<p class="empty">no data from either host yet</p>'
-    : `${renderHostSection('mac', hosts.mac, thresholds, nowEpochSecs)}${renderHostSection('vm', hosts.vm, thresholds, nowEpochSecs)}${groupTickets(hosts, nowEpochSecs).map(renderGroupSection).join('')}`;
+    : `${renderHostSection('mac', hosts.mac, thresholds, nowEpochSecs)}${renderHostSection('vm', hosts.vm, thresholds, nowEpochSecs)}${renderGoalsSection(hosts)}${groupTickets(hosts, nowEpochSecs).map(renderGroupSection).join('')}`;
 
   return `<!doctype html>
 <html lang="en">
@@ -191,6 +243,10 @@ export function renderPage(hosts, thresholds, nowEpochSecs) {
   .badge.stale { background: #9a6700; color: #ffffff; }
   .badge.offline { background: #a40e26; color: #ffffff; }
   .badge.nodata { background: #6e7781; color: #ffffff; }
+  .badge.goal-running { background: #1a7f37; color: #ffffff; }
+  .badge.goal-waiting_jp { background: #9a6700; color: #ffffff; }
+  .badge.goal-held { background: #a40e26; color: #ffffff; }
+  .badge.goal-between_cycles { background: #6e7781; color: #ffffff; }
   table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
   th, td { text-align: left; padding: 0.25rem; border-bottom: 1px solid rgba(127, 127, 127, 0.3); }
   section.host, section.group { margin-bottom: 1.5rem; }
