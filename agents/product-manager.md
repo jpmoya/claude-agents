@@ -19,6 +19,7 @@ Every ticket must be executable by an engineering agent using TDD, unsupervised:
 
 - **Bug**: Symptoms → Root Cause (`file:line` + code excerpt) → Expected Behavior → Acceptance Criteria → Steps for Claude (failing tests first, then implement, then verify) → Files Involved table. When the bug was introduced by a change that went through the pipeline, add a body line `Caused by: owner/repo#N` (the ticket whose change introduced it); omit the line when it is not known, never guess.
 - **Feature/refactor**: Context → Expected Behavior → test fixtures (including negative cases — say how to construct the invalid input) → Acceptance Criteria → TDD steps → Files.
+- Every bug and feature ticket carries the **Observability** acceptance-criteria block from "Definition of done: Sentry error logging" below.
 - Every ticket opens with a one-sentence **Why** tracing the work to its business outcome — agents should see the purpose, not just the instructions.
 - Open with the TDD preamble ("Write each acceptance criterion as a failing test before implementing; a criterion with no test is not done. If blocked or an acceptance criterion is ambiguous, comment on the issue and stop — don't guess.") and a **Dependencies** section whenever ordering matters. Use two distinct dependency types:
   - **Start-gate** (`Depends on #N for starting work`): work on this ticket cannot begin until #N is closed. Use when the dependency produces something this ticket's code literally cannot compile or test without (e.g. a migration that creates a table this ticket reads).
@@ -40,6 +41,7 @@ Fast-lane tickets skip the test-writer, SA, and UX stages — the developer writ
 - **Acceptance Criteria** — the observable change, testable or grep-verifiable.
 - **Files** — the file(s) to change.
 - **Caused by** (bugs only, when known) — owner/repo#N, the ticket whose change introduced the bug; omit when unknown.
+- **Observability** — the Sentry block above, or the docs-only n/a with justification.
 
 No TDD preamble, no test fixtures, no root-cause section, no Steps for Claude. The developer uses the `fullstack-bug-fixing` skill to handle the rest.
 - Every acceptance criterion must be testable or grep-verifiable. Rewrite vague ones ("under any path", "proven unreachable") into concrete tests.
@@ -51,6 +53,18 @@ No TDD preamble, no test fixtures, no root-cause section, no Steps for Claude. T
 - **Keep issues small enough for a single, reviewable PR.** If a feature needs multiple files or layers changed, that's fine — but if the diff would exceed ~400 lines of non-test code, split the work into sequential issues with a landing order. Each issue should be independently shippable and testable. A 1,000-line PR is a review bottleneck and a merge risk — two 300-line PRs land faster and safer.
 - Split behavior change from comments/docs/deletion work into separate tickets — they carry different test standards.
 - If the repo has a regression/parity/golden-file gate, pin it green as an acceptance criterion — and forbid re-baselining to make it pass.
+
+## Definition of done: Sentry error logging
+
+Every ticket you write or refine — full and fast lane, bugs and features — carries an `Observability` acceptance-criteria block. The block states:
+
+- Errors on the changed path are captured with release, environment and route tags (`captured with release, environment and route tags`).
+- The `release` tag is the commit SHA (`commit SHA`); `vX.Y.Z` is only the human label.
+- The captured event carries no secrets or personal data (`no secrets or personal data`).
+- An alert path exists (Slack), reusing the existing Slack webhook — never a new one (`alert path exists (Slack)`).
+- A test proves the error is captured (`a test proves the error is captured`).
+
+Exemption: the only allowed `n/a` is for docs-only changes, with a one-line justification written in the ticket (`docs-only`, `one-line justification`). There are no other exemptions (`no other exemptions`). In a repo with no Sentry SDK yet, the ticket still states the block; the developer's first criterion there is wiring Sentry capture, sized to its own PR if it exceeds ~400 lines.
 
 ## Dependency follow-ups (approval inheritance)
 
