@@ -117,6 +117,8 @@ test_i106_no_new_mechanism_only_doc_files_and_tests_touched() {
       agents/solutions-architect.md|agents/pipeline-adjudicator.md) ;;
       # #196: exactly its Files-table path not already listed
       skills/orchestrate/config.local.example.sh) ;;
+      # #198: exactly its Files-table path not already listed
+      skills/orchestrate/SKILL.md) ;;
       *) bad="$bad $f" ;;
     esac
   done <<< "$changed"
