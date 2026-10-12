@@ -7,6 +7,7 @@
 #   3b. intake: triage one user-feedback-intake issue from DISPATCH_REPOS (claim, swap label, launch `--agent intake`)
 #   3c. spec: PM-only spec run for one `user-feedback-needs-spec` idea from DISPATCH_REPOS (no agent-go, no orchestrator; ends in agent-proposed)
 #   5. shared dispatch: launch one agent-go issue from DISPATCH_REPOS after winning a claim
+#   3d. goal step (#195): keep-alive, pacing, parking, completion of goal-bound delivery leads pinned to this host
 #   7. status reconcile: refresh listed tickets from GitHub (backgrounded, throttled to once per 600 s; issue #51)
 # One launch per tick max. All state is local (/tmp/pipeline); the only shared state is the issue's markers and labels.
 set -uo pipefail
@@ -16,6 +17,8 @@ source "$HERE/config.sh"
 source "$HERE/pipeline-lib.sh"
 # shared run-state derivation + report_status_async (issue #10)
 source "$HERE/run-state.sh"
+# goal-bound delivery lead library (goal-lib.sh; the goal step #195 lives there)
+source "$HERE/goal-lib.sh"
 # routing-marker vocabulary (marker_re), shared with the handoff hook and the orchestrator
 source "$HERE/../../hooks/pipeline-markers.sh" 2>/dev/null || source "$HOME/.claude/hooks/pipeline-markers.sh"
 
@@ -834,6 +837,9 @@ if [ "$launched" -eq 0 ] && [ "$HAS_CAP" -eq 1 ] && [ "${#DISPATCH_REPOS[@]}" -g
     done
   done
 fi
+
+# 3d. Goal step (#195) — goal pids are coordinators: not in count_running, never set the orchestrator `launched` flag.
+goal_step
 
 # 4. Label reconciliation — catch orphaned agent-in-progress labels that have no local state at all
 #    (e.g. /tmp was cleared, or a run from another machine died). Only clear if no marker movement for 30+ min.

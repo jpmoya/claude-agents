@@ -154,6 +154,8 @@ cmd_stop() {
     add_label "$issue" goal-stopped
     post_note "$issue" "**[deliver] NOTE** stopped by $THIS_HOST"
     set_state "$issue" closed
+    # registry write landed: mark the local stop as confirmed (goal_sync only lifts a confirmed .stopped)
+    [ "$host" = "$THIS_HOST" ] && echo registry > "$PIPE/goal-$id.stopped" 2>/dev/null
     echo "stopped $id (issue #$issue)"
   else
     echo "$id is already $st"
