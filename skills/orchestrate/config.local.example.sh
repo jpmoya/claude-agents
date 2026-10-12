@@ -14,7 +14,7 @@ DISPATCH_REPOS=(
 
 # Concurrent orchestrators this machine runs (default 3 in config.sh).
 # MAX_CONCURRENT=3
-# MAX_CLAUDE_PROCS=8
+# MAX_CLAUDE_PROCS=10
 # ^ ceiling of the orchestrator's pre-dispatch gate — raise it whenever MAX_CONCURRENT is raised (rule in config.sh).
 
 # Hourly backlog scan (labels new issues agent-proposed, posts a Slack digest). Exactly ONE machine should run it.
