@@ -74,14 +74,14 @@ test_gate_passes_under_capacity() {
   assert_exit0 "$GATE_RC" "3 matching lines" || return 1
 }
 
-test_gate_boundary_9_lines_passes() {
-  gate_case gate_rep 9 "$GATE_MATCH"
-  assert_exit0 "$GATE_RC" "9 lines (ACTIVE=8)" || return 1
+test_gate_boundary_11_lines_passes() {
+  gate_case gate_rep 11 "$GATE_MATCH"
+  assert_exit0 "$GATE_RC" "11 lines (ACTIVE=10)" || return 1
 }
 
-test_gate_boundary_10_lines_blocks() {
-  gate_case gate_rep 10 "$GATE_MATCH"
-  [ "$GATE_RC" -ne 0 ] || { fail "10 lines (ACTIVE=9): expected non-zero, got 0"; return 1; }
+test_gate_boundary_12_lines_blocks() {
+  gate_case gate_rep 12 "$GATE_MATCH"
+  [ "$GATE_RC" -ne 0 ] || { fail "12 lines (ACTIVE=11): expected non-zero, got 0"; return 1; }
 }
 
 test_gate_ignores_bash_wrappers() {
@@ -95,8 +95,8 @@ test_gate_ignores_claude_without_skip_permissions() {
 }
 
 test_gate_counts_macos_path_prefixed_comm() {
-  gate_case gate_rep 10 "/opt/homebrew/bin/claude /opt/homebrew/bin/claude --dangerously-skip-permissions --agent x -p y"
-  [ "$GATE_RC" -ne 0 ] || { fail "10 path-prefixed claude lines (ACTIVE=9): expected non-zero, got 0"; return 1; }
+  gate_case gate_rep 12 "/opt/homebrew/bin/claude /opt/homebrew/bin/claude --dangerously-skip-permissions --agent x -p y"
+  [ "$GATE_RC" -ne 0 ] || { fail "12 path-prefixed claude lines (ACTIVE=11): expected non-zero, got 0"; return 1; }
 }
 
 # --- #40: interactive sessions are not counted; ceiling comes from config ---------------------
@@ -125,16 +125,16 @@ test_gate_ignores_interactive_sessions_only() {
 
 test_gate_config_declares_max_claude_procs() {
   local cfg="$HERE_GATE/../config.sh" n after
-  n=$(grep -c '^MAX_CLAUDE_PROCS=8' "$cfg")
-  assert_eq "$n" "1" "config.sh: count of ^MAX_CLAUDE_PROCS=8 lines" || return 1
+  n=$(grep -c '^MAX_CLAUDE_PROCS=10' "$cfg")
+  assert_eq "$n" "1" "config.sh: count of ^MAX_CLAUDE_PROCS=10 lines" || return 1
   after=$(grep -A1 '^MAX_CONCURRENT=3' "$cfg" | sed -n 2p)
-  assert_contains "$after" "MAX_CLAUDE_PROCS=8" "line directly after MAX_CONCURRENT=3" || return 1
+  assert_contains "$after" "MAX_CLAUDE_PROCS=10" "line directly after MAX_CONCURRENT=3" || return 1
 }
 
 test_gate_example_config_mentions_max_claude_procs() {
   local after
   after=$(grep -A1 '^# MAX_CONCURRENT=3' "$HERE_GATE/../config.local.example.sh" | sed -n 2p)
-  assert_eq "$after" "# MAX_CLAUDE_PROCS=8" "example: line directly under # MAX_CONCURRENT=3" || return 1
+  assert_eq "$after" "# MAX_CLAUDE_PROCS=10" "example: line directly under # MAX_CONCURRENT=3" || return 1
 }
 
 test_gate_honours_local_override() {
@@ -154,17 +154,17 @@ test_gate_function_has_no_max_concurrent_or_16() {
 }
 
 test_gate_fallback_when_config_missing() {
-  gate_case_with 1 "" gate_rep 9 "$GATE_MATCH"
-  assert_exit0 "$GATE_RC" "no config.sh, 9 lines (ACTIVE=8)" || return 1
-  gate_case_with 1 "" gate_rep 10 "$GATE_MATCH"
-  [ "$GATE_RC" -ne 0 ] || { fail "no config.sh, 10 lines (ACTIVE=9): expected non-zero, got 0"; return 1; }
+  gate_case_with 1 "" gate_rep 11 "$GATE_MATCH"
+  assert_exit0 "$GATE_RC" "no config.sh, 11 lines (ACTIVE=10)" || return 1
+  gate_case_with 1 "" gate_rep 12 "$GATE_MATCH"
+  [ "$GATE_RC" -ne 0 ] || { fail "no config.sh, 12 lines (ACTIVE=11): expected non-zero, got 0"; return 1; }
 }
 
 test_gate_fallback_when_value_garbage() {
-  gate_case_with "" "MAX_CLAUDE_PROCS=abc" gate_rep 9 "$GATE_MATCH"
-  assert_exit0 "$GATE_RC" "MAX_CLAUDE_PROCS=abc, 9 lines (ACTIVE=8)" || return 1
-  gate_case_with "" "MAX_CLAUDE_PROCS=abc" gate_rep 10 "$GATE_MATCH"
-  [ "$GATE_RC" -ne 0 ] || { fail "MAX_CLAUDE_PROCS=abc, 10 lines (ACTIVE=9): expected non-zero, got 0"; return 1; }
+  gate_case_with "" "MAX_CLAUDE_PROCS=abc" gate_rep 11 "$GATE_MATCH"
+  assert_exit0 "$GATE_RC" "MAX_CLAUDE_PROCS=abc, 11 lines (ACTIVE=10)" || return 1
+  gate_case_with "" "MAX_CLAUDE_PROCS=abc" gate_rep 12 "$GATE_MATCH"
+  [ "$GATE_RC" -ne 0 ] || { fail "MAX_CLAUDE_PROCS=abc, 12 lines (ACTIVE=11): expected non-zero, got 0"; return 1; }
 }
 
 test_gate_does_not_leak_config_into_shell() {
@@ -183,8 +183,8 @@ echo "-- orchestrator concurrency gate"
 run_test test_gate_extraction_nonempty_and_no_pgrep
 run_test test_gate_blocks_over_capacity
 run_test test_gate_passes_under_capacity
-run_test test_gate_boundary_9_lines_passes
-run_test test_gate_boundary_10_lines_blocks
+run_test test_gate_boundary_11_lines_passes
+run_test test_gate_boundary_12_lines_blocks
 run_test test_gate_ignores_bash_wrappers
 run_test test_gate_ignores_claude_without_skip_permissions
 run_test test_gate_counts_macos_path_prefixed_comm

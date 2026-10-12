@@ -113,6 +113,8 @@ test_i106_no_new_mechanism_only_doc_files_and_tests_touched() {
       agents/fullstack-developer.md|agents/product-manager.md|skills/orchestrate/test/*) ;;
       # #188: exactly its Files-table paths not already listed
       agents/solutions-architect.md|agents/pipeline-adjudicator.md) ;;
+      # #196: exactly its Files-table path not already listed
+      skills/orchestrate/config.local.example.sh) ;;
       *) bad="$bad $f" ;;
     esac
   done <<< "$changed"
