@@ -1,4 +1,4 @@
-# Issue #198 — goal-bound delivery lead docs: CLAUDE.md, agents/project-manager.md, SKILL.md, README.md
+# Issue #198 — goal-bound delivery lead docs: CLAUDE.md, agents/delivery-lead.md, SKILL.md, README.md
 # (deliver.sh section + relauncher migration checklist). Docs-only; pinned by literal strings read from
 # tracked files. No gh, no network, no /tmp/pipeline.
 # AC4's "full suite green" is the run-tests.sh run itself; the #109 one-cycle-per-launch rule is re-pinned
@@ -7,7 +7,7 @@
 HERE_198=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT_198=$(cd "$HERE_198/../../.." && pwd)
 CLAUDE_198="$ROOT_198/CLAUDE.md"
-PM_198="$ROOT_198/agents/project-manager.md"
+PM_198="$ROOT_198/agents/delivery-lead.md"
 SKILL_198="$ROOT_198/skills/orchestrate/SKILL.md"
 README_198="$ROOT_198/README.md"
 
@@ -15,8 +15,8 @@ d198_has()   { grep -qF  -- "$2" "$1" || { fail "$(basename "$1"): missing [$2]"
 d198_hasnt() { if grep -qF -- "$2" "$1"; then fail "$(basename "$1"): must not contain [$2]"; return 1; fi; }
 d198_has_i() { grep -qiE -- "$2" "$1" || { fail "$(basename "$1"): missing (regex, any case) [$2]"; return 1; }; }
 
-# d198_para <file> — the "Project manager (delivery lead)" paragraph of CLAUDE.md
-d198_para() { grep -F '**Project manager (delivery lead).**' "$1"; }
+# d198_para <file> — the "Delivery lead" paragraph of CLAUDE.md (heading renamed by #192 AC6)
+d198_para() { grep -E '^\*\*Delivery lead\.\*\*' "$1"; }
 # d198_section <file> <heading-regex> — body of the first "## " section whose heading matches
 d198_section() {
   awk -v re="$2" '/^## /{ if (on) exit; if ($0 ~ re) { on=1; next } } on' "$1"
@@ -89,11 +89,11 @@ test_198_claude_md_no_stale_start_by_brief() {
   assert_not_contains "$p" 'JP starts it with a brief' "stale hand-start sentence removed"
 }
 
-# ---- AC2: agents/project-manager.md ------------------------------------------------------------
+# ---- AC2: agents/delivery-lead.md ------------------------------------------------------------
 test_198_ac2_pm_md_never_unload() {
   d198_has "$PM_198" 'never unload' || return 1
   grep -iE 'never unload' "$PM_198" | grep -qiE 'job|launchd|cron|relaunch|goal' \
-    || { fail "project-manager.md: 'never unload' must name what is not unloaded (jobs/launchd/cron)"; return 1; }
+    || { fail "delivery-lead.md: 'never unload' must name what is not unloaded (jobs/launchd/cron)"; return 1; }
 }
 test_198_ac2_pm_md_completion_decided_by_machinery() {
   d198_has_i "$PM_198" 'completion is decided by the (machinery|supervisor)' || return 1
@@ -119,7 +119,7 @@ test_198_pm_md_one_cycle_per_launch_still_pinned() {  # AC4 / #109
 }
 test_198_pm_md_jp_only_parks_and_waiting_on_jp() {
   d198_has "$PM_198" 'waiting on JP' || return 1
-  grep -iE 'JP-only' "$PM_198" | grep -qiE 'park' || { fail "project-manager.md: JP-only items must park the ticket"; return 1; }
+  grep -iE 'JP-only' "$PM_198" | grep -qiE 'park' || { fail "delivery-lead.md: JP-only items must park the ticket"; return 1; }
 }
 
 # ---- item 3: deliver.sh sections ---------------------------------------------------------------

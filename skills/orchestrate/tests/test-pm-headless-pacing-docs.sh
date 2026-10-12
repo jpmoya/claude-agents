@@ -3,7 +3,7 @@
 # /loop self-pacing is interactive-only; the 20–30 min cadence is the launcher's interval.
 # The checker is run against the real file AND against hand-written pre-fix / fixed fixtures (self-check).
 ROOT_PM=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
-PM_MD="$ROOT_PM/agents/project-manager.md"
+PM_MD="$ROOT_PM/agents/delivery-lead.md"   # #192: content moved from project-manager.md (now a thin alias)
 
 # pm_sections <file> — §3 and §4 (from "## 3." up to "## 5."), one sentence per line.
 pm_sections() {

@@ -2,7 +2,7 @@
 # Issue #164 — sessions open staging->main promotion PRs directly; no pipeline ticket; fixes land on staging first.
 set -u
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
-C="$ROOT/CLAUDE.md"; PM="$ROOT/agents/project-manager.md"
+C="$ROOT/CLAUDE.md"; PM="$ROOT/agents/delivery-lead.md"   # #192: content moved from project-manager.md (now a thin alias)
 fail=0
 chk() { if ! grep -qE "$2" "$3"; then echo "FAIL: $1"; fail=1; fi; }
 chk "CLAUDE.md: session opens promotion PR itself from a worktree" 'opens the (promotion )?PR itself from a worktree' "$C"

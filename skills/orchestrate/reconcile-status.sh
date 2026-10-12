@@ -117,7 +117,7 @@ RCSCOPE
 
 # rc_gate_facts <info json> — one TSV line: gate createdAt, answered (1|0), gate comment line 2.
 # Gate = the newest routing-marker comment; answered = a later comment whose first line starts
-# **[jp] or **[project-manager] (not **[project-manager] NOTE**).
+# **[jp], **[delivery-lead] or legacy **[project-manager] (not their NOTE**).
 rc_gate_facts() {
   printf '%s' "$1" | jq -r --arg re "$(marker_re | jq -Rs . | jq -r .)" '
     (.comments // []) as $c
@@ -125,7 +125,7 @@ rc_gate_facts() {
     | if $g == null then empty else
         [ ($g.value.createdAt // ""),
           (if ([$c[($g.key + 1):][] | .body | split("\n")[0]
-                | select(test("^\\*\\*\\[(jp|project-manager)\\]") and (test("^\\*\\*\\[project-manager\\] NOTE") | not))] | length) > 0 then "1" else "0" end),
+                | select(test("^\\*\\*\\[(jp|delivery-lead|project-manager)\\]") and (test("^\\*\\*\\[(delivery-lead|project-manager)\\] NOTE") | not))] | length) > 0 then "1" else "0" end),   # legacy project-manager accepted
           (($g.value.body | split("\n")[1]) // "" | gsub("[\t\r]"; " ")) ] | @tsv
       end' 2>/dev/null
 }

@@ -22,6 +22,7 @@ markers_for() {  # markers_for <agent> → that agent's routing markers, |-separ
     infra-operator)      echo 'APPLIED|AWAITING GO|BLOCKED' ;;
     intake)              echo 'TRIAGED BUG|TRIAGED IDEA|DUPLICATE|NEEDS INFO|NOISE|BLOCKED' ;;   # raw-feedback triage, launched by the supervisor, never by the orchestrator (#114)
     jp)                  echo 'GO|MOCKUPS APPROVED' ;;
+    delivery-lead)       echo 'DECISION|JP CONFIRMED' ;;  # JP's delegate (legacy spelling below, #192): same markers, same limits
     project-manager)     echo 'DECISION|JP CONFIRMED' ;;  # JP's delegate: resumes a code-track BLOCKED and the two caps only — never jp's gates (claude-agents#59)
   esac
 }
@@ -34,7 +35,7 @@ marker_re() {  # marker_re [agent] → jq (oniguruma) regex for a valid first li
   else
     # literal list, not a variable: zsh (the Mac Bash tool's shell) does not word-split unquoted variables
     for a in product-manager ux-flow-designer ui-ux-designer solutions-architect test-writer test-reviewer fullstack-developer code-reviewer deployer \
-             infra-planner infra-reviewer infra-operator jp project-manager intake; do alt="${alt:+$alt|}$a\\] ($(markers_for "$a"))"; done
+             infra-planner infra-reviewer infra-operator jp delivery-lead project-manager intake; do alt="${alt:+$alt|}$a\\] ($(markers_for "$a"))"; done
   fi
   printf '^\\*\\*\\[(%s)(\\*\\*|:| |$)' "$alt"
 }

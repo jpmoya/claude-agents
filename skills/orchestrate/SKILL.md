@@ -43,7 +43,7 @@ Label rule: `agent-go` = "approved, not launched anywhere yet"; launching anywhe
 
 ## deliver.sh (goal-bound delivery lead)
 
-`skills/orchestrate/deliver.sh` registers a goal (a registry issue on GitHub) and starts one cycle of the delivery lead (`project-manager`). Keep-alive and completion belong to the supervisor, not to the agent.
+`skills/orchestrate/deliver.sh` registers a goal (a registry issue on GitHub) and starts one cycle of the delivery lead (`delivery-lead`). Keep-alive and completion belong to the supervisor, not to the agent.
 
 ```bash
 ~/.claude/skills/orchestrate/deliver.sh <goal> [instructions...]   # register + launch one cycle

@@ -41,8 +41,8 @@ Mac). The first matching rule decides the group:
 7. winning run `held` with marker `MOCKUPS PENDING APPROVAL`, `AWAITING GO`,
    `EFFORT APPROVAL NEEDED` or `BLOCKED` → **Needs JP**, unless demoted to **Parked** by any of
    (issue #139):
-   - **answered**: host set `parked_reason: "answered"` — a later `**[jp]` or `**[project-manager]`
-     comment (not `**[project-manager] NOTE**`) after the gate comment;
+   - **answered**: host set `parked_reason: "answered"` — a later `**[jp]` or `**[delivery-lead]`
+     (legacy: `**[project-manager]`) comment (not a NOTE from the delivery lead) after the gate comment;
    - **out of scope**: host set `parked_reason: "out_of_scope"` — repo not in `DISPATCH_REPOS` ∪
      `SCAN_ONLY_REPOS`;
    - **stale**: `max(gate_at, last_activity_at)` older than 14 days (missing `gate_at` falls back to

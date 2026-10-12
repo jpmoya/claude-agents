@@ -41,7 +41,7 @@ COST_CEILING_USD=40        # refuse a new fix-cycle developer/test-writer stage 
 
 # Goal-bound delivery lead (#193): the agent deliver.sh launches (claude-agents#192 flips the default) and the repo that
 # hosts the goal registry issues (label delivery-goal) — one registry for every goal, whatever repo the goal is on.
-GOAL_AGENT=project-manager
+GOAL_AGENT=project-manager   # deprecated alias of delivery-lead (#192); default flip is a follow-up, goal tests pin this value
 GOAL_REGISTRY_REPO=jpmoya/claude-agents
 # Supervisor goal step (#195)
 MAX_GOALS=2                 # goal (delivery-lead) pids alive at once on this host; not counted in count_running
