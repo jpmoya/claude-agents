@@ -127,7 +127,8 @@ test_i106_no_new_mechanism_only_doc_files_and_tests_touched() {
 test_i106_no_runtime_script_parses_final_report() {
   local hits
   hits=$(grep -lE 'Report to JP|STATUS: +<|NEEDED FROM YOU|SELF-HEAL TICKETS|marker trail' \
-    "$ROOT_106"/skills/orchestrate/*.sh "$ROOT_106"/hooks/* 2>/dev/null)
+    "$ROOT_106"/skills/orchestrate/*.sh "$ROOT_106"/hooks/* 2>/dev/null \
+    | grep -vxF "$ROOT_106/skills/orchestrate/goal-lib.sh")   # #195: goal-lib.sh composes (never parses) the standard card in its delivered/waiting comments
   assert_eq "$hits" "" "AC6: no runtime script/hook parses the final report" || return 1
 }
 

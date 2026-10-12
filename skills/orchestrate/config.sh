@@ -43,6 +43,11 @@ COST_CEILING_USD=40        # refuse a new fix-cycle developer/test-writer stage 
 # hosts the goal registry issues (label delivery-goal) — one registry for every goal, whatever repo the goal is on.
 GOAL_AGENT=project-manager
 GOAL_REGISTRY_REPO=jpmoya/claude-agents
+# Supervisor goal step (#195)
+MAX_GOALS=2                 # goal (delivery-lead) pids alive at once on this host; not counted in count_running
+GOAL_CYCLE_SECS=1200        # a cleanly ended cycle is relaunched only this long after its launch
+GOAL_SYNC_SECS=300          # registry sync + live-goal re-evaluation throttle, per host
+GOAL_MAX_NO_PROGRESS=3      # relaunch decisions with an unchanged scope snapshot before a goal is parked
 
 [ -f "$HOME/.claude/pipeline/config.local.sh" ] && source "$HOME/.claude/pipeline/config.local.sh"
 
