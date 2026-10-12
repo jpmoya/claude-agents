@@ -338,7 +338,6 @@ for f in "$PIPE"/orch-*.pid; do
 
   # Skip if alive
   kill -0 "$pid" 2>/dev/null && continue
-
   # #178 begin
   # The orchestrator exits by design at a stage's time cap while the stage keeps running (#178): wait for the
   # stage like for a live orchestrator — no count, no requeue, no relaunch. An unreadable process table yields
