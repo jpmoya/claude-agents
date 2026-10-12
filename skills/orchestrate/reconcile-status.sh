@@ -131,15 +131,17 @@ rc_gate_facts() {
 }
 
 # Snapshot first: the pass edits the very files derive_runs reads.
-records=$(derive_runs)
-while IFS=$'\t' read -r issue repo state pid started last_activity restarts stage; do
+# Empty fields become "-" so read's tab-collapsing cannot shift the run key (last field) into another variable.
+records=$(derive_runs | awk -F'\t' -v OFS='\t' '{for (i = 1; i <= NF; i++) if ($i == "") $i = "-"; print}')
+while IFS=$'\t' read -r issue repo state pid started last_activity restarts stage key; do
   [ -n "$issue" ] || continue
+  [ "$last_activity" != "-" ] || last_activity=""
   # queued-only entries have no pid/.repo record: their repo comes from the queue JSON (derive_runs)
-  { [ "$state" = "queued" ] && [ -n "$repo" ]; } || [ -f "$PIPE/orch-$issue.repo" ] || continue
+  { [ "$state" = "queued" ] && [ -n "$repo" ]; } || [ -f "$PIPE/$key.repo" ] || continue
   case "$state" in
     running|restarting|held|queued) ;;
     done|stopped)
-      [ -n "$last_activity" ] || last_activity=$(_rs_mtime "$PIPE/orch-$issue.pid")
+      [ -n "$last_activity" ] || last_activity=$(_rs_mtime "$PIPE/$key.pid")
       [ -n "$last_activity" ] && [ $((now - last_activity)) -le "$RECENT_SECS" ] || continue ;;
     *) continue ;;                                             # closed (already reconciled) or unknown
   esac
@@ -150,24 +152,24 @@ while IFS=$'\t' read -r issue repo state pid started last_activity restarts stag
   marker=$(printf '%s' "$info" | jq -r "$MARKER_JQ" 2>/dev/null) || marker=""
   marker=$(marker_name_from_line "$marker")
 
-  old_marker=$(head -n1 "$PIPE/orch-$issue.marker" 2>/dev/null)
+  old_marker=$(head -n1 "$PIPE/$key.marker" 2>/dev/null)
   if [ -n "$marker" ]; then
-    [ "$marker" = "$old_marker" ] || { printf '%s\n' "$marker" > "$PIPE/orch-$issue.marker"; changed=1; }
-  elif [ -f "$PIPE/orch-$issue.marker" ]; then
-    rm -f "$PIPE/orch-$issue.marker"; changed=1
+    [ "$marker" = "$old_marker" ] || { printf '%s\n' "$marker" > "$PIPE/$key.marker"; changed=1; }
+  elif [ -f "$PIPE/$key.marker" ]; then
+    rm -f "$PIPE/$key.marker"; changed=1
   fi
 
   release=$(printf '%s' "$info" | jq -r '.milestone.title // empty' 2>/dev/null)
   printf '%s' "$release" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || release=""
-  [ -z "$release" ] || printf '%s\n' "$release" > "$PIPE/orch-$issue.release"
+  [ -z "$release" ] || printf '%s\n' "$release" > "$PIPE/$key.release"
 
   ms=$(printf '%s' "$info" | jq -r '.milestone.title // empty' 2>/dev/null | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//' | cut -c1-60)
   printf '%s' "$ms" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' && ms=""
-  old_ms=$(head -n1 "$PIPE/orch-$issue.milestone" 2>/dev/null)
+  old_ms=$(head -n1 "$PIPE/$key.milestone" 2>/dev/null)
   if [ -n "$ms" ]; then
-    [ "$ms" = "$old_ms" ] || { printf '%s\n' "$ms" > "$PIPE/orch-$issue.milestone"; changed=1; }
-  elif [ -f "$PIPE/orch-$issue.milestone" ]; then
-    rm -f "$PIPE/orch-$issue.milestone"; changed=1
+    [ "$ms" = "$old_ms" ] || { printf '%s\n' "$ms" > "$PIPE/$key.milestone"; changed=1; }
+  elif [ -f "$PIPE/$key.milestone" ]; then
+    rm -f "$PIPE/$key.milestone"; changed=1
   fi
 
   if [ "$gh_state" = "CLOSED" ] || { [ "$gh_state" = "OPEN" ] && [ -n "$release" ]; }; then
@@ -177,10 +179,10 @@ while IFS=$'\t' read -r issue repo state pid started last_activity restarts stag
       [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) ;;
       *) closed_at=$(date -u +%FT%TZ) ;;
     esac
-    printf '%s\n' "$closed_at" > "$PIPE/orch-$issue.closed"
-    [ -f "$PIPE/orch-$issue.repo" ] || printf '%s\n' "$repo" > "$PIPE/orch-$issue.repo"   # queued-only: keep the repo for completed[]
-    touch "$PIPE/orch-$issue.done"
-    rm -f "$PIPE/orch-$issue.held" "$PIPE/orch-$issue.stopped" "$PIPE/orch-$issue.alert" "$QUEUE/orch-$issue.json"
+    printf '%s\n' "$closed_at" > "$PIPE/$key.closed"
+    [ -f "$PIPE/$key.repo" ] || printf '%s\n' "$repo" > "$PIPE/$key.repo"   # queued-only: keep the repo for completed[]
+    touch "$PIPE/$key.done"
+    rm -f "$PIPE/$key.held" "$PIPE/$key.stopped" "$PIPE/$key.alert" "$QUEUE/$key.json"
     if [ "$gh_state" = "OPEN" ]; then
       rc_log "[reconcile] #$issue — released $release, moved to completed"
     else
@@ -217,9 +219,9 @@ RCFACTS
         fi
       fi
     fi
-    rc_set "$PIPE/orch-$issue.gate_at" "$gate_at"
-    rc_set "$PIPE/orch-$issue.needs" "$needs"
-    rc_set "$PIPE/orch-$issue.parked_reason" "$reason"
+    rc_set "$PIPE/$key.gate_at" "$gate_at"
+    rc_set "$PIPE/$key.needs" "$needs"
+    rc_set "$PIPE/$key.parked_reason" "$reason"
   fi
 done <<EOF
 $records

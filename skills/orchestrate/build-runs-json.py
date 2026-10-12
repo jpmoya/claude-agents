@@ -6,12 +6,12 @@
 # Usage: build-runs-json.py <aliases-arg> <runs-jsonl-path> [<pipe-dir> [completed]]
 #   <aliases-arg>: STATUS_REPO_ALIASES entries ("owner/repo:alias"), one per line
 #   <runs-jsonl-path>: ~/.claude/pipeline/runs.jsonl, for the last dispatch marker per repo+issue
-#   <pipe-dir>: $PIPE, for the per-run orch-<issue>.title file written at launch (issue #29).
+#   <pipe-dir>: $PIPE, for the per-run <run key>.title file written at launch (issue #29).
 #               Local files only -- this script never makes a network call.
 #   completed:  emit the payload's "completed" array (issue #51) instead of "runs": the records
-#               reconcile-status.sh marked closed (state_code "closed", orch-<issue>.closed = closedAt),
+#               reconcile-status.sh marked closed (state_code "closed", <run key>.closed = closedAt),
 #               closed within the last 7 days, newest first, first 10. Items carry "release" when
-#               orch-<issue>.release exists (issue #65).
+#               <run key>.release exists (issue #65).
 #   staging | approved: emit the payload's "staging" / "approved" array (issue #65) from
 #               <pipe-dir>/status-staging.json / status-approved.json (written by reconcile-status.sh);
 #               no stdin, `[]` when the file is missing or unreadable.
@@ -70,32 +70,32 @@ def alias_for(repo_path):  # -> (published repo string, owner/repo or "" for the
     return aliases.get(owner_repo, "other"), owner_repo
 
 
-def marker_for(owner_repo, issue):  # first line of <pipe-dir>/orch-<issue>.marker (written at launch + by reconcile-status.sh), else None
+def marker_for(owner_repo, key):  # first line of <pipe-dir>/<run key>.marker (written at launch + by reconcile-status.sh), else None
     if not pipe_dir:
         return None
     try:
-        with open(os.path.join(pipe_dir, "orch-%s.marker" % issue), encoding="utf-8", errors="replace") as f:
+        with open(os.path.join(pipe_dir, "%s.marker" % key), encoding="utf-8", errors="replace") as f:
             return f.readline(256).strip() or None
     except OSError:
         return None
 
 
-def title_for(issue):  # first line of <pipe-dir>/orch-<issue>.title, stripped + capped; else ""
+def title_for(key):  # first line of <pipe-dir>/<run key>.title, stripped + capped; else ""
     if not pipe_dir:
         return ""
     try:
-        with open(os.path.join(pipe_dir, "orch-%s.title" % issue), encoding="utf-8", errors="replace") as f:
+        with open(os.path.join(pipe_dir, "%s.title" % key), encoding="utf-8", errors="replace") as f:
             first_line = f.readline(4096)
     except OSError:
         return ""
     return first_line.strip()[:TITLE_MAX_CHARS]
 
 
-def milestone_for(issue):  # first line of <pipe-dir>/orch-<issue>.milestone, stripped + capped at 60; else ""
+def milestone_for(key):  # first line of <pipe-dir>/<run key>.milestone, stripped + capped at 60; else ""
     if not pipe_dir:
         return ""
     try:
-        with open(os.path.join(pipe_dir, "orch-%s.milestone" % issue), encoding="utf-8", errors="replace") as f:
+        with open(os.path.join(pipe_dir, "%s.milestone" % key), encoding="utf-8", errors="replace") as f:
             return f.readline(256).strip()[:60]
     except OSError:
         return ""
@@ -119,7 +119,7 @@ STATE_MAP = {"running": "running", "restarting": "restarting", "held": "held", "
 # Sort priority when the run list is longer than the 20-slot cap below: currently-active work
 # must never be bumped off the page by an older held/queued run just because its issue number
 # glob-sorts earlier (derive_runs() walks orch-*.pid in filename order, which is a lexicographic
-# string sort of the issue number, not numeric or recency order).
+# string sort of the run key, not numeric or recency order).
 STATE_PRIORITY = {"running": 0, "restarting": 1, "queued": 2, "held": 3}
 
 def load_list(kind):  # <pipe-dir>/status-<kind>.json -> list of well-formed dicts, else []
@@ -156,32 +156,32 @@ PARKED_REASONS = ("answered", "out_of_scope")
 ISO_Z_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 
 
-def state_file_for(issue, suffix):  # first line of <pipe-dir>/orch-<issue>.<suffix>, else ""
+def state_file_for(key, suffix):  # first line of <pipe-dir>/<run key>.<suffix>, else ""
     if not pipe_dir:
         return ""
     try:
-        with open(os.path.join(pipe_dir, "orch-%s.%s" % (issue, suffix)), encoding="utf-8", errors="replace") as f:
+        with open(os.path.join(pipe_dir, "%s.%s" % (key, suffix)), encoding="utf-8", errors="replace") as f:
             return f.readline(64).strip()
     except OSError:
         return ""
 
 
-def release_for(issue):  # first line of <pipe-dir>/orch-<issue>.release if it is vX.Y.Z, else ""
+def release_for(key):  # first line of <pipe-dir>/<run key>.release if it is vX.Y.Z, else ""
     if not pipe_dir:
         return ""
     try:
-        with open(os.path.join(pipe_dir, "orch-%s.release" % issue), encoding="utf-8", errors="replace") as f:
+        with open(os.path.join(pipe_dir, "%s.release" % key), encoding="utf-8", errors="replace") as f:
             text = f.readline(64).strip()
     except OSError:
         return ""
     return text if RELEASE_RE.match(text) else ""
 
 
-def closed_at_for(issue):  # first line of <pipe-dir>/orch-<issue>.closed -> (iso string, epoch) or None
+def closed_at_for(key):  # first line of <pipe-dir>/<run key>.closed -> (iso string, epoch) or None
     if not pipe_dir:
         return None
     try:
-        with open(os.path.join(pipe_dir, "orch-%s.closed" % issue), encoding="utf-8", errors="replace") as f:
+        with open(os.path.join(pipe_dir, "%s.closed" % key), encoding="utf-8", errors="replace") as f:
             text = f.readline(64).strip()
         epoch = datetime.datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(
             tzinfo=datetime.timezone.utc).timestamp()
@@ -195,12 +195,12 @@ def build_completed(rows):
     items = []
     for line in rows:
         parts = line.split("\t")
-        while len(parts) < 8:
+        while len(parts) < 9:
             parts.append("")
-        issue, repo_path, state_code = parts[0], parts[1], parts[2]
+        issue, repo_path, state_code, key = parts[0], parts[1], parts[2], parts[8]
         if state_code != "closed":
             continue
-        closed = closed_at_for(issue)
+        closed = closed_at_for(key)
         if closed is None or now - closed[1] > COMPLETED_RETENTION_SECS:
             continue
         repo_alias, owner_repo = alias_for(repo_path)
@@ -208,14 +208,14 @@ def build_completed(rows):
             "repo": repo_alias,
             "issue": int(issue) if issue.isdigit() else issue,
             "closed_at": closed[0],
-            "marker": marker_for(owner_repo, issue),
+            "marker": marker_for(owner_repo, key),
         }
-        title = title_for(issue)
+        title = title_for(key)
         if title:
             item["title"] = title
             if owner_repo and issue.isdigit():
                 item["url"] = "https://github.com/%s/issues/%s" % (owner_repo, issue)
-        release = release_for(issue)
+        release = release_for(key)
         if release:
             item["release"] = release
         items.append((closed[1], {k: v for k, v in item.items() if v is not None}))
@@ -240,9 +240,9 @@ for raw in sys.stdin:
     if not line:
         continue
     parts = line.split("\t")
-    while len(parts) < 8:
+    while len(parts) < 9:
         parts.append("")
-    issue, repo_path, state_code, pid, started_at, last_activity_epoch, restarts, stage = parts[:8]
+    issue, repo_path, state_code, pid, started_at, last_activity_epoch, restarts, stage, key = parts[:9]
     if state_code not in STATE_MAP:
         continue
     repo_alias, owner_repo = alias_for(repo_path)
@@ -253,7 +253,7 @@ for raw in sys.stdin:
         "issue": int(issue) if issue.isdigit() else issue,
         "state": STATE_MAP[state_code],
         "stage": stage or None,
-        "marker": marker_for(owner_repo, issue),
+        "marker": marker_for(owner_repo, key),
         "started_at": started_at or None,
         "last_activity_at": iso(last_activity_epoch) or (started_at or None),
         "restarts": int(restarts) if str(restarts).lstrip("-").isdigit() else 0,
@@ -261,22 +261,22 @@ for raw in sys.stdin:
     run = {k: v for k, v in run.items() if v is not None}
     # Published on the public page by JP's decision (#29): the title, and the issue URL -- the only
     # place owner/repo may appear in the payload. No title file -> neither field.
-    title = title_for(issue)
+    title = title_for(key)
     if title:
         run["title"] = title
         if owner_repo and issue.isdigit():
             run["url"] = "https://github.com/%s/issues/%s" % (owner_repo, issue)
-    milestone = milestone_for(issue)
+    milestone = milestone_for(key)
     if milestone:
         run["milestone"] = milestone
     # Issue #139: fixed labels / enum / timestamp only, never comment text (re-checked here).
-    needs = state_file_for(issue, "needs")
+    needs = state_file_for(key, "needs")
     if needs in NEEDS_LABELS:
         run["needs"] = needs
-    gate_at = state_file_for(issue, "gate_at")
+    gate_at = state_file_for(key, "gate_at")
     if ISO_Z_RE.match(gate_at):
         run["gate_at"] = gate_at
-    parked_reason = state_file_for(issue, "parked_reason")
+    parked_reason = state_file_for(key, "parked_reason")
     if parked_reason in PARKED_REASONS:
         run["parked_reason"] = parked_reason
     activity_epoch = int(last_activity_epoch) if last_activity_epoch.strip().isdigit() else -1

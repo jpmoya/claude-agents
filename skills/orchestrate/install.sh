@@ -45,6 +45,53 @@ if [ "$SCAN" = 1 ] && [ -z "${SLACK_WEBHOOK_URL:-}" ]; then todo "SCAN enabled b
 [ -z "${SLACK_BOT_TOKEN:-}" ] && todo "set SLACK_BOT_TOKEN in config.local.sh (bot token) to enable #engineering notifications — notify_engineering() stays a silent no-op until this and SLACK_ENGINEERING_CHANNEL are both set"
 [ -z "${SLACK_ENGINEERING_CHANNEL:-}" ] && todo "set SLACK_ENGINEERING_CHANNEL in config.local.sh (channel ID) to enable #engineering notifications — notify_engineering() stays a silent no-op until this and SLACK_BOT_TOKEN are both set"
 
+echo "2b. run-state keys (#213): orch-<N>.* -> orch-<owner>_<repo>-<N>.*   (one-shot, idempotent; names only, live pids survive)"
+source "$REPO_DIR/skills/orchestrate/pipeline-lib.sh"
+rk_unresolved=()
+rk_moved=0
+rk_resolve() {  # <checkout dir> -> owner/repo on stdout, non-zero when the dir is not a resolvable checkout
+  local o
+  [ -n "$1" ] && [ -d "$1" ] || return 1
+  o=$(cd "$1" 2>/dev/null && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null </dev/null) || return 1
+  case "$o" in */*) printf '%s' "$o" ;; *) return 1 ;; esac
+}
+rk_seen=" "
+for f in "$PIPE"/orch-[0-9]*.*; do
+  [ -e "$f" ] || continue   # the glob was expanded up front; earlier iterations move files away
+  b=$(basename "$f"); n=${b#orch-}; n=${n%%.*}
+  case "$n" in ''|*[!0-9]*) continue ;; esac
+  case "$rk_seen" in *" $n "*) continue ;; esac
+  rk_seen="$rk_seen$n "
+  owner_repo=$(rk_resolve "$(cat "$PIPE"/orch-"$n".repo 2>/dev/null)") || owner_repo=""
+  if [ -z "$owner_repo" ]; then
+    for g in "$PIPE"/orch-"$n".*; do [ -e "$g" ] && rk_unresolved+=("$(basename "$g")"); done
+    continue
+  fi
+  key=$(run_key "$owner_repo" "$n")
+  for g in "$PIPE"/orch-"$n".*; do
+    [ -e "$g" ] || continue
+    gb=$(basename "$g"); dest="$PIPE/$key.${gb#orch-"$n".}"
+    if [ -e "$dest" ]; then rk_unresolved+=("$gb (target exists)"); continue; fi
+    mv "$g" "$dest" && rk_moved=$((rk_moved+1))
+  done
+done
+for qf in "$QUEUE"/orch-[0-9]*.json; do
+  [ -e "$qf" ] || continue
+  qb=$(basename "$qf" .json); n=${qb#orch-}
+  case "$n" in ''|*[!0-9]*) continue ;; esac
+  qrepo=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['repo'])" "$qf" 2>/dev/null) || qrepo=""
+  owner_repo=$(rk_resolve "$qrepo") || owner_repo=""
+  if [ -z "$owner_repo" ]; then rk_unresolved+=("queue/$qb.json"); continue; fi
+  dest="$QUEUE/$(run_key "$owner_repo" "$n").json"
+  if [ -e "$dest" ]; then rk_unresolved+=("queue/$qb.json (target exists)"); continue; fi
+  mv "$qf" "$dest" && rk_moved=$((rk_moved+1))
+done
+ok "$rk_moved file(s) renamed"
+if [ "${#rk_unresolved[@]}" -gt 0 ]; then
+  for u in "${rk_unresolved[@]}"; do todo "left number-keyed (owner/repo not resolvable, not deleted): $u"; done
+  pipeline_error run-key-migration "" "" "run-key migration left ${#rk_unresolved[@]} number-keyed file(s) in place: ${rk_unresolved[*]:0:5}"
+fi
+
 echo "3. repo trust (headless runs ignore permissions.allow in untrusted checkouts)"
 python3 - "$HOME/.claude.json" "${DISPATCH_REPOS[@]}" <<'PY'
 import json,sys,os

@@ -4,13 +4,13 @@
 # Usage: pipeline-bridge-dispatch.sh <issue> <repo-or-dash> <channel> <ts>
 #   <issue>          must match ^[0-9]+$ — validated before any `gh` call.
 #   <repo-or-dash>   explicit "owner/repo", or literal "-" to resolve from this machine's local
-#                     $PIPE/orch-<issue>.repo checkout. Required, never omittable.
+#                     $PIPE/orch-*-<issue>.repo checkout. Required, never omittable.
 #   <channel>        Slack channel id of the mention (chat_id with its "channel:" prefix stripped).
 #   <ts>             Slack thread ts of the mention (message_id). Both are required.
 #
 # Resolution order (Expected Behavior #1):
 #   1. explicit owner/repo arg, if reachable via `gh repo view --repo`.
-#   2. else (arg is "-"): the local $PIPE/orch-<issue>.repo checkout's real git remote, if this
+#   2. else (arg is "-"): the local $PIPE/orch-*-<issue>.repo checkout's real git remote, if this
 #      machine has run that issue before.
 #   3. else: print a one-line prompt asking which repo, and stop. Zero `gh` calls in that case.
 #
@@ -54,15 +54,18 @@ case "$ISSUE" in
     ;;
 esac
 
-# resolve_from_checkout <issue> — prints owner/repo parsed from $PIPE/orch-<issue>.repo's real git
-# remote (local, no network — same mechanism build-runs-json.py / report-status.sh use for the
-# status-board alias lookup); exits non-zero if no mapping is on file or the remote can't be
-# parsed as a github.com URL.
+# resolve_from_checkout <issue> — prints owner/repo parsed from the real git remote of the checkout recorded in
+# $PIPE/orch-*-<issue>.repo (local, no network — same mechanism build-runs-json.py / report-status.sh use for the
+# status-board alias lookup); exits non-zero if no mapping is on file, if two repos on this host share the number
+# (#213: ambiguous, the caller asks which repo) or the remote can't be parsed as a github.com URL.
 resolve_from_checkout() {
-  local issue=$1 repo_file checkout url
-  repo_file="$PIPE/orch-$issue.repo"
-  [ -f "$repo_file" ] || return 1
-  checkout=$(cat "$repo_file" 2>/dev/null)
+  local issue=$1 repo_file checkout url n=0 found=""
+  for repo_file in "$PIPE"/orch-*-"$issue".repo; do
+    [ -f "$repo_file" ] || continue
+    n=$((n + 1)); found=$repo_file
+  done
+  [ "$n" -eq 1 ] || return 1
+  checkout=$(cat "$found" 2>/dev/null)
   [ -n "$checkout" ] || return 1
   url=$(git -C "$checkout" config --get remote.origin.url 2>/dev/null)
   [ -n "$url" ] || return 1

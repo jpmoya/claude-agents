@@ -36,7 +36,7 @@ Config: shared defaults in `skills/orchestrate/config.sh` (labels, caps, backoff
 
 Label rule: `agent-go` = "approved, not launched anywhere yet"; launching anywhere swaps it for `agent-in-progress`; the supervisor removes `agent-in-progress` when the run is done or parked. To run a parked issue again, relaunch by hand or re-add `agent-go`.
 
-- **Per machine.** `/tmp/pipeline` (pids, queue, tombstones) is local; the only shared state is the issue's markers and labels. The launcher refuses an issue that carries `agent-in-progress` and isn't owned here ("running elsewhere?"); `orchestrate.sh --force <repo> <issue>` overrides when the other machine is known dead.
+- **Per machine.** `/tmp/pipeline` (pids, queue, tombstones) is local, one file set per run named `orch-<owner>_<repo>-<issue>.*` (the run key, `run_key` in `pipeline-lib.sh`; `install.sh` renames old `orch-<number>.*` files once); the only shared state is the issue's markers and labels. The launcher refuses an issue that carries `agent-in-progress` and isn't owned here ("running elsewhere?"); `orchestrate.sh --force <repo> <issue>` overrides when the other machine is known dead.
 - `stop` writes a tombstone — the supervisor will not auto-restart a manually stopped orchestrator.
 - A manual `orchestrate.sh <repo> <issue>` clears tombstones and restart state and supersedes a queued entry.
 - `status` shows the state: `running`, `exited (will auto-restart)`, `stopped (manual)`, `held (needs JP)`, or `done`; `!! ALERT` lines say why something is held.
@@ -45,8 +45,8 @@ Label rule: `agent-go` = "approved, not launched anywhere yet"; launching anywhe
 
 ```bash
 ~/.claude/skills/orchestrate/orchestrate.sh status          # every recorded orchestrator: running/exited + latest issue marker
-~/.claude/skills/orchestrate/orchestrate.sh status 547
-~/.claude/skills/orchestrate/orchestrate.sh tail 547 40     # last 40 lines of the orchestrator's log
+~/.claude/skills/orchestrate/orchestrate.sh status 547             # every repo's #547 (each line prints repo= and its log path)
+~/.claude/skills/orchestrate/orchestrate.sh tail jpmoya/claude-agents 547 40     # last 40 lines of that run's log
 ```
 
 The issue's latest marker is the truth; the log is for diagnosing a stall. Stage logs the orchestrator writes are in `/tmp/pipeline/run-<issue>-<agent>.log`, and its run log is `~/.claude/pipeline/runs.jsonl`.
@@ -58,16 +58,16 @@ The supervisor handles this automatically now. If you need to force-restart imme
 ## Stop
 
 ```bash
-~/.claude/skills/orchestrate/orchestrate.sh stop 547
+~/.claude/skills/orchestrate/orchestrate.sh stop jpmoya/claude-agents 547
 ```
 
-Stops the orchestrator and writes a tombstone preventing auto-restart. A stage it already launched (e.g. fullstack-developer) keeps running and will still post its marker; relaunch afterwards to pick it up.
+Stops the orchestrator of that `<owner/repo> <issue>` and writes a tombstone preventing auto-restart. The one-argument form (`stop 547`) is refused (exit 2): two repos can hold the same number on one host. A stage it already launched (e.g. fullstack-developer) keeps running and will still post its marker; relaunch afterwards to pick it up.
 
 ## Status board (issue #10)
 
 Each host pushes a heartbeat (running/queued/held/restarting runs, capacity, last activity) to a shared status page whenever `skills/orchestrate/report-status.sh` decides something changed or the keep-alive interval elapsed. It is a silent no-op — no network call at all — until `~/.claude/pipeline/config.local.sh` sets both `STATUS_PUSH_URL` (the deployed status-page Worker's `/beat` endpoint) and `STATUS_PUSH_TOKEN` (this host's bearer secret); both come from the companion infra issue once it deploys. Never invoked directly by a call site — `orchestrate.sh`, `supervisor.sh` and `hooks/report-status-hook.sh` all go through `report_status_async` (`skills/orchestrate/run-state.sh`), which backgrounds it, redirects its output to `~/logs/pipeline/report-status.log`, and can't propagate a failure back to the caller.
 
-The status page is public (no auth, `noindex` only). Since issue #29 each run's **issue title and GitHub issue URL are published** on it (JP's decision, 2026-09-19), so `owner/repo` appears in the payload inside `runs[].url` and nowhere else. `orchestrate.sh` fetches the title once at launch (before the capacity check, so queued runs get one too) into `$PIPE/orch-<issue>.title`; `supervisor.sh` `do_launch` fetches it only if that file is missing. The reporter only reads the file — a beat never makes a network call for a title, and a missing, empty or unreadable file just means the run is sent without `title`/`url` and shows an empty Ticket cell.
+The status page is public (no auth, `noindex` only). Since issue #29 each run's **issue title and GitHub issue URL are published** on it (JP's decision, 2026-09-19), so `owner/repo` appears in the payload inside `runs[].url` and nowhere else. `orchestrate.sh` fetches the title once at launch (before the capacity check, so queued runs get one too) into `$PIPE/<run key>.title`; `supervisor.sh` `do_launch` fetches it only if that file is missing. The reporter only reads the file — a beat never makes a network call for a title, and a missing, empty or unreadable file just means the run is sent without `title`/`url` and shows an empty Ticket cell.
 
 `STATUS_REPO_ALIASES=("owner/repo:alias" …)` in `config.local.sh` still populates `runs[].repo` in the payload and `/status.json` — a repo absent from the map publishes as `"other"` — but the alias is no longer shown in the HTML table. See `config.local.example.sh` for the placeholder form.
 
