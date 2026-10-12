@@ -15,8 +15,8 @@ d198_has()   { grep -qF  -- "$2" "$1" || { fail "$(basename "$1"): missing [$2]"
 d198_hasnt() { if grep -qF -- "$2" "$1"; then fail "$(basename "$1"): must not contain [$2]"; return 1; fi; }
 d198_has_i() { grep -qiE -- "$2" "$1" || { fail "$(basename "$1"): missing (regex, any case) [$2]"; return 1; }; }
 
-# d198_para <file> — the "Project manager (delivery lead)" paragraph of CLAUDE.md
-d198_para() { grep -F '**Project manager (delivery lead).**' "$1"; }
+# d198_para <file> — the "Delivery lead" paragraph of CLAUDE.md (heading renamed by #192 AC6)
+d198_para() { grep -E '^\*\*Delivery lead\.\*\*' "$1"; }
 # d198_section <file> <heading-regex> — body of the first "## " section whose heading matches
 d198_section() {
   awk -v re="$2" '/^## /{ if (on) exit; if ($0 ~ re) { on=1; next } } on' "$1"
