@@ -21,7 +21,7 @@ test_gs_sync_repinned_goal_drops_local_lead_and_cache() {
 test_gs_sync_active_registry_goal_clears_stale_held_and_stopped() {
   gs_env
   gs_own "$GS_ID_MS12" 50 "$GS_SPEC_MS12" 3600 ""
-  touch "$GS_PIPE/goal-$GS_ID_MS12.held" "$GS_PIPE/goal-$GS_ID_MS12.stopped"
+  touch "$GS_PIPE/goal-$GS_ID_MS12.held"; echo registry > "$GS_PIPE/goal-$GS_ID_MS12.stopped"
   gs_tick; gs_wait_claude 1; gs_settle
   local held=absent stopped=absent
   [ -e "$GS_PIPE/goal-$GS_ID_MS12.held" ] && held=present
@@ -31,5 +31,20 @@ test_gs_sync_active_registry_goal_clears_stale_held_and_stopped() {
   assert_eq "$stopped" "absent" "resumed elsewhere: stale .stopped cleared on the owner" || return 1
 }
 
+# a local stop whose registry write failed (.stopped unconfirmed, registry still active) must not be undone by sync
+test_gs_sync_unconfirmed_local_stop_survives_active_registry() {
+  gs_env
+  gs_own "$GS_ID_MS12" 50 "$GS_SPEC_MS12" 3600 ""
+  touch "$GS_PIPE/goal-$GS_ID_MS12.stopped"
+  gs_tick; gs_settle
+  local stopped=absent cnt
+  [ -e "$GS_PIPE/goal-$GS_ID_MS12.stopped" ] && stopped=present
+  cnt=$(gs_claude_count)
+  gs_cleanup
+  assert_eq "$stopped" "present" "failed registry write: local .stopped kept" || return 1
+  assert_eq "$cnt" "0" "failed registry write: the lead is not relaunched" || return 1
+}
+
 run_test test_gs_sync_repinned_goal_drops_local_lead_and_cache
 run_test test_gs_sync_active_registry_goal_clears_stale_held_and_stopped
+run_test test_gs_sync_unconfirmed_local_stop_survives_active_registry

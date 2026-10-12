@@ -343,7 +343,7 @@ goal_sync() {  # registry -> local: rebuild missing caches, propagate stop/close
       stopped|delivered)
         ls "$PIPE"/goal-"$id".* >/dev/null 2>&1 || continue
         goal_kill "$id"
-        touch "$PIPE/goal-$id.stopped"
+        echo registry > "$PIPE/goal-$id.stopped"   # confirmed by the registry
         slog "[goal] $id closed in the registry ($st) — stopped" ;;
       unreadable) ;;
       *)
@@ -355,7 +355,12 @@ goal_sync() {  # registry -> local: rebuild missing caches, propagate stop/close
             || goal_err "cannot write the cache of $id"
           rm -f "$f.tmp"
         fi
-        if [ "$st" = held ]; then touch "$PIPE/goal-$id.held"; else rm -f "$PIPE/goal-$id.held" "$PIPE/goal-$id.stopped"; fi
+        if [ "$st" = held ]; then touch "$PIPE/goal-$id.held"; else
+          rm -f "$PIPE/goal-$id.held"
+          # lift .stopped only when the registry itself confirmed that stop (resumed elsewhere); an unconfirmed local stop
+          # whose registry write failed stays in force
+          [ "$(cat "$PIPE/goal-$id.stopped" 2>/dev/null)" = registry ] && rm -f "$PIPE/goal-$id.stopped"
+        fi
         if [ "$st" = waiting_jp ] && [ ! -f "$PIPE/goal-$id.waiting" ]; then echo "(from registry)" > "$PIPE/goal-$id.waiting"; fi ;;
     esac
   done <<< "$(printf '%s' "$reg" | jq -c '.[]')"
@@ -488,7 +493,8 @@ goal_tick_one() {  # <id>
   else
     run=$age
     if [ -f "$PIPE/goal-$id.exit" ] && [ "$la" -gt 0 ]; then
-      em=$(file_mtime "$PIPE/goal-$id.exit"); [ -n "$em" ] && run=$((em - la))
+      em=$(file_mtime "$PIPE/goal-$id.exit")
+      if [ -n "$em" ]; then run=$((em - la)); [ "$em" -le "$now" ] && age=$((now - em)); fi   # backoff counts from the crash
     fi
     if [ "$run" -lt "$MIN_RUN_SECS" ]; then   # transient (rate limit, OOM, API error): the longer backoff
       idx=$restarts; [ "$idx" -ge "${#TRANSIENT_BACKOFF[@]}" ] && idx=$(( ${#TRANSIENT_BACKOFF[@]} - 1 ))
