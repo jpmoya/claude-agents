@@ -53,8 +53,11 @@ gc_fn() { sed -n '/^wait_for_capacity() {/,/^}/p' "$GC_ORCH_MD"; }
 # --- AC1 / AC5(a): shipped default ------------------------------------------------------------
 
 test_gc_ac5a_config_default_covers_goal_runs() {
-  local v floor=$((3 * 3 - 1 + 2))   # 3 orchestrators x (1 + 2 stages) - 1 caller + MAX_GOALS 2 = 10
-  v=$( . "$GC_CONFIG" >/dev/null 2>&1; printf '%s' "${MAX_CLAUDE_PROCS:-}" )
+  local v h floor=$((3 * 3 - 1 + 2))   # 3 orchestrators x (1 + 2 stages) - 1 caller + MAX_GOALS 2 = 10
+  # empty HOME so config.sh cannot pick up the host's ~/.claude/pipeline/config.local.sh override
+  h=$(mktemp -d "${TMPDIR:-/tmp}/orch-test-goalcap-home.XXXXXX")
+  v=$( HOME="$h"; unset MAX_CLAUDE_PROCS; . "$GC_CONFIG" >/dev/null 2>&1; printf '%s' "${MAX_CLAUDE_PROCS:-}" )
+  rm -rf "$h"
   case "$v" in ''|*[!0-9]*) fail "config.sh MAX_CLAUDE_PROCS is not an integer: [$v]"; return 1 ;; esac
   [ "$v" -ge "$floor" ] || { fail "config.sh MAX_CLAUDE_PROCS=$v, expected >= $floor"; return 1; }
 }
