@@ -14,7 +14,7 @@ has "removes worktree"                'git worktree remove --force'
 has "prunes"                          'git worktree prune'
 has "scoped to .worktrees/"           '.worktrees/'
 has "never removes main checkout"     'never the main checkout'
-has "force-safe rationale"            '--match-head-commit'
+has "force-safe rationale"            'is not part of the merge'
 has "fix cycle re-create"             'git worktree add .worktrees/<dir> <branch>'
 has "hard limit clause"               'removes the PR'"'"'s worktree before merging'
 # ordering: removal precedes the first gh pr merge command
