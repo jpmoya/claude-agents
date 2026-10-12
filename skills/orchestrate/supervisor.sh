@@ -542,11 +542,23 @@ PY
     slog "[progress] #$issue marker advanced: $last_marker -> $marker"
   fi
 
-  total=$((total + 1))
-  if $transient; then
-    slog "[transient] #$issue ran ${run_duration}s (<${MIN_RUN_SECS}s) — treating as transient"
-  else
-    count=$((count + 1))
+  # #178 begin
+  # A cap exit (the deferral signal is set, exit 0, and the orchestrator's own terminal row for this launch) is the
+  # orchestrator waiting by design: it increments neither count nor total, now that its stage has ended too.
+  cap_exit_now=false
+  if [ -f "$PIPE/orch-$issue.cap-exit" ] && [ "$exit_code" = 0 ] && cap_exit_row "$repo" "$issue"; then
+    cap_exit_now=true
+    slog "[cap-exit] #$issue — stage ended after a cap exit; relaunching without counting"
+  fi
+  # #178 end
+
+  if ! $cap_exit_now; then
+    total=$((total + 1))
+    if $transient; then
+      slog "[transient] #$issue ran ${run_duration}s (<${MIN_RUN_SECS}s) — treating as transient"
+    else
+      count=$((count + 1))
+    fi
   fi
 
   # One ceiling for every exit, fast or slow
@@ -570,7 +582,9 @@ json.dump(d, open('$restarts_file','w'))
   fi
 
   # Calculate backoff — transient exits use longer backoff
-  if $transient; then
+  if $cap_exit_now; then
+    backoff_val=${BACKOFF[0]}
+  elif $transient; then
     idx=$((total - 1))
     [ "$idx" -ge "${#TRANSIENT_BACKOFF[@]}" ] && idx=$(( ${#TRANSIENT_BACKOFF[@]} - 1 ))
     backoff_val=${TRANSIENT_BACKOFF[$idx]}
@@ -655,6 +669,8 @@ try:
 except Exception:
     pass
 " 2>/dev/null)
+    # #178: a cap exit is not counted, so count may be 0; the relaunch still needs its (cap) preamble
+    [ "$q_reason" = "auto-restart" ] && [ "$restart_n" -eq 0 ] && [ -f "$PIPE/orch-$best_issue.cap-exit" ] && restart_n=1
     do_launch "$q_repo" "$best_issue" "$q_extra" "$restart_n" "$q_reason" "$q_wait"
     rm -f "$best_qf"
     launched=1

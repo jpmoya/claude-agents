@@ -11,6 +11,7 @@
 #         appears only for exit 0, and the signal is gone after the launch
 #   11 exit 0 + live stage + NO cap terminal row (the #220 silent exit): counted and restarted, fault wording
 #   12 cap row older than this launch: counted (a stale row is not this run's cap exit)
+#   13 three cap exits, each followed by the stage ending: count and total unchanged
 #   6  cap-exit relaunch preamble does not claim the previous run "exited without reaching a terminal state"
 #
 # RS_PS_CMD (run-state.sh) stands in for the process table. Reuses the sq_* helpers of
@@ -204,6 +205,26 @@ test_ls_12_row_older_than_launch_counted() {
   assert_eq "$n" "1" "#178/12: stale row does not defer" || return 1
 }
 
+test_ls_13_cap_exits_leave_counters_after_stage_ends() {
+  ls_fixture
+  sq_seed_restarts 2 2 "$SQ_READY"
+  local i
+  for i in 1 2 3; do
+    ls_tick "$LS_STAGE_42"        # deferral: stage alive
+    ls_tick "true"                # stage finished: released and queued
+    rm -f "$SQ_PIPE/queue/orch-42.json"   # stands in for the launch that drains it
+  done
+  local c t log
+  c=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['count'])" "$SQ_PIPE/orch-42.restarts")
+  t=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['total'])" "$SQ_PIPE/orch-42.restarts")
+  log=$(sq_log)
+  sq_cleanup
+  assert_eq "$c" "2" "#178/13: count unchanged" || return 1
+  assert_eq "$t" "2" "#178/13: total unchanged" || return 1
+  assert_contains "$log" "[queue-restart] #42" "#178/13: still relaunched" || return 1
+  assert_not_contains "$log" "[escalate] #42" "#178/13: not escalated" || return 1
+}
+
 run_test test_ls_1_live_stage_defers_three_ticks
 run_test test_ls_2_other_issue_stage_does_not_defer
 run_test test_ls_3_no_live_stage_counts
@@ -216,3 +237,4 @@ run_test test_ls_9_deferral_then_release_not_reported_as_fault
 run_test test_ls_10_crash_with_live_stage_keeps_fault_wording
 run_test test_ls_11_silent_exit0_live_stage_no_row_counted
 run_test test_ls_12_row_older_than_launch_counted
+run_test test_ls_13_cap_exits_leave_counters_after_stage_ends
