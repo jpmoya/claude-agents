@@ -14,7 +14,7 @@
 # Placeholder repos only. Bash 3.2 portable.
 
 HERE_RK4=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-. "$HERE_RK4/lib/runkey.sh"
+. "$HERE_RK4/helpers/runkey.sh"
 ROOT_RK4=$(cd "$HERE_RK4/../../.." && pwd)
 RK4_TOKEN="xoxb-FAKE-213-TOKEN"
 

@@ -4,10 +4,10 @@
 #
 # Expected values come from the ticket's Decisions section (hand-written):
 #   run_key project-a/repo-1 196  ->  orch-project-a_repo-1-196
-# Two placeholder repos share every number. See lib/runkey.sh.
+# Two placeholder repos share every number. See helpers/runkey.sh.
 
 HERE_RK1=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-. "$HERE_RK1/lib/runkey.sh"
+. "$HERE_RK1/helpers/runkey.sh"
 SK_RK1="$HERE_RK1/.."
 ORCH_RK1="$SK_RK1/orchestrate.sh"
 

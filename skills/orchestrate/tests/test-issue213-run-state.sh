@@ -4,11 +4,11 @@
 #
 #   AC5  report-status.sh --print / reconcile-status.sh with repo-1 #196 and repo-2 #196
 #   AC6  derive_runs' stage column ignores a same-number stage process of another repo
-# Files are hand-written under repo-keyed names (lib/runkey.sh). Expected values are hand-written below.
+# Files are hand-written under repo-keyed names (helpers/runkey.sh). Expected values are hand-written below.
 # Placeholder repos only. Bash 3.2 portable.
 
 HERE_RK3=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-. "$HERE_RK3/lib/runkey.sh"
+. "$HERE_RK3/helpers/runkey.sh"
 RS_RK3="$HERE_RK3/.."
 
 rk3_print() { rk_env_run "$RS_RK3/report-status.sh" --print; }

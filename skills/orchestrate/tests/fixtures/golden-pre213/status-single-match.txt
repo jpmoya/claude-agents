@@ -1,0 +1,4 @@
+#101  running (pid @@PID@@)  repo=@@REPOA@@  latest marker: none  log=@@PIPE@@/orch-101.log
+!! ALERT: 2026-09-17T00:00:00Z Pipeline #103 waiting on JP
+--- queued ---
+#104  queued since 2026-09-17T00:00:00Z  ready  repo=@@REPOB@@

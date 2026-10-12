@@ -7,7 +7,7 @@
 # Placeholder repos only. Bash 3.2 portable.
 
 HERE_RK2=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-. "$HERE_RK2/lib/runkey.sh"
+. "$HERE_RK2/helpers/runkey.sh"
 SUP_RK2="$HERE_RK2/../supervisor.sh"
 
 rk2_tick() { rk_env_run "$SUP_RK2" >/dev/null; }
