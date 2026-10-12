@@ -1,7 +1,8 @@
 #!/bin/bash
 # Goal-bound delivery lead library (#193), sourced by deliver.sh (and supervisor.sh from #195).
 # A goal is a registry issue on GitHub (label delivery-goal); $PIPE/goal-<id>.* is only a host-local cache.
-# Every GitHub call here is REST (`gh api`, writes included) — the GraphQL budget is the one that ran out in #57.
+# GitHub calls here are REST (`gh api`, writes included) — the GraphQL budget is the one that ran out in #57 —
+# except the per-ticket marker read (latest_marker, `gh issue view --json`, GraphQL), once per ticket per sync.
 # Needs config.sh + pipeline-lib.sh (pipeline_host, SETSID) sourced first; bash 3.2 compatible.
 
 _GOAL_LIB_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -328,8 +329,15 @@ goal_sync() {  # registry -> local: rebuild missing caches, propagate stop/close
   while IFS= read -r g; do
     [ -n "$g" ] || continue
     host=$(printf '%s' "$g" | jq -r '(.host // "") | ascii_downcase')
-    [ "$host" = "$GOAL_THIS_HOST" ] || continue
     id=$(printf '%s' "$g" | jq -r '.id // empty'); n=$(printf '%s' "$g" | jq -r '.issue // empty'); st=$(printf '%s' "$g" | jq -r '.st')
+    if [ -n "$id" ] && [ -n "$host" ] && [ "$host" != "$GOAL_THIS_HOST" ] \
+       && [ "$(jq -r '(.host // "") | ascii_downcase' "$PIPE/goal-$id.json" 2>/dev/null)" = "$GOAL_THIS_HOST" ]; then
+      goal_kill "$id"   # re-pinned to another host: drop the lead and the cache so only the new owner runs it
+      rm -f "$PIPE"/goal-"$id".*
+      slog "[goal] $id re-pinned to $host — local lead and cache dropped"
+      continue
+    fi
+    [ "$host" = "$GOAL_THIS_HOST" ] || continue
     [ -n "$id" ] && [ -n "$n" ] || continue
     case "$st" in
       stopped|delivered)
@@ -347,7 +355,7 @@ goal_sync() {  # registry -> local: rebuild missing caches, propagate stop/close
             || goal_err "cannot write the cache of $id"
           rm -f "$f.tmp"
         fi
-        [ "$st" = held ] && touch "$PIPE/goal-$id.held"
+        if [ "$st" = held ]; then touch "$PIPE/goal-$id.held"; else rm -f "$PIPE/goal-$id.held" "$PIPE/goal-$id.stopped"; fi
         if [ "$st" = waiting_jp ] && [ ! -f "$PIPE/goal-$id.waiting" ]; then echo "(from registry)" > "$PIPE/goal-$id.waiting"; fi ;;
     esac
   done <<< "$(printf '%s' "$reg" | jq -c '.[]')"
