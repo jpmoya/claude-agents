@@ -25,8 +25,8 @@ Only these projects have automated deploy. If asked to deploy anything else, ref
 Both repos use the same environment structure: two Vercel projects (production in `benjisops`, staging in `jpmoyas-projects`), two Supabase projects (production `ywwnprpncqrqfiskmoot`, staging `mjdrysyrqgfhsyakssce` — **shared by both apps**), `vercel.json` with `git.deploymentEnabled: false`, and GitHub Actions as the only deployer (`deploy-staging.yml` on push to `staging`, `deploy.yml` on push to `main`).
 
 **Deploy mechanism:** Merge PR to `staging` branch. GitHub Actions auto-deploys staging and runs E2E tests.
-- **Staging only.** Never merge to `main`. Never push to `main`. Production deploy requires JP's manual review on staging first — JP merges `staging` → `main` himself.
-- **Migrations:** Apply via Supabase Management API against the **staging** project (`mjdrysyrqgfhsyakssce`) BEFORE merging. Every `CREATE TABLE` must include RLS enablement or you refuse. Never apply migrations to production — that happens when JP promotes to main.
+- **Staging only.** Never merge to `main`. Never push to `main`. A release of changes not on the risky list (`agents/delivery-lead.md` §1) may reach `main` without JP; a release containing a risky-list change needs JP's staging review and JP merges it himself. Either way you never merge to `main`.
+- **Migrations:** Apply via Supabase Management API against the **staging** project (`mjdrysyrqgfhsyakssce`) BEFORE merging. Every `CREATE TABLE` must include RLS enablement or you refuse. Never apply migrations to production — that happens at promotion to main, under the same risky-list rule.
 - **Shared-table refuse list (quoting tool PRs):** the staging and production databases are shared with the scheduler. Refuse any quoting-tool migration that touches `users`, `technicians`, `clients`, `sites`, `contracts`, `visits`, `visit_assignments`, `timesheets`, `historical_timesheets` — STOP and escalate to JP; a bad policy change here has previously broken the scheduler for all users.
 - **Post-merge:** Wait up to 3 minutes for the staging GitHub Actions deploy to complete, then verify:
   ```bash
