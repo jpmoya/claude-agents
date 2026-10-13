@@ -7,7 +7,7 @@
 // win", "Plus whatever the brief adds") live in agents/delivery-lead.md, so the checks target it.
 
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -40,31 +40,43 @@ describe('AC1: JP decision quoted verbatim in tracked text', () => {
   it.each([
     ['CLAUDE.md', () => claudeMd],
     ['agents/delivery-lead.md', () => deliveryLead],
-  ])('%s says non-risky-list releases merge to main without JP, risky list stays JP-only', (_n, get) => {
+  ])('%s says releases NOT on the risky list merge to main without JP', (_n, get) => {
+    // Positive polarity only: "not on the risky list" + "merges to main without JP",
+    // and no sentence that makes such merges need JP.
     const s = sentences(get());
-    const merge = s.some((x) => /risky list/i.test(x) && /merge/i.test(x) && /without JP/i.test(x));
-    const jpOnly = s.some((x) => /risky/i.test(x) && /destructive/i.test(x) && /JP-only/i.test(x));
-    expect(merge, 'sentence: non-risky releases merge to main without JP').toBe(true);
-    expect(jpOnly, 'sentence: risky-list (destructive DB) changes stay JP-only').toBe(true);
+    const positive = s.filter(
+      (x) => /not on the risky list/i.test(x) && /merges? to `?main`? without JP/i.test(x),
+    );
+    expect(positive.length, 'sentence: non-risky releases merge to main without JP').toBeGreaterThan(0);
+    for (const x of positive) expect(x).not.toMatch(/\b(never|must not|may not|cannot|needs? JP|requires? JP)\b/i);
   });
 
-  it('prod `go` not given by JP stays JP-only (stated next to the decision)', () => {
-    const ok = sentences(claudeMd).some((x) => /prod/i.test(x) && /`?go`?/.test(x) && /JP-only/i.test(x));
-    expect(ok).toBe(true);
+  it.each([
+    ['CLAUDE.md', () => claudeMd],
+    ['agents/delivery-lead.md', () => deliveryLead],
+  ])('%s says risky-list (destructive DB) changes stay JP-only', (_n, get) => {
+    const ok = sentences(get()).some(
+      (x) => /on the risky list/i.test(x) && !/not on the risky list/i.test(x) && /destructive database changes/i.test(x) && /stays? JP-only/i.test(x),
+    );
+    expect(ok, 'sentence: a change on the risky list stays JP-only').toBe(true);
+  });
+
+  it.each([
+    ['CLAUDE.md', () => claudeMd],
+    ['agents/delivery-lead.md', () => deliveryLead],
+  ])('%s keeps a prod `go` JP has not given JP-only, in the same paragraph as the decision', (_n, get) => {
+    const para = get().split(/\n+/).find((l) => l.includes(QUOTE_2));
+    expect(para, 'paragraph containing quote 2').toBeDefined();
+    expect(sentences(para).some((x) => /prod `go` JP has not given/i.test(x) && /JP-only/i.test(x))).toBe(true);
   });
 });
 
 describe('AC4: blanket "JP merges" wording is gone', () => {
-  it("CLAUDE.md no longer contains \"Merging stays JP's call\"", () => {
-    expect(claudeMd).not.toContain("Merging stays JP's call");
-  });
+  const files = ['CLAUDE.md', ...readdirSync(join(root, 'agents')).filter((f) => f.endsWith('.md')).map((f) => `agents/${f}`)];
 
-  it.each(['CLAUDE.md', 'agents/delivery-lead.md', 'agents/project-manager.md'])(
-    "%s has no \"Merging stays JP's call\"",
-    (f) => {
-      expect(read(f)).not.toContain("Merging stays JP's call");
-    },
-  );
+  it.each(files)("%s has no \"Merging stays JP's call\"", (f) => {
+    expect(read(f)).not.toContain("Merging stays JP's call");
+  });
 
   it('delivery-lead JP-only list no longer lists every merge to main as JP-only', () => {
     // Old text: "merge or push to `main`, promotion of staging — merging it, not preparing it".
@@ -75,7 +87,7 @@ describe('AC4: blanket "JP merges" wording is gone', () => {
 describe('AC2: a brief cannot grant a permission the tracked text forbids', () => {
   it('delivery-lead states the rule in one sentence', () => {
     const ok = sentences(deliveryLead).some(
-      (x) => /brief/i.test(x) && /(cannot|can't|never|may not|only adds? limits)/i.test(x) && /(grant|widen|permission|forbid)/i.test(x),
+      (x) => /\bbrief\b/i.test(x) && /(cannot|can't|may not) (grant|widen)/i.test(x) && /forbids?/i.test(x),
     );
     expect(ok).toBe(true);
   });
