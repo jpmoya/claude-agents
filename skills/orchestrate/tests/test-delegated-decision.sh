@@ -398,7 +398,7 @@ test_dd_ac18_project_manager_sections_and_untouched_parts_byte_identical() {
   # re-pinned for #98 (model line only)
   # re-pinned for #106 (tail hash: project-manager.md line 104 only)
   # re-pinned for #168 (promotion-PR exception, §1 only) and #192 (delivery-lead.md: name, intro sentence, DECISION marker spelling)
-  assert_eq "$head" "81b0a7fddfc1e8a62b71d8e7fde7c1c0f025cdfb7bf9c0a1fed01aa9d1c56847" "AC18: frontmatter + section 1 (re-pinned for #192, rename only)" || return 1
+  assert_eq "$head" "fe6849a1ce67ef63f74e1424c14415af7db21ecf225dd6e732bdbc73053388bd" "AC18: frontmatter + section 1 (re-pinned for #117, JP-only paragraph Slack carve-out only)" || return 1
   # re-pinned for #198 (§3 pacing sentence and §4 headless line) and #192 (status-card sentence rename only)
   assert_eq "$tail" "fb03617fc4fc31263c4d51d527dce5901ce363312c0a7ffb09ce6b201cccae3e" "AC18: sections 3-8 (re-pinned for #198 + #192, rename only)" || return 1
 }

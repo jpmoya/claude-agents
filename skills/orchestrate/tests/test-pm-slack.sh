@@ -429,12 +429,12 @@ pms_pm_section() {  # text of the "Asking JP" section (heading line to the next 
   awk '
     !on && /^#+[[:space:]].*Asking JP/ { on=1; match($0,/^#+/); lvl=RLENGTH; print; next }
     on { if (match($0,/^#+[[:space:]]/) && RLENGTH-1 <= lvl) exit; print }
-  ' "$ROOT_PMS/agents/project-manager.md"
+  ' "$ROOT_PMS/agents/delivery-lead.md"
 }
 
 test_pms_project_manager_has_asking_jp_section_with_the_rules() {
   local s; s=$(pms_pm_section)
-  [ -n "$s" ] || { fail "AC9: agents/project-manager.md needs an 'Asking JP' heading"; return 1; }
+  [ -n "$s" ] || { fail "AC9: agents/delivery-lead.md needs an 'Asking JP' heading"; return 1; }
   assert_contains "$s" "pm-slack.sh ask" "AC9: how to ask" || return 1
   assert_contains "$s" "pm-slack.sh poll" "AC9: poll first each cycle" || return 1
   assert_contains "$s" "jp-reply (slack)" "AC9: reads jp-reply (slack) notes" || return 1
@@ -448,7 +448,7 @@ test_pms_project_manager_has_asking_jp_section_with_the_rules() {
 }
 
 test_pms_jp_only_list_no_longer_lists_slack_to_jp() {
-  local f="$ROOT_PMS/agents/project-manager.md" p
+  local f="$ROOT_PMS/agents/delivery-lead.md" p
   assert_not_contains "$(cat "$f")" "sending email, Slack or any external message" "AC9: old blanket ban removed" || return 1
   p=$(grep -F 'JP-only, these may block' "$f")
   assert_ne "$p" "" "AC9: JP-only paragraph still present" || return 1
