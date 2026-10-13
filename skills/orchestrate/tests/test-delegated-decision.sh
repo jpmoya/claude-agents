@@ -400,7 +400,8 @@ test_dd_ac18_project_manager_sections_and_untouched_parts_byte_identical() {
   # re-pinned for #168 (promotion-PR exception, §1 only) and #192 (delivery-lead.md: name, intro sentence, DECISION marker spelling)
   assert_eq "$head" "660a5938bb3aced5c747dd620721f7eae4f85561d31a0a68f0c031a27f7f7bb2" "AC18: frontmatter + section 1 (re-pinned for #117, JP-only paragraph Slack carve-out only)" || return 1
   # re-pinned for #198 (§3 pacing sentence and §4 headless line) and #192 (status-card sentence rename only)
-  assert_eq "$tail" "fb03617fc4fc31263c4d51d527dce5901ce363312c0a7ffb09ce6b201cccae3e" "AC18: sections 3-8 (re-pinned for #198 + #192, rename only)" || return 1
+  # re-pinned for #236 (§5 deployer-merged-no-marker row narrowed; no no-decision relaunch for a deployer BLOCKED)
+  assert_eq "$tail" "4fd3422aa087bcc39e5a9eebc49215590fff58c471c0070369165a5017573e8e" "AC18: sections 3-8 (re-pinned for #198 + #192, rename only; #236 playbook row)" || return 1
 }
 
 # ---------------------------------------------------------------------------------------- AC19-AC20 docs
