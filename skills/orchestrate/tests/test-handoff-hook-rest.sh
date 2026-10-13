@@ -180,7 +180,7 @@ test_hr_nag_message_posts_over_rest() {
   local rc=0
   assert_contains "$HR_ERR" "gh api repos/Benjis-Plants/scheduler/issues/600/comments -F body=@" "AC5: REST post instruction" \
     && assert_not_contains "$HR_ERR" "gh issue comment" "AC5: no GraphQL post instruction" \
-    && assert_contains "$HR_ERR" "the only routing markers deployer has are: DEPLOYED, BLOCKED." "AC5: valid-marker list unchanged" \
+    && assert_contains "$HR_ERR" "the only routing markers deployer has are: DEPLOYED TO STAGING, DEPLOYED, BLOCKED." "AC5: valid-marker list unchanged" \
     && assert_contains "$HR_ERR" "keep working and wait for it — post nothing yet" "AC5: keep-working wording unchanged" \
     && assert_contains "$HR_ERR" "Use BLOCKED, with the exact reason underneath, only if you could not finish. Then stop." "AC5: BLOCKED guidance unchanged" || rc=1
   hr_teardown; return $rc

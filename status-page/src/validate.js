@@ -9,7 +9,7 @@
 // (140 code points), has control characters and whitespace runs collapsed to one space, and is
 // HTML-escaped at render. `runs[].url` is not an exception — it must match ISSUE_URL below.
 
-import { STAGE_VOCAB, MARKER_VOCAB, STATE_VOCAB } from './vocab.js';
+import { STAGE_VOCAB, MARKER_VOCAB, STATE_VOCAB, NEEDS_VOCAB, PARKED_REASON_VOCAB } from './vocab.js';
 
 const ISO_8601_Z = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 const REPO_ALIAS = /^[a-z0-9][a-z0-9-]{0,23}$/;
@@ -20,7 +20,12 @@ const MAX_RUNS = 20;
 const MAX_COMPLETED = 10;
 const MAX_STAGING = 60;
 const MAX_APPROVED = 20;
+const MILESTONE = /^[\w .,()&/+:-]{1,60}$/;
 const RELEASE = /^v\d+\.\d+\.\d+$/;
+const MAX_GOALS = 50;
+const GOAL_STATES = ['running', 'between_cycles', 'waiting_jp', 'held'];
+const GOAL_HOSTS = ['mac', 'vm'];
+const GOAL_UNSAFE = /[<>&"`]/;
 
 /** True iff `value` is a string that is exactly a GitHub issue URL. render.js re-checks with it. */
 export function isIssueUrl(value) {
@@ -101,9 +106,20 @@ function sanitiseRun(rawRun) {
   if (isIsoTimestamp(rawRun.started_at)) run.started_at = rawRun.started_at;
   if (isIsoTimestamp(rawRun.last_activity_at)) run.last_activity_at = rawRun.last_activity_at;
 
+  if (isIsoTimestamp(rawRun.gate_at)) run.gate_at = rawRun.gate_at;
+  if (typeof rawRun.needs === 'string' && NEEDS_VOCAB.includes(rawRun.needs)) run.needs = rawRun.needs;
+  if (typeof rawRun.parked_reason === 'string' && PARKED_REASON_VOCAB.includes(rawRun.parked_reason)) {
+    run.parked_reason = rawRun.parked_reason;
+  }
+
   const title = sanitiseTitle(rawRun.title);
   if (title !== null) run.title = title;
   if (isIssueUrl(rawRun.url)) run.url = rawRun.url;
+
+  if (typeof rawRun.milestone === 'string') {
+    const milestone = rawRun.milestone.trim();
+    if (MILESTONE.test(milestone)) run.milestone = milestone;
+  }
 
   return run;
 }
@@ -147,6 +163,28 @@ function sanitiseListItem(rawItem) {
   if (isIssueUrl(rawItem.url)) item.url = rawItem.url;
   if (isIsoTimestamp(rawItem.updated_at)) item.updated_at = rawItem.updated_at;
   return item;
+}
+
+/** Safe-text rule for goal id/spec: collapsed + capped like titles, and no <, >, &, " or `. Else null. */
+function sanitiseGoalText(value) {
+  const text = sanitiseTitle(value);
+  return text === null || GOAL_UNSAFE.test(text) ? null : text;
+}
+
+/** Sanitises one goals[] entry (issue #197). Returns null to drop it. */
+function sanitiseGoal(raw) {
+  if (!isPlainObject(raw)) return null;
+  const id = sanitiseGoalText(raw.id);
+  const spec = sanitiseGoalText(raw.spec);
+  if (id === null || spec === null) return null;
+  if (!GOAL_HOSTS.includes(raw.host) || !GOAL_STATES.includes(raw.state)) return null;
+  const goal = { id, spec, host: raw.host, state: raw.state };
+  const total = clampInt(raw.scope_total, 0, 9999);
+  if (total !== null) goal.scope_total = total;
+  const delivered = clampInt(raw.scope_delivered, 0, 9999);
+  if (delivered !== null) goal.scope_delivered = delivered;
+  if (isIsoTimestamp(raw.last_cycle_at)) goal.last_cycle_at = raw.last_cycle_at;
+  return goal;
 }
 
 function sanitiseList(raw, max) {
@@ -198,6 +236,12 @@ export function validateBeatPayload(parsedBody) {
   // Optional (issue #62): absent or non-array -> []; never a rejection.
   value.staging = sanitiseList(parsedBody.staging, MAX_STAGING);
   value.approved = sanitiseList(parsedBody.approved, MAX_APPROVED);
+
+  // Optional (issue #197): absent or non-array -> no key. First 50 entries, then filtered.
+  if (Array.isArray(parsedBody.goals)) {
+    const goals = parsedBody.goals.slice(0, MAX_GOALS).map(sanitiseGoal).filter((g) => g !== null);
+    if (goals.length > 0) value.goals = goals;
+  }
 
   return { ok: true, value };
 }

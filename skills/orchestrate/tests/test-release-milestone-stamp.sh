@@ -53,9 +53,16 @@ test_rm_ac4_readme_paragraph() {
   done
 }
 
-# AC5: the PM never invents a milestone convention.
+# AC5 (rewritten by issue #188): the PM owns planning milestones; the old "never pre-assign" rule is gone
+# and the new Milestones rule literals are pinned.
 test_rm_ac5_pm_no_preassigned_milestone() {
-  rm_has "$ROOT_RM/agents/product-manager.md" 'never pre-assign a release milestone' || return 1
+  local s pm="$ROOT_RM/agents/product-manager.md"
+  ! grep -qF -- 'never pre-assign a release milestone' "$pm" || { fail "product-manager.md: old rule literal still present"; return 1; }
+  ! grep -qF -- 'No milestones' "$pm" || { fail "product-manager.md: old 'No milestones' bullet still present"; return 1; }
+  for s in 'vX.Y.Z - plain-language title' 'due_on' 'open milestones' 'moved from' \
+           'Never edit, reopen, or assign to a closed milestone' 'no version number'; do
+    rm_has "$pm" "$s" || return 1
+  done
 }
 
 echo "-- release tracking (issue #37)"

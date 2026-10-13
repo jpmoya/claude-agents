@@ -15,6 +15,9 @@
 #   staging | approved: emit the payload's "staging" / "approved" array (issue #65) from
 #               <pipe-dir>/status-staging.json / status-approved.json (written by reconcile-status.sh);
 #               no stdin, `[]` when the file is missing or unreadable.
+#   goals:      emit the payload's "goals" array (issue #197) from <pipe-dir>/goal-<id>.json (+ .pid,
+#               .held, .stopped); no stdin, `[]` when none. Local files only; spec is NOT sanitised
+#               here (validate.js does that).
 import sys
 import json
 import subprocess
@@ -91,6 +94,16 @@ def title_for(issue):  # first line of <pipe-dir>/orch-<issue>.title, stripped +
     return first_line.strip()[:TITLE_MAX_CHARS]
 
 
+def milestone_for(issue):  # first line of <pipe-dir>/orch-<issue>.milestone, stripped + capped at 60; else ""
+    if not pipe_dir:
+        return ""
+    try:
+        with open(os.path.join(pipe_dir, "orch-%s.milestone" % issue), encoding="utf-8", errors="replace") as f:
+            return f.readline(256).strip()[:60]
+    except OSError:
+        return ""
+
+
 def iso(epoch_str):
     epoch_str = (epoch_str or "").strip()
     if not epoch_str:
@@ -139,6 +152,21 @@ def build_list(kind):
         })
     items.sort(key=lambda i: i["updated_at"], reverse=True)
     return items[:LIST_CAPS[kind]]
+
+
+NEEDS_LABELS = ("Approve mockups", "Say go", "Approve effort", "Missing credential", "Decision needed")
+PARKED_REASONS = ("answered", "out_of_scope")
+ISO_Z_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
+
+
+def state_file_for(issue, suffix):  # first line of <pipe-dir>/orch-<issue>.<suffix>, else ""
+    if not pipe_dir:
+        return ""
+    try:
+        with open(os.path.join(pipe_dir, "orch-%s.%s" % (issue, suffix)), encoding="utf-8", errors="replace") as f:
+            return f.readline(64).strip()
+    except OSError:
+        return ""
 
 
 def release_for(issue):  # first line of <pipe-dir>/orch-<issue>.release if it is vX.Y.Z, else ""
@@ -206,6 +234,75 @@ if mode in LIST_CAPS:
     print(json.dumps(build_list(mode)))
     sys.exit(0)
 
+GOALS_MAX = 50
+GOAL_STATES = ("active", "waiting_jp", "held")
+
+
+def _pid_alive(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            pid = int(f.readline(32).strip())
+        if pid <= 0:
+            return False
+        os.kill(pid, 0)
+    except PermissionError:
+        return True
+    except (OSError, ValueError, OverflowError):
+        return False
+    return True
+
+
+def build_goals():
+    if not pipe_dir:
+        return []
+    try:
+        names = sorted(n for n in os.listdir(pipe_dir) if n.startswith("goal-") and n.endswith(".json"))
+    except OSError:
+        return []
+    out = []
+    for name in names:
+        stem = name[:-5]
+        base = os.path.join(pipe_dir, stem)
+        try:
+            with open(base + ".json", encoding="utf-8") as f:
+                d = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(d, dict):
+            continue
+        if not all(isinstance(d.get(k), str) and d.get(k) for k in ("id", "spec", "host")):
+            continue
+        if os.path.exists(base + ".stopped"):
+            continue
+        held_file = os.path.exists(base + ".held")
+        raw_state = d.get("state")
+        if raw_state is None:
+            raw_state = "held" if held_file else "active"
+        if raw_state not in GOAL_STATES:
+            continue
+        if held_file or raw_state == "held":
+            state = "held"
+        elif raw_state == "waiting_jp":
+            state = "waiting_jp"
+        else:
+            state = "running" if _pid_alive(base + ".pid") else "between_cycles"
+        entry = {"id": d["id"], "spec": d["spec"], "host": d["host"], "state": state}
+        for k in ("scope_total", "scope_delivered"):
+            v = d.get(k)
+            if isinstance(v, int) and not isinstance(v, bool):
+                entry[k] = v
+        if isinstance(d.get("last_cycle_at"), str) and ISO_Z_RE.match(d["last_cycle_at"]):
+            entry["last_cycle_at"] = d["last_cycle_at"]
+        out.append(entry)
+        if len(out) >= GOALS_MAX:
+            break
+    return out
+
+
+if mode == "goals":
+    print(json.dumps(build_goals()))
+    sys.exit(0)
+
 # A non-running row whose ticket is already on this host's staging list is not "in flight" (#65).
 staged = set((d["owner_repo"], d["issue"]) for d in load_list("staging"))
 
@@ -241,6 +338,19 @@ for raw in sys.stdin:
         run["title"] = title
         if owner_repo and issue.isdigit():
             run["url"] = "https://github.com/%s/issues/%s" % (owner_repo, issue)
+    milestone = milestone_for(issue)
+    if milestone:
+        run["milestone"] = milestone
+    # Issue #139: fixed labels / enum / timestamp only, never comment text (re-checked here).
+    needs = state_file_for(issue, "needs")
+    if needs in NEEDS_LABELS:
+        run["needs"] = needs
+    gate_at = state_file_for(issue, "gate_at")
+    if ISO_Z_RE.match(gate_at):
+        run["gate_at"] = gate_at
+    parked_reason = state_file_for(issue, "parked_reason")
+    if parked_reason in PARKED_REASONS:
+        run["parked_reason"] = parked_reason
     activity_epoch = int(last_activity_epoch) if last_activity_epoch.strip().isdigit() else -1
     sort_key = (STATE_PRIORITY[state_code], -activity_epoch)
     runs.append((sort_key, run))

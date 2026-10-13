@@ -143,8 +143,10 @@ except Exception: print('?')
     # Launching consumes agent-go (the shared-dispatch pool) and claims the issue for this machine. Crash restarts are
     # the local supervisor's job, not the label's; the supervisor drops agent-in-progress when the run is done or parked.
     (cd "$REPO" && gh issue edit "$ISSUE" --add-label "$LABEL_IN_PROGRESS" --remove-label "$LABEL_GO" 2>/dev/null) || true
+    # Post the owner claim (same format as shared dispatch) so the other machine's reconcile leaves the label alone.
+    (cd "$REPO" && gh issue comment "$ISSUE" --body "**[supervisor] NOTE** claim: $(hostname -s) $(date -u +%FT%TZ)" >/dev/null 2>&1) || true
     # Clear tombstones and restart state on manual launch
-    rm -f "$PIPE/orch-$ISSUE".{stopped,held,done,closed,release,marker,alert,label-cleared,start,exit} "$PIPE/orch-$ISSUE.restarts"
+    rm -f "$PIPE/orch-$ISSUE".{stopped,held,done,closed,release,marker,milestone,alert,label-cleared,start,exit,exit-logged} "$PIPE/orch-$ISSUE.restarts"
     # Persist on both the launch and queued paths: supervisor.sh rebuilds the queue JSON from this file.
     printf '%s' "$EXTRA" > "$PIPE/orch-$ISSUE.extra"
     # Ticket title for the status board (#29) — fetched once here, before the capacity check so a queued run has it
@@ -176,6 +178,7 @@ with open('$QUEUE/orch-$ISSUE.json', 'w') as f:
     ' _ "$PROMPT" "$PIPE/orch-$ISSUE.exit" >> "$PIPE/orch-$ISSUE.log" 2>&1 9>&- &
     echo $! > "$PIPE/orch-$ISSUE.pid"; echo "$REPO" > "$PIPE/orch-$ISSUE.repo"
     date -u +%FT%TZ > "$PIPE/orch-$ISSUE.start"; date -u +%FT%TZ > "$PIPE/orch-$ISSUE.launched-at"
+    log_run_launch "$OWNER_REPO" "$ISSUE" "${LAUNCH_REASON:-manual}" 0 ""
     report_status_async "launch"   # event push: run launched (design #10 §4.4)
     echo "launched orchestrator for $OWNER_REPO#$ISSUE  pid=$!  log=$PIPE/orch-$ISSUE.log"
     echo "check: ~/.claude/skills/orchestrate/orchestrate.sh status $ISSUE"

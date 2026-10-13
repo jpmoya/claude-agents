@@ -81,6 +81,7 @@ function renderTicketCell(run) {
 }
 
 const RUN_COLUMNS = ['Issue', 'Ticket', 'Host', 'State', 'Stage', 'Marker', 'Last activity', 'Restarts'];
+const NEEDS_COLUMNS = ['Issue', 'Ticket', 'Needs', 'Host', 'State', 'Stage', 'Marker', 'Last activity', 'Restarts'];
 const LIST_COLUMNS = ['Issue', 'Ticket', 'Updated'];
 const DONE_COLUMNS = ['Issue', 'Ticket', 'Closed', 'Release', 'Final marker'];
 
@@ -94,6 +95,11 @@ const runCells = (run) => [
   esc(formatCet(run.last_activity_at)),
   esc(run.restarts),
 ];
+const needsCells = (run) => {
+  const cells = runCells(run);
+  cells.splice(2, 0, esc(run.needs));
+  return cells;
+};
 const listCells = (item) => [`#${esc(item.issue)}`, renderTicketCell(item), esc(formatCet(item.updated_at))];
 const doneCells = (item) => [
   `#${esc(item.issue)}`,
@@ -105,6 +111,7 @@ const doneCells = (item) => [
 
 // Group heading -> table layout. Headings come from group.js; anything unlisted gets the run layout.
 const LAYOUTS = {
+  'Needs JP': { columns: NEEDS_COLUMNS, cells: needsCells },
   'Approved, waiting for a slot': { columns: LIST_COLUMNS, cells: listCells },
   'On staging (awaiting production)': { columns: LIST_COLUMNS, cells: listCells },
   Done: { columns: DONE_COLUMNS, cells: doneCells },
@@ -113,13 +120,73 @@ const RUN_LAYOUT = { columns: RUN_COLUMNS, cells: runCells };
 
 function renderGroupSection(group) {
   const { columns, cells } = LAYOUTS[group.heading] || RUN_LAYOUT;
+  const byMilestone = group.heading === 'Needs JP';
+  const label = (row) => (typeof row.milestone === 'string' && row.milestone ? row.milestone : 'no release');
+  const sameGroup = (a, b) => label(a) === label(b) && a.repo === b.repo;
+  const headerFor = (row, i) => {
+    if (!byMilestone || (i > 0 && sameGroup(group.rows[i - 1], row))) return '';
+    const n = group.rows.filter((r) => sameGroup(r, row)).length;
+    return `<tr><td colspan="${columns.length}">${esc(`${label(row)} (${row.repo}) — ${n} waiting`)}</td></tr>`;
+  };
   const rows = group.rows.length
-    ? group.rows.map((row) => `<tr>${cells(row).map((c) => `<td>${c}</td>`).join('')}</tr>`).join('')
+    ? group.rows.map((row, i) => `${headerFor(row, i)}<tr>${cells(row).map((c) => `<td>${c}</td>`).join('')}</tr>`).join('')
     : `<tr><td colspan="${columns.length}">none</td></tr>`;
   return `<section class="group">
     <h2>${esc(group.heading)} (${group.rows.length})</h2>
     <table>
       <tr>${columns.map((c) => `<th>${esc(c)}</th>`).join('')}</tr>
+      <tbody>${rows}</tbody>
+    </table>
+  </section>`;
+}
+
+const GOAL_STATE_LABELS = { waiting_jp: 'waiting on JP', held: 'held', running: 'running', between_cycles: 'between cycles' };
+const GOAL_STATE_ORDER = ['waiting_jp', 'held', 'running', 'between_cycles'];
+const GOAL_COLUMNS = ['Goal', 'Host', 'State', 'Delivered', 'Last cycle'];
+
+/** Merges both hosts' goals: one entry per id — the goal's own host's report wins, else the newer received_at. */
+function mergeGoals(hosts) {
+  const winners = new Map();
+  for (const hostKey of ['mac', 'vm']) {
+    const rec = hosts[hostKey];
+    if (!rec || !Array.isArray(rec.goals)) continue;
+    const at = Date.parse(rec.received_at);
+    const receivedMs = Number.isNaN(at) ? 0 : at;
+    for (const g of rec.goals) {
+      if (!g || typeof g !== 'object' || typeof g.id !== 'string') continue;
+      const cand = { goal: g, own: g.host === hostKey, receivedMs };
+      const cur = winners.get(g.id);
+      if (!cur || (cand.own && !cur.own) || (cand.own === cur.own && cand.receivedMs > cur.receivedMs)) {
+        winners.set(g.id, cand);
+      }
+    }
+  }
+  const rank = (g) => {
+    const i = GOAL_STATE_ORDER.indexOf(g.state);
+    return i === -1 ? GOAL_STATE_ORDER.length : i;
+  };
+  return [...winners.values()]
+    .map((w) => w.goal)
+    .sort((a, b) => rank(a) - rank(b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+}
+
+function renderGoalsSection(hosts) {
+  const goals = mergeGoals(hosts);
+  if (goals.length === 0) return '';
+  const delivered = (g) =>
+    Number.isInteger(g.scope_delivered) && Number.isInteger(g.scope_total) ? `${g.scope_delivered}/${g.scope_total}` : '–';
+  const cells = (g) => [
+    esc(g.spec),
+    esc(HOST_LABELS[g.host] || g.host),
+    `<span class="badge goal-${esc(g.state)}">${esc(GOAL_STATE_LABELS[g.state] || g.state)}</span>`,
+    esc(delivered(g)),
+    esc(formatCet(g.last_cycle_at) || '–'),
+  ];
+  const rows = goals.map((g) => `<tr>${cells(g).map((c) => `<td>${c}</td>`).join('')}</tr>`).join('');
+  return `<section class="group">
+    <h2>Goals</h2>
+    <table>
+      <tr>${GOAL_COLUMNS.map((c) => `<th>${esc(c)}</th>`).join('')}</tr>
       <tbody>${rows}</tbody>
     </table>
   </section>`;
@@ -157,7 +224,7 @@ export function renderPage(hosts, thresholds, nowEpochSecs) {
 
   const body = bothEmpty
     ? '<p class="empty">no data from either host yet</p>'
-    : `${renderHostSection('mac', hosts.mac, thresholds, nowEpochSecs)}${renderHostSection('vm', hosts.vm, thresholds, nowEpochSecs)}${groupTickets(hosts, nowEpochSecs).map(renderGroupSection).join('')}`;
+    : `${renderHostSection('mac', hosts.mac, thresholds, nowEpochSecs)}${renderHostSection('vm', hosts.vm, thresholds, nowEpochSecs)}${renderGoalsSection(hosts)}${groupTickets(hosts, nowEpochSecs).map(renderGroupSection).join('')}`;
 
   return `<!doctype html>
 <html lang="en">
@@ -176,6 +243,10 @@ export function renderPage(hosts, thresholds, nowEpochSecs) {
   .badge.stale { background: #9a6700; color: #ffffff; }
   .badge.offline { background: #a40e26; color: #ffffff; }
   .badge.nodata { background: #6e7781; color: #ffffff; }
+  .badge.goal-running { background: #1a7f37; color: #ffffff; }
+  .badge.goal-waiting_jp { background: #9a6700; color: #ffffff; }
+  .badge.goal-held { background: #a40e26; color: #ffffff; }
+  .badge.goal-between_cycles { background: #6e7781; color: #ffffff; }
   table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
   th, td { text-align: left; padding: 0.25rem; border-bottom: 1px solid rgba(127, 127, 127, 0.3); }
   section.host, section.group { margin-bottom: 1.5rem; }

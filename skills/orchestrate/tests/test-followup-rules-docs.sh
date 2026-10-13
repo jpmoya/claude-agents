@@ -94,7 +94,8 @@ test_fu_ac2_orchestrator_never_hands_filing_a_followup_to_jp() {
   fu_text_has_i "AC2: the only route is the PM via NEEDS PM REVISION" "$report" 'NEEDS PM REVISION' || return 1
   fu_text_has_i "AC2: orchestrator does not judge — it routes to the product-manager" "$report" 'product-manager' || return 1
   # R1: no new routing-table row. Baseline at main = 28 table rows starting with "| `[".
-  rows=$(grep -c '^| `\[' "$ORCH_FU")
+  # #115: rows that name REJECTED are #115's own routing rows (terminal reasons, needs-spec, inert cases) and are not counted
+  rows=$(grep '^| `\[' "$ORCH_FU" | grep -vc 'REJECTED')
   assert_eq "$rows" "28" "R1: orchestrator routing table gains no new row" || return 1
 }
 
@@ -115,7 +116,8 @@ test_fu_ac2_solutions_architect_hygiene_findings_are_new_scope_not_dependency_fo
 test_fu_ac3_pipeline_markers_unchanged_and_note_route_is_used() {
   local got want
   . "$ROOT_FU/hooks/pipeline-markers.sh"
-  got=$(markers_for product-manager)
+  # #115: strip only `|REJECTED` (the marker #115 registers for the product-manager)
+  got=$(markers_for product-manager | sed -e 's/|REJECTED//' -e 's/REJECTED|//')
   want='READY FOR ARCHITECTURE|READY FOR ENGINEERING|EFFORT APPROVAL NEEDED|BLOCKED'
   assert_eq "$got" "$want" "AC3: markers_for product-manager is byte-identical (no new marker)" || return 1
   # The inherited-approval message travels as a NOTE — inert by the marker vocabulary. Control:
@@ -140,13 +142,14 @@ test_fu_ac4_pm_worked_example_216_to_229() {
 
 test_fu_ac6_no_new_hook_daemon_timer_or_state_file_and_single_config_key() {
   local hooks top keys
-  # hand-written baseline of tracked hook files and top-level orchestrate files at main (2026-09-19),
+  # hand-written baseline of tracked hook files and top-level orchestrate files at main (rebuilt 2026-10-08 for #114: main's
+  # actual contents plus intake-labels.sh; it was already red on main for rotate-logs.sh),
   # plus reconcile-status.sh, which issue #51 (Expected Behavior 2) adds to the orchestrate dir,
-  # plus pm-slack.sh, which issue #117 (AC1/AC2) adds to the orchestrate dir
+  # plus deliver.sh and goal-lib.sh, which issue #193 (goal-bound delivery lead) mandates
   hooks=$(ls "$ROOT_FU/hooks" | tr '\n' ' ')
-  assert_eq "$hooks" "block-orchestrator-agent.sh bug-fix-skill-reminder.sh cap-heavy-commands.py email-send-guard.sh enforce-tests-before-commit.sh limit-shells.sh pipeline-markers.sh protect-locked-tests.sh report-status-hook.sh require-handoff-marker.sh sync-agents.sh " "AC6: no new hook" || return 1
+  assert_eq "$hooks" "block-orchestrator-agent.sh bug-fix-skill-reminder.sh cap-heavy-commands.py email-send-guard.sh enforce-tests-before-commit.sh limit-shells.sh no-duplicate-stage.sh pipeline-markers.sh protect-locked-tests.sh report-status-hook.sh require-handoff-marker.sh sync-agents.sh " "AC6: no new hook" || return 1
   top=$(ls "$ROOT_FU/skills/orchestrate" | tr '\n' ' ')
-  assert_eq "$top" "SKILL.md build-runs-json.py config.local.example.sh config.sh install.sh orchestrate.sh pipeline-bridge-dispatch.sh pipeline-bridge-prompt.md pipeline-lib.sh pm-slack.sh reconcile-status.sh report-status.sh run-state.sh scan-backlog.sh supervisor.sh tests " "AC6: no new daemon/timer/state-file script under skills/orchestrate" || return 1
+  assert_eq "$top" "SKILL.md build-runs-json.py config.local.example.sh config.sh deliver.sh goal-lib.sh install.sh intake-labels.sh orchestrate.sh pipeline-bridge-dispatch.sh pipeline-bridge-prompt.md pipeline-lib.sh pipeline-report.sh pm-slack.sh reconcile-status.sh report-status.sh rotate-logs.sh run-state.sh scan-backlog.sh session-backfill.sh stage-run.sh supervisor.sh test tests " "AC6: no new daemon/timer/state-file script under skills/orchestrate" || return 1
   # the one allowed config key exists and defaults to today's behaviour (empty)
   assert_eq "$(grep -c '^SCAN_ONLY_REPOS=()' "$ROOT_FU/skills/orchestrate/config.sh")" "1" "AC6: config.sh carries the single new key, defaulting to empty" || return 1
   # ...and it is the only new key: no other *_REPOS / SCAN_* assignment beyond the baseline

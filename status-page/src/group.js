@@ -6,6 +6,7 @@ import { isIssueUrl } from './validate.js';
 const DAY_SECS = 86400;
 const DONE_RETENTION_SECS = 7 * DAY_SECS;
 const PARKED_MAX_AGE_SECS = 7 * DAY_SECS;
+const NEEDS_JP_MAX_AGE_SECS = 14 * DAY_SECS;
 const NEEDS_JP_MARKERS = ['MOCKUPS PENDING APPROVAL', 'AWAITING GO', 'EFFORT APPROVAL NEEDED', 'BLOCKED'];
 
 const HOST_ORDER = ['mac', 'vm']; // tie -> Mac
@@ -59,6 +60,40 @@ function mergeList(hosts, name, field, keep = () => true) {
   return byKey;
 }
 
+const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+
+/** Needs JP: groups by (repo, milestone), biggest group first; ties by repo, then milestone ("no release" last). */
+function groupNeedsJp(rows) {
+  const byKey = new Map();
+  for (const row of rows) {
+    const milestone = typeof row.milestone === 'string' && row.milestone !== '' ? row.milestone : null;
+    const repo = String(row.repo ?? '');
+    const key = JSON.stringify([repo, milestone]);
+    if (!byKey.has(key)) byKey.set(key, { repo, milestone, rows: [] });
+    byKey.get(key).rows.push(row);
+  }
+  return [...byKey.values()]
+    .sort(
+      (a, b) =>
+        b.rows.length - a.rows.length ||
+        cmp(a.repo, b.repo) ||
+        (a.milestone === null) - (b.milestone === null) ||
+        cmp(a.milestone ?? '', b.milestone ?? ''),
+    )
+    .flatMap((g) => newestFirst(g.rows, 'last_activity_at'));
+}
+
+/**
+ * A held gate leaves Needs JP when the host says it was answered / is out of scope, or when
+ * max(gate_at, last_activity_at) is older than 14 days. No timestamp at all -> stays.
+ */
+function isDemoted(run, nowEpochSecs) {
+  if (run.parked_reason === 'answered' || run.parked_reason === 'out_of_scope') return true;
+  const stamps = [epoch(run.gate_at), epoch(run.last_activity_at)].filter((t) => t !== null);
+  if (stamps.length === 0) return false;
+  return nowEpochSecs - Math.max(...stamps) > NEEDS_JP_MAX_AGE_SECS;
+}
+
 /**
  * @param {{ mac?: object|null, vm?: object|null }} hosts stored host records
  * @param {number} nowEpochSecs
@@ -97,7 +132,8 @@ export function groupTickets(hosts, nowEpochSecs) {
     else if (staging.has(key)) groups.staging.push(staging.get(key));
     else if (run && run.state === 'restarting') groups.running.push(run);
     else if (run && run.state === 'held') {
-      if (NEEDS_JP_MARKERS.includes(run.marker)) groups.needsJp.push(run);
+      if (NEEDS_JP_MARKERS.includes(run.marker) && !isDemoted(run, nowEpochSecs)) groups.needsJp.push(run);
+      else if (NEEDS_JP_MARKERS.includes(run.marker)) groups.parked.push(run); // demoted: exempt from the 7-day hide
       else {
         const last = epoch(run.last_activity_at);
         if (last === null || nowEpochSecs - last <= PARKED_MAX_AGE_SECS) groups.parked.push(run);
@@ -106,7 +142,7 @@ export function groupTickets(hosts, nowEpochSecs) {
   }
 
   const build = (name, field) => {
-    const rows = newestFirst(groups[name], field);
+    const rows = name === 'needsJp' ? groupNeedsJp(groups[name]) : newestFirst(groups[name], field);
     return { heading: HEADINGS[name], rows: CAPS[name] ? rows.slice(0, CAPS[name]) : rows };
   };
   return [

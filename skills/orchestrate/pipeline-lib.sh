@@ -2,12 +2,14 @@
 # Shared launcher helpers (issue #8), sourced by orchestrate.sh and supervisor.sh right after config.sh.
 # Reads $PIPE, $MAX_CONCURRENT and $MEM_FLOOR_MB at call time, so it does not source config.sh itself.
 # marker_last_jq needs marker_re from hooks/pipeline-markers.sh, which both launchers also source.
+pipeline_host() { hostname -s 2>/dev/null | tr '[:upper:]' '[:lower:]'; }
+
 SETSID=$(command -v setsid >/dev/null 2>&1 && echo setsid || true)   # absent on macOS; nohup + & is enough there
 
 count_running() {
   local n=0
-  for f in "$PIPE"/orch-*.pid; do
-    [ -e "$f" ] || break
+  for f in "$PIPE"/orch-*.pid "$PIPE"/intake-*.pid; do   # intake runs (#114) count against MAX_CONCURRENT too
+    [ -e "$f" ] || continue
     kill -0 "$(cat "$f")" 2>/dev/null && n=$((n + 1))
   done
   echo "$n"
@@ -48,4 +50,42 @@ write_title_marker() {
     marker=$(marker_name_from_line "$line")
   fi
   if [ -n "$marker" ]; then printf '%s\n' "$marker" > "$PIPE/orch-$issue.marker"; else rm -f "$PIPE/orch-$issue.marker"; fi
+}
+
+# limit_kind_of <file> — looks at the last 20 lines, case-insensitive: a `hit your … limit` line prints monthly_spend
+# (contains "spend limit"), weekly (contains "weekly limit") or other; no match prints nothing.
+limit_kind_of() {
+  local line
+  line=$(tail -n 20 "$1" 2>/dev/null | grep -iE 'hit your.*limit' | tail -1) || true
+  [ -n "$line" ] || return 0
+  case $(printf '%s' "$line" | tr '[:upper:]' '[:lower:]') in
+    *"spend limit"*) echo monthly_spend ;;
+    *"weekly limit"*) echo weekly ;;
+    *) echo other ;;
+  esac
+}
+
+# pipeline_event <event> [jq --arg/--argjson pairs…] — appends one row (v, ts, host, event + the given fields) to
+# $LOGDIR/events.jsonl. Any failure is swallowed: logging never blocks a launch or a supervisor tick.
+pipeline_event() {
+  local ev=${1:-}; shift 2>/dev/null || true
+  local dir=${LOGDIR:-$HOME/logs/pipeline} row
+  row=$(jq -nc --arg event "$ev" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg host "$(pipeline_host)" "$@" \
+    '{v:1,ts:$ts,host:$host,event:$event} + ($ARGS.named | del(.event,.ts,.host))' 2>/dev/null) || return 0
+  { mkdir -p "$dir" && printf '%s\n' "$row" >> "$dir/events.jsonl"; } 2>/dev/null || true
+  return 0
+}
+
+# log_run_launch <owner/repo> <issue> <reason> <restart_n> <queue_wait_s|""> — writes $PIPE/orch-<issue>.run-id, clears
+# .exit-logged and appends the run_launch row. Call right after the process is started.
+log_run_launch() {
+  local repo=$1 issue=$2 reason=$3 restart_n=${4:-0} qw=${5:-} run_id
+  run_id="$(pipeline_host)-orch-$issue-$(date +%s)"
+  rm -f "$PIPE/orch-$issue.exit-logged" 2>/dev/null
+  printf '%s\n' "$run_id" > "$PIPE/orch-$issue.run-id" 2>/dev/null || true
+  case "$qw" in ''|*[!0-9]*) qw=null ;; esac
+  case "$issue" in ''|*[!0-9]*) return 0 ;; esac
+  pipeline_event run_launch --arg run_id "$run_id" --arg repo "$repo" --argjson issue "$issue" --arg reason "$reason" \
+    --argjson restart_n "${restart_n:-0}" --argjson queue_wait_s "$qw"
+  return 0
 }

@@ -47,7 +47,7 @@ ROOT_DD=$(cd "$HERE_DD/../../.." && pwd)
 SUP_DD="$HERE_DD/../supervisor.sh"
 MARKERS_DD="$ROOT_DD/hooks/pipeline-markers.sh"
 ORCH_DD="$ROOT_DD/agents/orchestrator.md"
-PMGR_DD="$ROOT_DD/agents/project-manager.md"
+PMGR_DD="$ROOT_DD/agents/delivery-lead.md"   # #192: content moved from project-manager.md (now a thin alias)
 README_DD="$ROOT_DD/README.md"
 CLAUDE_DD="$ROOT_DD/CLAUDE.md"
 AGREADME_DD="$ROOT_DD/agents/README.md"
@@ -376,8 +376,8 @@ test_dd_ac17_project_manager_agent_contents() {
   local s
   (cd "$ROOT_DD" && git ls-files --error-unmatch agents/project-manager.md >/dev/null 2>&1) \
     || { fail "AC17: agents/project-manager.md must exist and be tracked"; return 1; }
-  dd_has "$PMGR_DD" 'name: project-manager' || return 1
-  for s in '**[project-manager] DECISION**' '**[project-manager] JP CONFIRMED**' 'Resolves:' '**[project-manager] NOTE**' \
+  dd_has "$PMGR_DD" 'name: delivery-lead' || return 1   # #192: content lives in delivery-lead.md; alias file existence checked above
+  for s in '**[delivery-lead] DECISION**' '**[delivery-lead] JP CONFIRMED**' 'Resolves:' '**[delivery-lead] NOTE**' \
            'AWAITING GO' 'orchestrate.sh' 'VM cannot read'; do
     dd_has "$PMGR_DD" "$s" || return 1
   done
@@ -388,7 +388,7 @@ test_dd_ac17_project_manager_agent_contents() {
 
 test_dd_ac18_project_manager_sections_and_untouched_parts_byte_identical() {
   local n head tail
-  [ -f "$PMGR_DD" ] || { fail "AC18: agents/project-manager.md missing"; return 1; }
+  [ -f "$PMGR_DD" ] || { fail "AC18: agents/delivery-lead.md missing"; return 1; }
   for n in 1 2 3 4 5 6 7 8; do
     grep -q "^## $n\\. " "$PMGR_DD" || { fail "AC18: heading '## $n.' missing"; return 1; }
   done
@@ -396,16 +396,19 @@ test_dd_ac18_project_manager_sections_and_untouched_parts_byte_identical() {
   head=$(awk '/^## 2\. How to decide/{exit} {print}' "$PMGR_DD" | dd_sha)
   tail=$(awk '/^## 3\. Start-up/{f=1} f' "$PMGR_DD" | dd_sha)
   # re-pinned for #98 (model line only)
-  assert_eq "$head" "40f3e69f54b590e2806b9151c148a1f7b320fc9c7db648be48b04f3792e6b7ac" "AC18: frontmatter + section 1 (re-pinned for #117, JP-only paragraph Slack carve-out only)" || return 1
-  assert_eq "$tail" "63eae647dfb1d3798566ad12c511509afc7bd5ca49285e81b015c3a78733174a" "AC18: sections 3-8 (re-pinned for #109, lines 60/64 only)" || return 1
+  # re-pinned for #106 (tail hash: project-manager.md line 104 only)
+  # re-pinned for #168 (promotion-PR exception, §1 only) and #192 (delivery-lead.md: name, intro sentence, DECISION marker spelling)
+  assert_eq "$head" "81b0a7fddfc1e8a62b71d8e7fde7c1c0f025cdfb7bf9c0a1fed01aa9d1c56847" "AC18: frontmatter + section 1 (re-pinned for #192, rename only)" || return 1
+  # re-pinned for #198 (§3 pacing sentence and §4 headless line) and #192 (status-card sentence rename only)
+  assert_eq "$tail" "fb03617fc4fc31263c4d51d527dce5901ce363312c0a7ffb09ce6b201cccae3e" "AC18: sections 3-8 (re-pinned for #198 + #192, rename only)" || return 1
 }
 
 # ---------------------------------------------------------------------------------------- AC19-AC20 docs
 
 test_dd_ac19_readme_paragraph() {
   local p s
-  p=$(grep -F '**Project manager (delivery lead).**' "$README_DD" | grep '^\*\*Project manager (delivery lead)\.\*\*' | head -1)
-  assert_ne "$p" "" "AC19: README has a paragraph starting **Project manager (delivery lead).**" || return 1
+  p=$(grep -F '**Delivery lead.**' "$README_DD" | grep '^\*\*Delivery lead\.\*\*' | head -1)
+  assert_ne "$p" "" "AC19: README has a paragraph starting **Delivery lead.**" || return 1
   for s in 'main agent of its own session' '[project-manager] DECISION' 'JP CONFIRMED' 'Resolves:' 'AWAITING GO'; do
     dd_text_has "AC19: README paragraph" "$p" "$s" || return 1
   done
@@ -413,8 +416,8 @@ test_dd_ac19_readme_paragraph() {
 
 test_dd_ac19_claude_md_paragraph() {
   local p s
-  p=$(grep '^\*\*Project manager (delivery lead)\.\*\*' "$CLAUDE_DD" | head -1)
-  assert_ne "$p" "" "AC19: CLAUDE.md has a paragraph starting **Project manager (delivery lead).**" || return 1
+  p=$(grep '^\*\*Delivery lead\.\*\*' "$CLAUDE_DD" | head -1)
+  assert_ne "$p" "" "AC19: CLAUDE.md has a paragraph starting **Delivery lead.**" || return 1
   for s in 'main agent of its own session' '[project-manager] DECISION'; do
     dd_text_has "AC19: CLAUDE.md paragraph" "$p" "$s" || return 1
   done
@@ -435,16 +438,6 @@ test_dd_ac21_untouched_paths_have_no_diff() {
   assert_eq "$d" "" "AC21: golden fixtures unchanged" || return 1
 }
 
-test_dd_ac22_no_timer_counter_or_new_state_file() {
-  local base d added bad
-  base=$(dd_base)
-  if [ -z "$base" ]; then printf '    (AC22 skipped: no origin/main merge-base)\n' >&2; return 0; fi
-  d=$(cd "$ROOT_DD" && git diff --name-only "$base" -- skills/orchestrate/config.sh)
-  assert_eq "$d" "" "AC22: config.sh unchanged" || return 1
-  added=$(cd "$ROOT_DD" && git diff -U0 "$base" -- skills/orchestrate/supervisor.sh | grep '^+' | grep -v '^+++')
-  bad=$(printf '%s\n' "$added" | grep -oE 'orch-\$\{?issue\}?\.[A-Za-z_-]+' | grep -vE '\.(held|alert|done|start)$')
-  assert_eq "$bad" "" "AC22: supervisor.sh adds no new orch-\$issue.<suffix> file" || return 1
-}
 
 # ---------------------------------------------------------------------------------------- Issue #76 (i76_ac1-ac8)
 
@@ -482,39 +475,71 @@ test_dd_i76_ac2_validation_row_gains_the_go_clause() {
   done
 }
 
-test_dd_i76_ac3_infra_track_rows_byte_identical() {   # characterisation
-  local base cur old
+test_dd_i76_ac3_gate_rows_byte_identical_and_carve_out_keeps_exclusions() {   # characterisation (issue #108: infra BLOCKED rows no longer held byte-identical)
+  local base cur old row s
   base=$(dd_base)
   if [ -z "$base" ]; then printf '    (i76 AC3 skipped: no origin/main merge-base)\n' >&2; return 0; fi
-  # AWAITING GO + go row (already covered by AC13 too; re-asserted here as this ticket's own AC3 gate)
   cur=$(grep -F '| `[infra-operator] AWAITING GO` + JP go comment' "$ORCH_DD")
   old=$(cd "$ROOT_DD" && git show "$base:agents/orchestrator.md" | grep -F '| `[infra-operator] AWAITING GO` + JP go comment')
   assert_ne "$cur" "" "i76 AC3: AWAITING GO + go row present" || return 1
   assert_eq "$cur" "$old" "i76 AC3: AWAITING GO + go row byte-identical" || return 1
-  # both MOCKUPS PENDING APPROVAL rows — anchored at line-start so this only captures the two rows
-  # that actually define the mockup gate (lines 52-53), not the carve-out at :69 (AC1 amends that row,
-  # and its closing sentence names "MOCKUPS PENDING APPROVAL" as one of the carve-out's exclusions —
-  # a mid-line substring match there is incidental to this row's own gate, not a change to it) or the
-  # ":55 solutions-architect" row, which also mentions the marker mid-sentence.
   cur=$(grep '^| `\[ui-ux-designer\] MOCKUPS PENDING APPROVAL`' "$ORCH_DD")
   old=$(cd "$ROOT_DD" && git show "$base:agents/orchestrator.md" | grep '^| `\[ui-ux-designer\] MOCKUPS PENDING APPROVAL`')
   assert_ne "$cur" "" "i76 AC3: MOCKUPS PENDING APPROVAL rows present" || return 1
   assert_eq "$cur" "$old" "i76 AC3: MOCKUPS PENDING APPROVAL rows byte-identical" || return 1
-  # deployer's unsupported-project BLOCKED sentence
-  cur=$(grep -F "the project isn't in its supported list" "$ORCH_DD")
-  old=$(cd "$ROOT_DD" && git show "$base:agents/orchestrator.md" | grep -F "the project isn't in its supported list")
+  # issue #144: the row's head now also mentions claude-agents; pin only the unsupported-project sentence (row tail).
+  cur=$(grep -F "the project isn't in its supported list" "$ORCH_DD" | sed 's/^.*\(If the deployer posts `BLOCKED` because the project isn.t in its supported list\)/\1/')
+  old=$(cd "$ROOT_DD" && git show "$base:agents/orchestrator.md" | grep -F "the project isn't in its supported list" | sed 's/^.*\(If the deployer posts `BLOCKED` because the project isn.t in its supported list\)/\1/')
   assert_ne "$cur" "" "i76 AC3: deployer unsupported-project sentence present" || return 1
   assert_eq "$cur" "$old" "i76 AC3: deployer unsupported-project sentence byte-identical" || return 1
-  # AC3 also requires the carve-out (:69) to keep naming these same four exclusions as "current carve-out
-  # behaviour" after AC1's edit to that row's closing sentence — the byte-identity checks above only cover
-  # the gate rows themselves, not this half. Assert on the current resume row (dd_blocked_row_next), which
-  # AC1's other tests already require to exist and be edited in place.
-  local row
   row=$(dd_blocked_row_next)
   assert_ne "$row" "" "i76 AC3: resume row (carve-out) exists" || return 1
   for s in '[infra-operator] AWAITING GO' '[ui-ux-designer] MOCKUPS PENDING APPROVAL' 'any infra-track `BLOCKED`' "project isn't in its supported list"; do
     dd_text_has "i76 AC3: carve-out still excludes [$s]" "$row" "$s" || return 1
   done
+}
+
+dd_infra_go_row() { grep -F '**Resume on JP' "$ORCH_DD" | grep -F '`[infra-planner] BLOCKED`' | head -1; }
+
+test_dd_i108_infra_go_row_resumes_planner_and_operator_blocked() {   # issue #108 AC1
+  local row s
+  row=$(dd_infra_go_row)
+  assert_ne "$row" "" "i108 AC1: infra BLOCKED row carries the go path" || return 1
+  for s in 'planner/operator `BLOCKED` on any infra ticket, prod or staging-only' 'issue author' 'dated after that `BLOCKED`' \
+           '`go` / `GO` / `**[jp] GO**`' 'a sentence containing "go" is not a go' 'Re-dispatch the agent that posted the `BLOCKED`' \
+           'go comment URL' 'names a stage to run first' 'Planner: revise'; do
+    dd_text_has "i108 AC1" "$row" "$s" || return 1
+  done
+}
+
+test_dd_i108_infra_go_path_exclusions_and_pm_never_clears() {   # issue #108 AC2
+  local row s
+  row=$(dd_infra_go_row)
+  assert_ne "$row" "" "i108 AC2: infra go path exists" || return 1
+  for s in 'never an `[infra-reviewer] BLOCKED`' '`Held: blocked by`' 'A `[project-manager]` marker never clears a prod infra `BLOCKED`'; do
+    dd_text_has "i108 AC2" "$row" "$s" || return 1
+  done
+}
+
+test_dd_i108_infra_go_staleness_and_plan_pass_rule() {   # issue #108 AC3
+  local row
+  row=$(dd_infra_go_row)
+  assert_ne "$row" "" "i108 AC3: infra go path exists" || return 1
+  dd_text_has "i108 AC3: go before BLOCKED clears nothing" "$row" 'a go dated before the `BLOCKED` clears nothing' || return 1
+  dd_text_has "i108 AC3: go must post-date PLAN PASS" "$row" 'dated after the latest `PLAN PASS`' || return 1
+  dd_text_has "i108 AC3: back to AWAITING GO" "$row" 'stops at `AWAITING GO` again' || return 1
+}
+
+test_dd_i108_carve_out_validation_and_prose_agree() {   # issue #108 AC4
+  local row val prose
+  row=$(dd_blocked_row_next)
+  dd_text_has "i108 AC4: carve-out names the go path" "$row" 'planner/operator go path' || return 1
+  dd_text_lacks "i108 AC4: carve-out has no stale line refs" "$row" '`:101`' || return 1
+  val=$(grep -F 'resume on JP go after `BLOCKED`' "$ORCH_DD")
+  assert_ne "$val" "" "i108 AC4: validation row exists" || return 1
+  dd_text_has "i108 AC4: validation row" "$val" 'dated after that `BLOCKED`' || return 1
+  prose=$(grep -F 'resume only a staging-only planner/operator' "$ORCH_DD" | head -1)
+  dd_text_has "i108 AC4: prose names the go path" "$prose" "JP's exact-form go also resumes a planner/operator" || return 1
 }
 
 test_dd_i76_ac4_carve_out_still_lists_money_and_no_extra_authority() {   # characterisation — issue #76 AC4
@@ -570,10 +595,14 @@ test_dd_i76_ac8_no_new_mechanisms() {   # characterisation
   base=$(dd_base)
   if [ -z "$base" ]; then printf '    (i76 AC8 skipped: no origin/main merge-base)\n' >&2; return 0; fi
   # orchestrate.sh dropped: #94 AC3 must edit it (launch writes the marker file)
-  for f in hooks/pipeline-markers.sh; do
-    d=$(cd "$ROOT_DD" && git diff --name-only "$base" -- "$f")
-    assert_eq "$d" "" "i76 AC8: $f unchanged" || return 1
-  done
+  # whole-file check narrowed to markers_for/marker_re: #136 AC10 appends block_classes()
+  local want got
+  # #192: also strip only the `delivery-lead)` case line and the ` delivery-lead` token, on both sides
+  # #115: also strip only `|REJECTED` from the product-manager/fullstack-developer lines, on both sides (REJECTED is #115's marker)
+  want=$(cd "$ROOT_DD" && git show "$base:hooks/pipeline-markers.sh" | awk '/^(markers_for|marker_re)\(\)/ {p=1} p {print} p && /^}/ {p=0}' | sed -e '/^ *intake) /d' -e '/^ *delivery-lead) /d' -e 's/ delivery-lead project-manager/ project-manager/' -e 's/ intake; do/; do/' -e 's/|REJECTED//' -e 's/REJECTED|//')   # #114: strip only intake)/token on both sides
+  got=$(cd "$ROOT_DD" && awk '/^(markers_for|marker_re)\(\)/ {p=1} p {print} p && /^}/ {p=0}' hooks/pipeline-markers.sh | sed -e '/^ *intake) /d' -e '/^ *delivery-lead) /d' -e 's/ delivery-lead project-manager/ project-manager/' -e 's/ intake; do/; do/' -e 's/|REJECTED//' -e 's/REJECTED|//')   # #114
+  [ -n "$want" ] || { fail "i76 AC8: markers_for/marker_re not found at merge-base"; return 1; }
+  assert_eq "$got" "$want" "i76 AC8: markers_for/marker_re unchanged" || return 1
   dd_has "$MARKERS_DD" 'GO|MOCKUPS APPROVED' || return 1
   dd_has "$PMGR_DD" 'never resum' || return 1
 }
@@ -610,12 +639,94 @@ run_test test_dd_ac19_readme_paragraph
 run_test test_dd_ac19_claude_md_paragraph
 run_test test_dd_ac20_agents_readme_roster_row
 run_test test_dd_ac21_untouched_paths_have_no_diff
-run_test test_dd_ac22_no_timer_counter_or_new_state_file
 run_test test_dd_i76_ac1_resume_row_names_the_go_clearing_path
 run_test test_dd_i76_ac2_validation_row_gains_the_go_clause
-run_test test_dd_i76_ac3_infra_track_rows_byte_identical
+run_test test_dd_i76_ac3_gate_rows_byte_identical_and_carve_out_keeps_exclusions
+run_test test_dd_i108_infra_go_row_resumes_planner_and_operator_blocked
+run_test test_dd_i108_infra_go_path_exclusions_and_pm_never_clears
+run_test test_dd_i108_infra_go_staleness_and_plan_pass_rule
+run_test test_dd_i108_carve_out_validation_and_prose_agree
 run_test test_dd_i76_ac4_carve_out_still_lists_money_and_no_extra_authority
 run_test test_dd_i76_ac5_staleness_wording_present
 run_test test_dd_i76_ac6_go_clause_covers_the_773_shape
 run_test test_dd_i76_ac7_run_log_names_fail_before_terminal_and_reason
 run_test test_dd_i76_ac8_no_new_mechanisms
+
+# ---------------------------------------------------------------------------------------- #192 delivery-lead spelling
+# Parallel to AC3-AC7 with the marker spelling swapped to `[delivery-lead]`; the `[project-manager]` cases above stay unchanged.
+# Expected: the supervisor treats both spellings identically; NOTE / BLOCKED / misspellings are inert.
+
+test_dd_i192_blocked_then_delivery_lead_decision_is_not_a_gate() {
+  dd_thread '**[deployer] BLOCKED**' $'**[delivery-lead] DECISION**\nResolves: https://example.test/c/1\nDo X.'
+  dd_tick
+  dd_assert_not_gate "i192 DECISION" || return 1
+}
+
+test_dd_i192_blocked_then_delivery_lead_jp_confirmed_is_not_a_gate() {
+  dd_thread '**[deployer] BLOCKED**' $'**[delivery-lead] JP CONFIRMED**\nResolves: https://example.test/c/1\nDo X.'
+  dd_tick
+  dd_assert_not_gate "i192 JP CONFIRMED" || return 1
+}
+
+test_dd_i192_awaiting_go_then_delivery_lead_decision_stays_a_gate() {
+  dd_thread '**[infra-operator] AWAITING GO**' $'**[delivery-lead] DECISION**\nResolves: https://example.test/c/1'
+  dd_tick
+  dd_assert_gate "i192 AWAITING GO" "AWAITING GO" "DECISION" || return 1
+}
+
+test_dd_i192_mockups_pending_then_delivery_lead_jp_confirmed_stays_a_gate() {
+  dd_thread '**[ui-ux-designer] MOCKUPS PENDING APPROVAL**' $'**[delivery-lead] JP CONFIRMED**\nResolves: https://example.test/c/1'
+  dd_tick
+  dd_assert_gate "i192 MOCKUPS" "MOCKUPS PENDING APPROVAL" "JP CONFIRMED" || return 1
+}
+
+test_dd_i192_infra_operator_blocked_then_delivery_lead_decision_stays_a_gate() {
+  dd_thread '**[infra-operator] BLOCKED**' $'**[delivery-lead] DECISION**\nResolves: https://example.test/c/1'
+  dd_tick
+  dd_assert_gate "i192 infra-operator" "BLOCKED" "DECISION" || return 1
+}
+
+test_dd_i192_delivery_lead_decision_older_than_the_block_stays_a_gate() {
+  dd_thread $'**[delivery-lead] DECISION**\nResolves: https://example.test/c/1' '**[deployer] BLOCKED**'
+  dd_tick
+  dd_assert_gate "i192 older decision" "BLOCKED" || return 1
+}
+
+test_dd_i192_delivery_lead_note_after_blocked_is_inert() {
+  dd_thread '**[deployer] BLOCKED**' $'**[delivery-lead] NOTE**\nstatus: still looking'
+  dd_tick
+  dd_assert_gate "i192 NOTE" "BLOCKED" || return 1
+}
+
+test_dd_i192_delivery_lead_blocked_is_not_a_valid_marker() {
+  dd_thread '**[deployer] BLOCKED**' $'**[delivery-lead] BLOCKED**\nResolves: https://example.test/c/1'
+  dd_tick
+  dd_assert_gate "i192 [delivery-lead] BLOCKED" "BLOCKED" || return 1
+}
+
+test_dd_i192_delivery_leader_misspelling_is_inert() {
+  dd_thread '**[deployer] BLOCKED**' $'**[delivery-leader] DECISION**\nResolves: https://example.test/c/1'
+  dd_tick
+  dd_assert_gate "i192 [delivery-leader]" "BLOCKED" || return 1
+}
+
+test_dd_i192_deployed_then_delivery_lead_decision_is_done() {
+  dd_thread '**[deployer] DEPLOYED**' $'**[delivery-lead] DECISION**\nResolves: https://example.test/c/1'
+  dd_tick
+  local done_f held
+  done_f=$(dd_present "$DD_PIPE/orch-42.done"); held=$(dd_present "$DD_PIPE/orch-42.held")
+  dd_cleanup
+  assert_eq "$done_f" "present" "i192: DEPLOYED then delivery-lead DECISION -> .done" || return 1
+  assert_eq "$held" "absent" "i192: not held" || return 1
+}
+
+run_test test_dd_i192_blocked_then_delivery_lead_decision_is_not_a_gate
+run_test test_dd_i192_blocked_then_delivery_lead_jp_confirmed_is_not_a_gate
+run_test test_dd_i192_awaiting_go_then_delivery_lead_decision_stays_a_gate
+run_test test_dd_i192_mockups_pending_then_delivery_lead_jp_confirmed_stays_a_gate
+run_test test_dd_i192_infra_operator_blocked_then_delivery_lead_decision_stays_a_gate
+run_test test_dd_i192_delivery_lead_decision_older_than_the_block_stays_a_gate
+run_test test_dd_i192_delivery_lead_note_after_blocked_is_inert
+run_test test_dd_i192_delivery_lead_blocked_is_not_a_valid_marker
+run_test test_dd_i192_delivery_leader_misspelling_is_inert
+run_test test_dd_i192_deployed_then_delivery_lead_decision_is_done

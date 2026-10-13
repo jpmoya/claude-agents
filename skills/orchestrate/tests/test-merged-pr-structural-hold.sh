@@ -13,7 +13,7 @@ HERE_MS=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT_MS=$(cd "$HERE_MS/../../.." && pwd)
 ORCH_MS="$ROOT_MS/agents/orchestrator.md"
 DEPL_MS="$ROOT_MS/agents/deployer.md"
-PMGR_MS="$ROOT_MS/agents/project-manager.md"
+PMGR_MS="$ROOT_MS/agents/delivery-lead.md"   # #192: content moved from project-manager.md (now a thin alias)
 
 if ! declare -f sq_env >/dev/null 2>&1; then
   eval "ms_real_$(declare -f run_test)"

@@ -175,7 +175,7 @@ Post on the GitHub issue via `gh issue comment`. The orchestrator reads this to 
 
 - Design ready: `**[solutions-architect] READY FOR ENGINEERING**` — the design is above, sanity-checked by engineering agent, surrounding-code scan done (list the refactoring issues opened, or "none found"), ready to implement. Used when the work fits in a single PR (≤ 3 workstreams, ≤ ~400 LOC non-test).
 - Split into sub-issues: `**[solutions-architect] SPLIT**` — the design exceeds the sizing threshold. Sub-issues have been created with their own ACs and design sections, each marked `READY FOR ENGINEERING`. The parent comment lists children and landing order.
-- Blocked: `**[solutions-architect] BLOCKED**` — name what's missing (external dependency, JP decision needed). Line 2 of a `BLOCKED` comment is `Blocked on: <the gate or question, one line>`, then the details.
+- Blocked: `**[solutions-architect] BLOCKED**` — name what's missing (external dependency, JP decision needed). Line 2 of a `BLOCKED` comment is `Blocked on: <class> — <the gate or question, one line>`, where `<class>` is exactly one of `ci_pending`, `ci_red`, `merge_conflict`, `unsupported_project`, `needs_jp`, `dependency`, `other`, then the details.
 - Needs PM revision: `**[solutions-architect] NEEDS PM REVISION**` — the PM's spec has gaps or contradictions that must be resolved before architecture can proceed. List the specific questions.
 
 Post even on failure or no-op. No silent exits.
@@ -207,6 +207,8 @@ If the design exceeds **3 workstreams** or **~400 lines non-test code**, split. 
 ### How to split
 
 ```bash
+# Milestone: inherit the parent's (omit --milestone if the parent has none)
+MS=$(gh issue view <parent> --json milestone --jq '.milestone.title // empty')
 # Create each child issue with its own ACs and design section
 gh issue create --title "<parent-title>: <slice-name>" \
   --body "$(cat <<'EOF'
@@ -218,7 +220,7 @@ Parent: #<N>
 ## Design
 (relevant subset of the parent's architecture)
 EOF
-)" --label "sub-issue"
+)" --label "sub-issue" ${MS:+--milestone "$MS"}
 
 # Post READY FOR ENGINEERING on each child
 gh issue comment <child-N> --body "**[solutions-architect] READY FOR ENGINEERING**

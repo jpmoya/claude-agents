@@ -112,6 +112,15 @@ both "neg: operator, body lacks Scope line" no "$OP"
 build "$BODY_OK" "$(c 1 2026-01-01T00:00:00Z "$PLAN_OK")" "$(c 3 2026-01-01T01:00:00Z "$OP"$'\n'"$BLK_SEQ")" "$(c 4 2026-01-01T02:00:00Z "${DEC/${U}3/${U}9}")"
 both "neg: operator, Resolves points elsewhere" no "$OP"
 
+# ---- terminal markers (#118): SPLIT is done; existing done/gate kinds unchanged
+for m in '**[solutions-architect] SPLIT**' '**[deployer] DEPLOYED**' '**[deployer] DEPLOYED TO STAGING**' '**[infra-operator] APPLIED**'; do
+  check_kind "terminal done: $m" done "$m" ''
+done
+check_kind "AWAITING GO still gate" gate '**[infra-operator] AWAITING GO**' ''
+check_kind "MOCKUPS PENDING APPROVAL still gate" gate '**[ui-ux-designer] MOCKUPS PENDING APPROVAL**' ''
+grep -q 'Split into sub-issues' "$SUP" && ok || bad "#118: done branch has SPLIT-specific Slack text" "missing"
+grep -E '^\| `\[solutions-architect\] SPLIT`.*Terminal' "$HERE/../../../agents/orchestrator.md" >/dev/null && ok || bad "#118: orchestrator.md SPLIT row labelled Terminal" "missing"
+
 # ---- docs (AC2, AC4, AC5): mechanical greps on the repo's own files
 ROOT="$HERE/../../.."
 ORCH="$ROOT/agents/orchestrator.md"; CMD="$ROOT/CLAUDE.md"
@@ -121,6 +130,42 @@ grep -q 'any infra-track `BLOCKED` [^e]' "$ORCH" && bad "AC2: no unqualified 'an
 grep -E '^\| `\[infra-planner\] BLOCKED`.*(Scope: staging-only)' "$ORCH" | grep -q 'PROJECT-MANAGER\|project-manager' && ok || bad "AC2: infra table row names Scope: staging-only + project-manager decision" "row missing"
 grep -q 'Scope: staging-only' "$CMD" && ok || bad "AC4: CLAUDE.md mentions Scope: staging-only" "missing"
 grep -qi 'infra' "$CMD" && grep 'Scope: staging-only' "$CMD" | grep -qi 'infra' && ok || bad "AC4: CLAUDE.md ties Scope: staging-only to infra BLOCKED resume" "missing"
+
+# ---- #192: `[delivery-lead]` spelling — same fixtures as the legacy cases above, spelling swapped
+DLDEC=$'**[delivery-lead] DECISION**\nResolves: '"${U}3"$'\nproceed.'
+dl_both() { # <name> <expect-resume yes|no> <marker> — asserts terminal_kind and the helper with a [delivery-lead] DECISION
+  if [ "$2" = yes ]; then check_kind "$1" "" "$3" '**[delivery-lead] DECISION**'; check_helper "$1" 0
+  else check_kind "$1" gate "$3" '**[delivery-lead] DECISION**'; check_helper "$1" 1; fi; }
+build "$BODY_OK" "$(c 1 2026-01-01T00:00:00Z "$PLAN_OK")" "$(c 3 2026-01-01T01:00:00Z "$PL"$'\n'"$BLK_SEQ")" "$(c 4 2026-01-01T02:00:00Z "$DLDEC")"
+dl_both "i192 positive planner sequencing DECISION" yes "$PL"
+build "$BODY_OK" "$(c 1 2026-01-01T00:00:00Z "$PLAN_OK")" "$(c 3 2026-01-01T01:00:00Z "$OP"$'\n'$'BLOCKED\nBlocked on: plan defect in step 2')" "$(c 4 2026-01-01T02:00:00Z "$DLDEC")"
+dl_both "i192 positive operator plan defect DECISION" yes "$OP"
+build "$BODY_OK" "$(c 1 2026-01-01T00:00:00Z "$PLAN_OK")" "$(c 3 2026-01-01T01:00:00Z "$PL"$'\n'"$BLK_SEQ")" "$(c 4 2026-01-01T02:00:00Z "${DLDEC/DECISION/JP CONFIRMED}")"
+check_kind "i192 positive JP CONFIRMED" "" "$PL" '**[delivery-lead] JP CONFIRMED**'; check_helper "i192 JP CONFIRMED" 0
+# legacy spelling still resumes the same fixture (unchanged behaviour)
+build "$BODY_OK" "$(c 1 2026-01-01T00:00:00Z "$PLAN_OK")" "$(c 3 2026-01-01T01:00:00Z "$PL"$'\n'"$BLK_SEQ")" "$(c 4 2026-01-01T02:00:00Z "$DEC")"
+dl_both "i192 legacy [project-manager] DECISION on the same fixture still resumes" yes "$PL"
+# negatives
+build "$BODY_OK" "$(c 1 2026-01-01T00:00:00Z "$PLAN_OK")" "$(c 3 2026-01-01T01:00:00Z "$PL"$'\n'"$BLK_SEQ")" "$(c 4 2026-01-01T02:00:00Z "${DLDEC/DECISION/NOTE}")"
+check_kind "i192 neg: [delivery-lead] NOTE" gate "$PL" '**[delivery-lead] NOTE**'; check_helper "i192 neg: NOTE" 1
+build "$BODY_OK" "$(c 1 2026-01-01T00:00:00Z "$PLAN_OK")" "$(c 3 2026-01-01T01:00:00Z "$PL"$'\n'"$BLK_SEQ")" "$(c 4 2026-01-01T02:00:00Z "${DLDEC/\[delivery-lead\] DECISION/[delivery-lead] BLOCKED}")"
+check_helper "i192 neg: [delivery-lead] BLOCKED is not a decision" 1
+build "$BODY_OK" "$(c 1 2026-01-01T00:00:00Z "$PLAN_OK")" "$(c 3 2026-01-01T01:00:00Z "$PL"$'\n'"$BLK_SEQ")" "$(c 4 2026-01-01T02:00:00Z "${DLDEC/\[delivery-lead\]/[delivery-leader]}")"
+check_helper "i192 neg: [delivery-leader] DECISION is not a decision" 1
+build "$BODY_OK" "$(c 1 2026-01-01T00:00:00Z "$PLAN_OK")" "$(c 3 2026-01-01T01:00:00Z "$PL"$'\n'"$BLK_SEQ")" "$(c 4 2026-01-01T02:00:00Z "${DLDEC/${U}3/${U}99}")"
+check_helper "i192 neg: Resolves points at a different comment" 1
+build "$BODY_OK" "$(c 1 2026-01-01T00:00:00Z "$PLAN_OK")" "$(c 3 2026-01-01T03:00:00Z "$PL"$'\n'"$BLK_SEQ")" "$(c 4 2026-01-01T02:00:00Z "$DLDEC")"
+check_helper "i192 neg: decision dated before BLOCKED" 1
+for say in "needs prod write" "spend" "where to store the secret" "external communication"; do
+  build "$BODY_OK" "$(c 1 2026-01-01T00:00:00Z "$PLAN_OK")" "$(c 3 2026-01-01T01:00:00Z "$PL"$'\nBLOCKED\nBlocked on: '"$say")" "$(c 4 2026-01-01T02:00:00Z "$DLDEC")"
+  check_helper "i192 neg: JP-only item [$say]" 1
+done
+build $'Why: x\nno scope line' "$(c 1 2026-01-01T00:00:00Z "$PLAN_OK")" "$(c 3 2026-01-01T01:00:00Z "$PL"$'\n'"$BLK_SEQ")" "$(c 4 2026-01-01T02:00:00Z "$DLDEC")"
+check_helper "i192 neg: body lacks Scope line" 1
+check_kind "i192 neg: infra-reviewer BLOCKED + delivery-lead decision" gate "$RV" '**[delivery-lead] DECISION**'
+check_kind "i192 neg: AWAITING GO + delivery-lead decision" gate '**[infra-operator] AWAITING GO**' '**[delivery-lead] DECISION**'
+check_kind "i192 neg: MOCKUPS PENDING APPROVAL + delivery-lead decision" gate '**[ui-ux-designer] MOCKUPS PENDING APPROVAL**' '**[delivery-lead] DECISION**'
+check_kind "i192 code-track BLOCKED + delivery-lead decision resumes" "" '**[fullstack-developer] BLOCKED**' '**[delivery-lead] DECISION**'
 
 echo "terminal_kind.test.sh: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

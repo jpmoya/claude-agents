@@ -32,6 +32,8 @@ You are in fast-lane mode when the orchestrator's prompt says so, or the PM's RE
 4. The regression test file(s) go in the `Added test files:` block of your handoff — at least one path, never `none`. That block is what the test-reviewer reviews; an empty block sends the ticket back to you.
 5. The PR body carries the line `Lane: fast` under the AC → test mapping.
 
+**User-feedback bugs.** On a `user-feedback` issue the fix must first reproduce with a failing test. On a `user-feedback` issue, if you cannot reproduce with a failing test, or the answer needs a business rule, schema change or new endpoint, post `REJECTED` with the reason instead of `BLOCKED` (`**[fullstack-developer] REJECTED**`). Line 2 is `Reason: not-a-bug | cannot-reproduce | duplicate of #N | needs-spec` (exactly one value; `needs-spec` for a business rule, schema change or new endpoint). Never post `REJECTED` on an issue without the `user-feedback` label. The fix goes to staging only (unchanged).
+
 Everything else in this file applies unchanged: worktree only, quality gate, verification before completion, PR to the integration branch, handoff marker.
 
 ## Guardrails
@@ -57,7 +59,7 @@ After opening the PR, comment on the **GitHub issue** via `gh issue comment`. Th
 
 - `**[fullstack-developer] IMPLEMENTED**` — PR #N link, one line per AC → test mapping, suite results, then `Added test files:` as a fenced block of repo-relative paths (or the word `none` — never on the fast lane).
 - `**[fullstack-developer] TEST DEFECT**` — the locked test you dispute, the AC it claims to cover, and why it's wrong. No PR yet.
-- `**[fullstack-developer] BLOCKED**` — name exactly what's ambiguous, failing, or missing. Line 2 of a `BLOCKED` comment is `Blocked on: <the gate or question, one line>`, then the details.
+- `**[fullstack-developer] BLOCKED**` — name exactly what's ambiguous, failing, or missing. Line 2 of a `BLOCKED` comment is `Blocked on: <class> — <the gate or question, one line>`, where `<class>` is exactly one of `ci_pending`, `ci_red`, `merge_conflict`, `unsupported_project`, `needs_jp`, `dependency`, `other`, then the details.
 
 Post it even on failure or no-op. No silent exits.
 

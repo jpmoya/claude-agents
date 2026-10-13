@@ -110,9 +110,28 @@ test_issue104_orchestrator_dispatch_untouched() {
   if ! git -C "$ROOT_104" rev-parse --verify origin/main >/dev/null 2>&1; then
     return 0
   fi
-  local diff
-  diff=$(git -C "$ROOT_104" diff origin/main -- agents/orchestrator.md 2>/dev/null)
-  assert_eq "$diff" "" "AC4: agents/orchestrator.md must be unchanged relative to origin/main" || return 1
+  # narrowed to the routing row named above: #136 AC11 legitimately edits other parts of the file
+  local want got
+  want=$(git -C "$ROOT_104" show origin/main:agents/orchestrator.md | grep '^| `\[product-manager\] READY FOR ENGINEERING` |')
+  got=$(grep '^| `\[product-manager\] READY FOR ENGINEERING` |' "$ROOT_104/agents/orchestrator.md")
+  [ "$(printf '%s\n' "$want" | grep -c .)" = 1 ] && [ "$(printf '%s\n' "$got" | grep -c .)" = 1 ] \
+    || { fail "AC4: expected exactly one READY FOR ENGINEERING routing row on each side"; return 1; }
+  assert_eq "$got" "$want" "AC4: fast-lane dispatch routing row unchanged relative to origin/main" || return 1
+}
+
+# #226 — test-writer step 6 and test-reviewer entry condition ordered "the repo's
+# unit/integration suite" and "every pre-existing test must pass", i.e. a whole-suite run.
+TW_226="$ROOT_104/agents/test-writer.md"
+test_issue226_no_unscoped_suite_wording() {
+  local hits
+  hits=$(grep -n -iE "unit/integration suite|every pre-existing test (must|should)" "$TW_226" "$TR_104" 2>/dev/null)
+  assert_eq "$hits" "" "#226: test-writer/test-reviewer must not order 'the repo's unit/integration suite' or 'every pre-existing test'" || return 1
+}
+test_issue226_scoped_wording_present() {
+  grep -q -- '--changed <merge-base>' "$TW_226" \
+    || { fail "#226: test-writer step 6 must name --changed <merge-base>"; return 1; }
+  grep -n "Entry condition" "$TR_104" | grep -q -- '--changed <merge-base>' \
+    || { fail "#226: test-reviewer entry condition must name --changed <merge-base>"; return 1; }
 }
 
 run_test test_issue104_ac1_no_unscoped_phrasing
@@ -124,3 +143,5 @@ run_test test_issue104_code_reviewer_scoped_and_claim_removed
 run_test test_issue104_test_reviewer_scoped_entry_condition
 run_test test_issue104_skill_phase4_scoped
 run_test test_issue104_orchestrator_dispatch_untouched
+run_test test_issue226_no_unscoped_suite_wording
+run_test test_issue226_scoped_wording_present

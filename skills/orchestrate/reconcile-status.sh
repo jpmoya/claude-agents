@@ -88,6 +88,48 @@ RCREPOS
   return 0
 }
 
+# rc_set <file> <value> — write <value> as the file's single line, or remove the file when empty; changed=1 on a change
+rc_set() {
+  local file=$1 val=$2
+  if [ -n "$val" ]; then
+    [ "$(head -n1 "$file" 2>/dev/null)" = "$val" ] || { printf '%s\n' "$val" > "$file"; changed=1; }
+  elif [ -f "$file" ]; then
+    rm -f "$file"; changed=1
+  fi
+}
+
+# rc_in_scope <repo checkout> — 0 when its origin owner/repo is in DISPATCH_REPOS u SCAN_ONLY_REPOS (rc_repos)
+rc_in_scope() {
+  local url r
+  url=$(git -C "$1" config --get remote.origin.url 2>/dev/null)
+  url=${url%/}; url=${url%.git}
+  case "$url" in
+    https://github.com/*) url=${url#https://github.com/} ;;
+    http://github.com/*) url=${url#http://github.com/} ;;
+    git@github.com:*) url=${url#git@github.com:} ;;
+    *) return 1 ;;
+  esac
+  while IFS= read -r r; do [ "$r" = "$url" ] && return 0; done <<RCSCOPE
+$(rc_repos)
+RCSCOPE
+  return 1
+}
+
+# rc_gate_facts <info json> — one TSV line: gate createdAt, answered (1|0), gate comment line 2.
+# Gate = the newest routing-marker comment; answered = a later comment whose first line starts
+# **[jp], **[delivery-lead] or legacy **[project-manager] (not their NOTE**).
+rc_gate_facts() {
+  printf '%s' "$1" | jq -r --arg re "$(marker_re | jq -Rs . | jq -r .)" '
+    (.comments // []) as $c
+    | ([$c | to_entries[] | select(.value.body | split("\n")[0] | test($re))] | last) as $g
+    | if $g == null then empty else
+        [ ($g.value.createdAt // ""),
+          (if ([$c[($g.key + 1):][] | .body | split("\n")[0]
+                | select(test("^\\*\\*\\[(jp|delivery-lead|project-manager)\\]") and (test("^\\*\\*\\[(delivery-lead|project-manager)\\] NOTE") | not))] | length) > 0 then "1" else "0" end),   # legacy project-manager accepted
+          (($g.value.body | split("\n")[1]) // "" | gsub("[\t\r]"; " ")) ] | @tsv
+      end' 2>/dev/null
+}
+
 # Snapshot first: the pass edits the very files derive_runs reads.
 records=$(derive_runs)
 while IFS=$'\t' read -r issue repo state pid started last_activity restarts stage; do
@@ -119,6 +161,15 @@ while IFS=$'\t' read -r issue repo state pid started last_activity restarts stag
   printf '%s' "$release" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || release=""
   [ -z "$release" ] || printf '%s\n' "$release" > "$PIPE/orch-$issue.release"
 
+  ms=$(printf '%s' "$info" | jq -r '.milestone.title // empty' 2>/dev/null | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//' | cut -c1-60)
+  printf '%s' "$ms" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' && ms=""
+  old_ms=$(head -n1 "$PIPE/orch-$issue.milestone" 2>/dev/null)
+  if [ -n "$ms" ]; then
+    [ "$ms" = "$old_ms" ] || { printf '%s\n' "$ms" > "$PIPE/orch-$issue.milestone"; changed=1; }
+  elif [ -f "$PIPE/orch-$issue.milestone" ]; then
+    rm -f "$PIPE/orch-$issue.milestone"; changed=1
+  fi
+
   if [ "$gh_state" = "CLOSED" ] || { [ "$gh_state" = "OPEN" ] && [ -n "$release" ]; }; then
     closed_at=""
     [ "$gh_state" = "CLOSED" ] && closed_at=$(printf '%s' "$info" | jq -r '.closedAt // empty' 2>/dev/null)
@@ -136,6 +187,39 @@ while IFS=$'\t' read -r issue repo state pid started last_activity restarts stag
       rc_log "[reconcile] #$issue — issue closed on GitHub ($closed_at), moved to completed"
     fi
     changed=1
+  elif [ "$gh_state" = "OPEN" ]; then
+    # Issue #139: per open ticket, what JP has to do (.needs), when the gate was posted (.gate_at) and
+    # why it leaves Needs JP (.parked_reason). Fixed labels only — no comment text is ever stored.
+    gate_at=""; needs=""; reason=""
+    facts=$(rc_gate_facts "$info")
+    if [ -n "$facts" ]; then
+      IFS=$'\t' read -r gate_at answered line2 <<RCFACTS
+$facts
+RCFACTS
+      case "$gate_at" in
+        [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) ;;
+        *) gate_at="" ;;
+      esac
+      case "$marker" in
+        "MOCKUPS PENDING APPROVAL") needs="Approve mockups" ;;
+        "AWAITING GO") needs="Say go" ;;
+        "EFFORT APPROVAL NEEDED") needs="Approve effort" ;;
+        "BLOCKED")
+          if printf '%s' "$line2" | grep -Eqi 'credential|token|secret|api key|password|access'; then
+            needs="Missing credential"
+          else
+            needs="Decision needed"
+          fi ;;
+      esac
+      if [ -n "$needs" ]; then
+        if ! rc_in_scope "$repo"; then reason="out_of_scope"
+        elif [ "$answered" = "1" ]; then reason="answered"
+        fi
+      fi
+    fi
+    rc_set "$PIPE/orch-$issue.gate_at" "$gate_at"
+    rc_set "$PIPE/orch-$issue.needs" "$needs"
+    rc_set "$PIPE/orch-$issue.parked_reason" "$reason"
   fi
 done <<EOF
 $records

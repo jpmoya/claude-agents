@@ -58,6 +58,11 @@ export const MARKER_VOCAB = [
   'JP CONFIRMED',
 ];
 
+// Fixed "what JP has to do" labels (issue #139) — the only values `runs[].needs` may carry — and the
+// reasons a held ticket is demoted out of Needs JP by the host (`runs[].parked_reason`).
+export const NEEDS_VOCAB = ['Approve mockups', 'Say go', 'Approve effort', 'Missing credential', 'Decision needed'];
+export const PARKED_REASON_VOCAB = ['answered', 'out_of_scope'];
+
 // The `runs[].state` enum (validate.js table) — fixed by the frozen v1 payload contract,
 // not derived from a repo scan the way STAGE_VOCAB/MARKER_VOCAB are.
 export const STATE_VOCAB = ['running', 'restarting', 'queued', 'held'];

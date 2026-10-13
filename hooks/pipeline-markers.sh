@@ -8,19 +8,21 @@
 
 markers_for() {  # markers_for <agent> → that agent's routing markers, |-separated (empty = unknown agent)
   case "$1" in
-    product-manager)     echo 'READY FOR ARCHITECTURE|READY FOR ENGINEERING|EFFORT APPROVAL NEEDED|BLOCKED' ;;
+    product-manager)     echo 'READY FOR ARCHITECTURE|READY FOR ENGINEERING|EFFORT APPROVAL NEEDED|BLOCKED|REJECTED' ;;
     ux-flow-designer)    echo 'USER FLOW READY|NO UX NEEDED|NEEDS PM REVISION|BLOCKED' ;;
     ui-ux-designer)      echo 'MOCKUPS PENDING APPROVAL|BLOCKED' ;;
     solutions-architect) echo 'READY FOR ENGINEERING|NEEDS PM REVISION|SPEC RESOLVED|SPLIT|BLOCKED' ;;
     test-writer)         echo 'TESTS WRITTEN|TEST UPHELD|BLOCKED' ;;
     test-reviewer)       echo 'TESTS APPROVED|TESTS FAIL|PASS|FAIL|BLOCKED' ;;
-    fullstack-developer) echo 'IMPLEMENTED|TEST DEFECT|BLOCKED' ;;
+    fullstack-developer) echo 'IMPLEMENTED|TEST DEFECT|BLOCKED|REJECTED' ;;
     code-reviewer)       echo 'PASS|FAIL|BLOCKED' ;;
     deployer)            echo 'DEPLOYED TO STAGING|DEPLOYED|BLOCKED' ;;   # 'DEPLOYED TO STAGING' = the deployer's staging phrasing, same terminal state (2026-09-22)
     infra-planner)       echo 'PLAN READY|BLOCKED' ;;
     infra-reviewer)      echo 'PLAN PASS|PLAN FAIL|BLOCKED' ;;
     infra-operator)      echo 'APPLIED|AWAITING GO|BLOCKED' ;;
+    intake)              echo 'TRIAGED BUG|TRIAGED IDEA|DUPLICATE|NEEDS INFO|NOISE|BLOCKED' ;;   # raw-feedback triage, launched by the supervisor, never by the orchestrator (#114)
     jp)                  echo 'GO|MOCKUPS APPROVED' ;;
+    delivery-lead)       echo 'DECISION|JP CONFIRMED' ;;  # JP's delegate (legacy spelling below, #192): same markers, same limits
     project-manager)     echo 'DECISION|JP CONFIRMED' ;;  # JP's delegate: resumes a code-track BLOCKED and the two caps only — never jp's gates (claude-agents#59)
   esac
 }
@@ -33,7 +35,9 @@ marker_re() {  # marker_re [agent] → jq (oniguruma) regex for a valid first li
   else
     # literal list, not a variable: zsh (the Mac Bash tool's shell) does not word-split unquoted variables
     for a in product-manager ux-flow-designer ui-ux-designer solutions-architect test-writer test-reviewer fullstack-developer code-reviewer deployer \
-             infra-planner infra-reviewer infra-operator jp project-manager; do alt="${alt:+$alt|}$a\\] ($(markers_for "$a"))"; done
+             infra-planner infra-reviewer infra-operator jp delivery-lead project-manager intake; do alt="${alt:+$alt|}$a\\] ($(markers_for "$a"))"; done
   fi
   printf '^\\*\\*\\[(%s)(\\*\\*|:| |$)' "$alt"
 }
+
+block_classes() { echo 'ci_pending|ci_red|merge_conflict|unsupported_project|needs_jp|dependency|cost_ceiling|other'; }  # class word on a BLOCKED comment's `Blocked on:` line (line 2); anything else reads as `other`

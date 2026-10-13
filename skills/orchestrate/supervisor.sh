@@ -4,7 +4,10 @@
 #   2. drain the local launch queue
 #   3. label lifecycle: drop agent-in-progress on issues this machine finished, parked, or abandoned
 #   4. label reconciliation: clear orphaned agent-in-progress labels (no local pid, no queue, stale marker)
+#   3b. intake: triage one user-feedback-intake issue from DISPATCH_REPOS (claim, swap label, launch `--agent intake`)
+#   3c. spec: PM-only spec run for one `user-feedback-needs-spec` idea from DISPATCH_REPOS (no agent-go, no orchestrator; ends in agent-proposed)
 #   5. shared dispatch: launch one agent-go issue from DISPATCH_REPOS after winning a claim
+#   3d. goal step (#195): keep-alive, pacing, parking, completion of goal-bound delivery leads pinned to this host
 #   7. status reconcile: refresh listed tickets from GitHub (backgrounded, throttled to once per 600 s; issue #51)
 #   8. PM Slack DM poll: record JP's replies to project-manager asks (backgrounded, no-op without PM_SLACK_BOT_TOKEN; issue #117)
 # One launch per tick max. All state is local (/tmp/pipeline); the only shared state is the issue's markers and labels.
@@ -15,6 +18,8 @@ source "$HERE/config.sh"
 source "$HERE/pipeline-lib.sh"
 # shared run-state derivation + report_status_async (issue #10)
 source "$HERE/run-state.sh"
+# goal-bound delivery lead library (goal-lib.sh; the goal step #195 lives there)
+source "$HERE/goal-lib.sh"
 # routing-marker vocabulary (marker_re), shared with the handoff hook and the orchestrator
 source "$HERE/../../hooks/pipeline-markers.sh" 2>/dev/null || source "$HOME/.claude/hooks/pipeline-markers.sh"
 
@@ -52,13 +57,20 @@ power_ok() {  # Mac: dispatch new work only on AC power (a sleeping laptop stran
   pmset -g batt 2>/dev/null | grep -q "AC Power"
 }
 
-latest_marker() {  # the GATE marker: newest real routing marker whose agent is not project-manager (NOTEs and off-vocabulary lines are inert).
-  # When the newest routing marker overall is a `[project-manager]` one (it follows the gate marker), it is printed on a 2nd line.
+latest_marker() {  # the GATE marker: newest real routing marker whose agent is not delivery-lead (or its legacy alias project-manager) (NOTEs and off-vocabulary lines are inert).
+  # Exception (claude-agents#133): a pre-implementation `[test-reviewer] TESTS APPROVED` that is the newest one does not hide a
+  # `[fullstack-developer]` BLOCKED / TEST DEFECT / IMPLEMENTED posted after the latest TESTS WRITTEN: that developer marker (the latest) is the gate marker.
+  # When the newest routing marker overall is a `[delivery-lead]` (or legacy `[project-manager]`) one (it follows the gate marker), it is printed on a 2nd line.
   # Both come out of the same single `gh issue view` call (claude-agents#59).
-  local repo=$1 issue=$2 last
-  last=$(marker_last_jq)
-  (cd "$repo" 2>/dev/null && gh issue view "$issue" --json comments \
-    --jq "($last) as \$last | ({comments: [.comments[] | select(.body | startswith(\"**[project-manager] \") | not)]} | $last) as \$gate | if \$last == \$gate then \$gate else \$gate + \"\\n\" + \$last end") 2>/dev/null || echo "?"
+  local repo=$1 issue=$2 last list prog
+  last=$(marker_last_jq); list=${last% | last // \"none\"}   # list = the same expression minus its final `last`
+  prog="($last) as \$last | {comments: [.comments[] | select(.body | test(\"^\\\\*\\\\*\\\\[(delivery-lead|project-manager)\\\\] \") | not)]} as \$np  # legacy alias
+    | (\$np | $last) as \$g0 | (\$np | $list) as \$m | (\$m | length) as \$n | (\$m | to_entries) as \$e
+    | ([\$e[] | select(.value | test(\"^\\\\*\\\\*\\\\[test-writer\\\\] TESTS WRITTEN\")) | .key] | last // -1) as \$w
+    | ([\$e[] | select(.key > \$w and .key < \$n - 1 and (.value | test(\"^\\\\*\\\\*\\\\[fullstack-developer\\\\] (BLOCKED|TEST DEFECT|IMPLEMENTED)\"))) | .value] | last // null) as \$dev
+    | (if (\$g0 | test(\"^\\\\*\\\\*\\\\[test-reviewer\\\\] TESTS APPROVED\")) and \$dev != null then \$dev else \$g0 end) as \$gate
+    | if (\$last | test(\"^\\\\*\\\\*\\\\[(delivery-lead|project-manager)\\\\] \") | not) then \$gate else \$gate + \"\\n\" + \$last end  # legacy alias"
+  (cd "$repo" 2>/dev/null && gh issue view "$issue" --json comments --jq "$prog") 2>/dev/null || echo "?"
 }
 
 issue_is_closed() {
@@ -68,16 +80,32 @@ issue_is_closed() {
   [ "$state" = "CLOSED" ]
 }
 
-# terminal_kind <gate marker> <issue> [<project-manager marker posted after it>] [<repo dir>] → prints "done" / "gate" /
+# #115 begin
+# rejected_ok <repo dir> <issue> → 0 when the newest REJECTED is a real terminal outcome; otherwise logs it as inert (routing unchanged).
+rejected_ok() {
+  local repo=$1 issue=$2 why
+  why=$(cd "$repo" 2>/dev/null && gh issue view "$issue" --json labels,comments 2>/dev/null | jq -r '
+    ([.comments[].body | split("\n")] | map(select(.[0] | test("^\\*\\*\\[(product-manager|fullstack-developer)\\] REJECTED(\\*\\*|:| |$)"))) | last) as $r
+    | if ([.labels[].name] | index("user-feedback") | not) then "no user-feedback label"
+      elif $r == null then "no REJECTED from an allowed agent"
+      elif ($r[1] // "" | rtrimstr("\r") | test("^Reason: (not-a-bug|cannot-reproduce|needs-spec|duplicate of #[0-9]+)$") | not) then "unknown or missing Reason"
+      else "ok" end') || why="?"
+  [ "$why" = ok ] && return 0
+  slog "[rejected] #$issue — REJECTED marker inert: $why"; return 1
+}
+# #115 end
+# "done" covers DEPLOYED / DEPLOYED TO STAGING / APPLIED and the architect's SPLIT (children run their own pipelines; #118).
+# terminal_kind <gate marker> <issue> [<delivery-lead marker posted after it>] [<repo dir>] → prints "done" / "gate" /
 # "grace" (BLOCKED inside the grace window: wait) / "" (not terminal). It judges the GATE marker. A later
-# `[project-manager] DECISION` / `JP CONFIRMED` lifts exactly one gate — a code-track BLOCKED — so the run takes the
+# `[delivery-lead] DECISION` / `JP CONFIRMED` (legacy spelling `[project-manager]` accepted) lifts exactly one gate — a code-track BLOCKED — so the run takes the
 # normal restart path and the orchestrator validates and relays the decision. It never lifts MOCKUPS PENDING APPROVAL,
 # AWAITING GO, EFFORT APPROVAL NEEDED or an infra-reviewer BLOCKED. An infra planner/operator BLOCKED is lifted only when
 # infra_staging_only holds (staging-only ticket, no JP-only item; claude-agents#89); otherwise it stays with JP.
 terminal_kind() {
   local marker=$1 issue=${2:-} decision=${3:-} repo=${4:-.}
   marker=${marker%%\*\*}   # markers are bold ("**[deployer] DEPLOYED**"): strip the trailing bold so the $-anchors below match
-  [[ "$marker" =~ \]\ (DEPLOYED|DEPLOYED\ TO\ STAGING|APPLIED)$ ]] && { echo done; return; }
+  [[ "$marker" =~ \]\ (DEPLOYED|DEPLOYED\ TO\ STAGING|APPLIED|SPLIT)$ ]] && { echo done; return; }
+  [[ "$marker" =~ \]\ REJECTED ]] && { rejected_ok "$repo" "$issue" && echo done || echo ""; return; }   # #115: valid only on user-feedback, from PM/developer, with a known Reason
   [[ "$marker" =~ \]\ (MOCKUPS\ PENDING\ APPROVAL|AWAITING\ GO|EFFORT\ APPROVAL\ NEEDED)$ ]] && { echo gate; return; }
   if [[ "$marker" =~ \]\ BLOCKED ]]; then
     # delegated decision recorded after a code-track BLOCKED: not a gate. An infra planner/operator BLOCKED is lifted
@@ -108,7 +136,7 @@ terminal_kind() {
 # infra_staging_only <owner/repo> <issue> <blocked-comment-url> → 0 when a staging-only infra BLOCKED may be resumed by a
 # delegated decision, 1 otherwise (claude-agents#89). All must hold: the BLOCKED is an infra-planner/operator one (not
 # "Held: blocked by", not JP-only: prod/spend/secret/external comms); the issue body has a line exactly
-# `Scope: staging-only`; the latest PLAN READY has no prod target step; a later `[project-manager] DECISION`/`JP CONFIRMED`
+# `Scope: staging-only`; the latest PLAN READY has no prod target step; a later `[delivery-lead]` (or legacy `[project-manager]`) `DECISION`/`JP CONFIRMED`
 # has line 2 `Resolves: <that url>`.
 infra_staging_only() {
   local owner_repo=$1 issue=$2 url=$3 json
@@ -123,7 +151,8 @@ infra_staging_only() {
       | ($b.body | test("held: blocked by|\\bprod(uction)?\\b|\\bspend|\\bsecret|who gets access|external communication"; "i") | not) as $safe
       | ([.comments[] | select(l1 | test("\\[infra-planner\\] PLAN READY"))] | last) as $plan
       | (($plan == null) or ($plan.body | test("(target|environment|env)\\s*:\\s*prod|prod step"; "i") | not)) as $planok
-      | ([.comments[] | select((l1 == "**[project-manager] DECISION**" or l1 == "**[project-manager] JP CONFIRMED**")
+      | ([.comments[] | select((l1 == "**[delivery-lead] DECISION**" or l1 == "**[delivery-lead] JP CONFIRMED**"
+               or l1 == "**[project-manager] DECISION**" or l1 == "**[project-manager] JP CONFIRMED**")   # legacy spelling
             and l2 == ("Resolves: " + $url) and .createdAt > $b.createdAt)] | length > 0) as $dec
       | $kind and $safe and $planok and $dec end' >/dev/null 2>&1
 }
@@ -178,7 +207,7 @@ clear_in_progress() {  # idempotent; one gh call per issue, remembered in a mark
 }
 
 do_launch() {
-  local repo=$1 issue=$2 extra=$3 restart_n=${4:-0} reason=${5:-manual}
+  local repo=$1 issue=$2 extra=$3 restart_n=${4:-0} reason=${5:-manual} queue_wait_s=${6:-}
   local owner_repo prompt title preamble=""
 
   owner_repo=$(cd "$repo" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo "unknown")
@@ -191,7 +220,17 @@ do_launch() {
 
   if [ "$restart_n" -gt 0 ]; then
     preamble="AUTO-RESTART #$restart_n: a previous orchestrator process exited without reaching a terminal state. Verify branch/PR/comment state with gh before dispatching anything. Never redo a completed stage. "
+    # #178 begin
+    # .cap-exit is written only by the stage-wait deferral in the main tick, which requires exit 0, a live stage
+    # and the orchestrator's own cap-exit terminal row. A silent exit 0 has no such row and keeps the fault wording.
+    if [ -f "$PIPE/orch-$issue.cap-exit" ]; then
+      preamble="AUTO-RESTART #$restart_n: the previous orchestrator process stopped waiting at a stage's time cap (normal, not a fault; do not report it as a technical problem). Verify branch/PR/comment state with gh before dispatching anything. Never redo a completed stage. "
+    fi
+    # #178 end
   fi
+  # #178 begin
+  rm -f "$PIPE/orch-$issue.cap-exit"   # every launch consumes the signal
+  # #178 end
 
   # Same launch shape as orchestrate.sh: the headless session IS the orchestrator (--agent), no Agent() call.
   prompt="Drive $owner_repo#$issue through the pipeline. Repo: $repo. Read the latest marker on the issue and continue from there. ${preamble}${extra}"
@@ -210,8 +249,51 @@ do_launch() {
   [ -f "$PIPE/orch-$issue.start" ] || date -u +%FT%TZ > "$PIPE/orch-$issue.start"
   date -u +%FT%TZ > "$PIPE/orch-$issue.launched-at"
   rm -f "$PIPE/orch-$issue.label-cleared"
+  local ev_reason=manual
+  case "$reason" in auto-restart) ev_reason=auto-restart ;; queued) ev_reason=queue ;; esac
+  log_run_launch "$owner_repo" "$issue" "$ev_reason" "$restart_n" "$queue_wait_s"
 
   slog "[launch] #$issue pid=$! reason=$reason restart=$restart_n mem=$(mem_available_mb)MB running=$(count_running)/$MAX_CONCURRENT"
+}
+
+file_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
+
+# log_run_exit <repo dir> <issue> — the one writer of run_exit (design #138): classify the exit of a launched run
+# (stopped > rate_limited > killed > error > normal), append the row, write .exit-class ("<class> <limit_kind|->"),
+# touch .exit-logged. Never fails the tick.
+log_run_exit() {
+  local repo=$1 issue=$2 rid ex="" cls lk="" last_line seg exf="$PIPE/orch-$2.exit" lf="$PIPE/orch-$2.log"
+  local launched dur now owner_repo
+  rid=$(cat "$PIPE/orch-$issue.run-id" 2>/dev/null) || return 0
+  [ -f "$exf" ] && ex=$(tr -dc '0-9' < "$exf")
+  last_line=""; seg=$(mktemp "${TMPDIR:-/tmp}/run-exit.XXXXXX" 2>/dev/null) || seg=""
+  if [ -n "$seg" ] && [ -f "$lf" ]; then
+    awk '/^===== .* LAUNCH .* =====$/ {buf=""; next} {buf = buf $0 "\n"} END {printf "%s", buf}' "$lf" 2>/dev/null \
+      | awk 'NF {l=$0} END {print l}' > "$seg" 2>/dev/null
+    last_line=$(cat "$seg" 2>/dev/null)
+  fi
+  if [ -f "$PIPE/orch-$issue.stopped" ]; then cls=stopped
+  elif [ -n "$seg" ] && lk=$(limit_kind_of "$seg") && [ -n "$lk" ]; then cls=rate_limited
+  elif [ ! -f "$exf" ]; then cls=killed
+  elif [ "${ex:-0}" != 0 ]; then cls=error
+  else cls=normal; fi
+  [ "$cls" = rate_limited ] || lk=""
+  [ -n "$seg" ] && rm -f "$seg"
+  now=$(date +%s)
+  launched=$(to_epoch "$(cat "$PIPE/orch-$issue.launched-at" 2>/dev/null)")
+  if [ "$launched" -gt 0 ] 2>/dev/null; then
+    if [ -f "$exf" ]; then dur=$(( $(file_mtime "$exf") - launched )); else dur=$((now - launched)); fi
+    [ "$dur" -ge 0 ] 2>/dev/null || dur=0
+  else dur=null; fi
+  owner_repo=$(cd "$repo" 2>/dev/null && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null </dev/null) || owner_repo=""
+  [ -n "$owner_repo" ] || owner_repo=unknown
+  pipeline_event run_exit --arg run_id "$rid" --arg repo "$owner_repo" --argjson issue "$issue" \
+    --argjson exit_code "${ex:-null}" --arg class "$cls" \
+    --argjson limit_kind "$([ -n "$lk" ] && jq -nc --arg v "$lk" '$v' || echo null)" \
+    --argjson dur_s "$dur" --arg last_line "${last_line:0:200}"
+  printf '%s %s\n' "$cls" "${lk:--}" > "$PIPE/orch-$issue.exit-class" 2>/dev/null || true
+  touch "$PIPE/orch-$issue.exit-logged" 2>/dev/null || true
+  return 0
 }
 
 escalate() {
@@ -249,6 +331,28 @@ EOC
   notify_engineering "$issue" ":rotating_light:" "Stalled — restarted multiple times without progress. Needs investigation." "$owner_repo"
 }
 
+# #178 begin
+# cap_exit_row <repo dir> <issue> — 0 when runs.jsonl holds a terminal row for this repo+issue, written at or after
+# this launch, whose next_action is the orchestrator's stage-cap hand-off. Any read/parse problem -> 1 (counted).
+cap_exit_row() {
+  local repo=$1 issue=$2 since owner_repo
+  since=$(cat "$PIPE/orch-$issue.launched-at" 2>/dev/null || cat "$PIPE/orch-$issue.start" 2>/dev/null)
+  [ -n "$since" ] && [ -f "$HOME/.claude/pipeline/runs.jsonl" ] || return 1
+  owner_repo=$(cd "$repo" 2>/dev/null && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null </dev/null) || return 1
+  [ -n "$owner_repo" ] || return 1
+  python3 - "$HOME/.claude/pipeline/runs.jsonl" "$issue" "$since" "$owner_repo" <<'PY' 2>/dev/null
+import json, sys
+path, issue, since, repo = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
+for line in open(path):
+    try: r = json.loads(line)
+    except ValueError: continue
+    if (r.get("event") == "terminal" and r.get("issue") == issue and r.get("repo") == repo
+            and r.get("next_action") == "supervisor relaunch picks up result" and str(r.get("ts", "")) >= since):
+        sys.exit(0)
+sys.exit(1)
+PY
+}
+# #178 end
 # --- Main tick ---
 
 launched=0
@@ -263,6 +367,27 @@ for f in "$PIPE"/orch-*.pid; do
 
   # Skip if alive
   kill -0 "$pid" 2>/dev/null && continue
+  # #178 begin
+  # The orchestrator exits by design at a stage's time cap while the stage keeps running (#178). It is a cap exit
+  # only when ALL hold: exit code 0, the stage process is alive, and runs.jsonl has a terminal row for this
+  # repo+issue written after this launch with next_action "supervisor relaunch picks up result" (the row the
+  # orchestrator writes at the cap). Then wait like for a live orchestrator: no count, no requeue, no relaunch.
+  # Anything else (silent exit 0, non-zero exit, no stage, unreadable process table) is counted as before.
+  live_stage=$(_rs_live_stage "$issue" 0 2>/dev/null)
+  if [ -n "$live_stage" ] && [ "$(cat "$PIPE/orch-$issue.exit" 2>/dev/null)" = 0 ] && cap_exit_row "$repo" "$issue"; then
+    [ -f "$PIPE/orch-$issue.cap-exit" ] || slog "[stage-wait] #$issue — orchestrator exited at a stage cap, stage $live_stage still running; deferring"
+    touch "$PIPE/orch-$issue.cap-exit" 2>/dev/null || true
+    continue
+  fi
+  # A live stage that is not a cap exit (silent exit 0, crash) clears any stale signal; a gone stage keeps the
+  # signal a prior deferral wrote, for the relaunch to consume.
+  [ -n "$live_stage" ] && rm -f "$PIPE/orch-$issue.cap-exit"
+  # #178 end
+
+  # First tick that sees a launched run gone: one run_exit row (runs without a run-id predate #138 and log nothing)
+  if [ -f "$PIPE/orch-$issue.run-id" ] && [ ! -f "$PIPE/orch-$issue.exit-logged" ]; then
+    log_run_exit "$repo" "$issue"
+  fi
 
   # Skip if tombstoned
   [ -f "$PIPE/orch-$issue.stopped" ] && continue
@@ -278,17 +403,19 @@ for f in "$PIPE"/orch-*.pid; do
 
   marker=$(latest_marker "$repo" "$issue")
   decision=""
-  case "$marker" in *$'\n'*) decision=${marker#*$'\n'}; marker=${marker%%$'\n'*} ;; esac   # line 2 = [project-manager] marker after the gate marker
+  case "$marker" in *$'\n'*) decision=${marker#*$'\n'}; marker=${marker%%$'\n'*} ;; esac   # line 2 = [delivery-lead] (or legacy [project-manager]) marker after the gate marker
   case "$(terminal_kind "$marker" "$issue" "$decision" "$repo")" in
     done)
       touch "$PIPE/orch-$issue.done"
       slog "[done] #$issue — terminal marker: $marker"
-      notify_engineering "$issue" ":white_check_mark:" "Deployed" "$(cd "$repo" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo "unknown")"
+      done_text="Deployed"; case "$marker" in *"] SPLIT"*) done_text="Split into sub-issues" ;; esac
+      case "$marker" in *"] REJECTED"*) done_text="Rejected" ;; esac
+      notify_engineering "$issue" ":white_check_mark:" "$done_text" "$(cd "$repo" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo "unknown")"
       continue ;;
     gate)
       # Human gate (mockups, infra go, BLOCKED with no delegated decision after it): park it; JP relaunches (or re-adds
-      # agent-go) after acting. $marker is the gate marker, never a [project-manager] one. A run that is already .held is
-      # skipped above and stays held — held runs are not polled; the project-manager relaunches with orchestrate.sh,
+      # agent-go) after acting. $marker is the gate marker, never a [delivery-lead] (or legacy [project-manager]) one. A run that is already .held is
+      # skipped above and stays held — held runs are not polled; the delivery lead relaunches with orchestrate.sh,
       # which clears .held (claude-agents#59).
       touch "$PIPE/orch-$issue.held"
       rm -f "$QUEUE/orch-$issue.json"
@@ -302,17 +429,64 @@ for f in "$PIPE"/orch-*.pid; do
     grace) continue ;;
   esac
 
+  # How this run ended (written by log_run_exit; absent for runs launched before #138)
+  exit_class=""; exit_lk=""
+  [ -f "$PIPE/orch-$issue.exit-class" ] && read -r exit_class exit_lk < "$PIPE/orch-$issue.exit-class"
+  [ "$exit_lk" = "-" ] && exit_lk=""
+
+  restarts_file="$PIPE/orch-$issue.restarts"
+  exit_code=$(cat "$PIPE/orch-$issue.exit" 2>/dev/null || echo "?")
+
+  if [ "$exit_class" = rate_limited ] && [ "$exit_lk" = monthly_spend ]; then
+    # Restarting cannot fix it and clearing it means spending money: park like a human gate. Counters untouched.
+    run_owner_repo=$(cd "$repo" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo "unknown")
+    python3 - "$restarts_file" "$(date -u +%FT%TZ)" "$exit_code" "$marker" "$exit_class" "$exit_lk" <<'PY' 2>/dev/null
+import json, sys
+path, ts, ex, marker, cls, lk = sys.argv[1:7]
+try: d = json.load(open(path))
+except Exception: d = {'count': 0, 'total': 0, 'last_marker': '', 'history': []}
+d.setdefault('history', []).append({'ts': ts, 'exit': ex, 'marker': marker, 'transient': False, 'run_secs': 0, 'class': cls, 'limit_kind': lk or None})
+json.dump(d, open(path, 'w'))
+PY
+    touch "$PIPE/orch-$issue.held"
+    rm -f "$QUEUE/orch-$issue.json"
+    printf '%s Pipeline #%s waiting on JP — monthly spend limit reached; relaunch after credits or a model switch\n' "$(date -u +%FT%TZ)" "$issue" > "$PIPE/orch-$issue.alert"
+    slog "[held] #$issue — monthly spend limit: needs JP"
+    report_status_async "held"
+    notify_engineering "$issue" ":hand:" "Waiting on you — monthly spend limit reached" "$run_owner_repo"
+    continue
+  fi
+
   # Already queued — nothing ended this tick: don't count it, don't overwrite its not_before
   if [ -f "$QUEUE/orch-$issue.json" ]; then
     slog "[queue-wait] #$issue — already queued, skipping re-enqueue"
     continue
   fi
 
+  if [ "$exit_class" = rate_limited ]; then
+    # Weekly / unrecognised limit: wait, don't count (never trips the "stalled" escalation)
+    python3 - "$restarts_file" "$(date -u +%FT%TZ)" "$exit_code" "$marker" "$exit_class" "$exit_lk" <<'PY' 2>/dev/null
+import json, sys
+path, ts, ex, marker, cls, lk = sys.argv[1:7]
+try: d = json.load(open(path))
+except Exception: d = {'count': 0, 'total': 0, 'last_marker': '', 'history': []}
+d.setdefault('history', []).append({'ts': ts, 'exit': ex, 'marker': marker, 'transient': False, 'run_secs': 0, 'class': cls, 'limit_kind': lk or None})
+json.dump(d, open(path, 'w'))
+PY
+    extra=$(cat "$PIPE/orch-$issue.extra" 2>/dev/null || echo "")
+    not_before=$(( $(date +%s) + RATE_LIMIT_BACKOFF_SECS ))
+    python3 - "$QUEUE/orch-$issue.json" "$issue" "$repo" "$extra" "$(date -u +%FT%TZ)" "$not_before" <<'PY' 2>/dev/null
+import json, sys
+path, issue, repo, extra, qa, nb = sys.argv[1:7]
+json.dump({'issue': issue, 'repo': repo, 'extra': extra, 'reason': 'auto-restart', 'queued_at': qa, 'not_before': int(nb)}, open(path, 'w'))
+PY
+    slog "[rate-limited] #$issue limit=$exit_lk backoff=${RATE_LIMIT_BACKOFF_SECS}s"
+    report_status_async "queue-restart"
+    continue
+  fi
+
   # Non-terminal exit — potential restart
   [ "$launched" -ge 1 ] && continue  # one launch per tick
-
-  restarts_file="$PIPE/orch-$issue.restarts"
-  exit_code=$(cat "$PIPE/orch-$issue.exit" 2>/dev/null || echo "?")
   extra=$(cat "$PIPE/orch-$issue.extra" 2>/dev/null || echo "")
 
   # Detect transient exit: use per-launch timestamp (.launched-at), not the original .start
@@ -326,25 +500,33 @@ for f in "$PIPE"/orch-*.pid; do
   transient=false
   [ "$run_duration" -lt "$MIN_RUN_SECS" ] && transient=true
 
-  # Deliberate stop: the run that just ended logged a validate fail of a structural stage (start-gate, closed PR).
+  # Deliberate stop: the run that just ended logged a validate fail of a deliberate-stop stage (start-gate, closed PR, refused delegated decision, loop cap).
   # A restart cannot heal it — hold instead of looping to MAX_TOTAL. Other stages (concurrency-gate, ...) still restart.
-  # "This run" = ts >= .launched-at. One list of stage values: structural (claude-agents#92).
-  since=$(date -u -d "@$(( $(date +%s) - run_duration ))" +%FT%TZ 2>/dev/null)   # this launch's start
-  if [ -n "$since" ] && [ -f "$HOME/.claude/pipeline/runs.jsonl" ] \
-     && python3 - "$HOME/.claude/pipeline/runs.jsonl" "$issue" "$since" <<'PY' 2>/dev/null
+  # "This run" = ts >= .launched-at. One list of stage values: structural (claude-agents#92), delegated-decision, loop-cap (#88).
+  since=$(cat "$PIPE/orch-$issue.launched-at" 2>/dev/null || cat "$PIPE/orch-$issue.start" 2>/dev/null)   # this launch's start (no GNU date -d: BSD date lacks it)
+  found_stage=""
+  if [ -n "$since" ] && [ -f "$HOME/.claude/pipeline/runs.jsonl" ]; then
+    found_stage=$(python3 - "$HOME/.claude/pipeline/runs.jsonl" "$issue" "$since" <<'PY' 2>/dev/null
 import json, sys
 path, issue, since = sys.argv[1], int(sys.argv[2]), sys.argv[3]
 for line in open(path):
     try: r = json.loads(line)
     except ValueError: continue
     if (r.get("issue") == issue and r.get("event") == "validate" and r.get("result") == "fail"
-            and r.get("stage") in ("structural",) and str(r.get("ts", "")) >= since):
-        sys.exit(0)
-sys.exit(1)
+            and r.get("stage") in ("structural", "delegated-decision", "loop-cap") and str(r.get("ts", "")) >= since):
+        print(r.get("stage"))
+        break
 PY
-  then
+)
+  fi
+  if [ -n "$found_stage" ]; then
     touch "$PIPE/orch-$issue.held"
-    slog "[held] #$issue — structural stop (start-gate / closed PR), needs a relaunch after it is resolved"
+    case "$found_stage" in
+      loop-cap) hold_reason="loop-cap stop" ;;
+      delegated-decision) hold_reason="refused delegated decision" ;;
+      *) hold_reason="structural stop (start-gate / closed PR)" ;;
+    esac
+    slog "[held] #$issue — $hold_reason, needs a relaunch after it is resolved"
     report_status_async "held"
     continue
   fi
@@ -365,11 +547,23 @@ PY
     slog "[progress] #$issue marker advanced: $last_marker -> $marker"
   fi
 
-  total=$((total + 1))
-  if $transient; then
-    slog "[transient] #$issue ran ${run_duration}s (<${MIN_RUN_SECS}s) — treating as transient"
-  else
-    count=$((count + 1))
+  # #178 begin
+  # A cap exit (the deferral signal is set, exit 0, and the orchestrator's own terminal row for this launch) is the
+  # orchestrator waiting by design: it increments neither count nor total, now that its stage has ended too.
+  cap_exit_now=false
+  if [ -f "$PIPE/orch-$issue.cap-exit" ] && [ "$exit_code" = 0 ] && cap_exit_row "$repo" "$issue"; then
+    cap_exit_now=true
+    slog "[cap-exit] #$issue — stage ended after a cap exit; relaunching without counting"
+  fi
+  # #178 end
+
+  if ! $cap_exit_now; then
+    total=$((total + 1))
+    if $transient; then
+      slog "[transient] #$issue ran ${run_duration}s (<${MIN_RUN_SECS}s) — treating as transient"
+    else
+      count=$((count + 1))
+    fi
   fi
 
   # One ceiling for every exit, fast or slow
@@ -382,7 +576,7 @@ PY
 import json
 try: d = json.load(open('$restarts_file'))
 except: d = {'count':0,'total':0,'last_marker':'','history':[]}
-d['history'].append({'ts':'$(date -u +%FT%TZ)','exit':'$exit_code','marker':'''$marker''','transient':$($transient && echo True || echo False),'run_secs':$run_duration})
+d['history'].append({'ts':'$(date -u +%FT%TZ)','exit':'$exit_code','marker':'''$marker''','transient':$($transient && echo True || echo False),'run_secs':$run_duration,'class':$([ -n "$exit_class" ] && echo "'$exit_class'" || echo None),'limit_kind':$([ -n "$exit_lk" ] && echo "'$exit_lk'" || echo None)})
 d['count']=$count; d['total']=$total; d['last_marker']='''$marker'''
 json.dump(d, open('$restarts_file','w'))
 " 2>/dev/null
@@ -393,7 +587,9 @@ json.dump(d, open('$restarts_file','w'))
   fi
 
   # Calculate backoff — transient exits use longer backoff
-  if $transient; then
+  if $cap_exit_now; then
+    backoff_val=${BACKOFF[0]}
+  elif $transient; then
     idx=$((total - 1))
     [ "$idx" -ge "${#TRANSIENT_BACKOFF[@]}" ] && idx=$(( ${#TRANSIENT_BACKOFF[@]} - 1 ))
     backoff_val=${TRANSIENT_BACKOFF[$idx]}
@@ -470,7 +666,17 @@ print('%d %d' % (int(t), int('$q_issue')))
       restart_n=$(python3 -c "import json; print(json.load(open('$PIPE/orch-$best_issue.restarts')).get('count',0))" 2>/dev/null || echo 0)
     fi
 
-    do_launch "$q_repo" "$best_issue" "$q_extra" "$restart_n" "$q_reason"
+    q_wait=$(python3 -c "
+import json, datetime, time
+try:
+    t = datetime.datetime.strptime(json.load(open('$best_qf'))['queued_at'], '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=datetime.timezone.utc).timestamp()
+    print(max(0, int(time.time() - t)))
+except Exception:
+    pass
+" 2>/dev/null)
+    # #178: a cap exit is not counted, so count may be 0; the relaunch still needs its (cap) preamble
+    [ "$q_reason" = "auto-restart" ] && [ "$restart_n" -eq 0 ] && [ -f "$PIPE/orch-$best_issue.cap-exit" ] && restart_n=1
+    do_launch "$q_repo" "$best_issue" "$q_extra" "$restart_n" "$q_reason" "$q_wait"
     rm -f "$best_qf"
     launched=1
   fi
@@ -493,6 +699,150 @@ for f in "$PIPE"/orch-*.pid; do
   fi
 done
 
+# 3b. Intake — triage raw staff feedback (#114): one `user-feedback-intake` issue per tick from DISPATCH_REPOS, claimed like
+#     step 5, label swapped to agent-in-progress, `claude --agent intake -p` launched detached. State is separate from the
+#     orchestrator's (PIPE/intake-<owner_repo>-<n>.*) but counts against MAX_CONCURRENT. A run that exits with no [intake]
+#     marker gets one recovery launch; a second failure posts a NOTE, re-adds the label once and parks it locally (.gaveup).
+intake_key() { printf 'intake-%s-%s' "${1//\//_}" "$2"; }
+intake_launch() {  # <owner/repo> <local path> <issue> <prompt>
+  local k; k=$(intake_key "$1" "$3")
+  echo 0 > "$PIPE/$3-intake-before.txt"; rm -f "$PIPE/$k.exit" "$PIPE/$k.exit-seen"
+  # #176: remember a source:sentry issue at launch, so the agent removing the label cannot turn the agent-go strip into a no-op
+  case " $(gh issue view "$3" --repo "$1" --json labels --jq '[.labels[].name] | join(" ")' 2>/dev/null) " in
+    *" source:sentry "*) touch "$PIPE/$k.sentry" ;; esac
+  ( cd "$PIPE" && PIPELINE_ISSUE="$3" PIPELINE_AGENT=intake PIPELINE_REPO="$1" PIPE="$PIPE" CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 \
+    nohup $SETSID bash -c 'claude --dangerously-skip-permissions --agent intake -p "$1"; echo $? > "$2"' _ "$4" "$PIPE/$k.exit" \
+    >> "$PIPE/$k.log" 2>&1 9>&- & echo $! > "$PIPE/$k.pid" )
+  echo "$2" > "$PIPE/$k.path"; echo "$1 $3" > "$PIPE/$k.id"
+  echo $(( $(cat "$PIPE/$k.attempts" 2>/dev/null || echo 0) + 1 )) > "$PIPE/$k.attempts"
+  slog "[intake] $1#$3 launched (attempt $(cat "$PIPE/$k.attempts"))"
+}
+# code-enforced gate (#176): the intake agent reads attacker-influenced text, so a source:sentry issue never keeps agent-go
+# unless SENTRY_AUTO_GO=1, whatever the agent did. Returns 1 when the label read fails (caller retries next tick), else 0.
+sentry_strip_go() {  # <owner/repo> <issue>
+  [ "${SENTRY_AUTO_GO:-0}" = 1 ] && return 0
+  local lbls k; k=$(intake_key "$1" "$2")
+  lbls=$(gh issue view "$2" --repo "$1" --json labels --jq '[.labels[].name] | join(" ")' 2>/dev/null) || {
+    slog "[intake] $1#$2 label read failed — will retry the source:sentry $LABEL_GO strip next tick"; return 1; }
+  # sentry = recorded at launch (survives the agent removing the label) OR labelled now
+  if [ -e "$PIPE/$k.sentry" ]; then lbls="$lbls source:sentry"; fi
+  case " $lbls " in *" source:sentry "*)
+    case " $lbls " in *" $LABEL_GO "*)
+      if gh issue edit "$2" --repo "$1" --remove-label "$LABEL_GO" >/dev/null 2>&1; then
+        slog "[intake] $1#$2 source:sentry carried $LABEL_GO with SENTRY_AUTO_GO=0 — removed"
+      else
+        slog "[intake] $1#$2 failed to remove $LABEL_GO from source:sentry issue — will retry next tick"; return 1
+      fi ;;
+    esac ;;
+  esac
+  return 0
+}
+INTAKE_RE=$(marker_re intake | jq -Rs .)
+for idf in "$PIPE"/intake-*.id; do   # runs that have exited: healthy -> clear state; no marker -> recover once, then give up
+  [ -e "$idf" ] || break
+  k=$(basename "$idf" .id); read -r i_repo i_num < "$idf"; i_path=$(cat "$PIPE/$k.path")
+  if kill -0 "$(cat "$PIPE/$k.pid" 2>/dev/null)" 2>/dev/null; then
+    sentry_strip_go "$i_repo" "$i_num" || launched=1   # live run: strip an injected agent-go before step 5 can dispatch it (also strips a hand-added one until intake finishes); a failed strip holds dispatch this tick
+    continue
+  fi
+  # done = a terminal marker (a NEEDS INFO-only run that died before labelling is not done) or the issue already carries user-feedback
+  have=$(gh issue view "$i_num" --repo "$i_repo" --json comments,labels \
+    --jq "([.comments[].body | split(\"\\n\")[0] | select(test(\"^\\\\*\\\\*\\\\[intake\\\\] (TRIAGED BUG|TRIAGED IDEA|DUPLICATE|NOISE|BLOCKED)\"))] | length) + ([(.labels // [])[].name | select(. == \"user-feedback\")] | length)" 2>/dev/null) || continue
+  if [ "${have:-0}" -gt 0 ]; then
+    sentry_strip_go "$i_repo" "$i_num" || { launched=1; continue; }   # keep state so the next tick retries the strip; hold dispatch this tick
+    gh issue edit "$i_num" --repo "$i_repo" --remove-label "$LABEL_IN_PROGRESS" >/dev/null 2>&1
+    rm -f "$PIPE/$k".{id,pid,path,exit,exit-seen,attempts,sentry}; slog "[intake] $i_repo#$i_num done"
+  elif [ ! -e "$PIPE/$k.exit-seen" ]; then
+    touch "$PIPE/$k.exit-seen"   # one grace tick: a slow marker or a lagging gh read must not trigger a recovery run
+  elif [ "$(cat "$PIPE/$k.attempts" 2>/dev/null || echo 1)" -lt 2 ]; then
+    [ "$launched" -eq 0 ] && [ "$HAS_CAP" -eq 1 ] || continue
+    intake_launch "$i_repo" "$i_path" "$i_num" "Triage $i_repo#$i_num as the intake agent. A previous run exited without posting an [intake] handoff marker: check the issue state with gh, finish the triage if it is incomplete, and post the handoff marker."
+    launched=1
+  else
+    sentry_strip_go "$i_repo" "$i_num" || { launched=1; continue; }   # keep state (no .gaveup) so the next tick retries the strip; hold dispatch this tick
+    gh issue comment "$i_num" --repo "$i_repo" --body "**[supervisor] NOTE** intake ran twice without a handoff marker; the issue is back in the intake queue for manual attention." >/dev/null 2>&1
+    gh issue edit "$i_num" --repo "$i_repo" --remove-label "$LABEL_IN_PROGRESS" --add-label user-feedback-intake >/dev/null 2>&1
+    rm -f "$PIPE/$k".{id,pid,path,exit,exit-seen,sentry}; touch "$PIPE/$k.gaveup"; slog "[intake] $i_repo#$i_num gave up after 2 runs without a marker"
+  fi
+done
+if [ "$launched" -eq 0 ] && [ "$HAS_CAP" -eq 1 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ] && power_ok; then
+  cutoff=$(python3 -c "import datetime; print((datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(seconds=$CLAIM_WINDOW_SECS)).strftime('%Y-%m-%dT%H:%M:%SZ'))")
+  for entry in "${DISPATCH_REPOS[@]}"; do
+    [ "$launched" -ge 1 ] && break
+    owner_repo="${entry%%:*}"; local_path="${entry#*:}"; local_path="${local_path/#\~/$HOME}"
+    case "$owner_repo" in */Business-Intelligence) continue ;; esac
+    [ -d "$local_path/.git" ] || continue
+    for num in $(gh issue list --repo "$owner_repo" --state open --label user-feedback-intake --limit 50 --json number,labels \
+        --jq ".[] | select([.labels[].name] | index(\"$LABEL_IN_PROGRESS\") | not) | .number" 2>/dev/null); do
+      case "$num" in ''|*[!0-9]*) continue ;; esac
+      k=$(intake_key "$owner_repo" "$num"); [ -e "$PIPE/$k.id" ] || [ -e "$PIPE/$k.gaveup" ] && continue
+      ts=$(date -u +%FT%TZ)
+      gh issue comment "$num" --repo "$owner_repo" --body "**[supervisor] NOTE** claim: $HOST $ts" >/dev/null 2>&1 || continue
+      sleep "$CLAIM_SETTLE_SECS"
+      winner=$(gh issue view "$num" --repo "$owner_repo" --json comments \
+        --jq "[.comments[] | select(.body | startswith(\"**[supervisor] NOTE** claim: \")) | select(.createdAt > \"$cutoff\")] | sort_by(.createdAt) | first | .body" 2>/dev/null | awk '{print $4}')
+      [ "$winner" = "$HOST" ] || { slog "[intake] $owner_repo#$num — lost claim to ${winner:-?}"; continue; }
+      gh issue edit "$num" --repo "$owner_repo" --add-label "$LABEL_IN_PROGRESS" --remove-label user-feedback-intake >/dev/null 2>&1
+      rm -f "$PIPE/$k.attempts" "$PIPE/$k.sentry"
+      intake_launch "$owner_repo" "$local_path" "$num" "Triage $owner_repo#$num as the intake agent."
+      launched=1; break
+    done
+  done
+fi
+
+# 3c. Spec — PM-only run (#115) for one `user-feedback-needs-spec` idea: claim, swap in agent-in-progress, launch `claude --agent product-manager -p`.
+#     Never adds agent-go and never starts an orchestrator. When the PM exits, drop agent-in-progress + needs-spec and add agent-proposed (JP's digest).
+#     Any PM routing marker except REJECTED blocks a launch, as do two REJECTED needs-spec (a PM REJECTED needs-spec is how a fix reaches here). State: PIPE/spec-<owner_repo>-<n>.*
+spec_key() { printf 'spec-%s-%s' "${1//\//_}" "$2"; }
+spec_pm_markers() {  # <owner/repo> <issue> → PM routing markers other than REJECTED, +1 once two REJECTED needs-spec are on the issue (re-reject loop stop)
+  gh issue view "$2" --repo "$1" --json comments 2>/dev/null | jq --arg re "$(marker_re product-manager)" '[.comments[].body | split("\n")] as $c
+    | ([$c[] | select(.[0] | test($re) and (test("\\] REJECTED") | not))] | length)
+    + (if ([$c[] | select((.[0] | test("^\\*\\*\\[(product-manager|fullstack-developer)\\] REJECTED")) and ((.[1] // "") | test("^Reason: needs-spec")))] | length) >= 2 then 1 else 0 end)' 2>/dev/null
+}
+for idf in "$PIPE"/spec-*.id; do   # exited PM runs: marker posted -> hand the spec to JP; none -> one retry, then park
+  [ -e "$idf" ] || break
+  k=$(basename "$idf" .id); read -r s_repo s_num < "$idf"
+  kill -0 "$(cat "$PIPE/$k.pid" 2>/dev/null)" 2>/dev/null && continue
+  m=$(spec_pm_markers "$s_repo" "$s_num"); case "$m" in ''|*[!0-9]*) continue ;; esac   # failed gh/jq lookup: act on nothing, retry next tick
+  if [ "$m" != 0 ]; then
+    gh issue edit "$s_num" --repo "$s_repo" --remove-label "$LABEL_IN_PROGRESS" --remove-label user-feedback-needs-spec --add-label "$LABEL_PROPOSED" >/dev/null 2>&1
+    rm -f "$PIPE/$k".{id,pid,path,attempts}; slog "[spec] $s_repo#$s_num spec written, moved to $LABEL_PROPOSED"
+  else
+    gh issue edit "$s_num" --repo "$s_repo" --remove-label "$LABEL_IN_PROGRESS" >/dev/null 2>&1; rm -f "$PIPE/$k".{id,pid,path}
+    [ "$(cat "$PIPE/$k.attempts" 2>/dev/null || echo 1)" -ge 2 ] && { touch "$PIPE/$k.gaveup"; slog "[spec] $s_repo#$s_num gave up: no PM marker after 2 runs"; }
+  fi
+done
+if [ "$launched" -eq 0 ] && [ "$HAS_CAP" -eq 1 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ] && power_ok; then
+  cutoff=$(python3 -c "import datetime; print((datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(seconds=$CLAIM_WINDOW_SECS)).strftime('%Y-%m-%dT%H:%M:%SZ'))")
+  for entry in "${DISPATCH_REPOS[@]}"; do
+    [ "$launched" -ge 1 ] && break
+    owner_repo="${entry%%:*}"; local_path="${entry#*:}"; local_path="${local_path/#\~/$HOME}"
+    case "$owner_repo" in */Business-Intelligence) continue ;; esac
+    [ -d "$local_path/.git" ] || continue
+    for num in $(gh issue list --repo "$owner_repo" --state open --label user-feedback-needs-spec --limit 50 --json number,labels \
+        --jq ".[] | select([.labels[].name] | (index(\"$LABEL_IN_PROGRESS\") or index(\"$LABEL_GO\") or index(\"source:sentry\")) | not) | .number" 2>/dev/null); do
+      case "$num" in ''|*[!0-9]*) continue ;; esac
+      k=$(spec_key "$owner_repo" "$num"); [ -e "$PIPE/$k.id" ] || [ -e "$PIPE/$k.gaveup" ] && continue
+      [ "$(spec_pm_markers "$owner_repo" "$num")" = 0 ] || continue
+      gh issue comment "$num" --repo "$owner_repo" --body "**[supervisor] NOTE** claim: $HOST $(date -u +%FT%TZ)" >/dev/null 2>&1 || continue
+      sleep "$CLAIM_SETTLE_SECS"
+      winner=$(gh issue view "$num" --repo "$owner_repo" --json comments \
+        --jq "[.comments[] | select(.body | startswith(\"**[supervisor] NOTE** claim: \")) | select(.createdAt > \"$cutoff\")] | sort_by(.createdAt) | first | .body" 2>/dev/null | awk '{print $4}')
+      [ "$winner" = "$HOST" ] || { slog "[spec] $owner_repo#$num — lost claim to ${winner:-?}"; continue; }
+      gh issue edit "$num" --repo "$owner_repo" --add-label "$LABEL_IN_PROGRESS" >/dev/null 2>&1
+      ( cd "$PIPE" && PIPELINE_ISSUE="$num" PIPELINE_AGENT=product-manager PIPELINE_REPO="$owner_repo" PIPE="$PIPE" CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 \
+        nohup $SETSID bash -c 'claude --dangerously-skip-permissions --agent product-manager -p "$1"; echo $? > "$2"' _ \
+        "Write the spec for $owner_repo#$num as the product-manager (spec-only run for a user-feedback idea): do not add agent-go; do not file dependency follow-ups on this issue; post your READY marker." "$PIPE/$k.exit" \
+        >> "$PIPE/$k.log" 2>&1 9>&- & echo $! > "$PIPE/$k.pid" )
+      echo "$owner_repo $num" > "$PIPE/$k.id"; echo $(( $(cat "$PIPE/$k.attempts" 2>/dev/null || echo 0) + 1 )) > "$PIPE/$k.attempts"
+      slog "[spec] $owner_repo#$num launched (attempt $(cat "$PIPE/$k.attempts"))"; launched=1; break
+    done
+  done
+fi
+
+# 3d. Goal step (#195) — goal pids are coordinators: not in count_running, never set the orchestrator `launched` flag.
+goal_step
+
 # 4. Label reconciliation — catch orphaned agent-in-progress labels that have no local state at all
 #    (e.g. /tmp was cleared, or a run from another machine died). Only clear if no marker movement for 30+ min.
 STALE_LABEL_SECS=1800
@@ -505,9 +855,15 @@ if [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
       # Skip if we have a live process or queue entry
       if [ -f "$PIPE/orch-$num.pid" ] && kill -0 "$(cat "$PIPE/orch-$num.pid" 2>/dev/null)" 2>/dev/null; then continue; fi
       [ -f "$QUEUE/orch-$num.json" ] && continue
+      [ -e "$PIPE/$(intake_key "$owner_repo" "$num").id" ] && continue   # an intake run (3b) owns it
+      [ -e "$PIPE/spec-${owner_repo//\//_}-$num.id" ] && continue   # a spec run (3c) owns it
       # Check marker staleness — only clear if no movement for STALE_LABEL_SECS
-      last_comment_age=$(cd "$local_path" && gh issue view "$num" --json comments,updatedAt \
-        --jq '(.comments[-1].createdAt // .updatedAt) // ""' 2>/dev/null)
+      # Same call also yields the latest "claim: <host>" comment: a claim naming another machine means it owns the run.
+      view=$(cd "$local_path" && gh issue view "$num" --json comments,updatedAt \
+        --jq '((.comments[-1].createdAt // .updatedAt) // ""), ([.comments[] | select(.body | startswith("**[supervisor] NOTE** claim: "))] | last | .body // "" | split(" ") | .[3] // "")' 2>/dev/null)
+      last_comment_age=$(printf '%s\n' "$view" | sed -n 1p)
+      claim_host=$(printf '%s\n' "$view" | sed -n 2p)
+      [ -n "$claim_host" ] && [ "$claim_host" != "$HOST" ] && continue
       if [ -n "$last_comment_age" ]; then
         comment_epoch=$(to_epoch "$last_comment_age")
         age=$(( $(date +%s) - comment_epoch ))
@@ -549,8 +905,8 @@ if [ "$launched" -eq 0 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
           continue
         fi
         # Won: a re-dispatch is JP's explicit "go again", so clear local tombstones like a manual launch does.
-        rm -f "$PIPE/orch-$num".{stopped,held,done,closed,marker,alert,label-cleared} "$PIPE/orch-$num.restarts"
-        out=$("$(dirname "${BASH_SOURCE[0]}")/orchestrate.sh" --force "$local_path" "$num" 2>&1 | tail -1)
+        rm -f "$PIPE/orch-$num".{stopped,held,done,closed,marker,milestone,alert,label-cleared} "$PIPE/orch-$num.restarts"
+        out=$(LAUNCH_REASON=agent-go "$(dirname "${BASH_SOURCE[0]}")/orchestrate.sh" --force "$local_path" "$num" 2>&1 | tail -1)
         slog "[dispatch] $owner_repo#$num — claimed by $HOST, $out"
         launched=1
         break
