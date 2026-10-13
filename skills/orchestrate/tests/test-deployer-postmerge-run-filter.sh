@@ -41,3 +41,28 @@ test_prf_ac2_unfiltered_command_absent() {
 run_test test_prf_ac1_filtered_run_and_deploy_job
 run_test test_prf_ac1_job_filter_matches_only_deploy_jobs
 run_test test_prf_ac2_unfiltered_command_absent
+
+# Issue #236 — a cancelled deploy (concurrency cancel-in-progress) is followed along the chain of
+# newer staging deploys containing the merge, never reported as a failure.
+test_prf_236_follows_cancel_chain() {
+  local pm; pm=$(prf_postmerge)
+  local want
+  for want in 'cancelled' 'compare/' 'identical' 'ahead' 'every further' 'cancelled → cancelled → success' 'never re-runs'; do
+    printf '%s\n' "$pm" | grep -qF -- "$want" || { fail "#236: post-merge bullet must mention '$want'"; return 1; }
+  done
+  printf '%s\n' "$pm" | grep -qiE 'run URL.*followed|followed.*run URL' || { fail "#236: handoff must name every followed run URL"; return 1; }
+  printf '%s\n' "$pm" | grep -qiE 'no new timer|same wait|existing wait' || { fail "#236: must stay inside the existing wait"; return 1; }
+  assert_eq 0 0 "#236 chain rule present"
+}
+
+test_prf_236_delivery_lead_no_blocked_relaunch_promise() {
+  local dl="$ROOT_PRF/agents/delivery-lead.md" line
+  line=$(grep -F 'Deployer merged but posted no marker' "$dl")
+  assert_ne "$line" "" "playbook row exists" || return 1
+  if printf '%s\n' "$line" | grep -qF 'verification "incomplete"'; then fail "#236: delivery-lead must not promise a no-decision relaunch for a deployer BLOCKED"; return 1; fi
+  printf '%s\n' "$line" | grep -qF 'No decision comment' && { fail "#236: 'No decision comment' promise still present"; return 1; }
+  assert_eq 0 0 "#236 delivery-lead narrowed"
+}
+
+run_test test_prf_236_follows_cancel_chain
+run_test test_prf_236_delivery_lead_no_blocked_relaunch_promise
