@@ -36,3 +36,9 @@ DISPATCH_REPOS=(
 # Repo alias map for the status board (issue #10): "owner/repo:published-alias" — a repo absent
 # from this list publishes as "other". Placeholder entries only; this repo is public.
 # STATUS_REPO_ALIASES=("example-owner/project-a:project-a" "example-owner/project-b:project-b")
+
+# Project-manager Slack DM (issue #117): skills/orchestrate/pm-slack.sh DMs JP only when he must unblock something,
+# and the supervisor tick copies his replies onto the issue. A silent no-op until PM_SLACK_BOT_TOKEN is set —
+# set it on ONE machine only (the one whose supervisor should poll).
+# PM_SLACK_BOT_TOKEN="..."      # secret (bot token: chat:write, im:write, im:history, im:read, reactions:write) — this file only, never the repo
+# PM_SLACK_USER_ID="U0123456789"   # placeholder — JP's Slack user id (only this user's DM replies are accepted)
