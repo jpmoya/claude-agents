@@ -12,4 +12,10 @@ chk "CLAUDE.md: no pipeline ticket for a promotion" 'No pipeline ticket' "$C"
 chk "CLAUDE.md: fixes land on staging first, never only on release branch" 'never committed only to the release branch' "$C"
 chk "CLAUDE.md: line 11 carves out promotions" 'except (for )?(a |the )?(staging.main )?promotion' "$C"
 chk "project-manager.md: preparing a promotion PR is done directly, merging JP-only" 'preparing a promotion PR.*directly|directly.*preparing a promotion PR' "$PM"
+# #221 — PR body states the ledger check as found; never pre-claims a prod apply
+L=$(grep -F 'Exception — promotion PRs' "$C")
+echo "$L" | grep -qE 'as found at writing time' && echo "$L" | grep -qE 'pending — apply and record before merge' || { echo "FAIL: CLAUDE.md: ledger check stated as found, pending files marked 'pending — apply and record before merge'"; fail=1; }
+echo "$L" | grep -qE 'never states? (that )?a migration (was )?applied' && echo "$L" | grep -qE 'until its production ledger row exists' && echo "$L" | grep -qE 'applied_at' || { echo "FAIL: CLAUDE.md: no applied/recorded claim until prod ledger row exists; apply reported in a comment quoting applied_at"; fail=1; }
+# negative-safe: "applied to production" only inside a never/until clause
+if echo "$L" | grep -qiE 'applied to production' && ! echo "$L" | grep -qiE '(never|until)[^.]*applied to production|applied to production[^.]*until'; then echo "FAIL: CLAUDE.md: 'applied to production' outside a never/until clause"; fail=1; fi
 [ $fail -eq 0 ] && echo "PASS"; exit $fail
