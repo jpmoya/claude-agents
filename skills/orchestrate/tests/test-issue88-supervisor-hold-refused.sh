@@ -94,7 +94,7 @@ i88_has() { grep -qF -- "$2" "$1" || { fail "$(basename "$1"): missing [$2]"; re
 i88_lacks() { if grep -qF -- "$2" "$1"; then fail "$(basename "$1"): must NOT contain [$2]"; return 1; fi; }
 
 test_i88_supervisor_stage_tuple() {
-  i88_has "$ROOT_I88/skills/orchestrate/supervisor.sh" '("structural", "delegated-decision", "loop-cap")' || return 1
+  i88_has "$ROOT_I88/skills/orchestrate/supervisor.sh" '("structural", "delegated-decision", "loop-cap", "hand-to-jp")' || return 1
   i88_lacks "$ROOT_I88/skills/orchestrate/supervisor.sh" 'in ("structural",)' || return 1
 }
 
