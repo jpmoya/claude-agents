@@ -21,6 +21,7 @@ markers_for() {  # markers_for <agent> → that agent's routing markers, |-separ
     infra-reviewer)      echo 'PLAN PASS|PLAN FAIL|BLOCKED' ;;
     infra-operator)      echo 'APPLIED|AWAITING GO|BLOCKED' ;;
     intake)              echo 'TRIAGED BUG|TRIAGED IDEA|DUPLICATE|NEEDS INFO|NOISE|BLOCKED' ;;   # raw-feedback triage, launched by the supervisor, never by the orchestrator (#114)
+    orchestrator)        echo 'BLOCKED' ;;   # config-error refusal: parks the run through the gate path instead of a silent exit (#75)
     jp)                  echo 'GO|MOCKUPS APPROVED' ;;
     delivery-lead)       echo 'DECISION|JP CONFIRMED' ;;  # JP's delegate (legacy spelling below, #192): same markers, same limits
     project-manager)     echo 'DECISION|JP CONFIRMED' ;;  # JP's delegate: resumes a code-track BLOCKED and the two caps only — never jp's gates (claude-agents#59)
@@ -28,14 +29,21 @@ markers_for() {  # markers_for <agent> → that agent's routing markers, |-separ
 }
 
 marker_re() {  # marker_re [agent] → jq (oniguruma) regex for a valid first line; no agent = any agent, each with its own markers
-  local a alt=""
+  # jp's markers are gates: the first line must be the marker and nothing else (trailing whitespace/CR ok),
+  # the same "exactly" rule the orchestrator applies (#202). Other agents keep the `**`/`:`/space/EOL suffix.
+  local a alt="" jpalt
+  jpalt="jp\\] ($(markers_for jp))\\*\\*[[:space:]]*\$"
+  if [ "${1:-}" = jp ]; then
+    printf '^\\*\\*\\[%s' "$jpalt"; return
+  fi
   if [ -n "${1:-}" ]; then
     alt=$(markers_for "$1"); [ -n "$alt" ] || alt='BLOCKED'
     alt="$1\\] ($alt)"
   else
     # literal list, not a variable: zsh (the Mac Bash tool's shell) does not word-split unquoted variables
     for a in product-manager ux-flow-designer ui-ux-designer solutions-architect test-writer test-reviewer fullstack-developer code-reviewer deployer \
-             infra-planner infra-reviewer infra-operator jp delivery-lead project-manager intake; do alt="${alt:+$alt|}$a\\] ($(markers_for "$a"))"; done
+             infra-planner infra-reviewer infra-operator delivery-lead project-manager intake orchestrator; do alt="${alt:+$alt|}$a\\] ($(markers_for "$a"))"; done
+    printf '^\\*\\*\\[((%s)(\\*\\*|:| |$)|%s)' "$alt" "$jpalt"; return
   fi
   printf '^\\*\\*\\[(%s)(\\*\\*|:| |$)' "$alt"
 }

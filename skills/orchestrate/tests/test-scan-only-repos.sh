@@ -19,6 +19,7 @@ so_write_gh_stub() {  # so_write_gh_stub <home>
   mkdir -p "$1/bin"
   cat > "$1/bin/gh" <<'STUB'
 #!/bin/bash
+case "$*" in *--search*) exit 0 ;; esac   # #166 claim-comment search: not a backlog listing, not logged
 echo "$*" >> "$GH_LOG"
 if [ "$1" = "issue" ] && [ "$2" = "list" ]; then printf '7\tsome title\n'; fi
 exit 0

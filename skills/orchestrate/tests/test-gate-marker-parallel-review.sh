@@ -239,12 +239,59 @@ test_gm_ac6_tests_approved_row_points_at_the_definition() {
 test_gm_ac6_definition_names_the_exception_once() {
   local para n
   para=$(awk '/^\*\*Gate marker\*\*/ {on=1} on && /^```/ {c++} on {print} on && c>=2 {exit}' "$ORCH_GM")
-  assert_contains "$para" "[test-reviewer] TESTS APPROVED" "AC6: definition names TESTS APPROVED" || return 1
-  assert_contains "$para" "[fullstack-developer]" "AC6: definition names the developer" || return 1
-  assert_contains "$para" "TESTS WRITTEN" "AC6: definition anchors on the latest TESTS WRITTEN" || return 1
+  assert_contains "$para" "test-reviewer" "AC6: definition names the test-reviewer" || return 1
+  assert_contains "$para" "fullstack-developer" "AC6: definition names the developer" || return 1
+  assert_contains "$para" "code-reviewer" "AC6: definition names the code-reviewer pair" || return 1
   assert_contains "$para" "TEST DEFECT" "AC6: definition names TEST DEFECT" || return 1
-  n=$(grep -c 'The approval answers the tests, not the developer' "$ORCH_GM")
+  n=$(grep -c "A sibling's later marker answers the sibling's work" "$ORCH_GM")
   assert_eq "$n" "1" "AC6: exactly one statement of the rule (no second rule beside it)" || return 1
+}
+
+# ------------------------------------------------------------------------------------------ #169 (claude-agents#169)
+
+test_gm_169_code_reviewer_blocked_survives_test_reviewer_pass() {
+  gm_env; gm_thread "$GM_IMPL" '**[code-reviewer] BLOCKED**' '**[test-reviewer] PASS**'
+  gm_check "169 trail" '**[code-reviewer] BLOCKED**'; local rc=$?
+  gm_cleanup; return $rc
+}
+
+test_gm_169_decision_on_the_blocked_keeps_it_as_gate() {
+  gm_env; gm_thread "$GM_IMPL" '**[code-reviewer] BLOCKED**' '**[test-reviewer] PASS**' $'**[delivery-lead] DECISION**\nResolves: https://example.test/c/2'
+  gm_check "169 decision" '**[code-reviewer] BLOCKED**' '**[delivery-lead] DECISION**'; local rc=$?
+  gm_cleanup; return $rc
+}
+
+test_gm_169_tick_holds_and_does_not_restart() {
+  gm_env
+  mk_restarting "$GM_PIPE" 42 "$GM_REPO"
+  gm_iso_ago 1300 > "$GM_PIPE/orch-42.start"
+  gm_thread "$GM_IMPL" '**[code-reviewer] BLOCKED**' '**[test-reviewer] PASS**'
+  HOME="$GM_HOME" PATH="$GM_GH:/usr/bin:/bin" PIPE="$GM_PIPE" QUEUE="$GM_PIPE/queue" LOGDIR="$GM_HOME/logs/pipeline" \
+    SLACK_BOT_TOKEN="" SLACK_ENGINEERING_CHANNEL="" "$SUP_GM" >/dev/null 2>&1
+  local held log
+  held=$([ -e "$GM_PIPE/orch-42.held" ] && echo present || echo absent)
+  log=$(cat "$GM_HOME/logs/pipeline/supervisor.log" 2>/dev/null)
+  gm_cleanup
+  assert_eq "$held" "present" "169: .held" || return 1
+  assert_not_contains "$log" "[queue-restart] #42" "169: no queue-restart" || return 1
+}
+
+test_gm_169_unchanged_cases() {
+  local rc=0
+  gm_env; gm_thread "$GM_IMPL" '**[code-reviewer] PASS**' '**[test-reviewer] PASS**'
+  gm_env; gm_thread "$GM_IMPL" '**[code-reviewer] PASS**' '**[test-reviewer] FAIL: 1 findings**' "$GM_IMPL"
+  gm_check "169 narrow FAIL then fix" "$GM_IMPL" || rc=1; gm_cleanup
+  gm_env; gm_thread "$GM_IMPL" '**[code-reviewer] BLOCKED**' '**[test-reviewer] FAIL: 1 findings**'
+  gm_check "169 code BLOCKED then test FAIL (newest blocks itself)" '**[test-reviewer] FAIL: 1 findings**' || rc=1; gm_cleanup
+  gm_env; gm_thread "$GM_IMPL" '**[code-reviewer] PASS**' '**[test-reviewer] PASS**'
+  gm_check "169 both pass" '**[test-reviewer] PASS**' || rc=1; gm_cleanup
+  gm_env; gm_thread "$GM_IMPL" '**[code-reviewer] BLOCKED**' '**[test-reviewer] PASS**' '**[code-reviewer] PASS**'
+  gm_check "169 same stage posts again" '**[code-reviewer] PASS**' || rc=1; gm_cleanup
+  gm_env; gm_thread '**[solutions-architect] BLOCKED**' '**[ui-ux-designer] READY**'
+  gm_check "169 design pair" '**[solutions-architect] BLOCKED**' || rc=1; gm_cleanup
+  gm_env; gm_thread "$GM_BLOCKED" "$GM_DECISION"
+  gm_check "169 developer BLOCKED + decision" "$GM_BLOCKED" "**[project-manager] DECISION**" || rc=1; gm_cleanup
+  return $rc
 }
 
 # ------------------------------------------------------------------------------------------ AC8
@@ -257,17 +304,18 @@ test_gm_ac8_no_new_mechanism() {
   # #115: both sides are normalised by stripping only `|REJECTED` / `REJECTED|` (the marker #115 registers) before diffing
   # #176: also strip `|NOISE` (the marker #176 registers in the intake vocabulary) from both sides, same technique as #115
   extra=$(cd "$ROOT_GM" && diff -U0 <(git show "$base:hooks/pipeline-markers.sh" | sed -e 's/|REJECTED//' -e 's/REJECTED|//' -e 's/|NOISE//') <(sed -e 's/|REJECTED//' -e 's/REJECTED|//' -e 's/|NOISE//' hooks/pipeline-markers.sh) | grep -E '^[-+]' | grep -vE '^(\+\+\+|---) ' \
-    | grep -vE '^\+ *intake\) +echo ' | grep -vE '^\+ *delivery-lead\) +echo ' | grep -vE '^[-+] +infra-planner infra-reviewer infra-operator jp( delivery-lead)? project-manager( intake)?; do ' || true)   # #192: also the delivery-lead) case line and the ` delivery-lead` token
+    | grep -vE '^\+ *intake\) +echo ' | grep -vE '^\+ *delivery-lead\) +echo ' | grep -vE '^\+ *orchestrator\) +echo ' | grep -vE '^[-+] +infra-planner infra-reviewer infra-operator( jp)?( delivery-lead)? project-manager( intake)?( orchestrator)?; do ' || true)   # #192: also the delivery-lead) case line and the ` delivery-lead` token
   assert_eq "$extra" "" "AC8: hooks/pipeline-markers.sh changed beyond #114's intake line + token" || return 1
   # supervisor.sh: everything except latest_marker is byte-identical
   # #192: lines naming project-manager / delivery-lead are dropped from both sides before hashing (the rename edits only those)
   # #114: also skip exactly the intake additions: the 3b step block (to its first blank line), its header-comment line, and step 5's one-line skip
-  now=$(awk '/^latest_marker\(\) \{/ {skip=1} !skip {print} skip && /^}/ {skip=0}' "$SUP_GM" | sed -e '/^# 3b\. Intake/,/^$/d' -e '/^#   3b\. intake: /d' -e '/an intake run (3b) owns it/d' -e '/^# 3c\. Spec/,/^$/d' -e '/^#   3c\. spec: /d' -e '/a spec run (3c) owns it/d' -e '/^# 3d\. Goal/,/^$/d' -e '/^#   3d\. goal step/d' -e '/goal-lib\.sh/d' -e '/REJECTED/d' -e '/# #115 begin/,/# #115 end/d' -e '/# #178 begin/,/# #178 end/d' | grep -vE 'project[- ]manager|delivery[- ]lead' | { shasum -a 256 2>/dev/null || sha256sum; } | cut -d' ' -f1)
-  was=$(cd "$ROOT_GM" && git show "$base:skills/orchestrate/supervisor.sh" | awk '/^latest_marker\(\) \{/ {skip=1} !skip {print} skip && /^}/ {skip=0}' | sed -e '/^# 3b\. Intake/,/^$/d' -e '/^#   3b\. intake: /d' -e '/an intake run (3b) owns it/d' -e '/^# 3c\. Spec/,/^$/d' -e '/^#   3c\. spec: /d' -e '/a spec run (3c) owns it/d' -e '/^# 3d\. Goal/,/^$/d' -e '/^#   3d\. goal step/d' -e '/goal-lib\.sh/d' -e '/REJECTED/d' -e '/# #115 begin/,/# #115 end/d' -e '/# #178 begin/,/# #178 end/d' | grep -vE 'project[- ]manager|delivery[- ]lead' | { shasum -a 256 2>/dev/null || sha256sum; } | cut -d' ' -f1)
+  now=$(awk '/^latest_marker\(\) \{/ {skip=1} !skip {print} skip && /^}/ {skip=0}' "$SUP_GM" | sed -e '/^# 3b\. Intake/,/^$/d' -e '/^#   3b\. intake: /d' -e '/an intake run (3b) owns it/d' -e '/^# 3c\. Spec/,/^$/d' -e '/^#   3c\. spec: /d' -e '/a spec run (3c) owns it/d' -e '/^# 3d\. Goal/,/^$/d' -e '/^#   3d\. goal step/d' -e '/goal-lib\.sh/d' -e '/REJECTED/d' -e '/# #115 begin/,/# #115 end/d' -e '/# #178 begin/,/# #178 end/d' -e '/^ *winner=\$(/d' -e '/sort_by(.createdAt) | first/d' | grep -vE 'project[- ]manager|delivery[- ]lead' | { shasum -a 256 2>/dev/null || sha256sum; } | cut -d' ' -f1)
+  was=$(cd "$ROOT_GM" && git show "$base:skills/orchestrate/supervisor.sh" | awk '/^latest_marker\(\) \{/ {skip=1} !skip {print} skip && /^}/ {skip=0}' | sed -e '/^# 3b\. Intake/,/^$/d' -e '/^#   3b\. intake: /d' -e '/an intake run (3b) owns it/d' -e '/^# 3c\. Spec/,/^$/d' -e '/^#   3c\. spec: /d' -e '/a spec run (3c) owns it/d' -e '/^# 3d\. Goal/,/^$/d' -e '/^#   3d\. goal step/d' -e '/goal-lib\.sh/d' -e '/REJECTED/d' -e '/# #115 begin/,/# #115 end/d' -e '/# #178 begin/,/# #178 end/d' -e '/^ *winner=\$(/d' -e '/sort_by(.createdAt) | first/d' | grep -vE 'project[- ]manager|delivery[- ]lead' | { shasum -a 256 2>/dev/null || sha256sum; } | cut -d' ' -f1)
   assert_eq "$now" "$was" "AC8: supervisor.sh outside latest_marker" || return 1
   # #115: also skip exactly the step-A additions: the 3c block (header `# 3c. Spec…` to its first blank line), its header-comment line `#   3c. spec: `, the one-line `a spec run (3c) owns it` skip, single lines mentioning REJECTED, and any multi-line REJECTED handling wrapped in `# #115 begin` … `# #115 end` comment lines
+  # #217: the winner= assignment (inline query -> claim_winner call) is dropped from both sides
   # only the ticket's files (plus tests) changed
-  extra=$(cd "$ROOT_GM" && git diff --name-only "$base" | grep -vE '^(agents/orchestrator\.md|skills/orchestrate/supervisor\.sh|skills/orchestrate/pipeline-lib\.sh|hooks/sync-agents\.sh|hooks/no-duplicate-stage\.sh|skills/orchestrate/tests/)' | grep -vxE 'agents/intake\.md|agents/README\.md|README\.md|hooks/pipeline-markers\.sh|hooks/require-handoff-marker\.sh|skills/orchestrate/(intake-labels|scan-backlog|config|pipeline-lib)\.sh' | grep -vxE 'agents/fullstack-developer\.md|agents/product-manager\.md|agents/deployer\.md|status-page/test/deployer-ci-wait\.test\.js|skills/orchestrate/test/.*|skills/orchestrate/deliver\.sh|skills/orchestrate/goal-lib\.sh' | grep -vxE 'CLAUDE\.md|agents/pipeline-adjudicator\.md|agents/solutions-architect\.md' | grep -vxE 'skills/orchestrate/config\.local\.example\.sh' | grep -vxE 'agents/project-manager\.md|skills/orchestrate/SKILL\.md' | grep -vxE 'agents/delivery-lead\.md|status-page/README\.md|skills/orchestrate/reconcile-status\.sh' | grep -vxE 'skills/orchestrate/report-status\.sh' || true)   # #114 + #115: exactly their Files-table paths; #188 adds its Files-table docs/agent paths; #196 AC2 adds the example config (one exact path); #193 adds deliver.sh and goal-lib.sh (its new Files-table paths); #198 adds project-manager.md and SKILL.md (docs); #192 adds delivery-lead.md, status-page/README.md, reconcile-status.sh (its Files-table paths)
+  extra=$(cd "$ROOT_GM" && git diff --name-only "$base" | grep -vE '^(agents/orchestrator\.md|skills/orchestrate/supervisor\.sh|skills/orchestrate/pipeline-lib\.sh|hooks/sync-agents\.sh|hooks/no-duplicate-stage\.sh|skills/orchestrate/tests/)' | grep -vxE 'agents/intake\.md|agents/README\.md|README\.md|hooks/pipeline-markers\.sh|hooks/require-handoff-marker\.sh|skills/orchestrate/(intake-labels|scan-backlog|config|pipeline-lib)\.sh' | grep -vxE 'agents/fullstack-developer\.md|agents/product-manager\.md|agents/deployer\.md|status-page/test/deployer-ci-wait\.test\.js|skills/orchestrate/test/.*|skills/orchestrate/deliver\.sh|skills/orchestrate/goal-lib\.sh' | grep -vxE 'CLAUDE\.md|agents/pipeline-adjudicator\.md|agents/solutions-architect\.md' | grep -vxE 'skills/orchestrate/config\.local\.example\.sh' | grep -vxE 'agents/project-manager\.md|skills/orchestrate/SKILL\.md' | grep -vxE 'agents/delivery-lead\.md|status-page/README\.md|skills/orchestrate/reconcile-status\.sh' | grep -vxE 'skills/orchestrate/report-status\.sh|skills/orchestrate/orchestrate\.sh' || true)   # #114 + #115: exactly their Files-table paths; #188 adds its Files-table docs/agent paths; #196 AC2 adds the example config (one exact path); #193 adds deliver.sh and goal-lib.sh (its new Files-table paths); #198 adds project-manager.md and SKILL.md (docs); #192 adds delivery-lead.md, status-page/README.md, reconcile-status.sh (its Files-table paths); #217 adds orchestrate.sh
   assert_eq "$extra" "" "AC8: files changed outside the ticket's list" || return 1
 }
 
@@ -287,3 +335,7 @@ run_test test_gm_ac4_post_implementation_review_markers_are_never_affected
 run_test test_gm_ac5_incident_trails_yield_blocked_from_both_places
 run_test test_gm_ac6_tests_approved_row_points_at_the_definition
 run_test test_gm_ac6_definition_names_the_exception_once
+run_test test_gm_169_code_reviewer_blocked_survives_test_reviewer_pass
+run_test test_gm_169_decision_on_the_blocked_keeps_it_as_gate
+run_test test_gm_169_tick_holds_and_does_not_restart
+run_test test_gm_169_unchanged_cases

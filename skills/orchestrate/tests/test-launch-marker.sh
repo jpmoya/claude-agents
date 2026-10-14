@@ -89,7 +89,8 @@ test_lm_marker_comes_from_the_title_call_no_extra_gh_call() {
   local calls n_comments n_both
   lm_launch 42 >/dev/null
   calls=$(gh_calls "$LM_BIN")
-  n_comments=$(printf '%s\n' "$calls" | grep -c 'issue view 42 .*comments')
+  # #217: the hand-launch claim arbitration reads comments too (--json comments only, no title); this pin is about the title call.
+  n_comments=$(printf '%s\n' "$calls" | grep 'issue view 42 ' | grep -v -- '--jq' | grep -c 'title.*comments\|comments.*title')
   n_both=$(printf '%s\n' "$calls" | grep 'issue view 42 ' | grep 'title' | grep -c 'comments')
   lm_cleanup
   assert_eq "$n_comments" "1" "#94: exactly one gh call for #42 asks for comments" || return 1
