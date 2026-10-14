@@ -678,11 +678,11 @@ EOF
   mk_running "$SC_PIPE" 601 "$SC_REPO"
   sc_run "$RS_SC/report-status.sh" event
   c1=$(cat "$SC_BIN/curl.calls" 2>/dev/null | wc -l | tr -d ' ')
-  # move the 10 s coalescing window past, keep the 600 s keep-alive fresh, then add ONLY a closed record
+  # move the derived coalescing window (216 s at cap 400, #240) past, keep the 600 s keep-alive fresh, then add ONLY a closed record
   python3 -c "
 import json, time
 p = '$SC_PIPE/status-push.state'
-d = json.load(open(p)); d['last_attempt_epoch'] = int(time.time()) - 60; d['last_push_epoch'] = int(time.time()) - 60
+d = json.load(open(p)); d['last_attempt_epoch'] = int(time.time()) - 300; d['last_push_epoch'] = int(time.time()) - 60
 json.dump(d, open(p, 'w'))"
   sc_mk_closed_record 602 3600
   sc_run "$RS_SC/report-status.sh" event

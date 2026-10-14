@@ -15,20 +15,23 @@ RS_HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # keys: 1,000 writes per day" — https://developers.cloudflare.com/kv/platform/limits/ (page
 # "Last updated" Apr 21 2026), checked 2026-09-17. The design's starting number (1,000/day) holds.
 #
-# Arithmetic (per host unless noted):
-#   keep-alive  86400 / KEEPALIVE_SECS(600)        = 144 writes/day  -> 288/day for both hosts,
-#                                                                        29% of the 1,000/day cap
-#   events      ~10-14 pushes/run x 5-15 runs/day,
-#               coalesced at MIN_PUSH_INTERVAL_SECS(10s)             -> ~264 writes/day/host,
-#                                                                        ~53% of the cap
-#   hard ceiling  2 x MAX_PUSHES_PER_DAY(400)                        = 800/day, 80% of the cap,
-#                                                                        whatever the event storm
+# Arithmetic (per host unless noted; #240):
+#   MIN_PUSH_INTERVAL_SECS is derived below as max(10, ceil(86400 / MAX_PUSHES_PER_DAY)), so
+#   pushes/day <= 86400 / MIN_PUSH_INTERVAL_SECS <= MAX_PUSHES_PER_DAY: the cap is an unreachable
+#   backstop and the page can never go dark mid-day (400 -> 216 s, 450 -> 192 s, 550 -> 158 s).
+#   keep-alive  86400 / KEEPALIVE_SECS(600)  = 144 writes/day (longer than the interval, so it
+#                                              never adds pushes beyond the spacing bound)
+#   both hosts' caps together stay <= the KV free tier's 1,000 writes/day.
+#   Worst-case page lag ~ interval + one 2-minute tick (~5 min) vs the 1,500 s stale threshold.
 MIN_PUSH_INTERVAL_SECS=10
 KEEPALIVE_SECS=600
 MAX_PUSHES_PER_DAY=400
 # Host override (2026-09-22): a busy host may raise its own share in ~/.claude/pipeline/config.local.sh
 # as long as both hosts together stay under the KV free tier (1,000 writes/day).
 [ -f "$HOME/.claude/pipeline/config.local.sh" ] && { _mp=$(grep -E "^MAX_PUSHES_PER_DAY=[0-9]+" "$HOME/.claude/pipeline/config.local.sh" | tail -1 | sed -E "s/^MAX_PUSHES_PER_DAY=([0-9]+).*/\1/"); [ -n "$_mp" ] && MAX_PUSHES_PER_DAY=$_mp; }
+# Spacing derived from the final cap (#240): a coalescing interval of 10 s alone does not bound daily volume.
+_min_gap=$(( (86400 + MAX_PUSHES_PER_DAY - 1) / MAX_PUSHES_PER_DAY ))
+[ "$_min_gap" -gt "$MIN_PUSH_INTERVAL_SECS" ] && MIN_PUSH_INTERVAL_SECS=$_min_gap
 
 EVENT="${1:-event}"
 CACHE="$PIPE/status-push.state"
@@ -211,7 +214,8 @@ if [ "$should_push" -eq 0 ]; then
 fi
 
 # ---- push --------------------------------------------------------------------------------------
-http_code=$(printf '%s' "$PAYLOAD" | curl -sS -X POST --connect-timeout 3 --max-time 5 \
+rs_post() { curl -sS -X POST --connect-timeout 3 --max-time 5 "$@"; }   # the script's one network call site
+http_code=$(printf '%s' "$PAYLOAD" | rs_post \
   -H "Authorization: Bearer $STATUS_PUSH_TOKEN" \
   -H 'Content-Type: application/json' \
   --data-binary @- \
@@ -235,6 +239,14 @@ else
   # once the previous attempt is more than KEEPALIVE_SECS old.
   if [ "$fails" -eq 1 ] || [ $((now_epoch - prev_attempt_epoch)) -ge "$KEEPALIVE_SECS" ]; then
     rs_log "$EVENT push failed status=${http_code:-000} fails=$fails"
+    # #240 observability: alert via the existing Slack webhook (no new one). Tags only: release (commit
+    # SHA), environment (host), route. Never the push token or payload body. Same once-per-streak gate.
+    if [ -n "${SLACK_WEBHOOK_URL:-}" ]; then
+      _rel=$(git -C "$RS_HERE" rev-parse --short HEAD 2>/dev/null || echo unknown)
+      _msg="status push failed: release=$_rel environment=$(hostname -s 2>/dev/null || echo unknown) route=status-reporter/push status=${http_code:-000} fails=$fails"
+      rs_post -H 'Content-type: application/json' \
+        --data "{\"text\": \"$_msg\"}" "$SLACK_WEBHOOK_URL" >/dev/null 2>&1
+    fi
   fi
 fi
 
