@@ -36,7 +36,7 @@ Config: shared defaults in `skills/orchestrate/config.sh` (labels, caps, backoff
 
 Label rule: `agent-go` = "approved, not launched anywhere yet"; launching anywhere swaps it for `agent-in-progress`; the supervisor removes `agent-in-progress` when the run is done or parked. To run a parked issue again, relaunch by hand or re-add `agent-go`.
 
-- **Per machine.** `/tmp/pipeline` (pids, queue, tombstones) is local; the only shared state is the issue's markers and labels. The launcher refuses an issue that carries `agent-in-progress` and isn't owned here ("running elsewhere?"); `orchestrate.sh --force <repo> <issue>` overrides when the other machine is known dead.
+- **Per machine.** `/tmp/pipeline` (pids, queue, tombstones) is local; the only shared state is the issue's markers and labels. The launcher refuses an issue that carries `agent-in-progress` and isn't owned here ("running elsewhere?"); A hand launch also posts a claim, waits `CLAIM_SETTLE_SECS` and refuses (`lost claim to <host>`) unless its claim is the earliest in `CLAIM_WINDOW_SECS` (#217). `orchestrate.sh --force <repo> <issue>` skips both checks — the deliberate takeover, e.g. a handover after the other machine's run was stopped.
 - `stop` writes a tombstone — the supervisor will not auto-restart a manually stopped orchestrator.
 - A manual `orchestrate.sh <repo> <issue>` clears tombstones and restart state and supersedes a queued entry.
 - `status` shows the state: `running`, `exited (will auto-restart)`, `stopped (manual)`, `held (needs JP)`, or `done`; `!! ALERT` lines say why something is held.
