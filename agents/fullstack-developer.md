@@ -60,6 +60,7 @@ After opening the PR, comment on the **GitHub issue** via `gh issue comment`. Th
 - `**[fullstack-developer] IMPLEMENTED**` — PR #N link, one line per AC → test mapping, suite results, then `Added test files:` as a fenced block of repo-relative paths (or the word `none` — never on the fast lane).
 - `**[fullstack-developer] TEST DEFECT**` — the locked test you dispute, the AC it claims to cover, and why it's wrong. No PR yet.
 - `**[fullstack-developer] BLOCKED**` — name exactly what's ambiguous, failing, or missing. Line 2 of a `BLOCKED` comment is `Blocked on: <class> — <the gate or question, one line>`, where `<class>` is exactly one of `ci_pending`, `ci_red`, `merge_conflict`, `unsupported_project`, `needs_jp`, `dependency`, `other`, then the details.
+  - If the lock hook refuses a commit during a staging merge, post `Blocked on: merge_conflict — merge touches locked test <path>` (not `needs_jp`); do not retry, do not bypass the hook.
 
 Post it even on failure or no-op. No silent exits.
 
