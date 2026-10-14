@@ -134,7 +134,7 @@ test_hc_b_only_own_claim_launches() {
   hc_cleanup
   assert_exit0 "$rc" "#217(b): launch exits 0" || return 1
   assert_contains "$out" "launched orchestrator" "#217(b): launched" || return 1
-  assert_contains "$settle" "7" "#217(b): slept CLAIM_SETTLE_SECS (7) before arbitrating" || return 1
+  printf '%s\n' "$settle" | grep -qx '7' || { fail "#217(b): no sleep of exactly CLAIM_SETTLE_SECS (7) before arbitrating; saw: $settle"; return 1; }
 }
 
 test_hc_old_foreign_claim_outside_window_ignored() {
@@ -157,7 +157,7 @@ test_hc_c_force_skips_arbitration() {
   hc_cleanup
   assert_exit0 "$rc" "#217(c): --force exits 0" || return 1
   assert_contains "$out" "launched orchestrator" "#217(c): --force launches despite rival claim" || return 1
-  assert_not_contains "$settle" "7" "#217(c): no settle wait under --force" || return 1
+  if printf '%s\n' "$settle" | grep -qx '7'; then fail "#217(c): settle wait (sleep 7) ran under --force"; return 1; fi
   assert_not_contains "$out" "lost claim" "#217(c): no refusal" || return 1
 }
 
@@ -180,25 +180,83 @@ test_hc_gh_failure_fails_closed_and_is_recorded() {
   local out rc stopped=gone ev=""
   out=$(hc_launch 42); rc=$?
   [ -f "$HC_PIPE/orch-42.stopped" ] && stopped=kept
-  [ -f "$HC_HOME/logs/pipeline/events.jsonl" ] && ev=$(grep -i claim "$HC_HOME/logs/pipeline/events.jsonl")
+  # a structured row: event name mentions claim AND some field is exactly the issue number 42
+  [ -f "$HC_HOME/logs/pipeline/events.jsonl" ] && ev=$(jq -c 'select((.event|tostring|test("claim";"i")) and ([.[]|tostring]|any(.=="42")))' \
+    "$HC_HOME/logs/pipeline/events.jsonl" 2>/dev/null)
   hc_cleanup
   assert_eq "$rc" "1" "#217(obs): comment read failure refuses the launch" || return 1
   assert_not_contains "$out" "launched orchestrator" "#217(obs): nothing launched on gh failure" || return 1
   assert_eq "$stopped" "kept" "#217(obs): tombstone untouched on gh failure" || return 1
-  assert_contains "$ev" "42" "#217(obs): failure recorded in events.jsonl with the issue number" || return 1
+  [ -n "$ev" ] || { fail "#217(obs): no claim event row carrying issue 42 in events.jsonl"; return 1; }
   assert_not_contains "$ev" "token" "#217(obs): no secrets in the recorded event" || return 1
 }
 
 test_hc_supervisor_uses_shared_function() {
   local n_call n_inline n_orch n_lib
   n_call=$(grep -c 'claim_winner' "$SUP_HC")
-  n_inline=$(grep -c 'sort_by(.createdAt) | first | .body' "$SUP_HC")
+  # inline copy = any createdAt-sorted winner pick left in supervisor.sh (the shared fn owns that query)
+  n_inline=$(grep -c 'sort_by(.createdAt)' "$SUP_HC")
   n_orch=$(grep -c 'claim_winner' "$ORCH_HC")
   n_lib=$(grep -c '^claim_winner()' "$RS_HC/pipeline-lib.sh")
   assert_eq "$n_lib" "1" "#217: claim_winner defined once in pipeline-lib.sh" || return 1
   assert_eq "$n_inline" "0" "#217: no inline winner query left in supervisor.sh" || return 1
+  [ "$n_call" -ge 3 ] || { fail "#217: supervisor.sh must call claim_winner at all 3 dispatch sites (found $n_call)"; return 1; }
   [ "$n_call" -ge 1 ] || { fail "#217: supervisor.sh does not call claim_winner"; return 1; }
   [ "$n_orch" -ge 1 ] || { fail "#217: orchestrate.sh does not call claim_winner"; return 1; }
+}
+
+# Dispatch-level (AC 6d): supervisor intake dispatch with a rival's earlier claim must not launch or relabel.
+hc_sup_env() {  # -> HC_PIPE HC_HOME HC_BIN ; one open user-feedback-intake issue #7 on project-a/repo-a
+  HC_PIPE=$(new_pipe); HC_HOME=$(new_home)
+  fixture_repo "$HC_PIPE/repo-a" "project-a/repo-a"
+  HC_BIN="$HC_HOME/.local/bin"; mkdir -p "$HC_BIN"
+  : > "$HC_BIN/gh-calls.log"; : > "$HC_BIN/claude.log"; echo '[]' > "$HC_BIN/comments.json"
+  printf 'MEM_FLOOR_MB=0\nCLAIM_SETTLE_SECS=0\nCLAIM_WINDOW_SECS=600\nDISPATCH_REPOS=("project-a/repo-a:%s/repo-a")\n' "$HC_PIPE" \
+    > "$HC_HOME/.claude/pipeline/config.local.sh"
+  printf '#!/bin/bash\necho "Now drawing from '"'"'AC Power'"'"'"\n' > "$HC_BIN/pmset"
+  printf '#!/bin/bash\necho "$* | ISSUE=${PIPELINE_ISSUE:-}" >> "%s/claude.log"\nexit 0\n' "$HC_BIN" > "$HC_BIN/claude"
+  cat > "$HC_BIN/gh" <<'GH_EOF'
+#!/bin/bash
+D="$(cd "$(dirname "$0")" && pwd)"
+echo "$*" >> "$D/gh-calls.log"
+jqx=""; prev=""; body=""
+for a in "$@"; do case "$prev" in --jq|-q) jqx=$a;; --body) body=$a;; esac; prev=$a; done
+out() { if [ -n "$jqx" ]; then printf '%s' "$1" | jq -r "$jqx"; else printf '%s\n' "$1"; fi; }
+case "$1 $2" in
+  "repo view") echo "project-a/repo-a";;
+  "issue list") out '[{"number":7,"labels":[{"name":"user-feedback-intake"}]}]';;
+  "issue comment") jq --arg b "$body" --arg t "$(date -u +%FT%TZ)" '. + [{body:$b,createdAt:$t}]' "$D/comments.json" > "$D/c.tmp" && mv "$D/c.tmp" "$D/comments.json";;
+  "issue view") out "$(jq -c '{state:"OPEN",title:"t",labels:[],comments:.}' "$D/comments.json")";;
+esac
+exit 0
+GH_EOF
+  chmod +x "$HC_BIN/pmset" "$HC_BIN/claude" "$HC_BIN/gh"
+}
+
+hc_sup_tick() {
+  HOME="$HC_HOME" PATH="$HC_BIN:/usr/bin:/bin" PIPE="$HC_PIPE" QUEUE="$HC_PIPE/queue" LOGDIR="$HC_HOME/logs/pipeline" \
+    SLACK_BOT_TOKEN="" SLACK_ENGINEERING_CHANNEL="" /bin/bash "$SUP_HC" >/dev/null 2>&1
+  /bin/sleep 1.5
+}
+
+test_hc_supervisor_dispatch_loses_to_earlier_rival_claim() {
+  hc_sup_env
+  # rival claimed 5s before the supervisor's own claim (posted "now" by the gh stub)
+  printf '[{"body":"**[supervisor] NOTE** claim: otherhost %s","createdAt":"%s"}]' "$(hc_iso 5)" "$(hc_iso 5)" > "$HC_BIN/comments.json"
+  hc_sup_tick
+  local n edits
+  n=$(grep -c -- '--agent intake' "$HC_BIN/claude.log"); edits=$(grep -c '^issue edit' "$HC_BIN/gh-calls.log")
+  cleanup_running; rm -rf "$HC_PIPE" "$HC_HOME"
+  assert_eq "$n" "0" "#217(6d): supervisor dispatch does not launch when a rival claim is earlier" || return 1
+  assert_eq "$edits" "0" "#217(6d): supervisor dispatch does not relabel when it loses" || return 1
+}
+
+test_hc_supervisor_dispatch_wins_without_rival() {  # positive control for the harness above
+  hc_sup_env
+  hc_sup_tick
+  local n; n=$(grep -c -- '--agent intake' "$HC_BIN/claude.log")
+  cleanup_running; rm -rf "$HC_PIPE" "$HC_HOME"
+  assert_eq "$n" "1" "#217(6d): with no rival claim the supervisor dispatch launches (control)" || return 1
 }
 
 test_hc_skill_documents_force_takeover() {
@@ -215,4 +273,6 @@ run_test test_hc_c_force_skips_arbitration
 run_test test_hc_label_guard_stays
 run_test test_hc_gh_failure_fails_closed_and_is_recorded
 run_test test_hc_supervisor_uses_shared_function
+run_test test_hc_supervisor_dispatch_loses_to_earlier_rival_claim
+run_test test_hc_supervisor_dispatch_wins_without_rival
 run_test test_hc_skill_documents_force_takeover
