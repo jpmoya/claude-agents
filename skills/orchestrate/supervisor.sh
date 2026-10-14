@@ -694,8 +694,16 @@ for f in "$PIPE"/orch-*.pid; do
   elif [ -f "$PIPE/orch-$issue.held" ];    then clear_in_progress "$repo" "$issue" held
   elif [ -f "$PIPE/orch-$issue.stopped" ]; then clear_in_progress "$repo" "$issue" stopped
   elif [ ! -f "$QUEUE/orch-$issue.json" ]; then
-    clear_in_progress "$repo" "$issue" "dead-no-queue"
-    slog "[label] #$issue — process dead, no queue entry, cleared orphaned label"
+    # #208: step 1 owns a fresh death (it queues the restart); act only once it has logged the exit, or for
+    # pre-#138 runs that never get a run-id.
+    if [ -f "$PIPE/orch-$issue.exit-logged" ] || [ ! -f "$PIPE/orch-$issue.run-id" ]; then
+      clear_in_progress "$repo" "$issue" "dead-no-queue"
+      slog "[label] #$issue — process dead, no queue entry, cleared orphaned label"
+    else
+      slog "[label] #$issue — process dead, exit not yet handled by step 1; label kept"
+      pipeline_event label_clear_deferred --arg level warn --arg route supervisor/step3 --argjson issue "$issue" \
+        --arg release "$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse HEAD 2>/dev/null || echo unknown)"
+    fi
   fi
 done
 
@@ -853,7 +861,8 @@ if [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
     orphans=$(gh issue list --repo "$owner_repo" --state open --label "$LABEL_IN_PROGRESS" --limit 50 --json number --jq '.[].number' 2>/dev/null) || continue
     for num in $orphans; do
       # Skip if we have a live process or queue entry
-      if [ -f "$PIPE/orch-$num.pid" ] && kill -0 "$(cat "$PIPE/orch-$num.pid" 2>/dev/null)" 2>/dev/null; then continue; fi
+      # #208: any local pid file, alive or not, means steps 1/3 own this run
+      [ -f "$PIPE/orch-$num.pid" ] && continue
       [ -f "$QUEUE/orch-$num.json" ] && continue
       [ -e "$PIPE/$(intake_key "$owner_repo" "$num").id" ] && continue   # an intake run (3b) owns it
       [ -e "$PIPE/spec-${owner_repo//\//_}-$num.id" ] && continue   # a spec run (3c) owns it
