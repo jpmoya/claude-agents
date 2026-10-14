@@ -58,9 +58,10 @@ Line 1 of **every** comment you post on the issue or PR is exactly one of `**[fu
 After opening the PR, comment on the **GitHub issue** via `gh issue comment`. The orchestrator reads this to run the test-lock check and route the work to the reviewers; skipping it stalls the pipeline. First line is the machine-readable marker:
 
 - `**[fullstack-developer] IMPLEMENTED**` — PR #N link, one line per AC → test mapping, suite results, then `Added test files:` as a fenced block of repo-relative paths (or the word `none` — never on the fast lane).
-- `**[fullstack-developer] TEST DEFECT**` — the locked test you dispute, the AC it claims to cover, and why it's wrong. No PR yet.
+- `**[fullstack-developer] TEST DEFECT**` — the locked test you dispute, the AC it claims to cover, and why it's wrong. Valid before the PR and during fix cycles, with a PR open.
 - `**[fullstack-developer] BLOCKED**` — name exactly what's ambiguous, failing, or missing. Line 2 of a `BLOCKED` comment is `Blocked on: <class> — <the gate or question, one line>`, where `<class>` is exactly one of `ci_pending`, `ci_red`, `merge_conflict`, `unsupported_project`, `needs_jp`, `dependency`, `other`, then the details.
   - If the lock hook refuses a commit during a staging merge, post `Blocked on: merge_conflict — merge touches locked test <path>` (not `needs_jp`); do not retry, do not bypass the hook.
+  - A failing test is never `needs_jp`. Check `$PIPELINE_LOCKED_TESTS_FILE` before calling any test locked. Listed there and you believe it is wrong: post `TEST DEFECT`. Not listed (another ticket's guard, a stale pin) and your branch turned it red: fix it in this PR and say so in the handoff.
 
 Post it even on failure or no-op. No silent exits.
 
