@@ -14,8 +14,21 @@ for entry in ${DISPATCH_REPOS[@]+"${DISPATCH_REPOS[@]}"} ${SCAN_ONLY_REPOS[@]+"$
   repo="${entry%%:*}"
   case "$seen" in *" $repo "*) continue ;; esac
   seen+="$repo "
+  # Issues the pipeline already launched carry a claim comment; a parked run has no pipeline label, so exclude them
+  # explicitly. Fail closed: a failed search skips the repo (never relabel on a failed search).
+  claimed=$(gh issue list --repo "$repo" --state all --limit 1000 --search '"[supervisor] NOTE" claim in:comments' \
+    --json number --jq '.[].number' 2>/dev/null) || {
+    echo "claim search failed for $repo — skipping" >&2
+    if [ -n "${SLACK_WEBHOOK_URL:-}" ]; then
+      rel=$(git -C "$(dirname "$0")" rev-parse HEAD 2>/dev/null || echo unknown)
+      curl -s -X POST -H 'Content-type: application/json' "$SLACK_WEBHOOK_URL" --data \
+        "$(jq -n --arg t "scan-backlog: claim search failed for $repo (route=scan-backlog env=${PIPELINE_ENV:-prod} release=$rel)" '{text:$t}')" >/dev/null 2>&1 || true
+    fi
+    continue
+  }
+  claimed_json=$(printf '%s\n' "$claimed" | jq -Rn '[inputs | select(length>0) | tonumber]')
   issues=$(gh issue list --repo "$repo" --state open --limit 100 --json number,title,labels \
-    --jq '.[] | select(.labels | map(.name) |
+    --jq '.[] | select(.number as $n | ('"$claimed_json"' | index($n)) == null) | select(.labels | map(.name) |
       (contains(["'"$LABEL_PROPOSED"'"]) | not) and
       (contains(["'"$LABEL_GO"'"]) | not) and
       (contains(["'"$LABEL_IN_PROGRESS"'"]) | not) and
