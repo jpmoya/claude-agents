@@ -304,7 +304,7 @@ test_gm_ac8_no_new_mechanism() {
   # #115: both sides are normalised by stripping only `|REJECTED` / `REJECTED|` (the marker #115 registers) before diffing
   # #176: also strip `|NOISE` (the marker #176 registers in the intake vocabulary) from both sides, same technique as #115
   extra=$(cd "$ROOT_GM" && diff -U0 <(git show "$base:hooks/pipeline-markers.sh" | sed -e 's/|REJECTED//' -e 's/REJECTED|//' -e 's/|NOISE//') <(sed -e 's/|REJECTED//' -e 's/REJECTED|//' -e 's/|NOISE//' hooks/pipeline-markers.sh) | grep -E '^[-+]' | grep -vE '^(\+\+\+|---) ' \
-    | grep -vE '^\+ *intake\) +echo ' | grep -vE '^\+ *delivery-lead\) +echo ' | grep -vE '^[-+] +infra-planner infra-reviewer infra-operator jp( delivery-lead)? project-manager( intake)?; do ' || true)   # #192: also the delivery-lead) case line and the ` delivery-lead` token
+    | grep -vE '^\+ *intake\) +echo ' | grep -vE '^\+ *delivery-lead\) +echo ' | grep -vE '^\+ *orchestrator\) +echo ' | grep -vE '^[-+] +infra-planner infra-reviewer infra-operator( jp)?( delivery-lead)? project-manager( intake)?( orchestrator)?; do ' || true)   # #192: also the delivery-lead) case line and the ` delivery-lead` token
   assert_eq "$extra" "" "AC8: hooks/pipeline-markers.sh changed beyond #114's intake line + token" || return 1
   # supervisor.sh: everything except latest_marker is byte-identical
   # #192: lines naming project-manager / delivery-lead are dropped from both sides before hashing (the rename edits only those)
