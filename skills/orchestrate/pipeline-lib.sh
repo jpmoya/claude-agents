@@ -89,3 +89,6 @@ log_run_launch() {
     --argjson restart_n "${restart_n:-0}" --argjson queue_wait_s "$qw"
   return 0
 }
+
+# claim_winner <local_path> <issue> — STUB (#217): prints the host of the earliest claim inside CLAIM_WINDOW_SECS.
+claim_winner() { echo "claim_winner: NotImplemented" >&2; return 1; }
