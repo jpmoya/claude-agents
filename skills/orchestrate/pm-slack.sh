@@ -1,5 +1,5 @@
 #!/bin/bash
-# pm-slack.sh — the project-manager <-> JP Slack DM bridge (issue #117). Deterministic, no LLM.
+# pm-slack.sh — the delivery-lead <-> JP Slack DM bridge (issue #117). Deterministic, no LLM.
 #   pm-slack.sh ask <owner/repo> <issue> <text>   post ONE top-level DM asking JP to unblock <issue>
 #   pm-slack.sh poll                              copy JP's DM replies onto the issues they answer
 # Needs PM_SLACK_BOT_TOKEN (config.local.sh); without it both subcommands are a silent no-op.
@@ -95,7 +95,7 @@ cmd_ask() {
   [ -n "$POSTED_TS" ] || die "chat.postMessage returned no ts"
   set_ask "$repo" "$issue" "$ch" "$POSTED_TS" "$now" open 0
   [ -f "$LASTREAD" ] || printf '%s\n' "$POSTED_TS" | write_atomic "$LASTREAD"   # replies are read from the first ask on
-  gh issue comment "$issue" --repo "$repo" --body "**[project-manager] NOTE** slack-ask: $POSTED_TS" >/dev/null \
+  gh issue comment "$issue" --repo "$repo" --body "**[delivery-lead] NOTE** slack-ask: $POSTED_TS" >/dev/null \
     || die "ask posted (ts $POSTED_TS) but the slack-ask comment on $repo#$issue failed"
 }
 
@@ -128,7 +128,7 @@ cmd_poll() {
       n=$(printf '%s' "$matches" | grep -c . )
       if [ "$n" = 1 ]; then
         IFS="$TAB" read -r repo issue mch _ _ _ _ <<< "$matches"
-        gh issue comment "$issue" --repo "$repo" --body "**[project-manager] NOTE** jp-reply (slack): $mtext" >/dev/null \
+        gh issue comment "$issue" --repo "$repo" --body "**[delivery-lead] NOTE** jp-reply (slack): $mtext" >/dev/null \
           || { echo "pm-slack: comment on $repo#$issue failed" >&2; exit 1; }
         IFS="$TAB" read -r _ _ _ ats aat _ rem <<< "$matches"
         set_ask "$repo" "$issue" "$mch" "$ats" "$aat" answered "$rem"

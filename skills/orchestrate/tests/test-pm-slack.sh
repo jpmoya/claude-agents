@@ -116,7 +116,7 @@ test_pms_ask_posts_one_top_level_message_and_comments_once() {
   local c; c=$(gh_calls "$PMS_BIN" | grep 'issue comment')
   assert_contains "$c" "issue comment 42" "AC1: comment goes on issue 42" || return 1
   assert_contains "$c" "$PMS_REPO_A" "AC1: comment goes to the ask's repo" || return 1
-  assert_contains "$c" "**[project-manager] NOTE** slack-ask: 1700000001.000100" "AC1: slack-ask note carries the message ts" || return 1
+  assert_contains "$c" "**[delivery-lead] NOTE** slack-ask: 1700000001.000100" "AC1: slack-ask note carries the message ts" || return 1
 }
 
 test_pms_ask_defaults_to_jp_user_id() {
@@ -273,7 +273,7 @@ test_pms_poll_comment_is_verbatim_and_reacts_and_marks_answered() {
   pms_history "1700000101.000100|$PMS_JP|$text"
   pms_run poll
   assert_exit0 "$PMS_RC" "poll ($PMS_OUT)" || return 1
-  assert_contains "$(gh_calls "$PMS_BIN")" "**[project-manager] NOTE** jp-reply (slack): $text" "AC4: exact comment, text verbatim" || return 1
+  assert_contains "$(gh_calls "$PMS_BIN")" "**[delivery-lead] NOTE** jp-reply (slack): $text" "AC4: exact comment, text verbatim" || return 1
   assert_eq "$(pms_n reactions.add)" 1 "AC4: one reaction" || return 1
   local r; r=$(pms_lines reactions.add)
   assert_contains "$r" "white_check_mark" "AC4: :white_check_mark: reaction" || return 1

@@ -37,7 +37,7 @@ DISPATCH_REPOS=(
 # from this list publishes as "other". Placeholder entries only; this repo is public.
 # STATUS_REPO_ALIASES=("example-owner/project-a:project-a" "example-owner/project-b:project-b")
 
-# Project-manager Slack DM (issue #117): skills/orchestrate/pm-slack.sh DMs JP only when he must unblock something,
+# Delivery-lead Slack DM (issue #117): skills/orchestrate/pm-slack.sh DMs JP only when he must unblock something,
 # and the supervisor tick copies his replies onto the issue. A silent no-op until PM_SLACK_BOT_TOKEN is set —
 # set it on ONE machine only (the one whose supervisor should poll).
 # PM_SLACK_BOT_TOKEN="..."      # secret (bot token: chat:write, im:write, im:history, im:read, reactions:write) — this file only, never the repo
