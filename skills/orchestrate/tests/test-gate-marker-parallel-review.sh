@@ -158,9 +158,9 @@ test_gm_ac3_test_defect_is_the_gate_marker() {
   gm_cleanup; return $rc
 }
 
-test_gm_ac3_implemented_does_not_displace_approval() {   # #169: only BLOCKED / TEST DEFECT / FAIL are kept; orchestrator row routes IMPLEMENTED
+test_gm_ac3_implemented_is_the_gate_marker() {   # ticket's definition names IMPLEMENTED too
   gm_env; gm_thread "$GM_WRITTEN" "$GM_IMPL" "$GM_APPROVED"
-  gm_check "AC3 IMPLEMENTED" "$GM_APPROVED"; local rc=$?
+  gm_check "AC3 IMPLEMENTED" "$GM_IMPL"; local rc=$?
   gm_cleanup; return $rc
 }
 
@@ -279,6 +279,11 @@ test_gm_169_tick_holds_and_does_not_restart() {
 test_gm_169_unchanged_cases() {
   local rc=0
   gm_env; gm_thread "$GM_IMPL" '**[code-reviewer] PASS**' '**[test-reviewer] PASS**'
+  gm_env; gm_thread "$GM_IMPL" '**[code-reviewer] PASS**' '**[test-reviewer] FAIL: 1 findings**' "$GM_IMPL"
+  gm_check "169 narrow FAIL then fix" "$GM_IMPL" || rc=1; gm_cleanup
+  gm_env; gm_thread "$GM_IMPL" '**[code-reviewer] BLOCKED**' '**[test-reviewer] FAIL: 1 findings**'
+  gm_check "169 code BLOCKED then test FAIL (newest blocks itself)" '**[test-reviewer] FAIL: 1 findings**' || rc=1; gm_cleanup
+  gm_env; gm_thread "$GM_IMPL" '**[code-reviewer] PASS**' '**[test-reviewer] PASS**'
   gm_check "169 both pass" '**[test-reviewer] PASS**' || rc=1; gm_cleanup
   gm_env; gm_thread "$GM_IMPL" '**[code-reviewer] BLOCKED**' '**[test-reviewer] PASS**' '**[code-reviewer] PASS**'
   gm_check "169 same stage posts again" '**[code-reviewer] PASS**' || rc=1; gm_cleanup
@@ -319,7 +324,7 @@ run_test test_gm_ac2_blocked_then_approved_then_decision_prints_blocked_and_deci
 run_test test_gm_ac2_tick_with_decision_takes_the_restart_path
 run_test test_gm_ac2_orchestrator_resume_rows_still_present
 run_test test_gm_ac3_test_defect_is_the_gate_marker
-run_test test_gm_ac3_implemented_does_not_displace_approval
+run_test test_gm_ac3_implemented_is_the_gate_marker
 run_test test_gm_ac3_latest_developer_marker_wins
 run_test test_gm_ac4_approved_without_developer_marker
 run_test test_gm_ac4_blocked_after_approved_is_the_gate_marker
