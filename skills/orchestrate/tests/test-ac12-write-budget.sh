@@ -160,20 +160,26 @@ test_ac12_changed_payload_past_86400_over_cap_pushes() {
 }
 
 test_ac12_failed_push_is_logged() {
-  # observability: a forced curl failure is captured by the script's existing rs_log mechanism
-  local pipe home bindir day log
+  # observability (#240): a forced curl failure fires the existing Slack webhook with release/environment/route
+  # tags and without the push token
+  local pipe home bindir day calls
   pipe=$(new_pipe); home=$(new_home); bindir=$(mktemp -d "${TMPDIR:-/tmp}/orch-test-bin.XXXXXX")
   setup_pushable_fixture "$pipe" "$home"
-  printf '#!/bin/bash\nexit 7\n' > "$bindir/curl"; chmod +x "$bindir/curl"
+  mkdir -p "$home/.claude/pipeline"
+  echo 'SLACK_WEBHOOK_URL="https://hooks.slack.test/T/B/X"' >> "$home/.claude/pipeline/config.local.sh"
+  printf '#!/bin/bash\necho "CALL $*" >> "%s/calls"\nexit 7\n' "$bindir" > "$bindir/curl"; chmod +x "$bindir/curl"
   day=$(today_utc)
   python3 -c "
 import json
 json.dump({'last_hash':'x','last_push_epoch':0,'last_attempt_epoch':0,'day':'$day','count':1,'fails':0,'last_status':''}, open('$pipe/status-push.state','w'))
 "
   ( PIPE="$pipe" QUEUE="$pipe/queue" HOME="$home" PATH="$bindir:/usr/bin:/bin" "$RS_AC12/report-status.sh" event )
-  log=$(grep -rah "push failed" "$pipe" "$home" 2>/dev/null | head -1)
-  cleanup_running; rm -rf "$pipe" "$home" "$bindir"
-  assert_ne "$log" "" "#240: a forced curl failure writes a 'push failed' line" || return 1
+  calls=$(grep 'hooks.slack.test' "$bindir/calls" 2>/dev/null)
+  cleanup_running; local leak; leak=$(grep -c "fake-token-for-test-only" <<<"$calls"); rm -rf "$pipe" "$home" "$bindir"
+  assert_contains "$calls" "route=status-reporter/push" "#240: Slack alert carries the route tag" || return 1
+  assert_contains "$calls" "release=" "#240: Slack alert carries the release tag" || return 1
+  assert_contains "$calls" "environment=" "#240: Slack alert carries the environment tag" || return 1
+  assert_eq "$leak" "0" "#240: Slack alert does not contain the push token" || return 1
 }
 
 run_test test_ac12_under_daily_cap_pushes

@@ -214,7 +214,8 @@ if [ "$should_push" -eq 0 ]; then
 fi
 
 # ---- push --------------------------------------------------------------------------------------
-http_code=$(printf '%s' "$PAYLOAD" | curl -sS -X POST --connect-timeout 3 --max-time 5 \
+rs_post() { curl -sS -X POST --connect-timeout 3 --max-time 5 "$@"; }   # the script's one network call site
+http_code=$(printf '%s' "$PAYLOAD" | rs_post \
   -H "Authorization: Bearer $STATUS_PUSH_TOKEN" \
   -H 'Content-Type: application/json' \
   --data-binary @- \
@@ -238,6 +239,14 @@ else
   # once the previous attempt is more than KEEPALIVE_SECS old.
   if [ "$fails" -eq 1 ] || [ $((now_epoch - prev_attempt_epoch)) -ge "$KEEPALIVE_SECS" ]; then
     rs_log "$EVENT push failed status=${http_code:-000} fails=$fails"
+    # #240 observability: alert via the existing Slack webhook (no new one). Tags only: release (commit
+    # SHA), environment (host), route. Never the push token or payload body. Same once-per-streak gate.
+    if [ -n "${SLACK_WEBHOOK_URL:-}" ]; then
+      _rel=$(git -C "$RS_HERE" rev-parse --short HEAD 2>/dev/null || echo unknown)
+      _msg="status push failed: release=$_rel environment=$(hostname -s 2>/dev/null || echo unknown) route=status-reporter/push status=${http_code:-000} fails=$fails"
+      rs_post -H 'Content-type: application/json' \
+        --data "{\"text\": \"$_msg\"}" "$SLACK_WEBHOOK_URL" >/dev/null 2>&1
+    fi
   fi
 fi
 
