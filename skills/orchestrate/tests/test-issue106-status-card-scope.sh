@@ -125,6 +125,8 @@ test_i106_no_new_mechanism_only_doc_files_and_tests_touched() {
       skills/orchestrate/SKILL.md) ;;
       # #240: exactly its Files-table path
       skills/orchestrate/report-status.sh) ;;
+      # #234: exactly its Files-table path not already listed
+      skills/orchestrate/run-state.sh) ;;
       *) bad="$bad $f" ;;
     esac
   done <<< "$changed"
