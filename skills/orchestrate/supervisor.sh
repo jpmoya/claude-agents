@@ -58,17 +58,20 @@ power_ok() {  # Mac: dispatch new work only on AC power (a sleeping laptop stran
 }
 
 latest_marker() {  # the GATE marker: newest real routing marker whose agent is not delivery-lead (or its legacy alias project-manager) (NOTEs and off-vocabulary lines are inert).
-  # Exception (claude-agents#133): a pre-implementation `[test-reviewer] TESTS APPROVED` that is the newest one does not hide a
-  # `[fullstack-developer]` BLOCKED / TEST DEFECT / IMPLEMENTED posted after the latest TESTS WRITTEN: that developer marker (the latest) is the gate marker.
+  # Parallel pairs (claude-agents#169, replaces the #133 exception): except for stages dispatched in parallel from the same marker (ui-ux-designer ∥ solutions-architect, fullstack-developer ∥ test-reviewer, code-reviewer ∥ test-reviewer): when that latest marker is not itself a `BLOCKED` / `TEST DEFECT` / `FAIL` and the nearest earlier marker from a different stage is a `BLOCKED`, `TEST DEFECT` or `FAIL` from its parallel partner, that earlier marker is the gate marker and stays so until its own stage posts again. A sibling's later marker answers the sibling's work, not the blocked stage. For fullstack-developer ∥ test-reviewer the partner block is `BLOCKED` / `TEST DEFECT` / `TESTS FAIL` only (a bare `FAIL` is the narrow review after the developer's fix, not a partner), and a developer `IMPLEMENTED` also stays the gate marker over a later `TESTS APPROVED`.
   # When the newest routing marker overall is a `[delivery-lead]` (or legacy `[project-manager]`) one (it follows the gate marker), it is printed on a 2nd line.
   # Both come out of the same single `gh issue view` call (claude-agents#59).
   local repo=$1 issue=$2 last list prog
   last=$(marker_last_jq); list=${last% | last // \"none\"}   # list = the same expression minus its final `last`
   prog="($last) as \$last | {comments: [.comments[] | select(.body | test(\"^\\\\*\\\\*\\\\[(delivery-lead|project-manager)\\\\] \") | not)]} as \$np  # legacy alias
-    | (\$np | $last) as \$g0 | (\$np | $list) as \$m | (\$m | length) as \$n | (\$m | to_entries) as \$e
-    | ([\$e[] | select(.value | test(\"^\\\\*\\\\*\\\\[test-writer\\\\] TESTS WRITTEN\")) | .key] | last // -1) as \$w
-    | ([\$e[] | select(.key > \$w and .key < \$n - 1 and (.value | test(\"^\\\\*\\\\*\\\\[fullstack-developer\\\\] (BLOCKED|TEST DEFECT|IMPLEMENTED)\"))) | .value] | last // null) as \$dev
-    | (if (\$g0 | test(\"^\\\\*\\\\*\\\\[test-reviewer\\\\] TESTS APPROVED\")) and \$dev != null then \$dev else \$g0 end) as \$gate
+    | (\$np | $last) as \$g0 | (\$np | $list) as \$m | (\$m | length) as \$n
+    | ((\$g0 | capture(\"^\\\\*\\\\*\\\\[(?<a>[a-z-]+)\\\\]\")? // {a: \"\"}).a) as \$ga
+    | ([\$m[0:(\$n - 1)] | reverse[] | select(((capture(\"^\\\\*\\\\*\\\\[(?<a>[a-z-]+)\\\\]\")? // {a: \"\"}).a) != \$ga)] | first // null) as \$p
+    | (if \$p == null then \"\" else ((\$p | capture(\"^\\\\*\\\\*\\\\[(?<a>[a-z-]+)\\\\]\")? // {a: \"\"}).a) end) as \$pa
+    | ([\$pa, \$ga] | sort) as \$pair
+    | (if (\$g0 | test(\"\\\\] (BLOCKED|TEST DEFECT|FAIL|TESTS FAIL)\") | not) and \$p != null and (if \$pair == [\"fullstack-developer\", \"test-reviewer\"] then ((\$p | test(\"\\\\] (BLOCKED|TEST DEFECT|TESTS FAIL)\")) or ((\$p | test(\"\\\\] IMPLEMENTED\")) and (\$g0 | test(\"\\\\] TESTS APPROVED\")))) else (\$p | test(\"\\\\] (BLOCKED|TEST DEFECT|FAIL|TESTS FAIL)\")) end)
+         and (\$pair == [\"solutions-architect\", \"ui-ux-designer\"] or \$pair == [\"fullstack-developer\", \"test-reviewer\"] or \$pair == [\"code-reviewer\", \"test-reviewer\"])
+       then \$p else \$g0 end) as \$gate
     | if (\$last | test(\"^\\\\*\\\\*\\\\[(delivery-lead|project-manager)\\\\] \") | not) then \$gate else \$gate + \"\\n\" + \$last end  # legacy alias"
   (cd "$repo" 2>/dev/null && gh issue view "$issue" --json comments --jq "$prog") 2>/dev/null || echo "?"
 }
