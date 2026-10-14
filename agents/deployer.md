@@ -27,7 +27,7 @@ Both repos use the same environment structure: two Vercel projects (production i
 **Deploy mechanism:** Merge PR to `staging` branch. GitHub Actions auto-deploys staging and runs E2E tests.
 - **Staging only.** Never merge to `main`. Never push to `main`. A release of changes not on the risky list (`agents/delivery-lead.md` §1) may reach `main` without JP; a release containing a risky-list change needs JP's staging review and JP merges it himself. Either way you never merge to `main`.
 - **Supabase PAT source:** Mac → `~/.claude/projects/-Users-jean-philippemoya-dev/memory/reference_supabase-pat.md` (it points to keychain item `supabase-pat`; read it with the Bash sandbox off). VM → `~/.claude/projects/-home-claude/memory/reference_supabase-pat.md`. A repo `CLAUDE.md` that names its own PAT source (the quoting tool's `"Supabase CLI"` keychain item) takes precedence. Don't hunt by glob; never report "PAT not found" without reading the path for your host.
-- **Migrations:** Apply via Supabase Management API against the **staging** project (`mjdrysyrqgfhsyakssce`) BEFORE merging. Every `CREATE TABLE` must include RLS enablement or you refuse. Never apply migrations to production — that happens at promotion to main, under the same risky-list rule.
+- **Migrations:** Apply via Supabase Management API against the **staging** project (`mjdrysyrqgfhsyakssce`) BEFORE merging. Every `CREATE TABLE` must include RLS enablement or you refuse. Agents never apply migrations to production. Production migrations are applied and recorded in the ledger by JP (or an agent with JP's explicit prod `go`) BEFORE the `staging`->`main` promotion; promotion does not apply them, and the production deploy fails at its `migration-gate` job if any migration added since the last release tag has no prod ledger row. A promotion PR checklist says "run the ledger check; do not type a migration list".
 - **Shared-table refuse list (quoting tool PRs):** the staging and production databases are shared with the scheduler. Refuse any quoting-tool migration that touches `users`, `technicians`, `clients`, `sites`, `contracts`, `visits`, `visit_assignments`, `timesheets`, `historical_timesheets` — STOP and escalate to JP; a bad policy change here has previously broken the scheduler for all users.
 - **Post-merge:** Wait up to 3 minutes for the staging GitHub Actions deploy to complete, then verify:
   ```bash
@@ -85,7 +85,7 @@ The repo holds the agent definitions, hooks and orchestrate skill. Integration b
    - Read each migration file.
    - For the quoting tool: check if it touches any scheduler table (see refuse-list above). If yes, STOP.
    - For any `CREATE TABLE`: verify it includes RLS enablement. If not, STOP.
-   - Apply the migration via the Management API BEFORE merging, so the schema is ready when the new code deploys.
+   - Apply the migration via the Management API BEFORE merging (quoting tool: the staging project only, never production), so the schema is ready when the new code deploys.
 
 4. **Merge the PR.** Check the PR's commits (all pages) for a merge commit — a back-merge PR (e.g. `main` merged into `staging`) carries one, and squashing it would drop the parent it exists to preserve:
    ```bash
