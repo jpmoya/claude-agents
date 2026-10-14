@@ -11,5 +11,6 @@ chk "CLAUDE.md: read-only prod-migration ledger check in PR body" 'prod-migratio
 chk "CLAUDE.md: no pipeline ticket for a promotion" 'No pipeline ticket' "$C"
 chk "CLAUDE.md: fixes land on staging first, never only on release branch" 'never committed only to the release branch' "$C"
 chk "CLAUDE.md: line 11 carves out promotions" 'except (for )?(a |the )?(staging.main )?promotion' "$C"
+chk "CLAUDE.md: auto-release workflow may merge release/auto- PRs (#222)" 'release/auto-' "$C"
 chk "project-manager.md: preparing a promotion PR is done directly, merging JP-only" 'preparing a promotion PR.*directly|directly.*preparing a promotion PR' "$PM"
 [ $fail -eq 0 ] && echo "PASS"; exit $fail
