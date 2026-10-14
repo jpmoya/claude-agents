@@ -238,10 +238,12 @@ test_stage_macos_ps_eww_lookup_reads_agent_and_pipeline_issue() {
   printf '#!/bin/bash\necho Darwin\n' > "$tmp/uname"
   cat > "$tmp/ps" <<'PSEOF'
 #!/bin/bash
+case " $* " in *" -axEww "*) ;; *) echo "  1 fake-no-env-without-E" ; exit 0 ;; esac
 cat <<'OUT'
   4001 /opt/homebrew/bin/claude --agent test-writer -p Work on ticket #8900 HOME=/Users/jp PIPELINE_ISSUE=8900 PIPELINE_AGENT=test-writer TERM=dumb
   4002 /opt/homebrew/bin/claude --agent deployer -p Deploy, mention PIPELINE_ISSUE=891 in prose HOME=/Users/jp PIPELINE_ISSUE=890 PIPELINE_AGENT=deployer TERM=dumb
   4003 /usr/bin/vim notes.txt HOME=/Users/jp PIPELINE_ISSUE=890 TERM=dumb
+  4004 /bin/zsh -c export PIPELINE_ISSUE=89 PIPELINE_AGENT=x; claude --agent fake-shell-stage -p go HOME=/Users/jp TERM=dumb
 OUT
 PSEOF
   chmod +x "$tmp/uname" "$tmp/ps"

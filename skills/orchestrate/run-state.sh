@@ -54,9 +54,9 @@ for pid in os.listdir("/proc"):
         continue
 PY
   else
-    # macOS: `ps eww` prints the environment after the command line; start time is not needed to rank
+    # macOS: `ps -E` (not `-e`, which only means "all processes") prints the environment after the command line; start time is not needed to rank
     # parallel stages, so use pid order (newer pid = newer start) as the epoch stand-in.
-    ps -axeww -o pid=,command= 2>/dev/null | awk '/--agent / && /PIPELINE_ISSUE=/ {
+    ps -axEww -o pid=,command= 2>/dev/null | awk '/--agent / && /PIPELINE_ISSUE=/ && $2 ~ /(^|\/)claude$/ {
       pid=$1; iss=$0; sub(/.*PIPELINE_ISSUE=/, "", iss); sub(/[ \t].*/, "", iss);
       cmd=$0; sub(/^[ \t]*[0-9]+ +/, "", cmd); printf "%d\t%s\t%s\n", pid, iss, cmd }'
   fi
