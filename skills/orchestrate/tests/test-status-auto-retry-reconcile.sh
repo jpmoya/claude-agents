@@ -121,6 +121,35 @@ test_ar_payload_has_no_block_class_for_jp_gates() {
   local out; out=$(ar_print)
   ar_cleanup
   assert_eq "$(ar_field "$out" 570 parked_reason)" "MISSING_FIELD" "needs_jp: no parked_reason in payload" || return 1
+  assert_eq "$(ar_field "$out" 570 block_class)" "MISSING_FIELD" "needs_jp: no block_class in payload" || return 1
+}
+
+# Ticket fixture: held run absent from completed[] but orch-<n>.closed present -> in neither Needs JP nor Parked.
+# Payload-level: such a run must not be published in runs[] at all (a held run in runs[] is a Needs JP/Parked row).
+test_ar_closed_file_held_run_is_not_published_as_a_run() {
+  ar_env; ar_gate 580 "$BLK" 'Blocked on: needs_jp — pick a vendor'
+  ar_gate 581 "$BLK" 'Blocked on: needs_jp — pick a vendor'
+  echo "$AR_GATE_T" > "$AR_PIPE/orch-580.closed"          # 580 closed; 581 is the open control
+  ar_reconcile
+  local out; out=$(ar_print)
+  ar_cleanup
+  assert_eq "$(ar_field "$out" 581 state)" "held" "control: an open held needs_jp run is still published" || return 1
+  assert_eq "$(ar_field "$out" 580 state)" "NORUN" "closed ticket (.closed present) is not in runs[] -> not Needs JP, not Parked" || return 1
+}
+
+# AC6 reconcile half: a failing `gh issue view` in the Blocked on: parse alerts Slack with release/environment/route.
+test_ar_reconcile_gh_failure_alerts_slack_with_tags_and_no_secret() {
+  ar_env; ar_gate 590 "$BLK" 'Blocked on: ci_red — x'
+  echo 4 > "$AR_BIN/gh-issue-view-rc-590"
+  echo 'SLACK_WEBHOOK_URL="https://hooks.slack.test/T/B/X"' >> "$AR_HOME/.claude/pipeline/config.local.sh"
+  printf '#!/bin/bash\necho "CALL $*" >> "%s/curl.calls"\nexit 0\n' "$AR_BIN" > "$AR_BIN/curl"; chmod +x "$AR_BIN/curl"
+  ar_reconcile
+  local calls; calls=$(grep 'hooks.slack.test' "$AR_BIN/curl.calls" 2>/dev/null)
+  ar_cleanup
+  assert_contains "$calls" "route=reconcile" "alert carries a reconcile route tag" || return 1
+  assert_contains "$calls" "release=" "alert carries the release tag" || return 1
+  case "$calls" in *release=unknown*|*"release= "*) fail "release must be the commit SHA"; return 1 ;; esac
+  case "$calls" in *environment=[a-zA-Z0-9]*) ;; *) fail "environment tag must have a value: $calls"; return 1 ;; esac
 }
 
 run_test test_ar_ci_red_is_auto_retry_with_empty_needs
@@ -131,3 +160,5 @@ run_test test_ar_class_on_a_non_blocked_gate_is_ignored
 run_test test_ar_stale_auto_retry_removed_when_class_becomes_needs_jp
 run_test test_ar_payload_carries_fixed_labels_only
 run_test test_ar_payload_has_no_block_class_for_jp_gates
+run_test test_ar_closed_file_held_run_is_not_published_as_a_run
+run_test test_ar_reconcile_gh_failure_alerts_slack_with_tags_and_no_secret

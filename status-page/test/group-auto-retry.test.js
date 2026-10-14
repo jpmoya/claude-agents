@@ -113,14 +113,32 @@ describe('#250 decision 2 — Parked rows show a fixed reason label', () => {
     return next === -1 ? rest : rest.slice(0, next);
   };
 
+  // Text of the single Parked row for issue 10 (tags stripped), so a label must be rendered in that row itself.
+  const rowText = (cls) => {
+    const section = parkedHtml(cls);
+    const rows = section.match(/<tr[\s\S]*?<\/tr>/g) || [];
+    const row = rows.find((r) => r.includes('/issues/10'));
+    expect(row, 'Parked row for #10 present').toBeDefined();
+    return row.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
+  };
+  const LABELS = ['CI/billing', 'merge conflict', 'waiting on dependency'];
+
   it.each([
     ['ci_pending', 'CI/billing'],
     ['ci_red', 'CI/billing'],
     ['merge_conflict', 'merge conflict'],
     ['dependency', 'waiting on dependency'],
-    ['other', 'other'],
-  ])('block_class %s -> label "%s" in the Parked section', (cls, label) => {
-    expect(parkedHtml(cls)).toContain(label);
+  ])('block_class %s -> label "%s" in its Parked row and no other class label', (cls, label) => {
+    const text = rowText(cls);
+    expect(text).toContain(label);
+    for (const other of LABELS.filter((l) => l !== label)) expect(text).not.toContain(other);
+    expect(text).not.toMatch(/\bother\b/); // control: bare word "other" is only the label of class other
+  });
+
+  it.each(['other', 'unsupported_project'])('block_class %s -> bare label "other" in its Parked row', (cls) => {
+    const text = rowText(cls);
+    expect(text).toMatch(/\bother\b/);
+    for (const l of LABELS) expect(text).not.toContain(l);
   });
 
   it('the Needs JP section never shows these labels (Parked only)', () => {

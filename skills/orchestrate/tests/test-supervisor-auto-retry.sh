@@ -78,6 +78,10 @@ ar2_launches() {  # wait briefly for the async launch, then count claude invocat
   local i; for i in $(seq 1 20); do [ -s "$SQ_PIPE/claude.calls" ] && break; sleep 0.1; done
   wc -l < "$SQ_PIPE/claude.calls" | tr -d ' '
 }
+ar2_no_launch() {  # negatives: sq_run is synchronous; wait for the cause-check signal (pr call) if one is expected, then settle
+  local i; for i in $(seq 1 10); do [ "$(ar2_pr_calls)" -ge 1 ] && break; sleep 0.1; done
+  sleep 0.7; wc -l < "$SQ_PIPE/claude.calls" | tr -d ' '
+}
 ar2_pr_calls() { grep -c '^pr ' "$SQ_GH/gh-calls.log" 2>/dev/null || true; }
 ar2_counter() { if [ -f "$SQ_PIPE/orch-42.autoretry" ]; then head -n1 "$SQ_PIPE/orch-42.autoretry" | tr -d ' \n'; else echo ABSENT; fi; }
 ar2_held() { sq_present "$SQ_PIPE/orch-42.held"; }
@@ -133,7 +137,7 @@ test_ar2_ci_red_checks_still_failing_not_relaunched() {
   ar2_fixture 'Blocked on: ci_red — checks failing'
   echo fail > "$SQ_GH/gh-pr-checks"
   ar2_tick
-  local n c h; n=$(ar2_launches); c=$(ar2_counter); h=$(ar2_held)
+  local n c h; n=$(ar2_no_launch); c=$(ar2_counter); h=$(ar2_held)
   sq_cleanup
   assert_eq "$n" "0" "failing checks -> no relaunch" || return 1
   assert_eq "$h" "present" "still held" || return 1
@@ -144,7 +148,7 @@ test_ar2_ci_red_checks_pending_not_relaunched() {
   ar2_fixture 'Blocked on: ci_red — checks failing'
   echo pending > "$SQ_GH/gh-pr-checks"
   ar2_tick
-  local n; n=$(ar2_launches)
+  local n; n=$(ar2_no_launch)
   sq_cleanup
   assert_eq "$n" "0" "pending checks (none failing/pending required) -> no relaunch" || return 1
 }
@@ -153,7 +157,7 @@ test_ar2_merge_conflict_still_conflicting_not_relaunched() {
   ar2_fixture 'Blocked on: merge_conflict — rebase needed'
   echo CONFLICTING > "$SQ_GH/gh-pr-mergeable"
   ar2_tick
-  local n h; n=$(ar2_launches); h=$(ar2_held)
+  local n h; n=$(ar2_no_launch); h=$(ar2_held)
   sq_cleanup
   assert_eq "$n" "0" "CONFLICTING -> no relaunch" || return 1
   assert_eq "$h" "present" "still held" || return 1
@@ -164,7 +168,7 @@ test_ar2_dependency_one_still_open_not_relaunched() {
   printf 'Depends on #77\nDepends on #78\n' > "$SQ_GH/gh-issue-body-42"
   echo CLOSED > "$SQ_GH/gh-issue-state-77"; echo OPEN > "$SQ_GH/gh-issue-state-78"
   ar2_tick
-  local n; n=$(ar2_launches)
+  local n; n=$(ar2_no_launch)
   sq_cleanup
   assert_eq "$n" "0" "one dependency still open -> no relaunch" || return 1
 }
@@ -186,7 +190,7 @@ test_ar2_fourth_retry_never_fires() {
   echo 3 > "$SQ_PIPE/orch-42.autoretry"
   echo pass > "$SQ_GH/gh-pr-checks"
   ar2_tick
-  local n c h; n=$(ar2_launches); c=$(ar2_counter); h=$(ar2_held)
+  local n c h; n=$(ar2_no_launch); c=$(ar2_counter); h=$(ar2_held)
   sq_cleanup
   assert_eq "$n" "0" "counter 3 -> no 4th relaunch even though the cause cleared" || return 1
   assert_eq "$c" "3" "counter unchanged" || return 1
@@ -202,7 +206,7 @@ test_ar2_jp_only_and_unretryable_gates_are_never_relaunched() {
     ar2_fixture "$line2"
     echo pass > "$SQ_GH/gh-pr-checks"; echo MERGEABLE > "$SQ_GH/gh-pr-mergeable"
     ar2_tick
-    n=$(ar2_launches); h=$(ar2_held)
+    n=$(ar2_no_launch); h=$(ar2_held)
     sq_cleanup
     assert_eq "$n" "0" "[$line2] is never auto-retried" || return 1
     assert_eq "$h" "present" "[$line2] stays held" || return 1
@@ -215,7 +219,7 @@ test_ar2_non_blocked_gates_are_never_relaunched() {
     ar2_fixture 'Blocked on: ci_red — decoy class on a JP gate' "$m"
     echo pass > "$SQ_GH/gh-pr-checks"
     ar2_tick
-    n=$(ar2_launches); h=$(ar2_held)
+    n=$(ar2_no_launch); h=$(ar2_held)
     sq_cleanup
     assert_eq "$n" "0" "$m never auto-retried" || return 1
     assert_eq "$h" "present" "$m stays held" || return 1
@@ -235,6 +239,26 @@ test_ar2_second_tick_within_30_min_does_not_check_again() {
   assert_eq "$second" "$first" "throttle: no second cause-check within 30 minutes" || return 1
 }
 
+# F2: after the 30 min window the cause is checked again (state backdated by 31 min; works for mtime- or epoch-content state)
+test_ar2_check_runs_again_after_30_min() {
+  ar2_fixture 'Blocked on: ci_red — x'
+  echo fail > "$SQ_GH/gh-pr-checks"
+  local before; before=$(ls "$SQ_PIPE")
+  ar2_tick
+  local first f new; first=$(ar2_pr_calls)
+  for f in $(ls "$SQ_PIPE"); do
+    case "$f" in orch-42.*) printf '%s\n' "$before" | grep -qx "$f" && continue
+      touch -t "$(date -v-31M +%Y%m%d%H%M.%S 2>/dev/null || date -d '31 minutes ago' +%Y%m%d%H%M.%S)" "$SQ_PIPE/$f"
+      if grep -Eqx '[0-9]{9,}' "$SQ_PIPE/$f" 2>/dev/null; then echo $(( $(head -n1 "$SQ_PIPE/$f") - 1900 )) > "$SQ_PIPE/$f"; fi ;;
+    esac
+  done
+  ar2_tick
+  local second; second=$(ar2_pr_calls)
+  sq_cleanup
+  [ "$first" -ge 1 ] || { fail "control: the first tick must check the cause (pr calls: $first)"; return 1; }
+  [ "$second" -gt "$first" ] || { fail "after 31 min the cause is checked again (first=$first second=$second)"; return 1; }
+}
+
 # ---- observability ---------------------------------------------------------------------------------------------
 test_ar2_cause_check_error_alerts_slack_with_tags_and_no_secret() {
   ar2_fixture 'Blocked on: ci_red — x'
@@ -243,10 +267,10 @@ test_ar2_cause_check_error_alerts_slack_with_tags_and_no_secret() {
   printf '#!/bin/bash\necho "CALL $*" >> "%s/curl.calls"\nexit 0\n' "$SQ_GH" > "$SQ_GH/curl"; chmod +x "$SQ_GH/curl"
   ar2_tick
   local calls n c h log
-  calls=$(grep 'hooks.slack.test' "$SQ_GH/curl.calls" 2>/dev/null); n=$(ar2_launches); c=$(ar2_counter); h=$(ar2_held); log=$(sq_log)
+  calls=$(grep 'hooks.slack.test' "$SQ_GH/curl.calls" 2>/dev/null); n=$(ar2_no_launch); c=$(ar2_counter); h=$(ar2_held); log=$(sq_log)
   sq_cleanup
   assert_contains "$calls" "route=supervisor/auto-retry" "alert carries the route tag" || return 1
-  assert_contains "$calls" "environment=" "alert carries the environment tag" || return 1
+  case "$calls" in *environment=[a-zA-Z0-9]*) ;; *) fail "environment tag must have a value: $calls"; return 1 ;; esac
   assert_contains "$calls" "release=" "alert carries the release tag" || return 1
   case "$calls" in *release=unknown*) fail "release must be the commit SHA, got unknown"; return 1 ;; esac
   assert_not_contains "$calls" "ghp_FAKESECRET123" "alert carries no secret from the failing call" || return 1
@@ -269,4 +293,5 @@ run_test test_ar2_fourth_retry_never_fires
 run_test test_ar2_jp_only_and_unretryable_gates_are_never_relaunched
 run_test test_ar2_non_blocked_gates_are_never_relaunched
 run_test test_ar2_second_tick_within_30_min_does_not_check_again
+run_test test_ar2_check_runs_again_after_30_min
 run_test test_ar2_cause_check_error_alerts_slack_with_tags_and_no_secret
