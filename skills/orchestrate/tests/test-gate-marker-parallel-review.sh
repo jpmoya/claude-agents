@@ -158,9 +158,9 @@ test_gm_ac3_test_defect_is_the_gate_marker() {
   gm_cleanup; return $rc
 }
 
-test_gm_ac3_implemented_is_the_gate_marker() {   # ticket's definition names IMPLEMENTED too
+test_gm_ac3_implemented_does_not_displace_approval() {   # #169: only BLOCKED / TEST DEFECT / FAIL are kept; orchestrator row routes IMPLEMENTED
   gm_env; gm_thread "$GM_WRITTEN" "$GM_IMPL" "$GM_APPROVED"
-  gm_check "AC3 IMPLEMENTED" "$GM_IMPL"; local rc=$?
+  gm_check "AC3 IMPLEMENTED" "$GM_APPROVED"; local rc=$?
   gm_cleanup; return $rc
 }
 
@@ -239,12 +239,54 @@ test_gm_ac6_tests_approved_row_points_at_the_definition() {
 test_gm_ac6_definition_names_the_exception_once() {
   local para n
   para=$(awk '/^\*\*Gate marker\*\*/ {on=1} on && /^```/ {c++} on {print} on && c>=2 {exit}' "$ORCH_GM")
-  assert_contains "$para" "[test-reviewer] TESTS APPROVED" "AC6: definition names TESTS APPROVED" || return 1
-  assert_contains "$para" "[fullstack-developer]" "AC6: definition names the developer" || return 1
-  assert_contains "$para" "TESTS WRITTEN" "AC6: definition anchors on the latest TESTS WRITTEN" || return 1
+  assert_contains "$para" "test-reviewer" "AC6: definition names the test-reviewer" || return 1
+  assert_contains "$para" "fullstack-developer" "AC6: definition names the developer" || return 1
+  assert_contains "$para" "code-reviewer" "AC6: definition names the code-reviewer pair" || return 1
   assert_contains "$para" "TEST DEFECT" "AC6: definition names TEST DEFECT" || return 1
-  n=$(grep -c 'The approval answers the tests, not the developer' "$ORCH_GM")
+  n=$(grep -c "A sibling's later marker answers the sibling's work" "$ORCH_GM")
   assert_eq "$n" "1" "AC6: exactly one statement of the rule (no second rule beside it)" || return 1
+}
+
+# ------------------------------------------------------------------------------------------ #169 (claude-agents#169)
+
+test_gm_169_code_reviewer_blocked_survives_test_reviewer_pass() {
+  gm_env; gm_thread "$GM_IMPL" '**[code-reviewer] BLOCKED**' '**[test-reviewer] PASS**'
+  gm_check "169 trail" '**[code-reviewer] BLOCKED**'; local rc=$?
+  gm_cleanup; return $rc
+}
+
+test_gm_169_decision_on_the_blocked_keeps_it_as_gate() {
+  gm_env; gm_thread "$GM_IMPL" '**[code-reviewer] BLOCKED**' '**[test-reviewer] PASS**' $'**[delivery-lead] DECISION**\nResolves: https://example.test/c/2'
+  gm_check "169 decision" '**[code-reviewer] BLOCKED**' '**[delivery-lead] DECISION**'; local rc=$?
+  gm_cleanup; return $rc
+}
+
+test_gm_169_tick_holds_and_does_not_restart() {
+  gm_env
+  mk_restarting "$GM_PIPE" 42 "$GM_REPO"
+  gm_iso_ago 1300 > "$GM_PIPE/orch-42.start"
+  gm_thread "$GM_IMPL" '**[code-reviewer] BLOCKED**' '**[test-reviewer] PASS**'
+  HOME="$GM_HOME" PATH="$GM_GH:/usr/bin:/bin" PIPE="$GM_PIPE" QUEUE="$GM_PIPE/queue" LOGDIR="$GM_HOME/logs/pipeline" \
+    SLACK_BOT_TOKEN="" SLACK_ENGINEERING_CHANNEL="" "$SUP_GM" >/dev/null 2>&1
+  local held log
+  held=$([ -e "$GM_PIPE/orch-42.held" ] && echo present || echo absent)
+  log=$(cat "$GM_HOME/logs/pipeline/supervisor.log" 2>/dev/null)
+  gm_cleanup
+  assert_eq "$held" "present" "169: .held" || return 1
+  assert_not_contains "$log" "[queue-restart] #42" "169: no queue-restart" || return 1
+}
+
+test_gm_169_unchanged_cases() {
+  local rc=0
+  gm_env; gm_thread "$GM_IMPL" '**[code-reviewer] PASS**' '**[test-reviewer] PASS**'
+  gm_check "169 both pass" '**[test-reviewer] PASS**' || rc=1; gm_cleanup
+  gm_env; gm_thread "$GM_IMPL" '**[code-reviewer] BLOCKED**' '**[test-reviewer] PASS**' '**[code-reviewer] PASS**'
+  gm_check "169 same stage posts again" '**[code-reviewer] PASS**' || rc=1; gm_cleanup
+  gm_env; gm_thread '**[solutions-architect] BLOCKED**' '**[ui-ux-designer] READY**'
+  gm_check "169 design pair" '**[solutions-architect] BLOCKED**' || rc=1; gm_cleanup
+  gm_env; gm_thread "$GM_BLOCKED" "$GM_DECISION"
+  gm_check "169 developer BLOCKED + decision" "$GM_BLOCKED" "**[project-manager] DECISION**" || rc=1; gm_cleanup
+  return $rc
 }
 
 # ------------------------------------------------------------------------------------------ AC8
@@ -277,7 +319,7 @@ run_test test_gm_ac2_blocked_then_approved_then_decision_prints_blocked_and_deci
 run_test test_gm_ac2_tick_with_decision_takes_the_restart_path
 run_test test_gm_ac2_orchestrator_resume_rows_still_present
 run_test test_gm_ac3_test_defect_is_the_gate_marker
-run_test test_gm_ac3_implemented_is_the_gate_marker
+run_test test_gm_ac3_implemented_does_not_displace_approval
 run_test test_gm_ac3_latest_developer_marker_wins
 run_test test_gm_ac4_approved_without_developer_marker
 run_test test_gm_ac4_blocked_after_approved_is_the_gate_marker
@@ -287,4 +329,8 @@ run_test test_gm_ac4_post_implementation_review_markers_are_never_affected
 run_test test_gm_ac5_incident_trails_yield_blocked_from_both_places
 run_test test_gm_ac6_tests_approved_row_points_at_the_definition
 run_test test_gm_ac6_definition_names_the_exception_once
+run_test test_gm_169_code_reviewer_blocked_survives_test_reviewer_pass
+run_test test_gm_169_decision_on_the_blocked_keeps_it_as_gate
+run_test test_gm_169_tick_holds_and_does_not_restart
+run_test test_gm_169_unchanged_cases
 run_test test_gm_ac8_no_new_mechanism
