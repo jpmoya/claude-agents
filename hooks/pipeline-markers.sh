@@ -28,14 +28,21 @@ markers_for() {  # markers_for <agent> → that agent's routing markers, |-separ
 }
 
 marker_re() {  # marker_re [agent] → jq (oniguruma) regex for a valid first line; no agent = any agent, each with its own markers
-  local a alt=""
+  # jp's markers are gates: the first line must be the marker and nothing else (trailing whitespace/CR ok),
+  # the same "exactly" rule the orchestrator applies (#202). Other agents keep the `**`/`:`/space/EOL suffix.
+  local a alt="" jpalt
+  jpalt="jp\\] ($(markers_for jp))\\*\\*[[:space:]]*\$"
+  if [ "${1:-}" = jp ]; then
+    printf '^\\*\\*\\[%s' "$jpalt"; return
+  fi
   if [ -n "${1:-}" ]; then
     alt=$(markers_for "$1"); [ -n "$alt" ] || alt='BLOCKED'
     alt="$1\\] ($alt)"
   else
     # literal list, not a variable: zsh (the Mac Bash tool's shell) does not word-split unquoted variables
     for a in product-manager ux-flow-designer ui-ux-designer solutions-architect test-writer test-reviewer fullstack-developer code-reviewer deployer \
-             infra-planner infra-reviewer infra-operator jp delivery-lead project-manager intake; do alt="${alt:+$alt|}$a\\] ($(markers_for "$a"))"; done
+             infra-planner infra-reviewer infra-operator delivery-lead project-manager intake; do alt="${alt:+$alt|}$a\\] ($(markers_for "$a"))"; done
+    printf '^\\*\\*\\[((%s)(\\*\\*|:| |$)|%s)' "$alt" "$jpalt"; return
   fi
   printf '^\\*\\*\\[(%s)(\\*\\*|:| |$)' "$alt"
 }
