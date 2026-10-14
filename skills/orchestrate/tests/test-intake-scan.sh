@@ -11,6 +11,7 @@ test_is_scan_skips_feedback_labelled_issues() {
 #!/bin/bash
 echo "$*" >> "$GH_LOG"
 if [ "$1" = "issue" ] && [ "$2" = "list" ]; then
+  case "$*" in *--search*) exit 0 ;; esac   # #166 claim-comment search: no claimed issues
   expr=""; prev=""; for a in "$@"; do [ "$prev" = "--jq" ] && expr=$a; prev=$a; done
   json='[{"number":1,"title":"raw feedback","labels":[{"name":"user-feedback-intake"}]},
          {"number":2,"title":"idea awaiting spec","labels":[{"name":"user-feedback-needs-spec"}]},
