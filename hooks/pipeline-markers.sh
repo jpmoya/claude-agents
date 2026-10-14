@@ -41,3 +41,5 @@ marker_re() {  # marker_re [agent] → jq (oniguruma) regex for a valid first li
 }
 
 block_classes() { echo 'ci_pending|ci_red|merge_conflict|unsupported_project|needs_jp|dependency|cost_ceiling|other'; }  # class word on a BLOCKED comment's `Blocked on:` line (line 2); anything else reads as `other`
+parkable_classes() { echo 'ci_pending|ci_red|merge_conflict|unsupported_project|dependency|other'; }  # #250: BLOCKED classes that are not JP-only (parked, shown with a reason)
+autoretry_classes() { echo 'ci_pending|ci_red|merge_conflict|dependency'; }  # #250: the subset the supervisor re-checks and relaunches once cleared

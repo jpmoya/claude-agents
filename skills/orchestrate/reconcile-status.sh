@@ -45,6 +45,21 @@ touch "$STAMP" 2>/dev/null
 
 rc_log() { printf '[%s] %s\n' "$(date -u +%FT%TZ)" "$*" >> "$LOGDIR/supervisor.log" 2>/dev/null; }
 
+# rc_alert <issue> <what> — #250 observability: Slack webhook, tags only (release = commit SHA, environment = host,
+# route), never command output. At most one alert per RC_ALERT_SECS so an offline gh doesn't spam.
+RC_ALERT_SECS=1800
+rc_alert() {
+  [ -n "${SLACK_WEBHOOK_URL:-}" ] || return 0
+  local stamp="$PIPE/status-reconcile.alert-stamp" last rel msg
+  last=$(_rs_mtime "$stamp")
+  [ -z "$last" ] || [ $((now - last)) -ge "$RC_ALERT_SECS" ] || return 0
+  touch "$stamp" 2>/dev/null || true
+  rel=$(git -C "$RC_HERE" rev-parse --short HEAD 2>/dev/null || echo unknown)
+  msg="status reconcile failed for #$1 ($2): release=$rel environment=$(hostname -s 2>/dev/null || echo unknown) route=reconcile"
+  curl -s --max-time 10 -X POST -H 'Content-type: application/json' \
+    --data "$(jq -nc --arg t "$msg" '{text:$t}')" "$SLACK_WEBHOOK_URL" >/dev/null 2>&1 || true
+}
+
 MARKER_JQ="$(marker_last_jq)"
 changed=0
 
@@ -144,7 +159,8 @@ while IFS=$'\t' read -r issue repo state pid started last_activity restarts stag
     *) continue ;;                                             # closed (already reconciled) or unknown
   esac
 
-  info=$(cd "$repo" 2>/dev/null && gh issue view "$issue" --json state,closedAt,comments,milestone 2>/dev/null </dev/null) || continue
+  info=$(cd "$repo" 2>/dev/null && gh issue view "$issue" --json state,closedAt,comments,milestone 2>/dev/null </dev/null) \
+    || { rc_alert "$issue" "gh issue view"; continue; }
   gh_state=$(printf '%s' "$info" | jq -r '.state // empty' 2>/dev/null) || continue
   [ -n "$gh_state" ] || continue
   marker=$(printf '%s' "$info" | jq -r "$MARKER_JQ" 2>/dev/null) || marker=""
@@ -190,7 +206,7 @@ while IFS=$'\t' read -r issue repo state pid started last_activity restarts stag
   elif [ "$gh_state" = "OPEN" ]; then
     # Issue #139: per open ticket, what JP has to do (.needs), when the gate was posted (.gate_at) and
     # why it leaves Needs JP (.parked_reason). Fixed labels only — no comment text is ever stored.
-    gate_at=""; needs=""; reason=""
+    gate_at=""; needs=""; reason=""; bclass=""
     facts=$(rc_gate_facts "$info")
     if [ -n "$facts" ]; then
       IFS=$'\t' read -r gate_at answered line2 <<RCFACTS
@@ -205,7 +221,12 @@ RCFACTS
         "AWAITING GO") needs="Say go" ;;
         "EFFORT APPROVAL NEEDED") needs="Approve effort" ;;
         "BLOCKED")
-          if printf '%s' "$line2" | grep -Eqi 'credential|token|secret|api key|password|access'; then
+          # Issue #250: a BLOCKED whose line 2 names a machine-clearable class is not a JP gate.
+          bclass=$(printf '%s' "$line2" | sed -n 's/^Blocked on: \([a-z_][a-z_]*\)\( .*\)\{0,1\}$/\1/p')
+          case "|$(parkable_classes)|" in *"|$bclass|"*) ;; *) bclass="" ;; esac
+          if [ -n "$bclass" ]; then
+            reason="auto_retry"
+          elif printf '%s' "$line2" | grep -Eqi 'credential|token|secret|api key|password|access'; then
             needs="Missing credential"
           else
             needs="Decision needed"
@@ -220,6 +241,7 @@ RCFACTS
     rc_set "$PIPE/orch-$issue.gate_at" "$gate_at"
     rc_set "$PIPE/orch-$issue.needs" "$needs"
     rc_set "$PIPE/orch-$issue.parked_reason" "$reason"
+    rc_set "$PIPE/orch-$issue.block_class" "$bclass"
   fi
 done <<EOF
 $records

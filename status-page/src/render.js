@@ -100,6 +100,20 @@ const needsCells = (run) => {
   cells.splice(2, 0, esc(run.needs));
   return cells;
 };
+const BLOCK_LABELS = {
+  ci_pending: 'CI/billing',
+  ci_red: 'CI/billing',
+  merge_conflict: 'merge conflict',
+  dependency: 'waiting on dependency',
+  unsupported_project: 'other',
+  other: 'other',
+};
+const parkedCells = (run) => {
+  const cells = runCells(run);
+  const label = BLOCK_LABELS[run.block_class];
+  if (label) cells[5] = `${esc(run.marker)} — ${esc(label)}`; // fixed reason in the existing Marker cell
+  return cells;
+};
 const listCells = (item) => [`#${esc(item.issue)}`, renderTicketCell(item), esc(formatCet(item.updated_at))];
 const doneCells = (item) => [
   `#${esc(item.issue)}`,
@@ -112,6 +126,7 @@ const doneCells = (item) => [
 // Group heading -> table layout. Headings come from group.js; anything unlisted gets the run layout.
 const LAYOUTS = {
   'Needs JP': { columns: NEEDS_COLUMNS, cells: needsCells },
+  Parked: { columns: RUN_COLUMNS, cells: parkedCells },
   'Approved, waiting for a slot': { columns: LIST_COLUMNS, cells: listCells },
   'On staging (awaiting production)': { columns: LIST_COLUMNS, cells: listCells },
   Done: { columns: DONE_COLUMNS, cells: doneCells },

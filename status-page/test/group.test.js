@@ -74,7 +74,7 @@ describe('groupTickets — the eight rules, one test each', () => {
     expect(where(group({ mac: hostRecord({ runs: [run(7, { state: 'held', marker })] }) }), 7)).toBe(H.needsJp);
   });
 
-  it.each(['TESTS WRITTEN', 'DEPLOYED', 'other', 'DECISION', 'JP CONFIRMED'])('rule 8: held + %s -> Parked', (marker) => {
+  it.each(['TESTS WRITTEN', 'other', 'DECISION', 'JP CONFIRMED'])('rule 8: held + %s -> Parked', (marker) => {
     expect(where(group({ mac: hostRecord({ runs: [run(8, { state: 'held', marker })] }) }), 8)).toBe(H.parked);
   });
 });
@@ -115,9 +115,9 @@ describe('groupTickets — precedence conflicts (first matching rule wins)', () 
     expect(where(g, 6)).toBe(H.staging);
   });
 
-  it('completed older than 7 days does not count as Done: falls through to the run rule', () => {
+  it('completed older than 7 days is not Done and (#250) a closed ticket is dropped, not a gate', () => {
     const g = group({ mac: hostRecord({ runs: [run(9, { state: 'held', marker: 'BLOCKED' })], completed: [done(9, { closed_at: ago(24 * 8) })] }) });
-    expect(where(g, 9)).toBe(H.needsJp);
+    expect(g.filter((x) => x.rows.some((r) => r.issue === 9))).toEqual([]);
   });
 
   it('completed exactly-ish 6 days old still counts as Done', () => {

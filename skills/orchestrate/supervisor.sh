@@ -610,6 +610,92 @@ json.dump({'issue':'$issue','repo':'$repo','extra':'''$extra''','reason':'auto-r
   report_status_async "queue-restart"   # event push: run exited -> requeued (design #10 §4.4)
 done
 
+# 1b. Auto-retry (#250): a .held run whose latest gate is a BLOCKED of a machine-clearable class
+# (autoretry_classes in hooks/pipeline-markers.sh) is requeued once the cause has cleared. At most
+# AUTORETRY_MAX per run, one cause-check per AUTORETRY_THROTTLE_SECS per run. Never touches JP gates
+# (needs_jp, unparsable class, other, unsupported_project, AWAITING GO, EFFORT, MOCKUPS, spend hold).
+AUTORETRY_MAX=3
+AUTORETRY_THROTTLE_SECS=1800
+
+autoretry_alert() {  # <issue> <what> — Slack webhook, tags only (release = commit SHA); never command output
+  [ -n "${SLACK_WEBHOOK_URL:-}" ] || return 0
+  local rel msg
+  rel=$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --short HEAD 2>/dev/null || echo unknown)
+  msg="auto-retry check failed for #$1 ($2): release=$rel environment=$(hostname -s 2>/dev/null || echo unknown) route=supervisor/auto-retry"
+  curl -s --max-time 10 -X POST -H 'Content-type: application/json' \
+    --data "$(jq -nc --arg t "$msg" '{text:$t}')" "$SLACK_WEBHOOK_URL" >/dev/null 2>&1 || true
+}
+
+# autoretry_cleared <repo> <issue> <class> <issue json> — 0 cleared, 1 not cleared, 2 error (reason in AR_ERR)
+autoretry_cleared() {
+  local repo=$1 issue=$2 cls=$3 info=$4 prs pr mergeable dep rc deps
+  AR_ERR=""
+  case "$cls" in
+    dependency)
+      deps=$(printf '%s' "$info" | jq -r '.body // ""' | sed -n 's/^[Dd]epends on #\([0-9][0-9]*\).*/\1/p')
+      [ -n "$deps" ] || return 1
+      for dep in $deps; do
+        [ "$(cd "$repo" && gh issue view "$dep" --json state --jq .state 2>/dev/null </dev/null)" = "CLOSED" ] || return 1
+      done
+      return 0 ;;
+    ci_*|merge_conflict)
+      prs=$(cd "$repo" && gh pr list --state open --limit 100 --json number,headRefName,mergeable 2>/dev/null </dev/null) \
+        || { AR_ERR="pr list"; return 2; }
+      pr=$(printf '%s' "$prs" | jq -r --arg p "issue-$issue-" '[.[] | select(.headRefName | startswith($p))][0] // empty | "\(.number) \(.mergeable)"' 2>/dev/null) \
+        || { AR_ERR="pr list parse"; return 2; }
+      [ -n "$pr" ] || return 1
+      mergeable=${pr#* }; pr=${pr%% *}
+      if [ "$cls" = merge_conflict ]; then
+        [ "$mergeable" != "CONFLICTING" ]; return $?
+      fi
+      (cd "$repo" && gh pr checks "$pr" >/dev/null 2>&1 </dev/null); rc=$?
+      case "$rc" in 0) return 0 ;; 1|8) return 1 ;; *) AR_ERR="pr checks rc=$rc"; return 2 ;; esac ;;
+  esac
+  return 1
+}
+
+for f in "$PIPE"/orch-*.held; do
+  [ -e "$f" ] || break
+  issue=$(basename "$f" .held); issue=${issue#orch-}
+  repo=$(cat "$PIPE/orch-$issue.repo" 2>/dev/null || echo "")
+  [ -n "$repo" ] || continue
+  [ -f "$PIPE/orch-$issue.stopped" ] || [ -f "$PIPE/orch-$issue.done" ] && continue
+  n=$(tr -dc '0-9' < "$PIPE/orch-$issue.autoretry" 2>/dev/null); n=${n:-0}
+  [ "$n" -lt "$AUTORETRY_MAX" ] || continue
+  stamp="$PIPE/orch-$issue.autoretry-check"
+  last=$(file_mtime "$stamp")
+  if [ -n "$last" ] && [ $(( $(date +%s) - last )) -lt "$AUTORETRY_THROTTLE_SECS" ]; then continue; fi
+  touch "$stamp" 2>/dev/null || true   # throttle failed checks too
+
+  info=$(cd "$repo" && gh issue view "$issue" --json state,body,comments 2>/dev/null </dev/null) \
+    || { slog "[auto-retry] #$issue — issue read failed"; autoretry_alert "$issue" "issue view"; continue; }
+  [ "$(printf '%s' "$info" | jq -r '.state // empty')" = "OPEN" ] || continue
+  cls=$(printf '%s' "$info" | jq -r --arg re "$(marker_re)" '
+    ([(.comments // [])[] | select(.body | split("\n")[0] | test($re))] | last) as $g
+    | if $g == null or ($g.body | split("\n")[0] | test("\\] BLOCKED(\\*\\*|:| |$)") | not) then empty
+      else (($g.body | split("\n")[1] // "") | capture("^Blocked on: (?<w>[a-z_]+)( |$)") | .w) // empty end' 2>/dev/null)
+  case "|$(autoretry_classes)|" in *"|$cls|"*) ;; *) continue ;; esac
+
+  autoretry_cleared "$repo" "$issue" "$cls" "$info"; rc=$?
+  if [ "$rc" -eq 2 ]; then
+    slog "[auto-retry] #$issue — $cls check failed: $AR_ERR"
+    autoretry_alert "$issue" "$AR_ERR"
+    continue
+  fi
+  [ "$rc" -eq 0 ] || continue
+
+  n=$((n + 1))
+  echo "$n" > "$PIPE/orch-$issue.autoretry"
+  rm -f "$PIPE/orch-$issue.held" "$PIPE/orch-$issue.alert"
+  python3 -c "
+import json
+json.dump({'issue':'$issue','repo':'$repo','extra':'','reason':'queued','queued_at':'$(date -u +%FT%TZ)','not_before':0}, open('$QUEUE/orch-$issue.json','w'))
+" 2>/dev/null
+  (cd "$repo" && gh issue comment "$issue" --body "**[supervisor] NOTE** auto-retry $n/$AUTORETRY_MAX: $cls cleared" >/dev/null 2>&1 </dev/null) || true
+  slog "[auto-retry] #$issue — $cls cleared, relaunching ($n/$AUTORETRY_MAX)"
+  report_status_async "auto-retry"
+done
+
 # 2. Drain queue (one item per tick, oldest queued_at first)
 # Capacity is decided once per tick; the drain and the dispatch step (5) share the result, so a slot freed
 # mid-tick never goes to a new agent-go issue while a queued ticket waits.
