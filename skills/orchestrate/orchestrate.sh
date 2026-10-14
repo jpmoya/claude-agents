@@ -139,12 +139,22 @@ except Exception: print('?')
        && (cd "$REPO" && gh issue view "$ISSUE" --json labels --jq '[.labels[].name] | index("'"$LABEL_IN_PROGRESS"'") != null' 2>/dev/null | grep -q true); then
       echo "#$ISSUE carries $LABEL_IN_PROGRESS but nothing is running here — running elsewhere? check the other machine's status, or --force" >&2; exit 1
     fi
-    rm -f "$QUEUE/orch-$ISSUE.json"   # a manual launch supersedes a queued one; never both
     # Launching consumes agent-go (the shared-dispatch pool) and claims the issue for this machine. Crash restarts are
     # the local supervisor's job, not the label's; the supervisor drops agent-in-progress when the run is done or parked.
     (cd "$REPO" && gh issue edit "$ISSUE" --add-label "$LABEL_IN_PROGRESS" --remove-label "$LABEL_GO" 2>/dev/null) || true
     # Post the owner claim (same format as shared dispatch) so the other machine's reconcile leaves the label alone.
     (cd "$REPO" && gh issue comment "$ISSUE" --body "**[supervisor] NOTE** claim: $(hostname -s) $(date -u +%FT%TZ)" >/dev/null 2>&1) || true
+    # Arbitrate like shared dispatch (#217): earliest claim inside the window wins. --force is the deliberate takeover
+    # (dispatch already arbitrated). Unreadable comments fail closed. Losing leaves agent-in-progress to the winner.
+    if [ "$FORCE" -eq 0 ]; then
+      sleep "$CLAIM_SETTLE_SECS"
+      if WINNER=$(claim_winner "$REPO" "$ISSUE"); then
+        [ "$WINNER" = "$(hostname -s)" ] || { echo "#$ISSUE lost claim to ${WINNER:-?} — running there; use --force to take over" >&2; exit 1; }
+      else
+        echo "#$ISSUE could not read claims to arbitrate — refusing; retry, or --force to take over" >&2; exit 1
+      fi
+    fi
+    rm -f "$QUEUE/orch-$ISSUE.json"   # a manual launch supersedes a queued one; never both
     # Clear tombstones and restart state on manual launch
     rm -f "$PIPE/orch-$ISSUE".{stopped,held,done,closed,release,marker,milestone,alert,label-cleared,start,exit,exit-logged} "$PIPE/orch-$ISSUE.restarts"
     # Persist on both the launch and queued paths: supervisor.sh rebuilds the queue JSON from this file.

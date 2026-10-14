@@ -176,6 +176,11 @@ emit() {  # emit <json> <args...> — apply --jq if present, else print the raw 
 
 case "$*" in
   "issue comment"*)
+    # #217: a posted claim is readable back via `issue view --json comments` (hand launch arbitrates on it).
+    case "$*" in *"**[supervisor] NOTE** claim: "*)
+      jq -nc --arg b "$(printf '%s' "$*" | sed -n 's/.*--body \(\*\*\[supervisor\] NOTE\*\* claim: [^ ]* [^ ]*\).*/\1/p')" \
+        --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{body:$b,createdAt:$t}' >> "$HERE/gh-claims.jsonl" ;;
+    esac
     exit 0
     ;;
   *"repo view"*"--repo "*)
@@ -246,6 +251,9 @@ case "$*" in
         '. + {comments: [{body: $body, createdAt: "2026-01-01T00:00:00Z"}]}')
     elif case "$*" in *closedAt*) true ;; *) false ;; esac; then
       json=$(printf '%s' "$json" | jq '. + {comments: []}')   # like real gh: a requested comments field is always present
+    fi
+    if [ -s "$HERE/gh-claims.jsonl" ]; then
+      json=$(printf '%s' "$json" | jq --slurpfile c "$HERE/gh-claims.jsonl" '. + {comments: ((.comments // []) + $c)}')
     fi
     if case "$*" in *milestone*) true ;; *) false ;; esac; then   # additive (#65): gh-issue-milestone[-n] = title; absent -> null
       if [ -f "$(pick gh-issue-milestone)" ]; then

@@ -16,6 +16,7 @@ if [ "${PIPE:-}" = "/tmp/pipeline" ]; then
   exit 2
 fi
 unset PIPE QUEUE LOGDIR
+export CLAIM_SETTLE_SECS=0   # #217: hand launches wait the settle window; suites need not pay it (hand-launch test pins its own)
 
 . "$HERE/lib/assert.sh"
 . "$HERE/lib/fixture.sh"

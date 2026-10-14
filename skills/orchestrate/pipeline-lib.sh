@@ -90,5 +90,15 @@ log_run_launch() {
   return 0
 }
 
-# claim_winner <local_path> <issue> — STUB (#217): prints the host of the earliest claim inside CLAIM_WINDOW_SECS.
-claim_winner() { echo "claim_winner: NotImplemented" >&2; return 1; }
+# claim_winner <local_path> <issue> — prints the host of the earliest "**[supervisor] NOTE** claim: <host> <ts>" comment
+# inside CLAIM_WINDOW_SECS (empty if none). Shared by dispatch and hand launch (#217). A failed comment read returns 1,
+# prints nothing and records a claim_lookup_failed event (issue number only), so callers fail closed.
+claim_winner() {
+  local path=$1 issue=$2 cutoff out
+  cutoff=$(python3 -c "import datetime,sys; print((datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(seconds=int(sys.argv[1]))).strftime('%Y-%m-%dT%H:%M:%SZ'))" "${CLAIM_WINDOW_SECS:-600}") \
+    || { pipeline_event claim_lookup_failed --argjson issue "${issue:-0}" --arg stage cutoff; return 1; }
+  out=$(cd "$path" && gh issue view "$issue" --json comments \
+    --jq "[.comments[] | select(.body | startswith(\"**[supervisor] NOTE** claim: \")) | select(.createdAt > \"$cutoff\")] | sort_by(.createdAt) | first | .body // \"\"" 2>/dev/null) \
+    || { pipeline_event claim_lookup_failed --argjson issue "${issue:-0}" --arg stage gh; return 1; }
+  printf '%s\n' "$out" | awk '{print $4}'
+}

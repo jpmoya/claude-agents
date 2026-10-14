@@ -30,7 +30,7 @@ SENTRY_AUTO_GO=0
 DISPATCH_REPOS=()
 # Scanned by scan-backlog.sh, never dispatched. "owner/repo" entries; a ":path" suffix is tolerated and ignored.
 SCAN_ONLY_REPOS=()
-CLAIM_SETTLE_SECS=15       # wait after posting a claim before checking who was first
+CLAIM_SETTLE_SECS=${CLAIM_SETTLE_SECS:-15}       # wait after posting a claim before checking who was first
 CLAIM_WINDOW_SECS=600      # claims older than this are ignored
 
 # Log rotation (rotate-logs.sh, issue #141) and the per-ticket cost ceiling (stage-run.sh)
