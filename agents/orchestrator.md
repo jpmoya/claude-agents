@@ -165,6 +165,8 @@ The locked tests are the spec the developer must satisfy without touching. Three
 
 **Writing the lock (on `TESTS APPROVED`):** take the `Locked test files:` fenced block from the latest `[test-writer] TESTS WRITTEN` comment and the sha the test-reviewer says it approved. Write the paths, one per line, to `/tmp/pipeline/locked-<issue>.txt`, and note the sha in the run log. Export `PIPELINE_LOCKED_TESTS_FILE=/tmp/pipeline/locked-<issue>.txt` in the shell that launches fullstack-developer (and every fix cycle). Without the export the hook is inert.
 
+**Staging merge touching a locked test:** on a full-lane ticket with a lock file, when the PR branch must absorb `origin/staging`, run `git diff --name-only $(git merge-base origin/<branch> origin/staging) origin/staging -- $(cat /tmp/pipeline/locked-<issue>.txt)`. Empty → the merge goes to the developer as today. Non-empty → the developer's hook would refuse the merge commit, so route: (1) **test-writer**, one round, **without** exporting `PIPELINE_LOCKED_TESTS_FILE`, doing a real `git merge origin/staging` (no rebase, no force-push) and ending in `TESTS WRITTEN` with the same `Locked test files:` block and the new head sha; (2) **test-reviewer** in pre-implementation mode on that commit; (3) **fullstack-developer**, one cycle. This test-writer merge round is not a developer fix cycle and does not count against the 2-cycle caps below; the existing `TESTS WRITTEN` / `TESTS APPROVED` rows rewrite the lock file and the approved sha.
+
 **Checking the lock (on every `IMPLEMENTED` and after every fix cycle):**
 
 ```bash
