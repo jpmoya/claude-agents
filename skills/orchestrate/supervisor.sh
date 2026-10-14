@@ -888,8 +888,16 @@ if [ "$launched" -eq 0 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
       [ "$launched" -ge 1 ] && break
       owner_repo="${entry%%:*}"; local_path="${entry#*:}"; local_path="${local_path/#\~/$HOME}"
       if [ ! -d "$local_path/.git" ]; then slog "[dispatch] $owner_repo — no local checkout at $local_path, skipping"; continue; fi
-      candidates=$(gh issue list --repo "$owner_repo" --state open --label "$LABEL_GO" --limit 50 --json number,labels \
-        --jq ".[] | select([.labels[].name] | index(\"$LABEL_IN_PROGRESS\") | not) | .number" 2>/dev/null) || continue
+      # Release order (#247): in-progress dropped server-side before the 50 cap (and again in jq), then sort by milestone
+      # vX.Y.Z numerically asc, then issue number asc; no / staging / non-version milestone last. A malformed milestone sorts last.
+      candidates=$(gh issue list --repo "$owner_repo" --state open --label "$LABEL_GO" --limit 50 \
+        --search "-label:\"$LABEL_IN_PROGRESS\"" --json number,labels,milestone \
+        --jq "[.[] | select([.labels[].name] | index(\"$LABEL_IN_PROGRESS\") | not)]
+          | map(. as \$i | ((\$i.milestone.title? // \"\") | capture(\"^v(?<a>[0-9]+)\\\\.(?<b>[0-9]+)\\\\.(?<c>[0-9]+)\") // null) as \$v
+            | {n: \$i.number, k: (if \$v then [0, (\$v.a|tonumber), (\$v.b|tonumber), (\$v.c|tonumber), \$i.number] else [1, 0, 0, 0, \$i.number] end)})
+          | sort_by(.k) | .[].n" 2>/dev/null) || continue
+      cand_n=$(printf '%s\n' "$candidates" | grep -c '[0-9]')
+      [ "$cand_n" -ge 50 ] && slog "[dispatch] $owner_repo — candidate list reached the 50 cap; later tickets are not visible this tick"
       for num in $candidates; do
         # local state: alive or queued here → not a candidate
         if [ -f "$PIPE/orch-$num.pid" ] && kill -0 "$(cat "$PIPE/orch-$num.pid")" 2>/dev/null; then continue; fi
@@ -907,7 +915,7 @@ if [ "$launched" -eq 0 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
         # Won: a re-dispatch is JP's explicit "go again", so clear local tombstones like a manual launch does.
         rm -f "$PIPE/orch-$num".{stopped,held,done,closed,marker,milestone,alert,label-cleared} "$PIPE/orch-$num.restarts"
         out=$(LAUNCH_REASON=agent-go "$(dirname "${BASH_SOURCE[0]}")/orchestrate.sh" --force "$local_path" "$num" 2>&1 | tail -1)
-        slog "[dispatch] $owner_repo#$num — claimed by $HOST, $out"
+        slog "[dispatch] $owner_repo#$num — claimed by $HOST, candidates=$cand_n, $out"
         launched=1
         break
       done
