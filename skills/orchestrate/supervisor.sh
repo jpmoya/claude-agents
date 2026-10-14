@@ -502,7 +502,7 @@ PY
 
   # Deliberate stop: the run that just ended logged a validate fail of a deliberate-stop stage (start-gate, closed PR, refused delegated decision, loop cap).
   # A restart cannot heal it — hold instead of looping to MAX_TOTAL. Other stages (concurrency-gate, ...) still restart.
-  # "This run" = ts >= .launched-at. One list of stage values: structural (claude-agents#92), delegated-decision, loop-cap (#88).
+  # "This run" = ts >= .launched-at. One list of stage values: structural (claude-agents#92), delegated-decision, loop-cap (#88), hand-to-jp (#129).
   since=$(cat "$PIPE/orch-$issue.launched-at" 2>/dev/null || cat "$PIPE/orch-$issue.start" 2>/dev/null)   # this launch's start (no GNU date -d: BSD date lacks it)
   found_stage=""
   if [ -n "$since" ] && [ -f "$HOME/.claude/pipeline/runs.jsonl" ]; then
@@ -513,7 +513,7 @@ for line in open(path):
     try: r = json.loads(line)
     except ValueError: continue
     if (r.get("issue") == issue and r.get("event") == "validate" and r.get("result") == "fail"
-            and r.get("stage") in ("structural", "delegated-decision", "loop-cap") and str(r.get("ts", "")) >= since):
+            and r.get("stage") in ("structural", "delegated-decision", "loop-cap", "hand-to-jp") and str(r.get("ts", "")) >= since):
         print(r.get("stage"))
         break
 PY
@@ -524,9 +524,14 @@ PY
     case "$found_stage" in
       loop-cap) hold_reason="loop-cap stop" ;;
       delegated-decision) hold_reason="refused delegated decision" ;;
+      hand-to-jp) hold_reason="hand-to-jp: PR passed review, waiting on JP's merge" ;;
       *) hold_reason="structural stop (start-gate / closed PR)" ;;
     esac
     slog "[held] #$issue — $hold_reason, needs a relaunch after it is resolved"
+    if [ "$found_stage" = "hand-to-jp" ]; then   # route supervisor/hold/hand-to-jp; payload = issue number + stage only
+      notify_engineering "$issue" ":hand:" "Waiting on you — hand-to-jp, PR passed review (route supervisor/hold/hand-to-jp)" \
+        "$(cd "$repo" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo "unknown")"
+    fi
     report_status_async "held"
     continue
   fi
