@@ -5,7 +5,7 @@
 # Arithmetic (from the design, issue #4 §3 / #10 Design — the developer's PR re-verifies the cap
 # against Cloudflare's live limits page; that re-verification itself is not something a test can
 # perform, so it's called out as a developer obligation in the handoff, not asserted here):
-#   MIN_PUSH_INTERVAL_SECS=10, KEEPALIVE_SECS=600, MAX_PUSHES_PER_DAY=400 (per host).
+#   MIN_PUSH_INTERVAL_SECS=max(10,ceil(86400/cap))=216, KEEPALIVE_SECS=600, MAX_PUSHES_PER_DAY=400 (per host).
 #   Keep-alive: 86400/600 = 144 writes/host/day -> 288/day for both hosts (29% of the 1,000/day cap).
 #   Events: ~10-14 per run x 5-15 runs/host/day, coalesced at 10s -> ~264/host (~53% of cap).
 #   Hard ceiling: 2 x 400 = 800/day (80% of cap) whatever the event storm.
@@ -99,8 +99,8 @@ json.dump({'last_hash':'not-the-real-hash','last_push_epoch':0,'last_attempt_epo
   assert_eq "$calls" "1" "AC12: a capped count from a PRIOR UTC day must reset on rollover and push again" || return 1
 }
 
-test_ac12_two_pushes_under_10s_apart_coalesce_to_one_curl() {
-  # The coalescing half of the arithmetic: MIN_PUSH_INTERVAL_SECS=10 absorbs a burst.
+test_ac12_two_pushes_under_interval_apart_coalesce_to_one_curl() {
+  # The coalescing half of the arithmetic: the derived interval (216 s at cap 400) absorbs a burst.
   local pipe home bindir day t rc1 rc2 calls
   pipe=$(new_pipe); home=$(new_home); bindir=$(mktemp -d "${TMPDIR:-/tmp}/orch-test-bin.XXXXXX")
   setup_pushable_fixture "$pipe" "$home"
@@ -117,7 +117,7 @@ json.dump({'last_hash':'not-the-real-hash','last_push_epoch':$t,'last_attempt_ep
 
   assert_exit0 "$rc1" "AC12: coalesced call still exits 0" || return 1
   assert_exit0 "$rc2" "AC12: coalesced call still exits 0" || return 1
-  assert_eq "$calls" "0" "AC12: two attempts <10s after the last attempt, with an unchanged fixture, coalesce to zero new curls" || return 1
+  assert_eq "$calls" "0" "AC12: two attempts < derived interval after the last attempt, with an unchanged fixture, coalesce to zero new curls" || return 1
 }
 
 test_ac12_constants_match_the_arithmetic_in_a_comment() {
@@ -125,16 +125,62 @@ test_ac12_constants_match_the_arithmetic_in_a_comment() {
   # excluded (the AC12 arithmetic comment itself is allowed to name them in prose elsewhere).
   local code hit
   code=$(grep -vE '^[[:space:]]*#' "$RS_AC12/report-status.sh")
-  hit=$(echo "$code" | grep -c 'MIN_PUSH_INTERVAL_SECS=10')
-  assert_ne "$hit" "0" "AC12: MIN_PUSH_INTERVAL_SECS=10 must be present as a named constant (in real code, not just a comment)" || return 1
+  hit=$(echo "$code" | grep -c 'MIN_PUSH_INTERVAL_SECS=\$_min_gap')
+  assert_ne "$hit" "0" "AC12: MIN_PUSH_INTERVAL_SECS must be derived from ceil(86400/MAX_PUSHES_PER_DAY) (real code, not a comment)" || return 1
   hit=$(echo "$code" | grep -c 'KEEPALIVE_SECS=600')
   assert_ne "$hit" "0" "AC12: KEEPALIVE_SECS=600 must be present as a named constant (in real code, not just a comment)" || return 1
   hit=$(echo "$code" | grep -c 'MAX_PUSHES_PER_DAY=400')
   assert_ne "$hit" "0" "AC12: MAX_PUSHES_PER_DAY=400 must be present as a named constant (in real code, not just a comment)" || return 1
 }
 
+_ac12_run_with_attempt_age() {  # <age_secs> -> prints curl call count after one run with last_attempt that many secs ago
+  local age=$1 pipe home bindir day t calls
+  pipe=$(new_pipe); home=$(new_home); bindir=$(mktemp -d "${TMPDIR:-/tmp}/orch-test-bin.XXXXXX")
+  setup_pushable_fixture "$pipe" "$home"
+  write_counting_fake_curl "$bindir"
+  day=$(today_utc); t=$(now_epoch)
+  # last_push is fresh (keep-alive cannot fire); only the hash change + interval decide
+  python3 -c "
+import json
+json.dump({'last_hash':'not-the-real-hash','last_push_epoch':$t,'last_attempt_epoch':$t-$age,'day':'$day','count':1,'fails':0,'last_status':'204'}, open('$pipe/status-push.state','w'))
+"
+  ( PIPE="$pipe" QUEUE="$pipe/queue" HOME="$home" PATH="$bindir:/usr/bin:/bin" "$RS_AC12/report-status.sh" event )
+  calls=$(count_curl_calls "$bindir")
+  cleanup_running; rm -rf "$pipe" "$home" "$bindir"
+  echo "$calls"
+}
+
+test_ac12_changed_payload_inside_86400_over_cap_is_coalesced() {
+  # cap 400 -> 216 s: 200 s after the last attempt a changed payload must NOT push
+  assert_eq "$(_ac12_run_with_attempt_age 200)" "0" "#240: changed payload 200 s after last attempt (< 216) coalesces to zero curls" || return 1
+}
+
+test_ac12_changed_payload_past_86400_over_cap_pushes() {
+  assert_eq "$(_ac12_run_with_attempt_age 220)" "1" "#240: changed payload 220 s after last attempt (>= 216) pushes once" || return 1
+}
+
+test_ac12_failed_push_is_logged() {
+  # observability: a forced curl failure is captured by the script's existing rs_log mechanism
+  local pipe home bindir day log
+  pipe=$(new_pipe); home=$(new_home); bindir=$(mktemp -d "${TMPDIR:-/tmp}/orch-test-bin.XXXXXX")
+  setup_pushable_fixture "$pipe" "$home"
+  printf '#!/bin/bash\nexit 7\n' > "$bindir/curl"; chmod +x "$bindir/curl"
+  day=$(today_utc)
+  python3 -c "
+import json
+json.dump({'last_hash':'x','last_push_epoch':0,'last_attempt_epoch':0,'day':'$day','count':1,'fails':0,'last_status':''}, open('$pipe/status-push.state','w'))
+"
+  ( PIPE="$pipe" QUEUE="$pipe/queue" HOME="$home" PATH="$bindir:/usr/bin:/bin" "$RS_AC12/report-status.sh" event )
+  log=$(grep -rah "push failed" "$pipe" "$home" 2>/dev/null | head -1)
+  cleanup_running; rm -rf "$pipe" "$home" "$bindir"
+  assert_ne "$log" "" "#240: a forced curl failure writes a 'push failed' line" || return 1
+}
+
 run_test test_ac12_under_daily_cap_pushes
 run_test test_ac12_at_daily_cap_never_pushes
 run_test test_ac12_utc_day_rollover_resets_counter_and_pushes
-run_test test_ac12_two_pushes_under_10s_apart_coalesce_to_one_curl
+run_test test_ac12_two_pushes_under_interval_apart_coalesce_to_one_curl
 run_test test_ac12_constants_match_the_arithmetic_in_a_comment
+run_test test_ac12_changed_payload_inside_86400_over_cap_is_coalesced
+run_test test_ac12_changed_payload_past_86400_over_cap_pushes
+run_test test_ac12_failed_push_is_logged
