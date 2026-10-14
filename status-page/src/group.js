@@ -9,6 +9,8 @@ const PARKED_MAX_AGE_SECS = 7 * DAY_SECS;
 const NEEDS_JP_MAX_AGE_SECS = 14 * DAY_SECS;
 const NEEDS_JP_MARKERS = ['MOCKUPS PENDING APPROVAL', 'AWAITING GO', 'EFFORT APPROVAL NEEDED', 'BLOCKED'];
 
+const FINISHED_MARKERS = ['DEPLOYED', 'DEPLOYED TO STAGING', 'APPLIED', 'SPLIT'];
+
 const HOST_ORDER = ['mac', 'vm']; // tie -> Mac
 
 const HEADINGS = {
@@ -88,7 +90,7 @@ function groupNeedsJp(rows) {
  * max(gate_at, last_activity_at) is older than 14 days. No timestamp at all -> stays.
  */
 function isDemoted(run, nowEpochSecs) {
-  if (run.parked_reason === 'answered' || run.parked_reason === 'out_of_scope') return true;
+  if (run.parked_reason === 'answered' || run.parked_reason === 'out_of_scope' || run.parked_reason === 'auto_retry') return true;
   const stamps = [epoch(run.gate_at), epoch(run.last_activity_at)].filter((t) => t !== null);
   if (stamps.length === 0) return false;
   return nowEpochSecs - Math.max(...stamps) > NEEDS_JP_MAX_AGE_SECS;
@@ -117,6 +119,9 @@ export function groupTickets(hosts, nowEpochSecs) {
     const closed = epoch(item.closed_at);
     return closed !== null && nowEpochSecs - closed <= DONE_RETENTION_SECS;
   });
+  // Any completed[] entry (even past the 7-day Done window) means the ticket is closed.
+  const closedKeys = new Set();
+  for (const hostKey of HOST_ORDER) for (const item of listOf(hosts[hostKey], 'completed')) closedKeys.add(keyOf(item));
   const approved = mergeList(hosts, 'approved', 'updated_at');
   const staging = mergeList(hosts, 'staging', 'updated_at');
 
@@ -132,6 +137,7 @@ export function groupTickets(hosts, nowEpochSecs) {
     else if (staging.has(key)) groups.staging.push(staging.get(key));
     else if (run && run.state === 'restarting') groups.running.push(run);
     else if (run && run.state === 'held') {
+      if (FINISHED_MARKERS.includes(run.marker) || closedKeys.has(key)) continue; // finished or closed: never a gate
       if (NEEDS_JP_MARKERS.includes(run.marker) && !isDemoted(run, nowEpochSecs)) groups.needsJp.push(run);
       else if (NEEDS_JP_MARKERS.includes(run.marker)) groups.parked.push(run); // demoted: exempt from the 7-day hide
       else {

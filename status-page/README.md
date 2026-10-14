@@ -47,7 +47,14 @@ Mac). The first matching rule decides the group:
      `SCAN_ONLY_REPOS`;
    - **stale**: `max(gate_at, last_activity_at)` older than 14 days (missing `gate_at` falls back to
      `last_activity_at`; both missing → stays); applied by `group.js`.
+   - **auto retry** (issue #250): host set `parked_reason: "auto_retry"` — a `BLOCKED` whose `Blocked on:`
+     class is not JP-only (`ci_pending`, `ci_red`, `merge_conflict`, `dependency`, `unsupported_project`,
+     `other`); the supervisor re-checks and relaunches it itself. A missing or unparsable class stays Needs JP.
    (A closed or released issue is already **Done**.)
+
+   Before rule 7 (issue #250): a `held` run whose marker is `DEPLOYED`, `DEPLOYED TO STAGING`, `APPLIED` or
+   `SPLIT`, or whose key is in any `completed[]` (even past the 7-day Done window), is dropped from Needs JP and
+   Parked (Done if still inside the window, else omitted).
 8. any other `held` → **Parked** (a `BLOCKED` answered by `DECISION` / `JP CONFIRMED` lands here)
 
 A row demoted by rule 7 is exempt from Parked's 7-day hide; Parked's cap of 10 still applies.
@@ -76,7 +83,8 @@ Payload (`v` stays 1, every new key optional; the host half is #65):
 - `runs[].needs` (one of `Approve mockups`, `Say go`, `Approve effort`, `Missing credential`,
   `Decision needed`; `BLOCKED` → `Missing credential` when its `Blocked on:` line matches
   `credential|token|secret|api key|password|access`), `runs[].gate_at` (ISO-8601 Z) and
-  `runs[].parked_reason` (`answered` | `out_of_scope`): all optional, unknown values dropped, no
+  `runs[].parked_reason` (`answered` | `out_of_scope` | `auto_retry`) and `runs[].block_class` (fixed class, shown on
+  Parked rows as `CI/billing`, `merge conflict`, `waiting on dependency` or `other` in the Marker cell): all optional, unknown values dropped, no
   comment text is ever published. An old payload without them renders an empty `Needs` cell.
 - `completed[].release`, kept only if it matches `^v\d+\.\d+\.\d+$`.
 - `DECISION` and `JP CONFIRMED` are known markers.

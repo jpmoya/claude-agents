@@ -155,7 +155,8 @@ def build_list(kind):
 
 
 NEEDS_LABELS = ("Approve mockups", "Say go", "Approve effort", "Missing credential", "Decision needed")
-PARKED_REASONS = ("answered", "out_of_scope")
+PARKED_REASONS = ("answered", "out_of_scope", "auto_retry")
+BLOCK_CLASS_RE = re.compile(r"^[a-z_]{1,30}$")  # the class list lives in hooks/pipeline-markers.sh; status-page validate drops unknowns
 ISO_Z_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 
 
@@ -351,6 +352,9 @@ for raw in sys.stdin:
     parked_reason = state_file_for(issue, "parked_reason")
     if parked_reason in PARKED_REASONS:
         run["parked_reason"] = parked_reason
+    block_class = state_file_for(issue, "block_class")
+    if parked_reason == "auto_retry" and BLOCK_CLASS_RE.match(block_class):
+        run["block_class"] = block_class
     activity_epoch = int(last_activity_epoch) if last_activity_epoch.strip().isdigit() else -1
     sort_key = (STATE_PRIORITY[state_code], -activity_epoch)
     runs.append((sort_key, run))

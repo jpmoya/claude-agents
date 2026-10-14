@@ -9,7 +9,7 @@
 // (140 code points), has control characters and whitespace runs collapsed to one space, and is
 // HTML-escaped at render. `runs[].url` is not an exception — it must match ISSUE_URL below.
 
-import { STAGE_VOCAB, MARKER_VOCAB, STATE_VOCAB, NEEDS_VOCAB, PARKED_REASON_VOCAB } from './vocab.js';
+import { STAGE_VOCAB, MARKER_VOCAB, STATE_VOCAB, NEEDS_VOCAB, PARKED_REASON_VOCAB, BLOCK_CLASS_VOCAB } from './vocab.js';
 
 const ISO_8601_Z = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 const REPO_ALIAS = /^[a-z0-9][a-z0-9-]{0,23}$/;
@@ -110,6 +110,9 @@ function sanitiseRun(rawRun) {
   if (typeof rawRun.needs === 'string' && NEEDS_VOCAB.includes(rawRun.needs)) run.needs = rawRun.needs;
   if (typeof rawRun.parked_reason === 'string' && PARKED_REASON_VOCAB.includes(rawRun.parked_reason)) {
     run.parked_reason = rawRun.parked_reason;
+  }
+  if (typeof rawRun.block_class === 'string' && BLOCK_CLASS_VOCAB.includes(rawRun.block_class)) {
+    run.block_class = rawRun.block_class;
   }
 
   const title = sanitiseTitle(rawRun.title);
