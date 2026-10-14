@@ -25,12 +25,13 @@ i129_run() {
   local ago="$1" line_issue="$2" reason="${3:-both PASSes; PR base is main on the quoting tool, handed to JP}" slack="${4:-}"
   sq_env open
   mk_restarting "$SQ_PIPE" 42 "$SQ_REPO"
-  sq_iso_ago 600 > "$SQ_PIPE/orch-42.launched-at"
+  if [ -n "${I129_LAUNCH:-}" ]; then printf '%s\n' "$I129_LAUNCH" > "$SQ_PIPE/orch-42.launched-at"
+  else sq_iso_ago 600 > "$SQ_PIPE/orch-42.launched-at"; fi
   sq_marker "$I129_PASS"
   mkdir -p "$SQ_HOME/.claude/pipeline"
   if [ "$ago" != none ]; then
     printf '{"ts":"%s","host":"h","event":"validate","repo":"project-a/repo-a","issue":%s,"stage":"hand-to-jp","result":"fail","reason":"%s"}\n' \
-      "$(sq_iso_ago "$ago")" "$line_issue" "$reason" >> "$SQ_HOME/.claude/pipeline/runs.jsonl"
+      "${I129_TS:-$(sq_iso_ago "$ago")}" "$line_issue" "$reason" >> "$SQ_HOME/.claude/pipeline/runs.jsonl"
   fi
   if [ -n "$slack" ]; then
     # fake curl: save the -d payload, answer ok
@@ -82,6 +83,23 @@ test_i129_stale_hand_to_jp_fail_restarts() {
   i129_assert_restarted
 }
 
+# ts >= .launched-at boundary: both stamps from one python call (no second-tick drift)
+i129_boundary() {  # i129_boundary <offset secs of line ts vs launched-at>
+  local pair
+  pair=$(python3 -c "import datetime,sys; n=datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(seconds=600); f='%Y-%m-%dT%H:%M:%SZ'; print(n.strftime(f), (n+datetime.timedelta(seconds=int(sys.argv[1]))).strftime(f))" "$1")
+  I129_LAUNCH=${pair% *} I129_TS=${pair#* } i129_run 0 42
+}
+
+test_i129_hand_to_jp_ts_equal_launched_at_holds() {
+  i129_boundary 0     # ts == .launched-at counts as "this run" (>=)
+  i129_assert_held
+}
+
+test_i129_hand_to_jp_ts_one_second_before_launched_at_restarts() {
+  i129_boundary -1    # 1 s before .launched-at is the previous run
+  i129_assert_restarted
+}
+
 test_i129_other_issue_hand_to_jp_fail_restarts() {
   i129_run 60 99
   i129_assert_restarted
@@ -124,11 +142,17 @@ test_i129_supervisor_stage_tuple() {
 test_i129_orchestrator_logs_hand_to_jp_before_terminal() {
   local f="$ROOT_I129/agents/orchestrator.md" ln_stage ln_term
   i129_has "$f" '"stage":"hand-to-jp","result":"fail"' || return 1
-  # the instruction sits in the post-PASS hand-to-JP rule and names terminal ordering
-  local sec
-  sec=$(grep -F '"stage":"hand-to-jp"' "$f" | head -1)
-  assert_contains "$sec" "terminal" "#129: hand-to-jp line is specified as logged before the terminal event" || return 1
-  assert_contains "$sec" "log_run" "#129: via log_run" || return 1
+  # the instruction sits in the routing-table :65 rule (the one rule defining every post-PASS hand-to-JP exit)
+  local row before_log
+  row=$(grep -F 'One post-PASS hand-to-JP rule' "$f" | head -1)
+  [ -n "$row" ] || { fail "orchestrator.md: no routing-table row defines the post-PASS hand-to-JP rule"; return 1; }
+  assert_contains "$row" '"stage":"hand-to-jp","result":"fail"' "#129: the rule row carries the log line" || return 1
+  # ordering: the "Before the `terminal` event ... first log_run" sentence precedes the log_run literal
+  before_log=${row%%log_run*}
+  assert_contains "$before_log" 'Before the `terminal` event' "#129: log line is specified as logged before the terminal event" || return 1
+  # every exit kind is inside that same rule
+  assert_contains "$row" "merge-gate wait" "#129: merge-gate wait is an exit of the rule" || return 1
+  assert_contains "$row" "unsupported project" "#129: unsupported project is an exit of the rule" || return 1
 }
 
 test_i129_run_log_lists_hand_to_jp() {
@@ -144,9 +168,20 @@ test_i129_deployer_row_names_main_base_exception() {
   local row
   row=$(grep -F 'Dispatch the deployer (the repo-local' "$ROOT_I129/agents/orchestrator.md" | head -1)
   assert_contains "$row" "hand-to-jp" "#129: row names the hand-to-jp log line (exception rule lives in this row)" || return 1
-  assert_contains "$row" "base" "#129: row keys the exception on the PR base" || return 1
+  assert_contains "$row" 'base is `main`' "#129: row names main as the PR base for the exception" || return 1
   assert_contains "$row" "quoting tool" "#129: row names the scheduler/quoting-tool main-base exception" || return 1
   assert_contains "$row" "to JP directly" "#129: handed to JP directly, no deployer dispatch" || return 1
+}
+
+# one rule: no free-standing second "Otherwise, hand to JP" rule left in the post-PASS exit text
+test_i129_no_second_hand_to_jp_rule() {
+  local f="$ROOT_I129/agents/orchestrator.md" n
+  n=$(grep -ciE 'otherwise,? (hand|report)[^.]*to JP' "$f")
+  assert_eq "$n" "0" "#129: no free-standing 'Otherwise, hand to JP' rule" || return 1
+  local exits
+  exits=$(grep -F 'The only exits are:' "$f")
+  assert_contains "$exits" '`hand-to-jp`' "#129: exit list names hand-to-jp" || return 1
+  assert_contains "$exits" '`:65`' "#129: exit list points at the :65 rule instead of restating it" || return 1
 }
 
 test_i129_orchestrator_lists_merge_gate_wait_as_hand_to_jp_exit() {
@@ -158,6 +193,8 @@ test_i129_orchestrator_lists_merge_gate_wait_as_hand_to_jp_exit() {
 run_test test_i129_hand_to_jp_fail_holds
 run_test test_i129_merge_gate_wait_holds
 run_test test_i129_stale_hand_to_jp_fail_restarts
+run_test test_i129_hand_to_jp_ts_equal_launched_at_holds
+run_test test_i129_hand_to_jp_ts_one_second_before_launched_at_restarts
 run_test test_i129_other_issue_hand_to_jp_fail_restarts
 run_test test_i129_pass_marker_without_line_restarts
 run_test test_i129_terminal_kind_pass_still_empty
@@ -167,4 +204,5 @@ run_test test_i129_supervisor_stage_tuple
 run_test test_i129_orchestrator_logs_hand_to_jp_before_terminal
 run_test test_i129_run_log_lists_hand_to_jp
 run_test test_i129_deployer_row_names_main_base_exception
+run_test test_i129_no_second_hand_to_jp_rule
 run_test test_i129_orchestrator_lists_merge_gate_wait_as_hand_to_jp_exit
