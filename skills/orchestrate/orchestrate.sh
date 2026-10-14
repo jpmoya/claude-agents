@@ -153,7 +153,7 @@ except Exception: print('?')
     fi
     # Only after winning arbitration (a refused launch must leave labels alone, #217): launching consumes agent-go (the shared-dispatch pool) and claims the issue for this machine. Crash restarts are
     # the local supervisor's job, not the label's; the supervisor drops agent-in-progress when the run is done or parked.
-    (cd "$REPO" && gh issue edit "$ISSUE" --add-label "$LABEL_IN_PROGRESS" --remove-label "$LABEL_GO" 2>/dev/null) || true
+    (cd "$REPO" && gh issue edit "$ISSUE" --add-label "$LABEL_IN_PROGRESS" --remove-label "$LABEL_GO" --remove-label "$LABEL_PROPOSED" 2>/dev/null) || true
     rm -f "$QUEUE/orch-$ISSUE.json"   # a manual launch supersedes a queued one; never both
     # Clear tombstones and restart state on manual launch
     rm -f "$PIPE/orch-$ISSUE".{stopped,held,done,closed,release,marker,milestone,alert,label-cleared,start,exit,exit-logged} "$PIPE/orch-$ISSUE.restarts"

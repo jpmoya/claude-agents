@@ -435,6 +435,10 @@ test_mg_ac6_reason_never_argues_about_who_posted() {
 
 # ---------------------------------------------------------------------------------------- AC7 (guards)
 
+# #202: marker_re's suffix handling for jp changed on purpose; compare only the vocabulary lines
+# (markers_for body and marker_re's agent loop/alt build), which must stay byte-identical.
+mg_vocab_lines() { grep -E '^ +[a-z-]+\) +echo|for a in|infra-planner|alt=\$\(markers_for' ; }
+
 test_mg_ac7_pipeline_markers_byte_identical() {
   local base d
   base=$(mg_base)
@@ -443,8 +447,8 @@ test_mg_ac7_pipeline_markers_byte_identical() {
   local want got
   # #192: also strip only the `delivery-lead)` case line and the ` delivery-lead` token, on both sides
   # #115: also strip only `|REJECTED` from the product-manager/fullstack-developer lines, on both sides (REJECTED is #115's marker)
-  want=$(cd "$ROOT_MG" && git show "$base:hooks/pipeline-markers.sh" | awk '/^(markers_for|marker_re)\(\)/ {p=1} p {print} p && /^}/ {p=0}' | sed -e '/^ *intake) /d' -e '/^ *delivery-lead) /d' -e 's/ delivery-lead project-manager/ project-manager/' -e 's/ intake; do/; do/' -e 's/|REJECTED//' -e 's/REJECTED|//')   # #114: strip only intake)/token on both sides
-  got=$(cd "$ROOT_MG" && awk '/^(markers_for|marker_re)\(\)/ {p=1} p {print} p && /^}/ {p=0}' hooks/pipeline-markers.sh | sed -e '/^ *intake) /d' -e '/^ *delivery-lead) /d' -e 's/ delivery-lead project-manager/ project-manager/' -e 's/ intake; do/; do/' -e 's/|REJECTED//' -e 's/REJECTED|//')   # #114
+  want=$(cd "$ROOT_MG" && git show "$base:hooks/pipeline-markers.sh" | awk '/^(markers_for|marker_re)\(\)/ {p=1} p {print} p && /^}/ {p=0}' | sed -e '/^ *intake) /d' -e '/^ *delivery-lead) /d' -e 's/ delivery-lead project-manager/ project-manager/' -e 's/ intake; do/; do/' -e 's/|REJECTED//' -e 's/REJECTED|//' -e 's/ infra-operator jp / infra-operator /' | mg_vocab_lines)   # #114: strip only intake)/token on both sides; #202: jp left the any-agent loop
+  got=$(cd "$ROOT_MG" && awk '/^(markers_for|marker_re)\(\)/ {p=1} p {print} p && /^}/ {p=0}' hooks/pipeline-markers.sh | sed -e '/^ *intake) /d' -e '/^ *delivery-lead) /d' -e 's/ delivery-lead project-manager/ project-manager/' -e 's/ intake; do/; do/' -e 's/|REJECTED//' -e 's/REJECTED|//' | mg_vocab_lines)   # #114
   [ -n "$want" ] || { fail "AC7: markers_for/marker_re not found at merge-base"; return 1; }
   assert_eq "$got" "$want" "AC7: markers_for/marker_re unchanged" || return 1
 }
@@ -453,6 +457,49 @@ test_mg_ac7_project_manager_still_has_no_mockups_approved_marker() {
   local pm
   pm=$( . "$MARKERS_MG" && markers_for project-manager )
   assert_eq "$pm" "DECISION|JP CONFIRMED" "AC7: markers_for project-manager unchanged (no MOCKUPS APPROVED)" || return 1
+}
+
+# ---------------------------------------------------------------------------------------- #202
+# jp's gate markers must be the whole first line, like the orchestrator's "exactly" rule.
+
+mg_re_test() {  # mg_re_test <agent|-> <first line> → true|false
+  local re; re=$( . "$MARKERS_MG"; if [ "$1" = - ]; then marker_re; else marker_re "$1"; fi )
+  printf '%s' "$2" | jq -Rr --arg re "$re" 'test($re)'
+}
+
+test_mg_202_jp_trailing_text_does_not_match() {
+  local l
+  for l in '**[jp] MOCKUPS APPROVED** — JP 2026-10-11 (chat): "323 approved". **[jp] DECISION** go to build.' \
+           '**[jp] MOCKUPS APPROVED** with amendments — x' '**[jp] GO** now' '**[jp] GO**: go' '**[jp] GO** '"'"'x'"'"; do
+    assert_eq "$(mg_re_test jp "$l")" false "202: jp-scoped rejects: $l" || return 1
+    assert_eq "$(mg_re_test - "$l")" false "202: any-agent rejects: $l" || return 1
+  done
+}
+
+test_mg_202_jp_exact_line_still_matches() {
+  local l
+  for l in '**[jp] MOCKUPS APPROVED**' '**[jp] GO**' '**[jp] GO**  ' $'**[jp] MOCKUPS APPROVED**\r'; do
+    assert_eq "$(mg_re_test jp "$l")" true "202: jp-scoped accepts exact line" || return 1
+    assert_eq "$(mg_re_test - "$l")" true "202: any-agent accepts exact line" || return 1
+  done
+  assert_eq "$( . "$MARKERS_MG"; markers_for jp )" "GO|MOCKUPS APPROVED" "202: jp vocabulary unchanged" || return 1
+}
+
+test_mg_202_other_agents_suffix_unchanged() {
+  assert_eq "$(mg_re_test - '**[code-reviewer] BLOCKED**: reason')" true "202: BLOCKED**: reason" || return 1
+  assert_eq "$(mg_re_test - '**[deployer] DEPLOYED** to staging')" true "202: DEPLOYED** to staging" || return 1
+  assert_eq "$(mg_re_test code-reviewer '**[code-reviewer] PASS** looks good')" true "202: PASS** text" || return 1
+}
+
+test_mg_202_terminal_kind_gate_with_trailing_text_approval() {
+  local lib="$ROOT_MG/skills/orchestrate/pipeline-lib.sh" sup="$ROOT_MG/skills/orchestrate/supervisor.sh" out kind
+  # real marker_last_jq over [gate, trailing-text jp approval] must yield the gate, and terminal_kind must call it a gate
+  out=$( . "$MARKERS_MG"; . "$lib"
+    jq -n '{comments:[{body:"**[ui-ux-designer] MOCKUPS PENDING APPROVAL**\nmockups"},{body:"**[jp] MOCKUPS APPROVED** — JP (chat): \"323 approved\""}]}' \
+      | jq -r "$(marker_last_jq)" )
+  assert_eq "$out" '**[ui-ux-designer] MOCKUPS PENDING APPROVAL**' "202: newest marker is the gate, not the approval" || return 1
+  kind=$( eval "$(awk '/^terminal_kind\(\) \{/ {p=1} p {print} p && /^}/ {exit}' "$sup")"; terminal_kind "$out" 1 "" . )
+  assert_eq "$kind" gate "202: terminal_kind → gate (held), not a restart" || return 1
 }
 
 # ---------------------------------------------------------------------------------------- run
@@ -477,5 +524,9 @@ run_test test_mg_ac1_exact_marker_after_mockups_lifts_the_gate
 run_test test_mg_ac3_agent_note_after_mockups_stays_parked_not_a_revision
 run_test test_mg_ac6_run_log_has_mockup_gate_pass_and_fail
 run_test test_mg_ac6_reason_never_argues_about_who_posted
+run_test test_mg_202_jp_trailing_text_does_not_match
+run_test test_mg_202_jp_exact_line_still_matches
+run_test test_mg_202_other_agents_suffix_unchanged
+run_test test_mg_202_terminal_kind_gate_with_trailing_text_approval
 run_test test_mg_ac7_pipeline_markers_byte_identical
 run_test test_mg_ac7_project_manager_still_has_no_mockups_approved_marker
