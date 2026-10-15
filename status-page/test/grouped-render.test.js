@@ -9,7 +9,8 @@ const NOW = Date.parse('2026-09-21T12:00:00Z') / 1000;
 const ago = (hours) => new Date((NOW - hours * 3600) * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
 const urlOf = (n) => `https://github.com/example-owner/project-a/issues/${n}`;
 const run = (issue, o = {}) => validRun({ issue, url: urlOf(issue), title: `Title${issue}`, last_activity_at: ago(1), ...o });
-const render = (mac, vm) => renderPage({ mac, vm }, thresholds, NOW);
+// The #273 nav (Status | Pipelines) carries hrefs by design; these tests pin the table content.
+const render = (mac, vm) => renderPage({ mac, vm }, thresholds, NOW).replace(/<nav>[\s\S]*?<\/nav>/, '');
 
 const HEADINGS = ['Running', 'Queued', 'Approved, waiting for a slot', 'Needs JP', 'On staging (awaiting production)', 'Parked', 'Done'];
 const h2 = (name) => new RegExp(`<h2[^>]*>\\s*${name.replace(/[()]/g, '\\$&')} \\((\\d+)\\)\\s*</h2>`);

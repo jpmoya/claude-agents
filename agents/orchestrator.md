@@ -40,6 +40,8 @@ For the mockup gate only, check the first line of each comment posted after `MOC
 
 ## Routing table
 
+Routing changes: update `status-page/src/pipelines.js` (diagram) in the same PR; `status-page` tests enforce stage-name parity.
+
 | Latest marker on the issue | Action |
 |---|---|
 | none (fresh issue or raw request) | **Fork check first:** if the issue carries the `infra` label, use the **Infra track** table below, not this one. Otherwise dispatch the PM agent to spec it |

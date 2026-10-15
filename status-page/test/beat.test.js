@@ -220,7 +220,7 @@ describe('#29 — POST /beat with the optional ticket fields', () => {
     expect(stored).not.toHaveProperty('url');
 
     const home = await worker.fetch(getRequest('/'), env, {});
-    const html = await home.text();
+    const html = (await home.text()).replace(/<nav>[\s\S]*?<\/nav>/, ''); // #273 nav carries hrefs
     const tbody = html.match(/<tbody>([\s\S]*?)<\/tbody>/)[1];
     const cells = [...tbody.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((m) => m[1].trim());
     expect(cells).toHaveLength(8); // AC 6: run-shaped rows are 8 columns (Host inserted)

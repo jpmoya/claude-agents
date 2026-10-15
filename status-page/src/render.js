@@ -7,6 +7,7 @@
 
 import { isIssueUrl } from './validate.js';
 import { groupTickets } from './group.js';
+import { PIPELINES } from './pipelines.js';
 
 // Auto-refresh interval in seconds. Must stay <= 30 (AC15). Grepped directly by tests.
 export const PAGE_REFRESH_SECS = 20;
@@ -228,6 +229,17 @@ function renderHostSection(key, host, thresholds, nowEpochSecs) {
   </section>`;
 }
 
+/** Two-link nav ("Status" | "Pipelines"); the current page gets aria-current. */
+function renderNav(current) {
+  const link = (href, label, key) =>
+    `<a href="${href}"${current === key ? ' aria-current="page"' : ''}>${label}</a>`;
+  return `<nav>${link('/', 'Status', 'status')} ${link('/pipelines', 'Pipelines', 'pipelines')}</nav>`;
+}
+
+const NAV_CSS = `  nav { margin-bottom: 0.75rem; }
+  nav a { margin-right: 1rem; color: inherit; }
+  nav a[aria-current="page"] { font-weight: 700; text-decoration: none; }`;
+
 /**
  * @param {{ mac: object|null, vm: object|null }} hosts
  * @param {{ staleSecs: number, offlineSecs: number }} thresholds
@@ -265,6 +277,7 @@ export function renderPage(hosts, thresholds, nowEpochSecs) {
   table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
   th, td { text-align: left; padding: 0.25rem; border-bottom: 1px solid rgba(127, 127, 127, 0.3); }
   section.host, section.group { margin-bottom: 1.5rem; }
+${NAV_CSS}
   @media (prefers-color-scheme: dark) {
     body { background: #111111; color: #eeeeee; }
     th, td { border-bottom-color: rgba(255, 255, 255, 0.2); }
@@ -272,17 +285,65 @@ export function renderPage(hosts, thresholds, nowEpochSecs) {
 </style>
 </head>
 <body>
+${renderNav('status')}
 <h1>Pipeline status</h1>
 ${body}
 </body>
 </html>`;
 }
 
+const PIPELINES_CSS = `  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 1rem; max-width: 100%; overflow-wrap: anywhere; background: #ffffff; color: #111111; }
+  h1 { font-size: 1.1rem; }
+  h2 { font-size: 1rem; }
+${NAV_CSS}
+  section.group { margin-bottom: 1.5rem; }
+  ol.track { list-style: none; margin: 0; padding: 0; max-width: 100%; }
+  ol.track li { margin: 0; padding: 0; max-width: 100%; }
+  .chip { display: inline-block; max-width: 100%; margin: 0.25rem 0; padding: 0.1rem 0.5rem; border-radius: 1rem; font-size: 0.8rem; background: #ddf4ff; color: #0a3069; }
+  .chip[data-soon] { background: #fff8c5; color: #4d2d00; border: 1px dashed #9a6700; }
+  .arrow { display: block; margin: 0.1rem 0 0.1rem 1rem; }
+  .box { display: block; max-width: 100%; box-sizing: border-box; padding: 0.4rem 0.6rem; border: 1px solid rgba(127, 127, 127, 0.6); border-radius: 0.25rem; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #111111; color: #eeeeee; }
+    .chip { background: #0c2d6b; color: #cae8ff; }
+    .chip[data-soon] { background: #3b2300; color: #ffe8a3; border-color: #d29922; }
+  }`;
+
+function renderTrack(track) {
+  const items = track.stages
+    .map((stage, i) => {
+      const when = stage.when;
+      const chip = when
+        ? `<span class="chip"${when.coming ? ' data-soon="1"' : ''}>${esc(when.label)}${when.coming ? ' (coming)' : ''}</span>`
+        : '<span class="chip" hidden></span>';
+      const arrow = i > 0 ? '<span class="arrow" aria-hidden="true">&darr;</span>' : '';
+      return `<li>${arrow}${chip}<span class="box">${esc(stage.name)}</span></li>`;
+    })
+    .join('');
+  return `<section class="group"><h2>${esc(track.title)}</h2><ol class="track">${items}</ol></section>`;
+}
+
 /**
- * STUB (issue #273). Contract: renderPipelines(data = PIPELINES) -> full HTML document string.
- * @param {Array<object>} [_data]
- * @returns {string}
+ * Pipelines tab: server-rendered routing diagram, no JS.
+ * @param {Array<object>} [data]
+ * @returns {string} full HTML document
  */
-export function renderPipelines(_data) {
-  throw new Error('NotImplemented');
+export function renderPipelines(data = PIPELINES) {
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pipelines</title>
+<style>
+${PIPELINES_CSS}
+</style>
+</head>
+<body>
+${renderNav('pipelines')}
+<h1>How tickets are routed</h1>
+${data.map(renderTrack).join('')}
+</body>
+</html>`;
 }
