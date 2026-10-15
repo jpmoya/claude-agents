@@ -153,8 +153,7 @@ Description=GitHub Actions runner slot %i (label benjis-ci, ephemeral JIT)
 After=network-online.target
 Wants=network-online.target
 ConditionPathExists=/etc/gha/mint.env
-StartLimitIntervalSec=300
-StartLimitBurst=5
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -316,13 +315,17 @@ step_enable() {
   STEP=enable
   local i
   for ((i = 1; i <= SLOTS; i++)); do
+    # a failed slot (e.g. from an earlier start limit) is revived on every run
+    if [ "$CHECK" = 0 ] && [ -f "$ROOT/etc/gha/mint.env" ]; then
+      run systemctl reset-failed "gha-slot@$i.service"
+      run systemctl start "gha-slot@$i.service"
+    fi
     if [ "$(systemctl is-enabled "gha-slot@$i.service" 2>/dev/null)" = enabled ]; then ok "slot $i enabled"; else
       note_change "enable gha-slot@$i"
       if [ "$CHECK" = 0 ]; then
         run systemctl enable "gha-slot@$i.service"
         [ "$(systemctl is-enabled "gha-slot@$i.service" 2>/dev/null)" = enabled ] \
           || gha_fail "setup/$STEP" "gha-slot@$i is not enabled after systemctl enable"
-        [ ! -f "$ROOT/etc/gha/mint.env" ] || run systemctl start "gha-slot@$i.service"
       fi
     fi
   done
@@ -353,7 +356,9 @@ step_mint() {
     install -m 0600 /dev/null "$f"
     { [ -z "$others" ] || printf '%s\n' "$others"; printf 'GHA_MINT_TOKEN=%s\n' "$TOKEN"; } > "$f"
     # slots were skipped by ConditionPathExists until the token existed: start them now
-    local i; for ((i = 1; i <= SLOTS; i++)); do run systemctl start "gha-slot@$i.service"; done
+    local i; for ((i = 1; i <= SLOTS; i++)); do
+      run systemctl reset-failed "gha-slot@$i.service"; run systemctl start "gha-slot@$i.service"
+    done
   elif [ -f "$f" ]; then
     if [ "$(stat -c %a "$f")" = 600 ]; then ok "mint.env present (0600)"; else
       note_change "chmod 600 $f"; [ "$CHECK" = 1 ] || chmod 600 "$f"
