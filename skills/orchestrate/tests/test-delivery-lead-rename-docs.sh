@@ -120,7 +120,7 @@ test_dlr_ac3_marker_re_scoped_to_delivery_lead() {
 }
 
 test_dlr_ac3_other_vocabulary_unchanged() {
-  assert_eq "$( . "$MARKERS_DLR" && markers_for jp )" "GO|MOCKUPS APPROVED" "AC3: jp unchanged" || return 1
+  assert_eq "$( . "$MARKERS_DLR" && markers_for jp )" "GO|MOCKUPS APPROVED|SKIP MOCKUPS" "AC3: jp unchanged" || return 1
   assert_eq "$( . "$MARKERS_DLR" && markers_for code-reviewer )" "PASS|FAIL|BLOCKED" "AC3: code-reviewer unchanged" || return 1
 }
 

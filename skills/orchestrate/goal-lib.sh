@@ -254,6 +254,7 @@ _goal_ticket_eval() {
         cls=waiting_jp
         case "$mk" in
           *"MOCKUPS PENDING APPROVAL") why="mockups need your approval" ;;
+          *"SKIP MOCKUPS") why="mockups skipped by JP" ;;   # #272: not a gate; kept for display
           *"AWAITING GO") why="the plan needs your go" ;;
           *"EFFORT APPROVAL NEEDED") why="the effort estimate needs your approval" ;;
           *) why="needs your decision" ;;

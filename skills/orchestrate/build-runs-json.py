@@ -154,6 +154,8 @@ def build_list(kind):
     return items[:LIST_CAPS[kind]]
 
 
+# #272: a ticket whose mockups JP skipped (SKIP MOCKUPS marker) shows "mockups skipped by JP", never "Approve mockups"
+MOCKUPS_SKIPPED_LABEL = "mockups skipped by JP"
 NEEDS_LABELS = ("Approve mockups", "Say go", "Approve effort", "Missing credential", "Decision needed")
 PARKED_REASONS = ("answered", "out_of_scope", "auto_retry")
 BLOCK_CLASS_RE = re.compile(r"^[a-z_]{1,30}$")  # the class list lives in hooks/pipeline-markers.sh; status-page validate drops unknowns

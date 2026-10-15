@@ -63,7 +63,7 @@ latest_marker() {  # the GATE marker: newest real routing marker whose agent is 
   # Both come out of the same single `gh issue view` call (claude-agents#59).
   local repo=$1 issue=$2 last list prog
   last=$(marker_last_jq); list=${last% | last // \"none\"}   # list = the same expression minus its final `last`
-  prog="($last) as \$last | {comments: [.comments[] | select(.body | test(\"^\\\\*\\\\*\\\\[(delivery-lead|project-manager)\\\\] \") | not)]} as \$np  # legacy alias
+  prog="($last) as \$last | {author: .author, comments: [.comments[] | select(.body | test(\"^\\\\*\\\\*\\\\[(delivery-lead|project-manager)\\\\] \") | not)]} as \$np  # legacy alias
     | (\$np | $last) as \$g0 | (\$np | $list) as \$m | (\$m | length) as \$n
     | ((\$g0 | capture(\"^\\\\*\\\\*\\\\[(?<a>[a-z-]+)\\\\]\")? // {a: \"\"}).a) as \$ga
     | ([\$m[0:(\$n - 1)] | reverse[] | select(((capture(\"^\\\\*\\\\*\\\\[(?<a>[a-z-]+)\\\\]\")? // {a: \"\"}).a) != \$ga)] | first // null) as \$p
@@ -73,7 +73,17 @@ latest_marker() {  # the GATE marker: newest real routing marker whose agent is 
          and (\$pair == [\"solutions-architect\", \"ui-ux-designer\"] or \$pair == [\"fullstack-developer\", \"test-reviewer\"] or \$pair == [\"code-reviewer\", \"test-reviewer\"])
        then \$p else \$g0 end) as \$gate
     | if (\$last | test(\"^\\\\*\\\\*\\\\[(delivery-lead|project-manager)\\\\] \") | not) then \$gate else \$gate + \"\\n\" + \$last end  # legacy alias"
-  (cd "$repo" 2>/dev/null && gh issue view "$issue" --json comments --jq "$prog") 2>/dev/null || echo "?"
+  (cd "$repo" 2>/dev/null && gh issue view "$issue" --json comments,author --jq "$prog") 2>/dev/null || echo "?"
+}
+
+# #272: a comment whose first line is the exact skip marker but whose author/body cannot be read is ignored (the gate
+# stays) and logged once per tick. The `JP said:` quote is never logged.
+skip_marker_malformed_log() {
+  local repo=$1 issue=$2 n
+  n=$(cd "$repo" 2>/dev/null && gh issue view "$issue" --json comments --jq '[.comments[] | select((.body | type) == "string" and (.body | split("\n")[0] | rtrimstr("\r") | test("^\\*\\*\\[jp\\] SKIP MOCKUPS\\*\\*[[:space:]]*$")))
+      | select(((.author | type) != "object") or ((.author.login | type) != "string"))] | length' 2>/dev/null) || n=""
+  case "$n" in ''|0|*[!0-9]*) return 0 ;; esac
+  slog "[skip-mockups] #$issue — malformed SKIP MOCKUPS comment ignored ($n), gate stays"
 }
 
 issue_is_closed() {
@@ -420,6 +430,7 @@ for f in "$PIPE"/orch-*.pid; do
       # agent-go) after acting. $marker is the gate marker, never a [delivery-lead] (or legacy [project-manager]) one. A run that is already .held is
       # skipped above and stays held — held runs are not polled; the delivery lead relaunches with orchestrate.sh,
       # which clears .held (claude-agents#59).
+      case "$marker" in *"MOCKUPS PENDING APPROVAL"*) skip_marker_malformed_log "$repo" "$issue" ;; esac
       touch "$PIPE/orch-$issue.held"
       rm -f "$QUEUE/orch-$issue.json"
       printf '%s Pipeline #%s waiting on JP — %s; relaunch (or re-add %s) after acting\n' "$(date -u +%FT%TZ)" "$issue" "$marker" "$LABEL_GO" > "$PIPE/orch-$issue.alert"

@@ -4,6 +4,7 @@
 # A comment is a routing marker only when line 1 is `**[agent] <one of these>` followed by `**`, `:`,
 # a space or end of line. Anything else — NOTE, the literal word MARKER, an invented COMPLETED — is
 # inert: it never changes pipeline state and never satisfies the handoff hook (claude-agents#5).
+# SKIP MOCKUPS (#272) is honoured only from the issue author with a `JP said:` line 2 (see marker_last_jq).
 # Adding a marker to an agent definition or the routing table means adding it here too.
 
 markers_for() {  # markers_for <agent> → that agent's routing markers, |-separated (empty = unknown agent)
@@ -22,7 +23,7 @@ markers_for() {  # markers_for <agent> → that agent's routing markers, |-separ
     infra-operator)      echo 'APPLIED|AWAITING GO|BLOCKED' ;;
     intake)              echo 'TRIAGED BUG|TRIAGED IDEA|DUPLICATE|NEEDS INFO|NOISE|BLOCKED' ;;   # raw-feedback triage, launched by the supervisor, never by the orchestrator (#114)
     orchestrator)        echo 'BLOCKED' ;;   # config-error refusal: parks the run through the gate path instead of a silent exit (#75)
-    jp)                  echo 'GO|MOCKUPS APPROVED' ;;
+    jp)                  echo 'GO|MOCKUPS APPROVED|SKIP MOCKUPS' ;;
     delivery-lead)       echo 'DECISION|JP CONFIRMED' ;;  # JP's delegate (legacy spelling below, #192): same markers, same limits
     project-manager)     echo 'DECISION|JP CONFIRMED' ;;  # JP's delegate: resumes a code-track BLOCKED and the two caps only — never jp's gates (claude-agents#59)
   esac
