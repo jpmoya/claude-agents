@@ -437,7 +437,7 @@ for f in "$PIPE"/orch-*.pid; do
       # agent-go) after acting. $marker is the gate marker, never a [delivery-lead] (or legacy [project-manager]) one. A run that is already .held is
       # skipped above and stays held — held runs are not polled; the delivery lead relaunches with orchestrate.sh,
       # which clears .held (claude-agents#59).
-      case "$marker" in *"MOCKUPS PENDING APPROVAL"*) skip_marker_malformed_log "$repo" "$issue" ;; esac
+      skip_marker_malformed_log "$repo" "$issue"   # #272: at every gate park (not only MOCKUPS PENDING); an extra per-tick fetch would break the one-comments-call-per-tick pin
       touch "$PIPE/orch-$issue.held"
       rm -f "$QUEUE/orch-$issue.json"
       printf '%s Pipeline #%s waiting on JP — %s; relaunch (or re-add %s) after acting\n' "$(date -u +%FT%TZ)" "$issue" "$marker" "$LABEL_GO" > "$PIPE/orch-$issue.alert"
@@ -698,7 +698,7 @@ for f in "$PIPE"/orch-*.held; do
   [ "$ar_ec" = "rate_limited monthly_spend" ] && continue
   if [ -s "$PIPE/orch-$issue.alert" ] && ! grep -q 'BLOCKED' "$PIPE/orch-$issue.alert" 2>/dev/null; then continue; fi
 
-  info=$(cd "$repo" && gh issue view "$issue" --json state,body,comments 2>/dev/null </dev/null) \
+  info=$(cd "$repo" && gh issue view "$issue" --json state,body,author,comments 2>/dev/null </dev/null) \
     || { slog "[auto-retry] #$issue — issue read failed"; autoretry_alert "$issue" "issue view"; continue; }
   [ "$(printf '%s' "$info" | jq -r '.state // empty')" = "OPEN" ] || continue
   cls=$(printf '%s' "$info" | jq -r --arg re "$(marker_re)" '

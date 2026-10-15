@@ -159,7 +159,7 @@ while IFS=$'\t' read -r issue repo state pid started last_activity restarts stag
     *) continue ;;                                             # closed (already reconciled) or unknown
   esac
 
-  info=$(cd "$repo" 2>/dev/null && gh issue view "$issue" --json state,closedAt,comments,milestone 2>/dev/null </dev/null) \
+  info=$(cd "$repo" 2>/dev/null && gh issue view "$issue" --json state,closedAt,author,comments,milestone 2>/dev/null </dev/null) \
     || { rc_alert "$issue" "gh issue view"; continue; }
   gh_state=$(printf '%s' "$info" | jq -r '.state // empty' 2>/dev/null) || continue
   [ -n "$gh_state" ] || continue
