@@ -277,3 +277,12 @@ ${body}
 </body>
 </html>`;
 }
+
+/**
+ * STUB (issue #273). Contract: renderPipelines(data = PIPELINES) -> full HTML document string.
+ * @param {Array<object>} [_data]
+ * @returns {string}
+ */
+export function renderPipelines(_data) {
+  throw new Error('NotImplemented');
+}
