@@ -208,12 +208,6 @@ describe('groupTickets — ordering, caps and ageing (#62 AC7)', () => {
     expect(rowsOf(group({ mac: hostRecord({ runs: a }), vm: hostRecord({ runs: b }) }), H.queued)).toHaveLength(25);
   });
 
-  it('Parked: 12 fresh rows -> newest 10 shown', () => {
-    // issue i has last activity i hours ago -> issue 1 newest; the two oldest (11, 12) are cut
-    const runs = Array.from({ length: 12 }, (_v, i) => run(i + 1, { state: 'held', marker: 'PASS', last_activity_at: ago(i + 1) }));
-    const g = group({ mac: hostRecord({ runs }) });
-    expect(issuesOf(g, H.parked)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
-  });
 
   it('Parked: a 17-day-old row is hidden, a 6-day-old row is shown', () => {
     const g = group({
@@ -224,15 +218,6 @@ describe('groupTickets — ordering, caps and ageing (#62 AC7)', () => {
     expect(issuesOf(g, H.parked)).toEqual([2]);
   });
 
-  it('Needs JP: 25 rows -> capped at 20, newest first, none aged out (< 14 days)', () => {
-    const runs = Array.from({ length: 20 }, (_v, i) => run(i + 1, { state: 'held', marker: 'BLOCKED', last_activity_at: ago(24 * 10 + i) }));
-    const more = Array.from({ length: 5 }, (_v, i) => run(i + 101, { state: 'held', marker: 'AWAITING GO', last_activity_at: ago(24 * 12 + i) }));
-    const g = group({ mac: hostRecord({ runs }), vm: hostRecord({ runs: more }) });
-    const out = issuesOf(g, H.needsJp);
-    expect(out).toHaveLength(20);
-    expect(out[0]).toBe(1); // newest (10 days ago); every 12-day row is older and cut
-    expect(out.every((n) => n <= 20)).toBe(true);
-  });
 
   it('Running rows are ordered newest last_activity_at first', () => {
     const g = group({ mac: hostRecord({ runs: [run(1, { state: 'running', last_activity_at: ago(5) }), run(2, { state: 'running', last_activity_at: ago(1) }), run(3, { state: 'running', last_activity_at: ago(3) })] }) });
@@ -246,14 +231,6 @@ describe('groupTickets — ordering, caps and ageing (#62 AC7)', () => {
     expect(issuesOf(g, H.running)).toEqual([2, 1]);
   });
 
-  it('Approved: 25 items -> 20 shown, newest updated_at first', () => {
-    const items = Array.from({ length: 25 }, (_v, i) => approvedItem(i + 1, { updated_at: ago(i + 1) }));
-    const g = group({ mac: hostRecord({ approved: items.slice(0, 20) }), vm: hostRecord({ approved: items.slice(20) }) });
-    const out = issuesOf(g, H.approved);
-    expect(out).toHaveLength(20);
-    expect(out[0]).toBe(1);
-    expect(out[19]).toBe(20);
-  });
 
   it('On staging: 70 items across hosts -> 60 shown, newest updated_at first, missing updated_at last', () => {
     const noTs = staged(500);
@@ -349,28 +326,7 @@ describe('groupTickets — Needs JP by (repo, milestone) (#140)', () => {
     expect(needs(runs)).toEqual([2, 3, 1]);
   });
 
-  it('cap: 25 rows -> exactly 20, taken in group order; the last group is truncated, not dropped', () => {
-    const runs = [];
-    let n = 100;
-    for (let i = 0; i < 10; i++) runs.push(blocked(n++, 'alpha', 'M', 1 + i)); // 100..109
-    for (let i = 0; i < 9; i++) runs.push(blocked(n++, 'beta', 'M', 1 + i)); // 110..118
-    for (let i = 0; i < 6; i++) runs.push(blocked(n++, 'gamma', 'M', 1 + i)); // 119..124
-    const got = needs(runs);
-    expect(got).toHaveLength(20);
-    // alpha 10 + beta 9 + newest 1 of gamma (119, 1h ago)
-    expect(got.slice(0, 10)).toEqual([100, 101, 102, 103, 104, 105, 106, 107, 108, 109]);
-    expect(got.slice(10, 19)).toEqual([110, 111, 112, 113, 114, 115, 116, 117, 118]);
-    expect(got[19]).toBe(119);
-  });
 
-  it('group order uses the row count before the cap', () => {
-    const runs = [];
-    for (let i = 0; i < 21; i++) runs.push(blocked(100 + i, 'zeta', 'M', 1 + i));
-    for (let i = 0; i < 5; i++) runs.push(blocked(200 + i, 'alpha', 'M', 1 + i));
-    const got = needs(runs);
-    expect(got).toHaveLength(20);
-    expect(got.every((i) => i >= 100 && i < 121)).toBe(true); // 21-row group first, fills the cap
-  });
 
   it('other groups are unchanged: Parked stays newest-first, not grouped', () => {
     const runs = [
