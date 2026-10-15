@@ -1,6 +1,6 @@
 // src/index.js — router, bearer auth, rate limiting, response headers.
 //
-// Routes: POST /beat, GET /status.json, GET /, GET /robots.txt, else 404. X-Robots-Tag: noindex
+// Routes: POST /beat, GET /status.json, GET /, GET /pipelines, GET /robots.txt, else 404. X-Robots-Tag: noindex
 // is applied in one place to every response. Auth is a pure-JS constant-time compare
 // (XOR-accumulate, no early return — crypto.subtle.timingSafeEqual doesn't exist in the Node
 // test runtime) against both TOKEN_MAC and TOKEN_VM, with no early exit; the host label is
@@ -9,7 +9,8 @@
 // vitest. See issue #11 / #4 §5 for the full routes and validation tables.
 
 import { validateBeatPayload } from './validate.js';
-import { renderPage } from './render.js';
+import { renderPage, renderPipelines } from './render.js';
+import { captureError } from './capture.js';
 import { KEEPALIVE_SECS, computeThresholds } from './vocab.js';
 
 const MAX_BEAT_BYTES = 128 * 1024; // 128 KB cap (#62; "> 128 KB" -> 413)
@@ -157,6 +158,20 @@ async function handleHome(env) {
   });
 }
 
+async function handlePipelines(env) {
+  try {
+    const html = renderPipelines();
+    return noindexResponse(html, {
+      status: 200,
+      headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'max-age=15' },
+    });
+  } catch (err) {
+    const tags = { release: env.RELEASE, environment: env.ENVIRONMENT, route: '/pipelines' };
+    await captureError(err, tags, env);
+    return noindexResponse('Internal error', { status: 500, headers: { 'Content-Type': 'text/plain' } });
+  }
+}
+
 function handleRobots() {
   return noindexResponse('User-agent: *\nDisallow: /\n', {
     status: 200,
@@ -187,6 +202,11 @@ export default {
     if (url.pathname === '/') {
       if (request.method !== 'GET') return noindexResponse(null, { status: 405 });
       return handleHome(env);
+    }
+
+    if (url.pathname === '/pipelines') {
+      if (request.method !== 'GET') return noindexResponse(null, { status: 405 });
+      return handlePipelines(env);
     }
 
     if (url.pathname === '/robots.txt') {
