@@ -126,7 +126,7 @@ tok=""
 jit=$(sed -n 's/.*"encoded_jit_config"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' <<<"$resp")
 [ -n "$jit" ] || gha_fail launcher/mint "no encoded_jit_config in response"
 work="$GHA_ROOT/srv/gha/work/$slot"
-rm -rf "$work"; mkdir -p "$work"
+rm -rf "$work"; mkdir -p "$work"; chown gha:gha "$work"
 gha_docker_env
 ACTIONS_RUNNER_INPUT_JITCONFIG=$jit docker run --rm --name "gha-slot-$slot" \
   -e ACTIONS_RUNNER_INPUT_JITCONFIG -v "$work:/home/runner/_work" "gha-runner:$GHA_RUNNER_VERSION"
@@ -212,8 +212,9 @@ put() { # dest mode content
   note_change "$dest"
   [ "$CHECK" = 1 ] && return 0
   mkdir -p "$(dirname "$dest")"
-  printf '%s\n' "$content" > "$dest"
-  chmod "$mode" "$dest"
+  printf '%s\n' "$content" > "$dest.tmp"
+  chmod "$mode" "$dest.tmp"
+  mv -f "$dest.tmp" "$dest"
 }
 put_unit() { # a unit/drop-in change needs daemon-reload
   local before=$CHANGED; put "$@"; [ "$CHANGED" -eq "$before" ] || RELOAD=1
