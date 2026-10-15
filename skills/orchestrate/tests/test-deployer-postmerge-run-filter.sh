@@ -66,3 +66,26 @@ test_prf_236_delivery_lead_no_blocked_relaunch_promise() {
 
 run_test test_prf_236_follows_cancel_chain
 run_test test_prf_236_delivery_lead_no_blocked_relaunch_promise
+
+# Issue #296 — every staging DEPLOYED / DEPLOYED TO STAGING comment carries the JP-required
+# "E2E: deferred" line (claude-agents variant: n/a); smoke stays non-blocking, no wait added.
+test_prf_296_e2e_line_in_templates() {
+  local want='- E2E: deferred to the final suite run (JP 2026-09-22)' rep
+  rep=$(awk '/^7\. \*\*Report\.\*\*/{on=1} on&&/^## Comment protocol/{exit} on{print}' "$DEPL_PRF")
+  assert_ne "$rep" "" "step 7 exists" || return 1
+  printf '%s\n' "$rep" | grep -qF -- "$want" || { fail "#296: step-7 template lacks the E2E deferred line"; return 1; }
+  printf '%s\n' "$rep" | grep -qF -- '- E2E: n/a' || { fail "#296: claude-agents variant lacks '- E2E: n/a'"; return 1; }
+  local s0; s0=$(grep -E '^0\. \*\*Deployer post-merge mode' "$DEPL_PRF")
+  printf '%s\n' "$s0" | grep -qF -- 'E2E: deferred to the final suite run (JP 2026-09-22)' || { fail "#296: post-merge mode lacks the E2E line"; return 1; }
+  assert_eq 0 0 "#296 E2E line present"
+}
+
+test_prf_296_smoke_still_non_blocking() {
+  grep -qF 'A still-running or failed E2E/smoke job in the same run, or a separate E2E workflow, does not block.' "$DEPL_PRF" || { fail "#296: :39 non-blocking sentence changed"; return 1; }
+  grep -qF 'NOT merge gates on `staging`' "$DEPL_PRF" || { fail "#296: :77 exception changed"; return 1; }
+  grep -qF 'Never poll a workflow to completion.' "$DEPL_PRF" || { fail "#296: poll ban removed"; return 1; }
+  assert_eq 0 0 "#296 no wait added"
+}
+
+run_test test_prf_296_e2e_line_in_templates
+run_test test_prf_296_smoke_still_non_blocking
