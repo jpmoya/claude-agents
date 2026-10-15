@@ -438,7 +438,7 @@ for f in "$PIPE"/orch-*.pid; do
       case "$marker" in *"] BLOCKED"*) gate_cls=$(blocked_class_of "$(cd "$repo" && gh issue view "$issue" --json comments 2>/dev/null </dev/null)") ;; esac
       case "|$(autoretry_classes)|" in *"|$gate_cls|"*) ;; *) gate_cls="" ;; esac
       if [ -n "$gate_cls" ]; then
-        printf '%s Pipeline #%s parked, auto-retry (%s) — %s; no action needed\n' "$(date -u +%FT%TZ)" "$issue" "$gate_cls" "$marker" > "$PIPE/orch-$issue.alert"
+        printf '%s Pipeline #%s parked, auto-retry (%s) — %s\n' "$(date -u +%FT%TZ)" "$issue" "$gate_cls" "$marker" > "$PIPE/orch-$issue.alert"
         slog "[held] #$issue — parked for auto-retry ($gate_cls): $marker"
         report_status_async "held"
         notify_engineering "$issue" ":hourglass:" "Parked, auto-retry ($gate_cls) — $gate_reason" "$(cd "$repo" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo "unknown")"
