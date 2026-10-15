@@ -84,6 +84,13 @@ skip_marker_malformed_log() {
       | select(((.author | type) != "object") or ((.author.login | type) != "string"))] | length' 2>/dev/null) || n=""
   case "$n" in ''|0|*[!0-9]*) return 0 ;; esac
   slog "[skip-mockups] #$issue — malformed SKIP MOCKUPS comment ignored ($n), gate stays"
+  if [ -n "${SLACK_WEBHOOK_URL:-}" ]; then   # tags only (release = commit SHA); never the comment text or the JP quote
+    local rel msg
+    rel=$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --short HEAD 2>/dev/null || echo unknown)
+    msg="skip-mockups marker malformed for #$issue: release=$rel environment=$(hostname -s 2>/dev/null || echo unknown) route=supervisor/skip-mockups"
+    curl -s --max-time 10 -X POST -H 'Content-type: application/json' \
+      --data "$(jq -nc --arg t "$msg" '{text:$t}')" "$SLACK_WEBHOOK_URL" >/dev/null 2>&1 || true
+  fi
 }
 
 issue_is_closed() {
