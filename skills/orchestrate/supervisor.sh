@@ -76,6 +76,15 @@ latest_marker() {  # the GATE marker: newest real routing marker whose agent is 
   (cd "$repo" 2>/dev/null && gh issue view "$issue" --json comments --jq "$prog") 2>/dev/null || echo "?"
 }
 
+# blocked_class_of <issue json with .comments> → the `Blocked on: <class>` word of the latest routing marker when it is a
+# BLOCKED, else empty. One rule for the step-1 gate alert wording (#271) and the auto-retry scan (#250).
+blocked_class_of() {
+  printf '%s' "$1" | jq -r --arg re "$(marker_re)" '
+    ([(.comments // [])[] | select(.body | split("\n")[0] | test($re))] | last) as $g
+    | if $g == null or ($g.body | split("\n")[0] | test("\\] BLOCKED(\\*\\*|:| |$)") | not) then empty
+      else (($g.body | split("\n")[1] // "") | capture("^Blocked on: (?<w>[a-z_]+)( |$)") | .w) // empty end' 2>/dev/null
+}
+
 issue_is_closed() {
   local repo=$1 issue=$2
   local state
@@ -422,12 +431,23 @@ for f in "$PIPE"/orch-*.pid; do
       # which clears .held (claude-agents#59).
       touch "$PIPE/orch-$issue.held"
       rm -f "$QUEUE/orch-$issue.json"
-      printf '%s Pipeline #%s waiting on JP — %s; relaunch (or re-add %s) after acting\n' "$(date -u +%FT%TZ)" "$issue" "$marker" "$LABEL_GO" > "$PIPE/orch-$issue.alert"
-      slog "[held] #$issue — waiting on JP: $marker"
-      report_status_async "held"   # event push: run held/gate (design #10 §4.4)
       gate_reason=$(echo "$marker" | sed 's/\*\*\[[^]]*\]\*\* *//; s/^ *//; s/ *$//')
       [ -z "$gate_reason" ] && gate_reason="$marker"
-      notify_engineering "$issue" ":hand:" "Waiting on you — $gate_reason" "$(cd "$repo" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo "unknown")"
+      # #271: a BLOCKED whose class auto-retry clears is parked, not waiting on JP. Read failure -> today's text.
+      gate_cls=""
+      case "$marker" in *"] BLOCKED"*) gate_cls=$(blocked_class_of "$(cd "$repo" && gh issue view "$issue" --json comments 2>/dev/null </dev/null)") ;; esac
+      case "|$(autoretry_classes)|" in *"|$gate_cls|"*) ;; *) gate_cls="" ;; esac
+      if [ -n "$gate_cls" ]; then
+        printf '%s Pipeline #%s parked, auto-retry (%s) — %s; no action needed\n' "$(date -u +%FT%TZ)" "$issue" "$gate_cls" "$marker" > "$PIPE/orch-$issue.alert"
+        slog "[held] #$issue — parked for auto-retry ($gate_cls): $marker"
+        report_status_async "held"
+        notify_engineering "$issue" ":hourglass:" "Parked, auto-retry ($gate_cls) — $gate_reason" "$(cd "$repo" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo "unknown")"
+      else
+        printf '%s Pipeline #%s waiting on JP — %s; relaunch (or re-add %s) after acting\n' "$(date -u +%FT%TZ)" "$issue" "$marker" "$LABEL_GO" > "$PIPE/orch-$issue.alert"
+        slog "[held] #$issue — waiting on JP: $marker"
+        report_status_async "held"   # event push: run held/gate (design #10 §4.4)
+        notify_engineering "$issue" ":hand:" "Waiting on you — $gate_reason" "$(cd "$repo" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo "unknown")"
+      fi
       continue ;;
     grace) continue ;;
   esac
@@ -683,10 +703,7 @@ for f in "$PIPE"/orch-*.held; do
   info=$(cd "$repo" && gh issue view "$issue" --json state,body,comments 2>/dev/null </dev/null) \
     || { slog "[auto-retry] #$issue — issue read failed"; autoretry_alert "$issue" "issue view"; continue; }
   [ "$(printf '%s' "$info" | jq -r '.state // empty')" = "OPEN" ] || continue
-  cls=$(printf '%s' "$info" | jq -r --arg re "$(marker_re)" '
-    ([(.comments // [])[] | select(.body | split("\n")[0] | test($re))] | last) as $g
-    | if $g == null or ($g.body | split("\n")[0] | test("\\] BLOCKED(\\*\\*|:| |$)") | not) then empty
-      else (($g.body | split("\n")[1] // "") | capture("^Blocked on: (?<w>[a-z_]+)( |$)") | .w) // empty end' 2>/dev/null)
+  cls=$(blocked_class_of "$info")
   case "|$(autoretry_classes)|" in *"|$cls|"*) ;; *) continue ;; esac
 
   autoretry_cleared "$repo" "$issue" "$cls" "$info"; rc=$?
