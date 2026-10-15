@@ -97,8 +97,10 @@ test_i289_ac7_row_passes_url_only_not_blocked_text() {
 
 # AC7 behaviour: stage-run.sh, run for a solutions-architect dispatch carrying a BLOCKED URL, appends exactly one
 # stage_start row to events.jsonl (the runs log) for that agent/repo/issue, and the BLOCKED text never reaches the row.
-# NOTE: the existing stage_start row has no release/environment fields (route == .agent); only fields that exist today are pinned.
-test_i289_ac7_stage_start_emitted_for_sa_reroute_without_blocked_text() {
+# REGRESSION PIN (architect decision on #289): proves a solutions-architect dispatch logs one stage_start with
+# agent (=route), host (=environment), repo, issue. It does NOT prove the reroute decision (LLM orchestrator);
+# the row-79 text pin carries that. release SHA is dropped for this ticket.
+test_i289_ac7_regression_pin_stage_start_row_for_sa_dispatch() {
   local bin pipe home log rc row
   bin=$(mktemp -d "${TMPDIR:-/tmp}/orch-test-i289.XXXXXX"); pipe=$(new_pipe); home=$(new_home); log="$home/logs/pipeline"
   mkdir -p "$home/.claude/projects"
@@ -115,6 +117,7 @@ test_i289_ac7_stage_start_emitted_for_sa_reroute_without_blocked_text() {
   assert_eq "$rc" 0 "AC7: wrapper exits 0" || return 1
   assert_ne "$row" "" "AC7: a stage_start row was emitted for the reroute" || return 1
   assert_eq "$(printf '%s' "$row" | jq -r .agent)" "solutions-architect" "AC7: route (stage) field is solutions-architect" || return 1
+  assert_eq "$(printf '%s' "$row" | jq -r .host)" "$(hostname -s | tr "[:upper:]" "[:lower:]")" "AC7: environment (host) field" || return 1
   assert_eq "$(printf '%s' "$row" | jq -r .repo)" "project-a/app" "AC7: repo field" || return 1
   assert_eq "$(printf '%s' "$row" | jq -r .issue)" "289" "AC7: issue field" || return 1
   assert_not_contains "$row" 'BLOCKED' "AC7: no BLOCKED text in the logged row" || return 1
@@ -131,4 +134,4 @@ run_test test_i289_ac3_other_classes_rows_unchanged
 run_test test_i289_ac4_architect_answers_developer_blocked
 run_test test_i289_ac5_developer_needs_jp_is_jp_only_list
 run_test test_i289_ac7_row_passes_url_only_not_blocked_text
-run_test test_i289_ac7_stage_start_emitted_for_sa_reroute_without_blocked_text
+run_test test_i289_ac7_regression_pin_stage_start_row_for_sa_dispatch
