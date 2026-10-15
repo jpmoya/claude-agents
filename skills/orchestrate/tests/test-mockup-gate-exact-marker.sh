@@ -502,6 +502,12 @@ test_mg_202_terminal_kind_gate_with_trailing_text_approval() {
   assert_eq "$kind" gate "202: terminal_kind → gate (held), not a restart" || return 1
 }
 
+test_mg_294_designer_request_states_exact_approval_line() {
+  local f="$ROOT_MG/agents/ui-ux-designer.md"
+  grep -qF '**[jp] MOCKUPS APPROVED**' "$f" || { fail "294: designer request lacks exact approval line"; return 1; }
+  ! grep -qF 'Comment with approval' "$f" || { fail "294: old wording remains"; return 1; }
+}
+
 # ---------------------------------------------------------------------------------------- run
 
 run_test test_mg_ac1_approval_row_is_exact_first_line_form
@@ -530,3 +536,4 @@ run_test test_mg_202_other_agents_suffix_unchanged
 run_test test_mg_202_terminal_kind_gate_with_trailing_text_approval
 run_test test_mg_ac7_pipeline_markers_byte_identical
 run_test test_mg_ac7_project_manager_still_has_no_mockups_approved_marker
+run_test test_mg_294_designer_request_states_exact_approval_line
