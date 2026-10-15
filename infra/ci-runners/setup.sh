@@ -141,7 +141,8 @@ set -euo pipefail
 gha_docker_env
 pct=$(df --output=pcent "$GHA_ROOT/" 2>/dev/null | tail -n 1 | tr -dc '0-9' || true)
 if [ -n "$pct" ] && [ "$pct" -ge 80 ]; then gha_alert "CI runner disk at ${pct}% on ${HOSTNAME:-host}"; fi
-docker system prune -af --filter until=24h >/dev/null 2>&1 || gha_fail hygiene/prune "docker system prune failed"
+# Never `-a` on images: it would delete the idle gha-runner image and break every slot.
+{ docker container prune -f --filter until=24h && docker builder prune -af --filter until=24h && docker image prune -f; } >/dev/null 2>&1 || gha_fail hygiene/prune "docker prune failed"
 EOF
 }
 slot_unit_text() { render <<'EOF'
