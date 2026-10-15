@@ -437,6 +437,9 @@ for f in "$PIPE"/orch-*.pid; do
       gate_cls=""
       case "$marker" in *"] BLOCKED"*) gate_cls=$(blocked_class_of "$(cd "$repo" && gh issue view "$issue" --json comments 2>/dev/null </dev/null)") ;; esac
       case "|$(autoretry_classes)|" in *"|$gate_cls|"*) ;; *) gate_cls="" ;; esac
+      # Park only while retries remain; once the cap is spent auto-retry stops and JP must act.
+      gate_n=$(tr -dc '0-9' < "$PIPE/orch-$issue.autoretry" 2>/dev/null)
+      [ "${gate_n:-0}" -lt "${AUTORETRY_MAX:-3}" ] || gate_cls=""
       if [ -n "$gate_cls" ]; then
         printf '%s Pipeline #%s parked, auto-retry (%s) — %s\n' "$(date -u +%FT%TZ)" "$issue" "$gate_cls" "$marker" > "$PIPE/orch-$issue.alert"
         slog "[held] #$issue — parked for auto-retry ($gate_cls): $marker"
