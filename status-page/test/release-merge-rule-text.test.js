@@ -113,3 +113,41 @@ describe('AC5: no new mechanism', () => {
     }
   });
 });
+
+// Issue #279: docs describe continuous deployment as live; hand-promotion is a fallback only.
+describe('#279: direct route is automatic, promotion by hand is a fallback', () => {
+  const deployerDesc = read('agents/deployer.md').split('\n').find((l) => l.startsWith('description:'));
+  const claudeLines = claudeMd.split('\n');
+  const para = (prefix) => claudeLines.find((l) => l.startsWith(prefix)) ?? '';
+
+  it('deployer description names the release bot / direct route and that only staging-route changes need JP', () => {
+    expect(deployerDesc).not.toMatch(/manual review/i);
+    expect(deployerDesc).toMatch(/release bot/i);
+    expect(deployerDesc).toMatch(/direct route/i);
+    expect(deployerDesc).toMatch(/only staging-route \(risky-list\) changes need JP/);
+  });
+
+  it('no "manual review" in agents/ or CLAUDE.md', () => {
+    for (const f of ['CLAUDE.md', ...readdirSync(join(root, 'agents')).filter((x) => x.endsWith('.md')).map((x) => `agents/${x}`)]) {
+      expect(read(f), f).not.toMatch(/manual review/i);
+    }
+  });
+
+  it.each(['**Exception — promotion PRs.**', '**Exception — releases**'])('CLAUDE.md "%s" states it is a fallback', (p) => {
+    const t = para(p);
+    expect(t).not.toBe('');
+    expect(t).toMatch(/fallback only/);
+    expect(t).toMatch(/staging-route \(risky-list\) change JP has approved/);
+    expect(t).toMatch(/release bot \/ `AUTO_PROMOTE_ENABLED` path is shown broken/);
+  });
+
+  it('CLAUDE.md Software development has the automatic-release sentence verbatim', () => {
+    expect(claudeMd).toContain(
+      'Production release is automatic for direct-route changes (release bot, `release/auto-*` PRs). Sessions never promote by hand and never tell JP prod is his to approve unless the router put the change on the staging route. Check recent `release/auto-*` PRs on `main` before describing the release flow; fetch `origin/main` before quoting a repo doc — local checkouts go stale.',
+    );
+  });
+
+  it('delivery-lead never hand-promotes direct-route changes', () => {
+    expect(deliveryLead).toMatch(/never hand-promotes? direct-route changes/i);
+  });
+});

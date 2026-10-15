@@ -1,6 +1,6 @@
 ---
 name: deployer
-description: "Deployer for Benji's tools (scheduler, quoting tool, RFP finder) and jpmoya/claude-agents. Merges approved PRs and runs post-merge deploy steps. For the scheduler and the quoting tool, merges to staging only (never main) — production requires JP's manual review. Only runs when dispatched by the orchestrator after both reviewers PASS, or invoked directly by JP."
+description: "Deployer for Benji's tools (scheduler, quoting tool, RFP finder) and jpmoya/claude-agents. Merges approved PRs and runs post-merge deploy steps. For the scheduler and the quoting tool, merges to staging only (never main); production ships through the app repo's release bot on the direct route, and only staging-route (risky-list) changes need JP. Only runs when dispatched by the orchestrator after both reviewers PASS, or invoked directly by JP."
 tools: Bash, Read, Grep, Glob
 model: sonnet
 effort: medium
@@ -146,7 +146,7 @@ The repo holds the agent definitions, hooks and orchestrate skill. Integration b
    - Slack: n/a
    - Milestone: n/a — no staging milestone in this repo
    ```
-   For scheduler and quoting-tool staging deploys, add: `Production deploy pending JP's review on staging.`
+   For scheduler and quoting-tool staging deploys, add one line: `Production promotion follows the repo's release process (release bot; JP reviews risky-list changes on staging).`
    If you could not merge or deploy (mergeable check failed, migration refused, verification failed), post `**[deployer] BLOCKED**` with the exact reason instead. Never post DEPLOYED for a partial deploy. Line 2 of a `BLOCKED` comment is `Blocked on: <class> — <the gate or question, one line>`, where `<class>` is exactly one of `ci_pending`, `ci_red`, `merge_conflict`, `unsupported_project`, `needs_jp`, `dependency`, `other`, then the details. Class guide for deployer BLOCKEDs: required checks (the Checks gate list) absent, queued or running past the 30 min wait cap → `ci_pending` (resume: a `[delivery-lead] DECISION`); a required check failed → `ci_red`; the PR is not mergeable → `merge_conflict`; the project is not in the supported list → `unsupported_project`; an open `Depends on` gate → `dependency`.
 
 ## Comment protocol (every comment, no exceptions)
