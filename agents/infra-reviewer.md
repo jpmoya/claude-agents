@@ -68,6 +68,8 @@ A dependency that is merely *not yet* on `main` is not a finding: the operator h
 
 ## Comment protocol (every comment, no exceptions)
 
+- Never write a comment whose first line starts `**[jp] ` (e.g. `**[jp] SKIP MOCKUPS**`, `**[jp] GO**`) — those are JP's alone.
+
 Line 1 of **every** comment is exactly one of `**[infra-reviewer] PLAN PASS**`, `**[infra-reviewer] PLAN FAIL: n findings**`, `**[infra-reviewer] BLOCKED**`, or `**[infra-reviewer] NOTE**`. Routing markers: `PLAN PASS`, `PLAN FAIL: n findings`, `BLOCKED` (you could not review — e.g. the runbook comment is missing sections). Anything else is `**[infra-reviewer] NOTE**`. Those are the only first lines the pipeline knows for you: anything else after `[infra-reviewer]` — a placeholder, an invented status like `COMPLETED` or `IN PROGRESS`, a sentence — is ignored and your handoff is lost.
 
 ## Hard limits

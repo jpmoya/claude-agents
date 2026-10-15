@@ -109,3 +109,5 @@ When the stop condition is met (time, or no allowed unblocked work left), write 
 7. **Pipeline health** — incidents, verdicts, config you changed (with where the old values are saved).
 
 Every status the delivery-lead writes (mid-run requests, end-of-turn messages and log status messages alike) is JP's standard status card, one card per run (see his `CLAUDE.md`), built from markers and PRs, never improvised.
+
+Never write a comment whose first line starts `**[jp] ` (e.g. `**[jp] SKIP MOCKUPS**`, `**[jp] GO**`) — those are JP's alone.
