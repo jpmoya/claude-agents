@@ -233,6 +233,53 @@ test_sm_orchestrate_skill_says_main_session_posts_only_when_quoting_jp() {
   sm_needs "skill" "$t" "quoting JP" "JP said" || return 1
 }
 
+# ------------------------------------------------------------------ goal-lib classification (AC7, goal-lib.sh:256)
+# Reuses the goal-supervisor harness (gs_*). When this file runs on its own (not after test-goal-supervisor.sh in
+# the shared shell) load only that file's definitions — everything before its first run_test line.
+if ! type gs_env >/dev/null 2>&1; then
+  . <(sed '/^echo "-- goal supervisor/,$d' "$HERE_MG/test-goal-supervisor.sh")
+  GS_SKILL=$(cd "$HERE_MG/.." && pwd)   # the sourced copy derived these from /dev/fd/N
+  GS_ROOT=$(cd "$GS_SKILL/../.." && pwd)
+fi
+# CONTRACT: the goal step reads through REST (`gh api repos/<r>/issues/<n>` .user.login and .../comments .user.login),
+# as _goal_ticket_eval already does; the issue author and the marker author are `jpmoya`.
+# sm_goal_class <author> <body of the comment posted after MOCKUPS PENDING APPROVAL, or "" for none>
+# prints delivered | waiting_jp | active | none (same outcome reading as gs_classify: registry store / launch).
+sm_goal_class() {
+  local who=$1 body=$2 out=none f
+  gs_env
+  gs_issue 7 open
+  jq -c '.user = {login: "jpmoya"}' "$GS_ST/issues/$GS_A/7.json" > "$GS_ST/issues/$GS_A/7.json.tmp" \
+    && mv "$GS_ST/issues/$GS_A/7.json.tmp" "$GS_ST/issues/$GS_A/7.json"
+  f="$GS_ST/comments/$GS_A-7.json"
+  jq -nc --arg now "$GS_NOW" --arg p "$SM_PEND"$'\nmockups ready' '[{created_at:$now, user:{login:"jpmoya"}, body:$p}]' > "$f"
+  if [ -n "$body" ]; then
+    jq -c --arg now "$GS_NOW" --arg b "$body" --arg a "$who" '. + [{created_at:$now, user:{login:$a}, body:$b}]' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  fi
+  gs_own "$GS_ID_T7" 50 "$GS_SPEC_T7" 3600 ""
+  gs_tick
+  if [ "$(gs_reg_state 50)" = closed ] && ! gs_has_label 50 goal-stopped; then out=delivered
+  elif gs_has_label 50 goal-waiting-jp; then out=waiting_jp
+  elif gs_wait_claude 1; then out=active
+  fi
+  gs_cleanup
+  printf '%s' "$out"
+}
+# 7: a skipped ticket is not "waiting on you" in a goal run — the goal keeps it active (arch: it is not delivered either)
+test_sm_goal_valid_marker_is_not_waiting_jp() {
+  assert_eq "$(sm_goal_class jpmoya "$SM_VALID")" "active" "goal class: PENDING + valid skip marker" || return 1
+}
+# controls — each must stay "mockups need your approval" (waiting_jp)
+test_sm_goal_no_marker_stays_waiting_jp() {
+  assert_eq "$(sm_goal_class jpmoya "")" "waiting_jp" "goal class: PENDING, no marker" || return 1
+}
+test_sm_goal_non_author_marker_stays_waiting_jp() {
+  assert_eq "$(sm_goal_class someone-else "$SM_VALID")" "waiting_jp" "goal class: marker from non-author" || return 1
+}
+test_sm_goal_marker_without_quote_stays_waiting_jp() {
+  assert_eq "$(sm_goal_class jpmoya "$SM_MARK")" "waiting_jp" "goal class: marker without JP said line" || return 1
+}
+
 run_test test_sm_jp_vocabulary_has_skip_mockups_and_keeps_approved
 run_test test_sm_marker_re_matches_exact_valid_first_line
 run_test test_sm_marker_re_rejects_non_exact_lines
@@ -267,3 +314,8 @@ run_test test_sm_delivery_lead_decision_is_never_a_skip
 run_test test_sm_designer_describes_skip_and_no_mockup_case
 run_test test_sm_developer_does_not_bind_to_mockup_when_none_exists
 run_test test_sm_orchestrate_skill_says_main_session_posts_only_when_quoting_jp
+run_test test_sm_goal_valid_marker_is_not_waiting_jp
+run_test test_sm_goal_no_marker_stays_waiting_jp
+run_test test_sm_goal_non_author_marker_stays_waiting_jp
+run_test test_sm_goal_marker_without_quote_stays_waiting_jp
+gs_tree_cleanup
