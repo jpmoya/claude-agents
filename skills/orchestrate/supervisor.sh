@@ -640,7 +640,7 @@ autoretry_cleared() {
   AR_ERR=""
   case "$cls" in
     dependency)
-      deps=$(printf '%s' "$info" | jq -r '.body // ""' | sed -n 's/^[Dd]epends on #\([0-9][0-9]*\).*/\1/p')
+      deps=$(printf '%s' "$info" | jq -r '.body // ""' | grep -iE '^depends on ' | grep -oE '#[0-9]+' | tr -d '#')
       [ -n "$deps" ] || return 1
       for dep in $deps; do
         [ "$(cd "$repo" && gh issue view "$dep" --json state --jq .state 2>/dev/null </dev/null)" = "CLOSED" ] || return 1
@@ -675,6 +675,11 @@ for f in "$PIPE"/orch-*.held; do
   if [ -n "$last" ] && [ $(( $(date +%s) - last )) -lt "$AUTORETRY_THROTTLE_SECS" ]; then continue; fi
   touch "$stamp" 2>/dev/null || true   # throttle failed checks too
 
+  # Local state first (#269): no API call for a run that is not parked on a BLOCKED
+  ar_ec=""; [ -f "$PIPE/orch-$issue.exit-class" ] && ar_ec=$(tr -s ' \t' ' ' < "$PIPE/orch-$issue.exit-class" | head -1)
+  [ "$ar_ec" = "rate_limited monthly_spend" ] && continue
+  if [ -s "$PIPE/orch-$issue.alert" ] && ! grep -q 'BLOCKED' "$PIPE/orch-$issue.alert" 2>/dev/null; then continue; fi
+
   info=$(cd "$repo" && gh issue view "$issue" --json state,body,comments 2>/dev/null </dev/null) \
     || { slog "[auto-retry] #$issue — issue read failed"; autoretry_alert "$issue" "issue view"; continue; }
   [ "$(printf '%s' "$info" | jq -r '.state // empty')" = "OPEN" ] || continue
@@ -693,13 +698,21 @@ for f in "$PIPE"/orch-*.held; do
   [ "$rc" -eq 0 ] || continue
 
   n=$((n + 1))
+  # NOTE first: the relaunched orchestrator resumes on it. If it cannot be posted, stay held for the next tick.
+  if ! (cd "$repo" && gh issue comment "$issue" --body "**[supervisor] NOTE** auto-retry $n/$AUTORETRY_MAX: $cls cleared" >/dev/null 2>&1 </dev/null); then
+    slog "[auto-retry] #$issue — NOTE post failed, staying held"
+    autoretry_alert "$issue" "issue comment"
+    continue
+  fi
   echo "$n" > "$PIPE/orch-$issue.autoretry"
   rm -f "$PIPE/orch-$issue.held" "$PIPE/orch-$issue.alert"
-  python3 -c "
-import json
-json.dump({'issue':'$issue','repo':'$repo','extra':'','reason':'queued','queued_at':'$(date -u +%FT%TZ)','not_before':0}, open('$QUEUE/orch-$issue.json','w'))
-" 2>/dev/null
-  (cd "$repo" && gh issue comment "$issue" --body "**[supervisor] NOTE** auto-retry $n/$AUTORETRY_MAX: $cls cleared" >/dev/null 2>&1 </dev/null) || true
+  python3 - "$issue" "$repo" "$QUEUE/orch-$issue.json" "$(date -u +%FT%TZ)" "$PIPE/orch-$issue.extra" <<'PY' 2>/dev/null
+import json, sys
+issue, repo, out, ts, ex = sys.argv[1:6]
+try: extra = open(ex).read()
+except Exception: extra = ''
+json.dump({'issue': issue, 'repo': repo, 'extra': extra, 'reason': 'queued', 'queued_at': ts, 'not_before': 0}, open(out, 'w'))
+PY
   slog "[auto-retry] #$issue — $cls cleared, relaunching ($n/$AUTORETRY_MAX)"
   report_status_async "auto-retry"
 done
