@@ -8,6 +8,13 @@
 #   - Rendered launcher:  $GHA_ROOT/usr/local/sbin/gha-slot.sh <N>  (reads $GHA_ROOT/etc/gha/mint.env)
 #   - Rendered hygiene:   $GHA_ROOT/usr/local/sbin/gha-hygiene.sh   (reads $GHA_ROOT/etc/gha/alert.env)
 #   - Both honour GHA_ROOT and PATH=$GHA_DRY_STUBS:$PATH at run time.
+#   - Sentry event: sent via `sentry-cli` or `curl`; the stubs capture argv, SENTRY_* env, stdin and any
+#     `@file` body, so tags may travel in argv, a JSON body, a file or stdin. `release` must be the commit sha
+#     (7-40 hex) and appear as release<sep>sha where <sep> is up to 6 non-hex chars ('=', ' ', '":"', ...).
+#   - Slot enable/disable goes through `systemctl enable|disable|stop` (state recorded by the stub, not log greps).
+#   - The launcher's work dir is the host side of its `docker run -v <host>:<ctr>` bind mount.
+#   - `df` may be called with any flags (--output=pcent or -P).
+#   - Launcher scope comes from `GHA_RUNNER_SCOPE=` in mint.env (developer-chosen; documented in README).
 set -u
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 SETUP="$REPO/infra/ci-runners/setup.sh"
@@ -30,13 +37,24 @@ mkstubs() { # mkstubs <dir>
     cat > "$d/$c" <<'STUB'
 #!/usr/bin/env bash
 c=$(basename "$0"); S=${STUB_STATE:?}; mkdir -p "$S"
-echo "$c $*" >> "$S/$c.log"
+body=""; envs=""
+if [ "$c" = curl ] || [ "$c" = sentry-cli ]; then
+  for a in "$@"; do
+    case "$a" in @-) ;; @*) [ -f "${a#@}" ] && body="$body $(tr '\n' ' ' < "${a#@}")";; esac
+  done
+  # stdin is read only when argv says so (never blocks on an inherited stdin)
+  case " $* " in *" @-"*|*" -K - "*|*" --config - "*|*" -d - "*) body="$body $(cat | tr '\n' ' ')";; esac
+  envs=$(env | grep -E '^SENTRY_(RELEASE|ENVIRONMENT|TAGS?[A-Z_]*|EXTRA[A-Z_]*)=' | tr '\n' ' ')
+fi
+echo "$c $*${body:+ BODY=$body}${envs:+ ENV=$envs}" >> "$S/$c.log"
 case "$c" in
   systemctl)
     cmd=""; for a in "$@"; do case "$a" in enable|disable|stop|start|is-enabled|is-active|is-failed|show|daemon-reload|restart) cmd=$a; break;; esac; done
+    now=0; for a in "$@"; do [ "$a" = --now ] && now=1; done
     for a in "$@"; do case "$a" in gha-slot@*|gha-hygiene*)
       u=${a%.service}
-      case "$cmd" in enable) touch "$S/en.$u";; disable) rm -f "$S/en.$u";;
+      case "$cmd" in start|enable) rm -f "$S/stopped.$u";; stop) touch "$S/stopped.$u";; esac
+      case "$cmd" in enable) touch "$S/en.$u";; disable) rm -f "$S/en.$u"; [ $now = 1 ] && touch "$S/stopped.$u";;
         is-enabled|is-active) [ -e "$S/en.$u" ] && { echo enabled; exit 0; } || { echo disabled; exit 1; };; esac;;
     esac; done ;;
   useradd) touch "$S/user"; [ -n "${STUB_USERADD_FAIL:-}" ] && { echo "useradd: boom" >&2; exit 1; } ;;
@@ -51,9 +69,12 @@ case "$c" in
       "info "*) echo "name=rootless /srv/gha/docker";;
     esac
     case "$1" in build) touch "$S/image";; esac ;;
+esac
+case "$c" in
   curl)
     case "$*" in *generate-jitconfig*) [ -n "${STUB_MINT_FAIL:-}" ] && { echo "mint denied" >&2; exit 22; }; echo '{"encoded_jit_config":"abc"}';; esac ;;
-  df) printf 'Use%%\n %s%%\n' "${STUB_DF_PCT:-10}" ;;
+  df) case "$*" in *--output=pcent*) printf 'Use%%\n %s%%\n' "${STUB_DF_PCT:-10}";;
+        *) printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/x 100 %s %s %s%% /\n' "${STUB_DF_PCT:-10}" "$((100-${STUB_DF_PCT:-10}))" "${STUB_DF_PCT:-10}";; esac ;;
   sudo)
     for a in "$@"; do case "$a" in
       test) [ -n "${STUB_SUDO_READABLE:-}" ] && exit 0 || exit 1;;
@@ -72,6 +93,7 @@ newenv() {
   R="$TMP/root.$RANDOM$RANDOM"; ST="$TMP/state.$RANDOM$RANDOM"; STUBS="$TMP/stubs.$RANDOM$RANDOM"
   mkdir -p "$R" "$ST"; mkstubs "$STUBS"
   export GHA_ROOT="$R" GHA_DRY_STUBS="$STUBS" STUB_STATE="$ST" PATH="$STUBS:$ORIG_PATH"
+  for v in $(env | sed -n 's/^\(SENTRY_[A-Za-z_]*\)=.*/\1/p'); do unset "$v"; done   # ambient Sentry config must not leak in
   unset STUB_USERADD_FAIL STUB_DOCKER_PRUNE_FAIL STUB_MINT_FAIL STUB_DF_PCT STUB_SUDO_READABLE STUB_SUDO_LIST STUB_ENV_LEAK
 }
 ORIG_PATH=$PATH
@@ -130,23 +152,23 @@ test_check_no_root() { newenv; [ "$(id -u)" -ne 0 ] || return 0; bash "$SETUP" -
 t "--check works as non-root" test_check_no_root
 
 # ---- slots -----------------------------------------------------------------------------------
+enabled() { [ -e "$ST/en.gha-slot@$1" ]; }       # state recorded by the systemctl stub (enable/disable verbs only)
+stopped() { [ -e "$ST/stopped.gha-slot@$1" ]; }
 test_default_two() {
   newenv; bash "$SETUP" >/dev/null 2>&1
-  grep -Eq 'enable.*gha-slot@1' "$ST/systemctl.log" && grep -Eq 'enable.*gha-slot@2' "$ST/systemctl.log" \
-    && ! grep -Eq 'enable.*gha-slot@3' "$ST/systemctl.log"
+  enabled 1 && enabled 2 && ! enabled 3 && ! enabled 4
 }
 t "default slots = 2 (units 1,2 enabled, 3 not)" test_default_two
 test_scale_up() {
-  newenv; bash "$SETUP" --slots 2 >/dev/null 2>&1; : > "$ST/systemctl.log"
+  newenv; bash "$SETUP" --slots 2 >/dev/null 2>&1; ! enabled 3 || return 1
   bash "$SETUP" --slots 3 >/dev/null 2>&1 || return 1
-  grep -Eq 'enable.*gha-slot@3' "$ST/systemctl.log"
+  enabled 1 && enabled 2 && enabled 3
 }
 t "--slots 3 after 2 enables unit 3" test_scale_up
 test_scale_down() {
-  newenv; bash "$SETUP" --slots 2 >/dev/null 2>&1; : > "$ST/systemctl.log"
+  newenv; bash "$SETUP" --slots 2 >/dev/null 2>&1; enabled 2 || return 1
   bash "$SETUP" --slots 1 >/dev/null 2>&1 || return 1
-  grep -Eq '(disable|stop).*gha-slot@2' "$ST/systemctl.log" && grep -Eq 'disable.*gha-slot@2' "$ST/systemctl.log" \
-    && ! grep -Eq 'disable.*gha-slot@1' "$ST/systemctl.log"
+  enabled 1 && ! stopped 1 && ! enabled 2 && stopped 2
 }
 t "--slots 1 after 2 disables+stops unit 2 only" test_scale_down
 
@@ -176,6 +198,57 @@ test_version_param() {
 t "--runner-version pins version everywhere (no leftover default)" test_version_param
 test_no_sudo_user() { newenv; bash "$SETUP" >/dev/null 2>&1 || return 1; [ -n "$(find "$R" -type f)" ] && ! grep -rqiE 'gha.*NOPASSWD|usermod .*-aG sudo' "$R"; }
 t "gha granted no sudo" test_no_sudo_user
+
+# ---- per-step coverage (setup behaviours 1,2,4,5) ---------------------------------------------
+# stub uid for gha is 1234 (id -u gha)
+files_like() { find "$R" -type f -path "$1"; }
+has_in() { # has_in <path-glob> <fixed string>...: some file matching the glob contains every string
+  local g=$1 f str ok_; shift
+  for f in $(files_like "$g"); do ok_=1; for str in "$@"; do grep -qF -- "$str" "$f" || ok_=0; done; [ $ok_ = 1 ] && return 0; done
+  return 1; }
+test_user_slice_limits() {
+  newenv; bash "$SETUP" --slots 2 >/dev/null 2>&1
+  has_in '*user-1234.slice*' MemoryMax=5G MemoryHigh=4500M MemorySwapMax=0 CPUWeight=50 IOWeight=50 TasksMax=4096 \
+    || { echo "limits not in a user-1234.slice drop-in"; return 1; }
+}
+t "limits sit on user-<uid>.slice (not a runner-unit slice)" test_user_slice_limits
+test_oom_user_service() { newenv; bash "$SETUP" >/dev/null 2>&1; has_in '*user@1234.service*' OOMScoreAdjust=500; }
+t "OOMScoreAdjust=500 in a user@<uid>.service drop-in" test_oom_user_service
+test_oom_runner_unit() { newenv; bash "$SETUP" >/dev/null 2>&1; has_in '*gha-slot@*' OOMScoreAdjust=500 Restart=always; }
+t "OOMScoreAdjust=500 and Restart=always in the gha-slot@ unit" test_oom_runner_unit
+test_image_built() {
+  newenv; bash "$SETUP" >/dev/null 2>&1
+  grep -Eq '^docker .*build.*gha-runner:2\.338\.0' "$ST/docker.log"
+}
+t "runner image built and tagged gha-runner:2.338.0" test_image_built
+test_image_built_version() {
+  newenv; bash "$SETUP" --runner-version 2.340.1 >/dev/null 2>&1
+  grep -Eq '^docker .*build.*gha-runner:2\.340\.1' "$ST/docker.log" && ! grep -q 'gha-runner:2\.338' "$ST/docker.log"
+}
+t "image tag follows --runner-version" test_image_built_version
+test_user_dirs() {
+  newenv; bash "$SETUP" >/dev/null 2>&1 || return 1
+  [ -d "$R/srv/gha" ] || { echo "no /srv/gha"; return 1; }
+  grep -q '^gha:' "$R/etc/subuid" && grep -q '^gha:' "$R/etc/subgid" || { echo "subuid/subgid"; return 1; }
+  [ -e "$ST/linger" ] || { echo "linger not enabled"; return 1; }
+  [ -e "$ST/user" ] || { echo "gha not created"; return 1; }
+}
+t "gha user, /srv/gha, subuid/subgid, linger" test_user_dirs
+test_work_wiped() {
+  newenv; setup_mint; echo "GHA_RUNNER_SCOPE=orgs/benjis" >> "$R/etc/gha/mint.env"
+  bash "$SETUP" >/dev/null 2>&1 || return 1
+  : > "$ST/docker.log"
+  bash "$R/usr/local/sbin/gha-slot.sh" 1 >/dev/null 2>&1
+  local line host; line=$(grep -E '^docker .*run ' "$ST/docker.log" | head -1)
+  [ -n "$line" ] || { echo "launcher never ran docker run (scope key is GHA_RUNNER_SCOPE in mint.env)"; return 1; }
+  host=$(sed -nE 's/.* (-v|--volume)[ =]([^: ]+):.*/\2/p' <<<"$line" | head -1)
+  [ -n "$host" ] && [ -d "$host" ] || { echo "no host bind mount dir ($host)"; return 1; }
+  case "$host" in "$R"/*) ;; *) echo "work dir outside GHA_ROOT: $host"; return 1;; esac
+  echo stale > "$host/stale-from-previous-job"
+  bash "$R/usr/local/sbin/gha-slot.sh" 1 >/dev/null 2>&1
+  [ ! -e "$host/stale-from-previous-job" ]
+}
+t "slot work dir wiped on every slot start" test_work_wiped
 
 # ---- secrets ---------------------------------------------------------------------------------
 P1='gh''p_'; P2='gh''o_'; P3='github''_pat_'
@@ -262,15 +335,15 @@ test_hy_quiet() { # $1 = pct
   [ "$(hook_posts)" -eq 0 ]
 }
 test_hy_noenv() {
-  newenv; bash "$SETUP" >/dev/null 2>&1; export STUB_DF_PCT=95
+  newenv; bash "$SETUP" >/dev/null 2>&1; : > "$ST/curl.log"; export STUB_DF_PCT=95
   hygiene_run || return 1
-  [ "$(grep -c . "$ST/curl.log" 2>/dev/null || echo 0)" -eq 0 ]
+  [ ! -s "$ST/curl.log" ]
 }
 t "hygiene: 85% disk -> Slack alert" test_hy_alert 85
 t "hygiene: exactly 80% -> Slack alert (boundary)" test_hy_alert 80
 t "hygiene: 79% -> no alert (boundary)" test_hy_quiet 79
 t "hygiene: no alert.env -> silent, exit 0" test_hy_noenv
-test_hy_prunes() { newenv; bash "$SETUP" >/dev/null 2>&1; hygiene_run; grep -Eq 'system prune -af --filter until=24h' "$ST/docker.log"; }
+test_hy_prunes() { newenv; bash "$SETUP" >/dev/null 2>&1; : > "$ST/docker.log"; hygiene_run || return 1; grep -Eq 'system prune -af --filter until=24h' "$ST/docker.log"; }
 t "hygiene runs docker system prune -af --filter until=24h" test_hy_prunes
 
 # ---- observability ---------------------------------------------------------------------------
@@ -279,7 +352,7 @@ event_ok() { # asserts exactly one event with release/environment/route tags and
   local ev; ev=$({ cat "$ST/sentry-cli.log" 2>/dev/null; grep -i sentry "$ST/curl.log" 2>/dev/null; })
   grep -qi 'release' <<<"$ev" && grep -qF 'ci-runner' <<<"$ev" && grep -qi 'route' <<<"$ev" \
     || { echo "missing release/environment/route tag"; return 1; }
-  grep -qE 'release[= :"]+[0-9a-f]{7,40}' <<<"$ev" || { echo "release is not a commit sha"; return 1; }
+  grep -qiE 'release[^0-9a-f]{1,6}[0-9a-f]{7,40}' <<<"$ev" || { echo "release is not a commit sha"; return 1; }
   ! grep -qF "$SENT" <<<"$ev" || { echo "token in event"; return 1; }
   ! grep -qF SENTINELHOOK <<<"$ev" || { echo "webhook in event"; return 1; }
 }
