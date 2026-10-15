@@ -461,6 +461,19 @@ test_ar2_269_blocked_alert_still_reads_issue_and_retries() {
   [ "${views:-0}" -ge 1 ] || { fail "269 item4 control: BLOCKED hold must read the issue"; return 1; }
 }
 
+# ---- #293: a held run with no .autoretry file reads the counter silently ------------------------------------------
+test_ar2_293_missing_autoretry_file_no_stderr() {
+  ar2_fixture 'Blocked on: ci_pending — checks running'
+  echo pending > "$SQ_GH/gh-pr-checks"
+  rm -f "$SQ_PIPE/orch-42.autoretry"
+  sq_run "$SUP_SQ" >/dev/null 2>"$SQ_PIPE/tick.stderr"
+  local err stamp=no; err=$(grep -c 'autoretry: No such file' "$SQ_PIPE/tick.stderr" 2>/dev/null || true)
+  [ -e "$SQ_PIPE/orch-42.autoretry-check" ] && stamp=yes
+  sq_cleanup
+  assert_eq "${err:-0}" "0" "293: no 'No such file' stderr for a missing .autoretry" || return 1
+  assert_eq "$stamp" "yes" "293: loop reaches the throttle stamp" || return 1
+}
+
 run_test test_ar2_269_note_posted_before_queue_file_written
 run_test test_ar2_269_failed_note_post_does_not_requeue
 run_test test_ar2_269_comment_failure_alerts_slack_with_tags
@@ -472,3 +485,4 @@ run_test test_ar2_269_multi_dependency_all_closed_cleared
 run_test test_ar2_269_extra_carried_over_to_relaunch
 run_test test_ar2_269_non_blocked_alert_skips_issue_view
 run_test test_ar2_269_blocked_alert_still_reads_issue_and_retries
+run_test test_ar2_293_missing_autoretry_file_no_stderr
