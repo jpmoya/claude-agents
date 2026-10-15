@@ -104,7 +104,8 @@ cmd_register() {
   n=$(printf '%s' "$resp" | jq -r .number)
   mkdir -p "$LOGDIR/goals"
   write_cache "$id" "$block" "$n"
-  if ! goal_launch "$id"; then
+  if ! goal_launch "$id" "$(printf '%s' "$resp" | _goal_issue_to_goal)"; then
+    launch_alert "$id" "$n"
     # don't leave a ghost active goal behind
     if { add_label "$n" goal-stopped && set_state "$n" closed; } 2>/dev/null; then
       die "registered $id (issue #$n) but the launch failed; closed it as stopped"

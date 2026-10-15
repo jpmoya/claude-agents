@@ -102,6 +102,15 @@ claim_alert() {
     "$SLACK_WEBHOOK_URL" >/dev/null 2>&1 </dev/null || true
 }
 
+# launch_alert <goal id> <issue> — best-effort Slack alert (existing SLACK_WEBHOOK_URL) when deliver.sh register could not
+# launch. Goal id and issue number only (no instruction text). Never fails the caller.
+launch_alert() {
+  [ -n "${SLACK_WEBHOOK_URL:-}" ] || return 0
+  curl -s --max-time 10 -X POST -H 'Content-Type: application/json' \
+    --data "{\"text\":\"deliver.sh register: launch failed for goal ${1:-?} (issue #${2:-0}, host $(hostname -s)); closed as stopped\"}" \
+    "$SLACK_WEBHOOK_URL" >/dev/null 2>&1 </dev/null || true
+}
+
 claim_winner() {
   local path=$1 issue=$2 cutoff out
   cutoff=$(python3 -c "import datetime,sys; print((datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(seconds=int(sys.argv[1]))).strftime('%Y-%m-%dT%H:%M:%SZ'))" "${CLAIM_WINDOW_SECS:-600}") \
