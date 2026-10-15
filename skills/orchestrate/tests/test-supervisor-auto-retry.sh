@@ -295,3 +295,180 @@ run_test test_ar2_non_blocked_gates_are_never_relaunched
 run_test test_ar2_second_tick_within_30_min_does_not_check_again
 run_test test_ar2_check_runs_again_after_30_min
 run_test test_ar2_cause_check_error_alerts_slack_with_tags_and_no_secret
+
+# ===================================================================================================================
+# Issue #269 (follow-up to #250) — NOTE posted before the requeue, spend-hold skip, multi-#N deps, extra carry-over,
+# local-marker check before the gh read, alert on gh failure. Expected values from the ticket's ACs 3, 4, 6.
+# ===================================================================================================================
+
+# ar2_wrap_comment — layer over the fake gh: on `issue comment` record whether the queue file / .held existed at that
+# instant (-> comment-state.log); fail with exit 1 (stderr carries a fake secret) when $SQ_GH/gh-comment-fail exists.
+ar2_wrap_comment() {
+  cp "$SQ_GH/gh" "$SQ_GH/gh-ar2"
+  cat > "$SQ_GH/gh" <<GH_EOF
+#!/bin/bash
+HERE=\$(cd "\$(dirname "\$0")" && pwd)
+if [ "\$1 \$2" = "issue comment" ]; then
+  printf 'queue=%s held=%s\n' "\$([ -e "$SQ_PIPE/queue/orch-42.json" ] && echo yes || echo no)" "\$([ -e "$SQ_PIPE/orch-42.held" ] && echo yes || echo no)" >> "\$HERE/comment-state.log"
+  if [ -f "\$HERE/gh-comment-fail" ]; then echo "HTTP 502 token=ghp_FAKESECRET123" >&2; exit 1; fi
+fi
+exec "\$HERE/gh-ar2" "\$@"
+GH_EOF
+  chmod +x "$SQ_GH/gh"
+}
+ar2_queue_exists() { sq_present "$SQ_PIPE/queue/orch-42.json"; }
+
+# AC3a: the NOTE is posted before the queue file is written (and before .held is removed)
+test_ar2_269_note_posted_before_queue_file_written() {
+  ar2_fixture 'Blocked on: ci_red — x'
+  ar2_wrap_comment
+  echo pass > "$SQ_GH/gh-pr-checks"
+  ar2_tick
+  local st n; st=$(cat "$SQ_GH/comment-state.log" 2>/dev/null); n=$(ar2_launches)
+  sq_cleanup
+  assert_eq "$st" "queue=no held=yes" "269 AC3: at the instant the NOTE is posted the queue file is absent and .held still present" || return 1
+  assert_eq "$n" "1" "269 control: the run is still relaunched after the NOTE posted" || return 1
+}
+
+# AC3b: failing `gh issue comment` -> no queue file, .held kept, counter unchanged, no launch
+test_ar2_269_failed_note_post_does_not_requeue() {
+  ar2_fixture 'Blocked on: ci_red — x'
+  ar2_wrap_comment
+  echo pass > "$SQ_GH/gh-pr-checks"; echo fail > "$SQ_GH/gh-comment-fail"
+  ar2_tick
+  local q h c n log
+  q=$(ar2_queue_exists); h=$(ar2_held); c=$(ar2_counter); n=$(ar2_no_launch); log=$(sq_log)
+  sq_cleanup
+  assert_eq "$(cat /dev/null; echo x)" "x" "control" || return 1
+  assert_eq "$q" "absent" "269 AC3: no queue file when the NOTE could not be posted" || return 1
+  assert_eq "$h" "present" "269 AC3: .held kept for the next tick" || return 1
+  assert_eq "$c" "ABSENT" "269 AC3: counter unchanged" || return 1
+  assert_eq "$n" "0" "269 AC3: nothing launched" || return 1
+  assert_not_contains "$log" "ghp_FAKESECRET123" "269: no secret in the supervisor log" || return 1
+}
+
+# AC6: gh comment failure alerts Slack with release/environment/route tags and no secret
+test_ar2_269_comment_failure_alerts_slack_with_tags() {
+  ar2_fixture 'Blocked on: ci_red — x'
+  ar2_wrap_comment
+  echo pass > "$SQ_GH/gh-pr-checks"; echo fail > "$SQ_GH/gh-comment-fail"
+  echo 'SLACK_WEBHOOK_URL="https://hooks.slack.test/T/B/X"' >> "$SQ_HOME/.claude/pipeline/config.local.sh"
+  printf '#!/bin/bash\necho "CALL $*" >> "%s/curl.calls"\nexit 0\n' "$SQ_GH" > "$SQ_GH/curl"; chmod +x "$SQ_GH/curl"
+  ar2_tick
+  local calls; calls=$(grep 'hooks.slack.test' "$SQ_GH/curl.calls" 2>/dev/null)
+  sq_cleanup
+  assert_contains "$calls" "route=supervisor/auto-retry" "269 AC6: route tag" || return 1
+  assert_contains "$calls" "release=" "269 AC6: release tag" || return 1
+  case "$calls" in *release=unknown*) fail "269 AC6: release must be the commit SHA"; return 1 ;; esac
+  case "$calls" in *environment=[a-zA-Z0-9]*) ;; *) fail "269 AC6: environment tag must have a value: $calls"; return 1 ;; esac
+  assert_not_contains "$calls" "ghp_FAKESECRET123" "269 AC6: no secret in the event" || return 1
+}
+
+# AC6: gh issue-read failure alerts too (existing path, with the same tags)
+test_ar2_269_issue_read_failure_alerts_slack_with_tags() {
+  ar2_fixture 'Blocked on: ci_red — x'
+  cp "$SQ_GH/gh" "$SQ_GH/gh-ar2"
+  printf '#!/bin/bash\nif [ "$1 $2" = "issue view" ]; then echo "token=ghp_FAKESECRET123" >&2; exit 1; fi\nexec "$(dirname "$0")/gh-ar2" "$@"\n' > "$SQ_GH/gh"; chmod +x "$SQ_GH/gh"
+  echo 'SLACK_WEBHOOK_URL="https://hooks.slack.test/T/B/X"' >> "$SQ_HOME/.claude/pipeline/config.local.sh"
+  printf '#!/bin/bash\necho "CALL $*" >> "%s/curl.calls"\nexit 0\n' "$SQ_GH" > "$SQ_GH/curl"; chmod +x "$SQ_GH/curl"
+  ar2_tick
+  local calls h; calls=$(grep 'hooks.slack.test' "$SQ_GH/curl.calls" 2>/dev/null); h=$(ar2_held)
+  sq_cleanup
+  assert_contains "$calls" "route=supervisor/auto-retry" "269 AC6: issue-read failure carries route tag" || return 1
+  assert_not_contains "$calls" "ghp_FAKESECRET123" "269 AC6: no secret" || return 1
+  assert_eq "$h" "present" "269: stays held" || return 1
+}
+
+# AC4 item 1: a run held for the monthly spend limit is never auto-retried, even with a cleared class-matching BLOCKED
+test_ar2_269_monthly_spend_held_run_is_not_retried() {
+  ar2_fixture 'Blocked on: ci_red — x'
+  echo pass > "$SQ_GH/gh-pr-checks"
+  printf 'rate_limited monthly_spend\n' > "$SQ_PIPE/orch-42.exit-class"
+  printf '2026-10-15T00:00:00Z Pipeline #42 waiting on JP — monthly spend limit reached; relaunch after credits or a model switch\n' > "$SQ_PIPE/orch-42.alert"
+  ar2_tick
+  local n c h calls; n=$(ar2_no_launch); c=$(ar2_counter); h=$(ar2_held); calls=$(gh_calls "$SQ_GH")
+  sq_cleanup
+  assert_eq "$n" "0" "269 item1: spend-held run not relaunched" || return 1
+  assert_eq "$c" "ABSENT" "269 item1: no retry consumed" || return 1
+  assert_eq "$h" "present" "269 item1: stays held" || return 1
+  assert_not_contains "$calls" "auto-retry" "269 item1: no NOTE posted" || return 1
+}
+
+# AC4 item 2: every #N on a `Depends on` line counts
+test_ar2_269_multi_dependency_line_one_open_not_cleared() {
+  ar2_fixture 'Blocked on: dependency — waits'
+  printf 'Why\nDepends on #77, #78 and #79\n' > "$SQ_GH/gh-issue-body-42"
+  echo CLOSED > "$SQ_GH/gh-issue-state-77"; echo OPEN > "$SQ_GH/gh-issue-state-78"; echo CLOSED > "$SQ_GH/gh-issue-state-79"
+  ar2_tick
+  local n; n=$(ar2_no_launch)
+  sq_cleanup
+  assert_eq "$n" "0" "269 item2: #78 (2nd on the line) still open -> not cleared" || return 1
+}
+
+test_ar2_269_multi_dependency_last_one_open_not_cleared() {
+  ar2_fixture 'Blocked on: dependency — waits'
+  printf 'Depends on #77 and #78 for merging\n' > "$SQ_GH/gh-issue-body-42"
+  echo CLOSED > "$SQ_GH/gh-issue-state-77"; echo OPEN > "$SQ_GH/gh-issue-state-78"
+  ar2_tick
+  local n; n=$(ar2_no_launch)
+  sq_cleanup
+  assert_eq "$n" "0" "269 item2: '#77 and #78 for merging' with #78 open -> not cleared" || return 1
+}
+
+test_ar2_269_multi_dependency_all_closed_cleared() {
+  ar2_fixture 'Blocked on: dependency — waits'
+  printf 'Why\nDepends on #77, #78 and #79\n' > "$SQ_GH/gh-issue-body-42"
+  echo CLOSED > "$SQ_GH/gh-issue-state-77"; echo CLOSED > "$SQ_GH/gh-issue-state-78"; echo CLOSED > "$SQ_GH/gh-issue-state-79"
+  ar2_tick
+  local n calls; n=$(ar2_launches); calls=$(gh_calls "$SQ_GH")
+  sq_cleanup
+  assert_eq "$n" "1" "269 item2: all three closed -> cleared, relaunched" || return 1
+  assert_contains "$calls" "issue view 79" "269 item2: the 3rd dependency was actually checked" || return 1
+}
+
+# AC4 item 3: the auto-retry relaunch carries the run's saved .extra (observable in the launch prompt)
+test_ar2_269_extra_carried_over_to_relaunch() {
+  ar2_fixture 'Blocked on: ci_red — x'
+  echo pass > "$SQ_GH/gh-pr-checks"
+  printf '%s' 'EXTRA-SENTINEL-269' > "$SQ_PIPE/orch-42.extra"
+  ar2_tick
+  local n calls; n=$(ar2_launches); calls=$(cat "$SQ_PIPE/claude.calls")
+  sq_cleanup
+  assert_eq "$n" "1" "269 item3 control: relaunched" || return 1
+  assert_contains "$calls" "EXTRA-SENTINEL-269" "269 item3: saved extra reaches the relaunch prompt" || return 1
+}
+
+# AC4 item 4: local state shows no BLOCKED hold -> no `gh issue view` at all
+test_ar2_269_non_blocked_alert_skips_issue_view() {
+  ar2_fixture 'Blocked on: ci_red — decoy: older class-matching BLOCKED in thread'
+  echo pass > "$SQ_GH/gh-pr-checks"
+  printf '2026-10-15T00:00:00Z Pipeline #42 waiting on JP — **[infra-operator] AWAITING GO**; relaunch (or re-add agent-go) after acting\n' > "$SQ_PIPE/orch-42.alert"
+  ar2_tick
+  local views n; views=$(grep -c '^issue view' "$SQ_GH/gh-calls.log" 2>/dev/null || true); n=$(ar2_no_launch)
+  sq_cleanup
+  assert_eq "${views:-0}" "0" "269 item4: no gh issue view for a held JP gate" || return 1
+  assert_eq "$n" "0" "269 item4: not relaunched" || return 1
+}
+
+test_ar2_269_blocked_alert_still_reads_issue_and_retries() {
+  ar2_fixture 'Blocked on: ci_red — x'
+  echo pass > "$SQ_GH/gh-pr-checks"
+  printf '2026-10-15T00:00:00Z Pipeline #42 waiting on JP — **[fullstack-developer] BLOCKED**; relaunch (or re-add agent-go) after acting\n' > "$SQ_PIPE/orch-42.alert"
+  ar2_tick
+  local n views; n=$(ar2_launches); views=$(grep -c '^issue view' "$SQ_GH/gh-calls.log" 2>/dev/null || true)
+  sq_cleanup
+  assert_eq "$n" "1" "269 item4 control: a BLOCKED hold is still retried" || return 1
+  [ "${views:-0}" -ge 1 ] || { fail "269 item4 control: BLOCKED hold must read the issue"; return 1; }
+}
+
+run_test test_ar2_269_note_posted_before_queue_file_written
+run_test test_ar2_269_failed_note_post_does_not_requeue
+run_test test_ar2_269_comment_failure_alerts_slack_with_tags
+run_test test_ar2_269_issue_read_failure_alerts_slack_with_tags
+run_test test_ar2_269_monthly_spend_held_run_is_not_retried
+run_test test_ar2_269_multi_dependency_line_one_open_not_cleared
+run_test test_ar2_269_multi_dependency_last_one_open_not_cleared
+run_test test_ar2_269_multi_dependency_all_closed_cleared
+run_test test_ar2_269_extra_carried_over_to_relaunch
+run_test test_ar2_269_non_blocked_alert_skips_issue_view
+run_test test_ar2_269_blocked_alert_still_reads_issue_and_retries
