@@ -14,7 +14,7 @@ export const PIPELINES = [
       { name: 'product-manager' },
       { name: 'ux-flow-designer', when: { label: 'UX flow: yes' } },
       { name: 'ui-ux-designer', when: { label: 'UI change: yes' } },
-      { name: '[jp] MOCKUPS APPROVED', when: { label: 'UI change: yes' } },
+      { name: '**[jp] MOCKUPS APPROVED**', when: { label: 'UI change: yes' } },
       { name: 'solutions-architect', when: { label: 'READY FOR ARCHITECTURE' } },
       { name: 'test-writer', when: { label: 'UI change: no' } },
       { name: 'test-reviewer' },
@@ -74,7 +74,7 @@ export const PIPELINES = [
     title: 'Release / promotion',
     stages: [
       { name: 'deployer' },
-      { name: 'promotion', when: { label: 'risky list' } },
+      { name: 'JP-only', when: { label: 'risky list' } },
     ],
   },
 ];
