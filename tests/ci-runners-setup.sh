@@ -65,7 +65,7 @@ case "$c" in
     case "$1 $2" in
       "build "*|"image build") touch "$S/image";;
       "image inspect"|"image ls"|"images "*|"image list") [ -e "$S/image" ] || exit 1;;
-      "system prune") [ -n "${STUB_DOCKER_PRUNE_FAIL:-}" ] && { echo "prune failed" >&2; exit 1; } ;;
+      "system prune"|"container prune"|"builder prune"|"image prune") [ -n "${STUB_DOCKER_PRUNE_FAIL:-}" ] && { echo "prune failed" >&2; exit 1; } ;;
       "info "*) echo "name=rootless /srv/gha/docker";;
     esac
     case "$1" in build) touch "$S/image";; esac ;;
@@ -343,8 +343,23 @@ t "hygiene: 85% disk -> Slack alert" test_hy_alert 85
 t "hygiene: exactly 80% -> Slack alert (boundary)" test_hy_alert 80
 t "hygiene: 79% -> no alert (boundary)" test_hy_quiet 79
 t "hygiene: no alert.env -> silent, exit 0" test_hy_noenv
-test_hy_prunes() { newenv; bash "$SETUP" >/dev/null 2>&1; : > "$ST/docker.log"; hygiene_run || return 1; grep -Eq 'system prune -af --filter until=24h' "$ST/docker.log"; }
-t "hygiene runs docker system prune -af --filter until=24h" test_hy_prunes
+test_hy_prunes() {
+  newenv; bash "$SETUP" >/dev/null 2>&1; : > "$ST/docker.log"; hygiene_run || return 1
+  # Per code-review of #291: -a would delete the idle gha-runner image, so only these three are allowed.
+  grep -Eq 'container prune -f --filter until=24h' "$ST/docker.log" || { echo "no container prune"; return 1; }
+  grep -Eq 'builder prune -af --filter until=24h' "$ST/docker.log" || { echo "no builder prune"; return 1; }
+  grep -Eq 'image prune -f( |$)' "$ST/docker.log" || { echo "no dangling image prune"; return 1; }
+}
+t "hygiene prunes containers/build cache >24h and dangling images" test_hy_prunes
+test_hy_keeps_image() {
+  newenv; bash "$SETUP" >/dev/null 2>&1; : > "$ST/docker.log"; hygiene_run || return 1
+  [ -s "$ST/docker.log" ] || { echo "hygiene ran no docker command"; return 1; }
+  # no image-removing -a prune: neither `system prune -a*` nor `image prune -a*`
+  ! grep -Eq '(system|image) prune .*-[a-z]*a' "$ST/docker.log" || { echo "prune -a would delete gha-runner image"; return 1; }
+  ! grep -Eq '(system|image) prune .*--all' "$ST/docker.log" || { echo "prune --all would delete gha-runner image"; return 1; }
+  ! grep -Eq '(system|image) prune .*-[a-z]*a' "$(HY)" || { echo "rendered hygiene script has prune -a"; return 1; }
+}
+t "hygiene never runs an image-removing prune -a (keeps gha-runner image)" test_hy_keeps_image
 
 # ---- observability ---------------------------------------------------------------------------
 event_ok() { # asserts exactly one event with release/environment/route tags and no secrets
