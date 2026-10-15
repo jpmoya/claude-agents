@@ -57,6 +57,8 @@ Merge is JP's call; you never approve, request changes, or merge. Assume merge-t
 
 ## Comment protocol (every comment, no exceptions)
 
+- Never write a comment whose first line starts `**[jp] ` (e.g. `**[jp] SKIP MOCKUPS**`, `**[jp] GO**`) — those are JP's alone.
+
 **Be brief.** Findings with file:line, summary line, verdict. No restating the checklist categories, no filler between findings. A clean PR gets a short PASS, not a tour of everything that looked fine.
 
 Line 1 of **every** comment you post on the issue or PR is exactly one of `**[code-reviewer] PASS**`, `**[code-reviewer] FAIL: n findings**`, `**[code-reviewer] BLOCKED**`, or `**[code-reviewer] NOTE**` — nothing before it, not a heading, not an image, not a greeting. The orchestrator reads only first lines, so a comment that starts any other way is invisible to it or, worse, mis-routes the ticket. Those are the only first lines the pipeline knows for you: anything else after `[code-reviewer]` — a placeholder, an invented status like `COMPLETED` or `IN PROGRESS`, a sentence — is ignored and your handoff is lost.

@@ -89,7 +89,7 @@ test_dd_ac1_markers_for_project_manager_and_jp() {
   pm=$( . "$MARKERS_DD" && markers_for project-manager )
   jp=$( . "$MARKERS_DD" && markers_for jp )
   assert_eq "$pm" "DECISION|JP CONFIRMED" "AC1: markers_for project-manager" || return 1
-  assert_eq "$jp" "GO|MOCKUPS APPROVED" "AC1: markers_for jp unchanged" || return 1
+  assert_eq "$jp" "GO|MOCKUPS APPROVED|SKIP MOCKUPS" "AC1: markers_for jp unchanged" || return 1
 }
 
 test_dd_ac2_marker_re_matches_the_two_new_markers() {
@@ -484,7 +484,7 @@ test_dd_i76_ac3_gate_rows_byte_identical_and_carve_out_keeps_exclusions() {   # 
   old=$(cd "$ROOT_DD" && git show "$base:agents/orchestrator.md" | grep -F '| `[infra-operator] AWAITING GO` + JP go comment')
   assert_ne "$cur" "" "i76 AC3: AWAITING GO + go row present" || return 1
   assert_eq "$cur" "$old" "i76 AC3: AWAITING GO + go row byte-identical" || return 1
-  cur=$(grep '^| `\[ui-ux-designer\] MOCKUPS PENDING APPROVAL`' "$ORCH_DD")
+  cur=$(grep '^| `\[ui-ux-designer\] MOCKUPS PENDING APPROVAL`' "$ORCH_DD" | sed 's/ \*\*Skip marker:\*\*.* |$/ |/')   # #272: only the added skip clause is stripped
   old=$(cd "$ROOT_DD" && git show "$base:agents/orchestrator.md" | grep '^| `\[ui-ux-designer\] MOCKUPS PENDING APPROVAL`')
   assert_ne "$cur" "" "i76 AC3: MOCKUPS PENDING APPROVAL rows present" || return 1
   assert_eq "$cur" "$old" "i76 AC3: MOCKUPS PENDING APPROVAL rows byte-identical" || return 1
@@ -601,7 +601,7 @@ test_dd_i76_ac8_no_new_mechanisms() {   # characterisation
   # #192: also strip only the `delivery-lead)` case line and the ` delivery-lead` token, on both sides
   # #115: also strip only `|REJECTED` from the product-manager/fullstack-developer lines, on both sides (REJECTED is #115's marker)
   want=$(cd "$ROOT_DD" && git show "$base:hooks/pipeline-markers.sh" | awk '/^(markers_for|marker_re)\(\)/ {p=1} p {print} p && /^}/ {p=0}' | sed -e '/^ *intake) /d' -e '/^ *orchestrator) /d' -e '/^ *delivery-lead) /d' -e 's/ delivery-lead project-manager/ project-manager/' -e 's/ intake orchestrator; do/; do/' -e 's/ intake; do/; do/' -e 's/|REJECTED//' -e 's/REJECTED|//')   # #114: strip only intake)/token on both sides
-  got=$(cd "$ROOT_DD" && awk '/^(markers_for|marker_re)\(\)/ {p=1} p {print} p && /^}/ {p=0}' hooks/pipeline-markers.sh | sed -e '/^ *intake) /d' -e '/^ *orchestrator) /d' -e '/^ *delivery-lead) /d' -e 's/ delivery-lead project-manager/ project-manager/' -e 's/ intake orchestrator; do/; do/' -e 's/ intake; do/; do/' -e 's/|REJECTED//' -e 's/REJECTED|//')   # #114
+  got=$(cd "$ROOT_DD" && awk '/^(markers_for|marker_re)\(\)/ {p=1} p {print} p && /^}/ {p=0}' hooks/pipeline-markers.sh | sed -e 's/|SKIP MOCKUPS//' -e '/^ *intake) /d' -e '/^ *orchestrator) /d' -e '/^ *delivery-lead) /d' -e 's/ delivery-lead project-manager/ project-manager/' -e 's/ intake orchestrator; do/; do/' -e 's/ intake; do/; do/' -e 's/|REJECTED//' -e 's/REJECTED|//')   # #114
   [ -n "$want" ] || { fail "i76 AC8: markers_for/marker_re not found at merge-base"; return 1; }
   assert_eq "$got" "$want" "i76 AC8: markers_for/marker_re unchanged" || return 1
   dd_has "$MARKERS_DD" 'GO|MOCKUPS APPROVED' || return 1

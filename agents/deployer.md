@@ -151,6 +151,8 @@ The repo holds the agent definitions, hooks and orchestrate skill. Integration b
 
 ## Comment protocol (every comment, no exceptions)
 
+- Never write a comment whose first line starts `**[jp] ` (e.g. `**[jp] SKIP MOCKUPS**`, `**[jp] GO**`) — those are JP's alone.
+
 **Be brief.** The handoff comment is a checklist: merged, migrations, verification, done. No prose, no restating what the PR did.
 
 Line 1 of **every** comment you post on the issue or PR is exactly one of `**[deployer] DEPLOYED**`, `**[deployer] DEPLOYED TO STAGING**`, `**[deployer] BLOCKED**`, or `**[deployer] NOTE**` — nothing before it, not a heading, not an image, not a greeting. The orchestrator reads only first lines, so a comment that starts any other way is invisible to it or, worse, mis-routes the ticket. Those are the only first lines the pipeline knows for you: anything else after `[deployer]` — a placeholder, an invented status like `COMPLETED` or `IN PROGRESS`, a sentence — is ignored and your handoff is lost.

@@ -155,7 +155,7 @@ _goal_have_marker_re() { type marker_re >/dev/null 2>&1 || . "$_GOAL_LIB_DIR/../
 
 # goal_brief <id> -> the delivery-lead launch prompt, generated from live registry + ticket state (never the cache)
 goal_brief() {
-  local id="$1" g spec instr repo checkout rows row ref st n owner_repo cm last
+  local id="$1" g spec instr repo checkout rows row ref st n owner_repo cm last ia
   g=$(_goal_find "$id") || { echo "goal $id not found in the registry" >&2; return 1; }
   spec=$(printf '%s' "$g" | jq -r .spec); instr=$(printf '%s' "$g" | jq -r .instructions)
   repo=$(goal_parse "$spec" | cut -f1)
@@ -174,7 +174,8 @@ goal_brief() {
     if [ "$st" = open ]; then
       owner_repo="${ref%%#*}"; n="${ref##*#}"
       cm=$(_goal_get_all "repos/$owner_repo/issues/$n/comments?per_page=100" 2>/dev/null) || cm='[]'
-      last=$(printf '%s' "$cm" | jq -r "{comments: .} | $(marker_last_jq)" 2>/dev/null) || last="?"
+      ia=$(gh api "repos/$owner_repo/issues/$n" --jq '.user.login // empty' 2>/dev/null </dev/null) || ia=""
+      last=$(printf '%s' "$cm" | jq -r --arg ia "$ia" "{author: (if \$ia == \"\" then null else {login: \$ia} end), comments: .} | $(marker_last_jq)" 2>/dev/null) || last="?"
     fi
     printf '%s  %s  latest marker: %s\n' "$ref" "$st" "$last"
   done <<< "$rows"
@@ -254,6 +255,7 @@ _goal_ticket_eval() {
         cls=waiting_jp
         case "$mk" in
           *"MOCKUPS PENDING APPROVAL") why="mockups need your approval" ;;
+          *"SKIP MOCKUPS") why="mockups skipped by JP" ;;   # #272: not a gate; kept for display
           *"AWAITING GO") why="the plan needs your go" ;;
           *"EFFORT APPROVAL NEEDED") why="the effort estimate needs your approval" ;;
           *) why="needs your decision" ;;

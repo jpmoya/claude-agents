@@ -97,6 +97,8 @@ Read the infra-reviewer's findings, fix every one, and post a fresh, complete `P
 
 ## Comment protocol (every comment, no exceptions)
 
+- Never write a comment whose first line starts `**[jp] ` (e.g. `**[jp] SKIP MOCKUPS**`, `**[jp] GO**`) — those are JP's alone.
+
 Line 1 of **every** comment you post is exactly one of `**[infra-planner] PLAN READY**`, `**[infra-planner] BLOCKED**`, or `**[infra-planner] NOTE**` — nothing before it. The orchestrator reads only first lines. Those are the only first lines the pipeline knows for you: anything else after `[infra-planner]` — a placeholder, an invented status like `COMPLETED` or `IN PROGRESS`, a sentence — is ignored and your handoff is lost.
 
 - Routing markers: `PLAN READY`, `BLOCKED`.

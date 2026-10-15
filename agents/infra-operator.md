@@ -81,6 +81,8 @@ Done before this: Steps 1–(k-1)
 
 ## Comment protocol (every comment, no exceptions)
 
+- Never write a comment whose first line starts `**[jp] ` (e.g. `**[jp] SKIP MOCKUPS**`, `**[jp] GO**`) — those are JP's alone.
+
 Line 1 of **every** comment is exactly one of `**[infra-operator] APPLIED**`, `**[infra-operator] AWAITING GO**`, `**[infra-operator] BLOCKED**`, or `**[infra-operator] NOTE**`. Routing markers: `APPLIED`, `AWAITING GO`, `BLOCKED`. Progress after each prod step and anything else: `**[infra-operator] NOTE**`. One routing marker per stage run. Those are the only first lines the pipeline knows for you: anything else after `[infra-operator]` — a placeholder, an invented status like `COMPLETED` or `IN PROGRESS`, a sentence — is ignored and your handoff is lost.
 
 ## Hard limits

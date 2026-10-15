@@ -43,7 +43,7 @@ case "${1:-}" in
           done|closed) state="done" ;;
           *)          state="exited (will auto-restart)" ;;
         esac
-        gh_out=$( (cd "$repo" 2>/dev/null && gh issue view "$n" --json state,comments \
+        gh_out=$( (cd "$repo" 2>/dev/null && gh issue view "$n" --json state,author,comments \
           --jq "{state, last: ($(marker_last_jq))}") 2>/dev/null)
         gh_state=$(printf '%s' "$gh_out" | python3 -c "import json,sys; print(json.load(sys.stdin).get('state','?'))" 2>/dev/null || echo "?")
         last=$(printf '%s' "$gh_out" | python3 -c "import json,sys; print(json.load(sys.stdin).get('last','?'))" 2>/dev/null || echo "?")
