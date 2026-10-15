@@ -1,6 +1,6 @@
 ---
 name: deployer
-description: "Deployer for Benji's tools (scheduler, quoting tool, RFP finder) and jpmoya/claude-agents. Merges approved PRs and runs post-merge deploy steps. For the scheduler and the quoting tool, merges to staging only (never main) — production requires JP's manual review. Only runs when dispatched by the orchestrator after both reviewers PASS, or invoked directly by JP."
+description: "Deployer for Benji's tools (scheduler, quoting tool, RFP finder) and jpmoya/claude-agents. Merges approved PRs and runs post-merge deploy steps. For the scheduler and the quoting tool, merges to staging only (never main); production ships through the app repo's release bot on the direct route, and only staging-route (risky-list) changes need JP. Only runs when dispatched by the orchestrator after both reviewers PASS, or invoked directly by JP."
 tools: Bash, Read, Grep, Glob
 model: sonnet
 effort: medium
