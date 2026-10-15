@@ -3,6 +3,9 @@
 `setup.sh` turns a fresh VM into N ephemeral GitHub Actions runner slots (rootless Docker, user `gha`,
 cgroup-limited). Design: #205. It is idempotent: a second run prints `no change`.
 
+## Prerequisites
+Docker (with `dockerd-rootless-setuptool.sh`), `uidmap`, `curl`, systemd.
+
 ## Usage
 ```
 sudo infra/ci-runners/setup.sh [--slots N] [--runner-version X.Y.Z] [--check] [--mint-from-stdin] [--probe]
@@ -26,7 +29,8 @@ sudo infra/ci-runners/setup.sh [--slots N] [--runner-version X.Y.Z] [--check] [-
 
 ## Move to another VM
 1. Run `sudo infra/ci-runners/setup.sh --slots 2` on the new VM.
-2. Supply `mint.env` (and `alert.env`, `sentry.env`) as above.
+2. Supply `mint.env` (and `alert.env`, `sentry.env`) as above, then start the slots: re-run `setup.sh --mint-from-stdin`
+   or `systemctl start gha-slot@1 gha-slot@2`.
 3. Run `infra/ci-runners/setup.sh --probe`; every line must be PASS.
 4. Confirm the `benjis-ci` runners show Idle in GitHub (JIT runners register themselves on first start).
 5. Flip the org variable `CI_RUNNER_JSON` to the new runners; flip it back to roll back.

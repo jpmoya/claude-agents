@@ -44,7 +44,7 @@ if [ "$PROBE" = 1 ]; then exec bash "$SCRIPT_DIR/probe.sh"; fi
 TOKEN=""
 if [ "$FROM_STDIN" = 1 ] && [ "$CHECK" = 0 ]; then
   set +x
-  IFS= read -r TOKEN || [ -n "$TOKEN" ]
+  IFS= read -r TOKEN || true
   [ -n "$TOKEN" ] || usage_die "--mint-from-stdin got an empty token"
 fi
 if [ -z "$ROOT" ] && [ "$CHECK" = 0 ] && [ "$EUID" -ne 0 ]; then
@@ -117,6 +117,9 @@ mint="$GHA_ROOT/etc/gha/mint.env"
 scope=$(gha_envval "$mint" GHA_RUNNER_SCOPE)   # e.g. orgs/<org> or repos/<owner>/<repo>
 tok=$(gha_envval "$mint" GHA_MINT_TOKEN)
 [ -n "$tok" ] && [ -n "$scope" ] || gha_fail launcher/mint "mint.env missing GHA_MINT_TOKEN or GHA_RUNNER_SCOPE"
+gha_docker_env
+# free the container name before minting, so a name conflict cannot register runners that never run
+docker rm -f "gha-slot-$slot" >/dev/null 2>&1 || true
 body="{\"name\":\"gha-${HOSTNAME:-host}-$slot-$RANDOM\",\"runner_group_id\":1,\"labels\":[\"self-hosted\",\"$GHA_LABEL\"],\"work_folder\":\"_work\"}"
 resp=$(printf 'header = "Authorization: Bearer %s"\n' "$tok" | curl -sS -f --max-time 30 -K - -X POST \
   -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" \
@@ -127,7 +130,6 @@ jit=$(sed -n 's/.*"encoded_jit_config"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/
 [ -n "$jit" ] || gha_fail launcher/mint "no encoded_jit_config in response"
 work="$GHA_ROOT/srv/gha/work/$slot"
 rm -rf "$work"; mkdir -p "$work"; chown gha:gha "$work"
-gha_docker_env
 ACTIONS_RUNNER_INPUT_JITCONFIG=$jit docker run --rm --name "gha-slot-$slot" \
   -e ACTIONS_RUNNER_INPUT_JITCONFIG -v "$work:/home/runner/_work" "gha-runner:$GHA_RUNNER_VERSION"
 EOF
@@ -151,6 +153,8 @@ Description=GitHub Actions runner slot %i (label benjis-ci, ephemeral JIT)
 After=network-online.target
 Wants=network-online.target
 ConditionPathExists=/etc/gha/mint.env
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -158,6 +162,9 @@ OOMScoreAdjust=500
 Restart=always
 RestartSec=10
 ExecStart=/usr/local/sbin/gha-slot.sh %i
+
+[Install]
+WantedBy=multi-user.target
 EOF
 }
 hygiene_unit_text() { render <<'EOF'
@@ -309,9 +316,14 @@ step_enable() {
   STEP=enable
   local i
   for ((i = 1; i <= SLOTS; i++)); do
-    if systemctl is-enabled "gha-slot@$i.service" >/dev/null 2>&1; then ok "slot $i enabled"; else
+    if [ "$(systemctl is-enabled "gha-slot@$i.service" 2>/dev/null)" = enabled ]; then ok "slot $i enabled"; else
       note_change "enable gha-slot@$i"
-      [ "$CHECK" = 1 ] || run systemctl enable --now "gha-slot@$i.service"
+      if [ "$CHECK" = 0 ]; then
+        run systemctl enable "gha-slot@$i.service"
+        [ "$(systemctl is-enabled "gha-slot@$i.service" 2>/dev/null)" = enabled ] \
+          || gha_fail "setup/$STEP" "gha-slot@$i is not enabled after systemctl enable"
+        [ ! -f "$ROOT/etc/gha/mint.env" ] || run systemctl start "gha-slot@$i.service"
+      fi
     fi
   done
   for ((i = SLOTS + 1; i <= MAX_SLOTS; i++)); do
@@ -340,6 +352,8 @@ step_mint() {
     install -d -m 0750 "$(dirname "$f")"
     install -m 0600 /dev/null "$f"
     { [ -z "$others" ] || printf '%s\n' "$others"; printf 'GHA_MINT_TOKEN=%s\n' "$TOKEN"; } > "$f"
+    # slots were skipped by ConditionPathExists until the token existed: start them now
+    local i; for ((i = 1; i <= SLOTS; i++)); do run systemctl start "gha-slot@$i.service"; done
   elif [ -f "$f" ]; then
     if [ "$(stat -c %a "$f")" = 600 ]; then ok "mint.env present (0600)"; else
       note_change "chmod 600 $f"; [ "$CHECK" = 1 ] || chmod 600 "$f"
