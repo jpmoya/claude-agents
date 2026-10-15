@@ -460,8 +460,8 @@ test_dd_i76_ac1_resume_row_names_the_go_clearing_path() {
     dd_text_has "i76 AC1: carve-out survives" "$row" "$s" || return 1
   done
   # AC1: "No new routing row is added beside the carve-out" — the row right after this one is unchanged
-  # (still the SPEC CONFLICT row), i.e. the edit is in-place, not a new row inserted after it.
-  dd_text_has "i76 AC1: no new row inserted" "$(dd_next_row_after "$ORCH_DD" '| any `SPEC CONFLICT`')" 'solutions-architect' || return 1
+  # (still the spec-question SA row), i.e. the edit is in-place, not a new row inserted after it.
+  dd_text_has "i76 AC1: no new row inserted" "$(dd_next_row_after "$ORCH_DD" '| reviewer finding that questions the spec')" 'solutions-architect' || return 1
 }
 
 test_dd_i76_ac2_validation_row_gains_the_go_clause() {
