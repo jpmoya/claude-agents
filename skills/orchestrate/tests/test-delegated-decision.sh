@@ -484,8 +484,8 @@ test_dd_i76_ac3_gate_rows_byte_identical_and_carve_out_keeps_exclusions() {   # 
   old=$(cd "$ROOT_DD" && git show "$base:agents/orchestrator.md" | grep -F '| `[infra-operator] AWAITING GO` + JP go comment')
   assert_ne "$cur" "" "i76 AC3: AWAITING GO + go row present" || return 1
   assert_eq "$cur" "$old" "i76 AC3: AWAITING GO + go row byte-identical" || return 1
-  cur=$(grep '^| `\[ui-ux-designer\] MOCKUPS PENDING APPROVAL`' "$ORCH_DD")
-  old=$(cd "$ROOT_DD" && git show "$base:agents/orchestrator.md" | grep '^| `\[ui-ux-designer\] MOCKUPS PENDING APPROVAL`')
+  cur=$(grep '^| `\[ui-ux-designer\] MOCKUPS PENDING APPROVAL`' "$ORCH_DD" | grep -v 'JP approval comment')   # #311: the approval row now resolves via jp_go
+  old=$(cd "$ROOT_DD" && git show "$base:agents/orchestrator.md" | grep '^| `\[ui-ux-designer\] MOCKUPS PENDING APPROVAL`' | grep -v 'JP approval comment')
   assert_ne "$cur" "" "i76 AC3: MOCKUPS PENDING APPROVAL rows present" || return 1
   assert_eq "$cur" "$old" "i76 AC3: MOCKUPS PENDING APPROVAL rows byte-identical" || return 1
   # issue #144: the row's head now also mentions claude-agents; pin only the unsupported-project sentence (row tail).
@@ -540,7 +540,7 @@ test_dd_i108_carve_out_validation_and_prose_agree() {   # issue #108 AC4
   assert_ne "$val" "" "i108 AC4: validation row exists" || return 1
   dd_text_has "i108 AC4: validation row" "$val" 'dated after that `BLOCKED`' || return 1
   prose=$(grep -F 'resume only a staging-only planner/operator' "$ORCH_DD" | head -1)
-  dd_text_has "i108 AC4: prose names the go path" "$prose" "JP's exact-form go also resumes a planner/operator" || return 1
+  dd_text_has "i108 AC4: prose names the go path" "$prose" "JP's approval-word go also resumes a planner/operator" || return 1
 }
 
 test_dd_i76_ac4_carve_out_still_lists_money_and_no_extra_authority() {   # characterisation — issue #76 AC4

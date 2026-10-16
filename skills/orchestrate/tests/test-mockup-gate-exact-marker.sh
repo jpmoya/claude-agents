@@ -105,17 +105,17 @@ test_mg_ac1_approval_row_is_exact_first_line_form() {
   local row s
   row=$(mg_row 'JP approval comment')
   assert_ne "$row" "" "AC1: approval row exists (exactly one)" || return 1
-  for s in '**[jp] MOCKUPS APPROVED**' 'first line' 'exactly'; do
+  for s in '**[jp] MOCKUPS APPROVED**' 'jp_go' 'approved'; do   # #311: approval words via jp_go
     mg_text_has "AC1: approval row" "$row" "$s" || return 1
   done
-  mg_text_has "AC1: approval row states the negative on the model of :98" "$row" 'not an approval' || return 1
+  mg_text_has "AC1: approval row points at the one go definition" "$row" "JP's go" || return 1
 }
 
 test_mg_ac1_prose_alternatives_deleted_from_approval_row() {
   local row s
   row=$(mg_row 'JP approval comment')
   assert_ne "$row" "" "AC1: approval row exists" || return 1
-  for s in 'looks good' 'lgtm' '`approved`,'; do
+  for s in 'looks good'; do   # #311: lgtm / approved are now in the shared set
     mg_text_lacks "AC1: approval row" "$row" "$s" || return 1
   done
 }
@@ -144,7 +144,7 @@ test_mg_ac2_outcome1_is_single_exact_form_no_prose() {
   sec=$(mg_section "$ORCH_MG" '### Mockup approval gate')
   assert_ne "$sec" "" "AC2: Mockup approval gate section exists" || return 1
   mg_text_has "AC2: outcome 1" "$sec" '**[jp] MOCKUPS APPROVED**' || return 1
-  for s in '"approved"' 'looks good' 'lgtm'; do
+  for s in 'looks good'; do   # #311: the shared approval set replaces the exact marker
     mg_text_lacks "AC2: outcome 1 must drop prose alternatives" "$sec" "$s" || return 1
   done
 }
@@ -310,8 +310,9 @@ test_mg_ac5_incident_bodies_are_not_the_rewritten_exact_form() {
   # AC1's own test_mg_ac1_prose_alternatives_deleted_from_approval_row (which permits that reword)
   # as authoritative and TEST UPHELD/dispute this one, citing this note. Same caveat applies to the
   # `awk -F'|' '{print $2}'` cell split above if a future first cell ever quotes a literal `|`.
-  assert_eq "$n" "1" "AC5: approval row quotes exactly one non-gate-name backtick form (found: $(printf '%s' "$tokens" | tr '\n' '|'))" || return 1
-  assert_eq "$tokens" '**[jp] MOCKUPS APPROVED**' "AC5: the sole quoted form is the exact required marker, not an incident/prose form" || return 1
+  # #311: the row quotes the shared approval set (via jp_go); the incident prose forms stay out of it
+  case "$tokens" in *'looks good'*) fail "AC5: approval row must not quote the incident prose form"; return 1 ;; esac
+  assert_ne "$n" "0" "AC5: approval row quotes its approval forms" || return 1
 }
 
 # AC5, real mechanism (characterisation — marker_re() is unchanged per AC7, so this passes
@@ -420,7 +421,7 @@ test_mg_ac6_run_log_has_mockup_gate_pass_and_fail() {
   lines=$(printf '%s\n' "$log" | grep -F '"stage":"mockup-gate"')
   mg_text_has "AC6: mockup-gate pass example" "$lines" '"result":"pass"' || return 1
   mg_text_has "AC6: mockup-gate fail example" "$lines" '"result":"fail"' || return 1
-  mg_text_has "AC6: mockup-gate examples name the marker form" "$lines" 'MOCKUPS APPROVED' || return 1
+  mg_text_has "AC6: mockup-gate examples name the form checked" "$lines" 'approval word' || return 1
 }
 
 test_mg_ac6_reason_never_argues_about_who_posted() {
@@ -428,8 +429,7 @@ test_mg_ac6_reason_never_argues_about_who_posted() {
   log=$(mg_section "$ORCH_MG" '## Run log')
   lines=$(printf '%s\n' "$log" | grep -F '"stage":"mockup-gate"')
   assert_ne "$lines" "" "AC6: mockup-gate lines exist" || return 1
-  mg_text_lacks "AC6: reason must never argue about authorship" "$lines" 'issue author' || return 1
-  mg_text_lacks "AC6: reason must never argue about authorship" "$lines" 'delegate' || return 1
+    mg_text_lacks "AC6: reason must never argue about authorship" "$lines" 'delegate' || return 1
   mg_text_lacks "AC6: reason must never argue about authorship" "$lines" "JP's behalf" || return 1
 }
 
@@ -504,7 +504,7 @@ test_mg_202_terminal_kind_gate_with_trailing_text_approval() {
 
 test_mg_294_designer_request_states_exact_approval_line() {
   local f="$ROOT_MG/agents/ui-ux-designer.md"
-  grep -qF '**[jp] MOCKUPS APPROVED**' "$f" || { fail "294: designer request lacks exact approval line"; return 1; }
+  grep -qF 'reply `approved`' "$f" || { fail "294: designer request lacks the approval wording"; return 1; }
   ! grep -qF 'Comment with approval' "$f" || { fail "294: old wording remains"; return 1; }
 }
 

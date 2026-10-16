@@ -129,7 +129,7 @@ You are dispatched after the ux-flow-designer posts `USER FLOW READY`. You run i
    - Typography: <fonts and sizes used>
    - Spacing: <spacing scale applied>
 
-   @jpmoya — please review these mockups. To approve, reply with exactly `**[jp] MOCKUPS APPROVED**` as the first line (notes may follow on later lines); otherwise reply with feedback for revisions.
+   @jpmoya — please review these mockups. To approve, reply `approved` (or go / proceed / lgtm; notes may follow on later lines); otherwise reply with feedback for revisions.
    EOF
    )"
    ```
