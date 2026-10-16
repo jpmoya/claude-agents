@@ -120,3 +120,7 @@ claim_winner() {
     || { pipeline_event claim_lookup_failed --argjson issue "${issue:-0}" --arg stage gh; claim_alert "$issue" gh; return 1; }
   printf '%s\n' "$out" | awk '{print $4}'
 }
+
+# pid_alive <pidfile> — #332 STUB (test-writer): the developer replaces this. Must be: kill -0 on the stored pid AND the
+# sibling .launched-at later than host boot time.
+pid_alive() { echo "NotImplemented: pid_alive" >&2; return 99; }
