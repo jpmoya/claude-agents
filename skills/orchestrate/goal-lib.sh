@@ -232,8 +232,29 @@ goal_launch() {
 # returns 1 when not (no goal / goal without approval / other scope / goal closed); returns 2 when the registry cannot be read
 # (fail closed). Refusals (1 with a goal present but unapproved, and 2) emit a `slog` line with repo, milestone and reason.
 goal_milestone_approved() {
-  echo "NotImplemented: goal_milestone_approved" >&2
-  return 99
+  local repo="${1:-}" ms="${2:-}" open url rid why
+  if [ -z "$repo" ] || [ -z "$ms" ]; then
+    slog "goal_milestone_approved: repo=$repo milestone=$ms reason=missing-argument"; return 2
+  fi
+  open=$(_goal_get_all "repos/$GOAL_REGISTRY_REPO/issues?labels=delivery-goal&state=open&per_page=100") || {
+    slog "goal_milestone_approved: repo=$repo milestone=$ms reason=registry-unreadable (fail closed)"; return 2; }
+  # open registry issues whose spec covers this milestone: "repo:milestone:<n>" (spec or id ms-<n>) or "repo:milestones:all"
+  url=$(printf '%s' "$open" | jq -r --arg repo "$repo" --arg ms "$ms" "$_GOAL_ISSUE_JQ"'
+    def covers: .spec == "\($repo):milestone:\($ms)" or .spec == "\($repo):milestones:all"
+                or ((.spec | startswith("\($repo):milestone:")) and (.id | endswith("-ms-\($ms)")));
+    [.[] | select(has("pull_request") | not) | . as $i | goal_of | select(.st != "unreadable" and covers)
+      | {n: .issue, appr: (($i.body // "") | test("(^|\n)Approved-by: JP([^A-Za-z0-9_-]|$)"))}]
+    | (map(select(.appr)) | first // null) as $a | (first // null) as $f
+    | if $a then "yes\t\($a.n)" elif $f then "no\t\($f.n)" else "none\t" end') || {
+    slog "goal_milestone_approved: repo=$repo milestone=$ms reason=registry-unparseable (fail closed)"; return 2; }
+  case "$url" in
+    yes*) rid="${url#*$'\t'}"; printf 'https://github.com/%s/issues/%s\n' "$GOAL_REGISTRY_REPO" "$rid"
+          return 0 ;;
+    no*)  why="goal-not-approved (registry issue ${url#*$'\t'} has no 'Approved-by: JP' line)" ;;
+    *)    why="no-open-goal-covers-milestone" ;;
+  esac
+  slog "goal_milestone_approved: repo=$repo milestone=$ms reason=$why"
+  return 1
 }
 
 # ---- supervisor goal step (#195) ------------------------------------------------------------------------------
