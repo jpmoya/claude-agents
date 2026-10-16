@@ -227,6 +227,15 @@ goal_launch() {
   date -u +%FT%TZ > "$PIPE/goal-$id.start"; date -u +%FT%TZ > "$PIPE/goal-$id.launched-at"
 }
 
+# goal_milestone_approved <owner/repo> <milestone number> (#314) — is this milestone the scope of a registered, live goal
+# whose registry issue carries the plain line `Approved-by: JP`? Prints the registry issue URL and returns 0 when so;
+# returns 1 when not (no goal / goal without approval / other scope / goal closed); returns 2 when the registry cannot be read
+# (fail closed). Refusals (1 with a goal present but unapproved, and 2) emit a `slog` line with repo, milestone and reason.
+goal_milestone_approved() {
+  echo "NotImplemented: goal_milestone_approved" >&2
+  return 99
+}
+
 # ---- supervisor goal step (#195) ------------------------------------------------------------------------------
 # Everything from here down runs from supervisor.sh only: it relies on slog, report_status_async, power_ok, to_epoch,
 # file_mtime, latest_marker, terminal_kind and $HOST defined there. REST (`gh api`) for every read of ours, like above.
