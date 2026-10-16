@@ -286,7 +286,10 @@ def build_goals():
             continue
         if not isinstance(d, dict):
             continue
-        if not all(isinstance(d.get(k), str) and d.get(k) for k in ("id", "spec", "host")):
+        # v1 goals carry `spec`; a cross-repo label goal (#319) carries title/repos/order and may have no spec
+        if not all(isinstance(d.get(k), str) and d.get(k) for k in ("id", "host")):
+            continue
+        if not (isinstance(d.get("spec"), str) and d.get("spec")) and not (isinstance(d.get("title"), str) and d.get("title")):
             continue
         if os.path.exists(base + ".stopped"):
             continue
@@ -302,7 +305,18 @@ def build_goals():
             state = "waiting_jp"
         else:
             state = "running" if _pid_alive(base + ".pid") else "between_cycles"
-        entry = {"id": d["id"], "spec": d["spec"], "host": d["host"], "state": state}
+        entry = {"id": d["id"]}
+        if isinstance(d.get("spec"), str) and d.get("spec"):
+            entry["spec"] = d["spec"]
+        entry["host"] = d["host"]
+        entry["state"] = state
+        if isinstance(d.get("title"), str) and d.get("title"):
+            entry["title"] = d["title"]
+        repos = d.get("repos")
+        if isinstance(repos, list) and repos and all(isinstance(r, str) and r for r in repos):
+            entry["repos"] = repos
+        if isinstance(d.get("order"), int) and not isinstance(d.get("order"), bool):
+            entry["order"] = d["order"]
         for k in ("scope_total", "scope_delivered"):
             v = d.get(k)
             if isinstance(v, int) and not isinstance(v, bool):

@@ -85,6 +85,15 @@ JP's rule (2026-09-19): "A follow-up to a ticket that I've already approved inhe
 - Parent body: `Follow-up: Benjis-Plants/benjis-quoting-tool#229`.
 - No blocking questions. The single `JP-only` item is where the pre-drop snapshot of `pricing_users` is stored and who gets access; everything else is decided in the ticket, with a stated default on anything left non-blocking.
 
+### Goal-label inheritance (cross-repo goals, #319)
+
+A cross-repo goal is a GitHub label `goal: <short title>` present in each of its repos. When you file a ticket for an approved goal, apply that label; `goal_sync` then gives a new ticket carrying the `goal: ` label of an approved goal (go granted at registration) `agent-go` in any of the goal's repos. You never add `agent-go` for it yourself.
+- Excluded: `Business-Intelligence` (never), `source:sentry` tickets (unless the goal was registered with `--include-sentry`), and closed tickets.
+- Loop guard: the grant is applied once per ticket and recorded in the registry's `Go-granted:` list. An `agent-go` that JP removed is never re-added.
+- A goal registered without a non-empty requirements ticket has no go: its labelled tickets inherit nothing.
+- Milestone-bound goals keep the dependency-follow-up rule above.
+
+
 ## Comment protocol (every comment, no exceptions)
 
 **Be brief.** The ticket is the deliverable, not the handoff comment. The handoff is: marker, routing lines, one sentence. No restating the ticket in the comment.

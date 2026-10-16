@@ -168,6 +168,9 @@ function sanitiseListItem(rawItem) {
   return item;
 }
 
+const MAX_GOAL_REPOS = 20;
+const GOAL_REPO = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
+
 /** Safe-text rule for goal id/spec: collapsed + capped like titles, and no <, >, &, " or `. Else null. */
 function sanitiseGoalText(value) {
   const text = sanitiseTitle(value);
@@ -178,10 +181,22 @@ function sanitiseGoalText(value) {
 function sanitiseGoal(raw) {
   if (!isPlainObject(raw)) return null;
   const id = sanitiseGoalText(raw.id);
-  const spec = sanitiseGoalText(raw.spec);
-  if (id === null || spec === null) return null;
+  // v1 goals carry a single-repo `spec`; a cross-repo label goal (#319) carries title, repos and order instead.
+  const spec = raw.spec === undefined ? undefined : sanitiseGoalText(raw.spec);
+  const title = raw.title === undefined ? undefined : sanitiseGoalText(raw.title);
+  if (id === null || spec === null || title === null) return null;
+  if (spec === undefined && title === undefined) return null;
   if (!GOAL_HOSTS.includes(raw.host) || !GOAL_STATES.includes(raw.state)) return null;
-  const goal = { id, spec, host: raw.host, state: raw.state };
+  const goal = { id, host: raw.host, state: raw.state };
+  if (spec !== undefined) goal.spec = spec;
+  if (title !== undefined) goal.title = title;
+  if (raw.repos !== undefined) {
+    if (!Array.isArray(raw.repos) || raw.repos.length > MAX_GOAL_REPOS) return null;
+    if (!raw.repos.every((r) => typeof r === 'string' && GOAL_REPO.test(r))) return null;
+    goal.repos = [...raw.repos];
+  }
+  const order = clampInt(raw.order, 0, 999999);
+  if (order !== null) goal.order = order;
   const total = clampInt(raw.scope_total, 0, 9999);
   if (total !== null) goal.scope_total = total;
   const delivered = clampInt(raw.scope_delivered, 0, 9999);
