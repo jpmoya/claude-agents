@@ -21,7 +21,8 @@ test_p328_ac1_plan_fail_row_resumes_on_jp_go() {
   local row; row=$(p328_row)
   assert_ne "$row" "" "#328 AC1: PLAN FAIL row exists" || return 1
   assert_contains "$row" 'jp_go <N> <created_at of the capped PLAN FAIL>' "#328 AC1: go found with jp_go dated from the capped FAIL" || return 1
-  assert_contains "$row" 'infra-planner' "#328 AC1: go re-dispatches infra-planner" || return 1
+  # infra-planner must appear in the NEW resume clause (after the jp_go lookup), not merely elsewhere in the row
+  assert_contains "${row#*'jp_go <N>'}" 'infra-planner' "#328 AC1: go re-dispatches infra-planner" || return 1
   assert_contains "$row" 'go URL in the prompt' "#328 AC1: go URL passed in the prompt" || return 1
   assert_contains "$row" 'One go = one extra revision round' "#328 AC1: one go = one extra round" || return 1
 }
@@ -44,6 +45,12 @@ test_p328_ac1_no_loop_cap_row_when_go_exists() {
   assert_contains "$row" 'no qualifying go' "#328 AC6: loop-cap logged only when no qualifying go" || return 1
 }
 
+test_p328_ac5_go_dated_before_capped_fail_does_not_count() {
+  # First cap: a go that predates the capped FAIL must not resume; loop-cap row is logged instead.
+  local row; row=$(p328_row)
+  assert_contains "$row" 'go dated before the capped' "#328 AC5: a go dated before the capped PLAN FAIL does not count (first cap)" || return 1
+}
+
 test_p328_ac2_delivery_lead_cannot_extend_plan_fail_cap() {
   local row sent
   row=$(p328_row); sent=$(p328_cap_sentence)
@@ -64,12 +71,14 @@ test_p328_ac3_para_no_longer_leaves_plan_fail_cap_with_jp() {
 }
 
 test_p328_ac3_stale_line_96_pointer_replaced() {
-  local sent; sent=$(p328_cap_sentence)
-  assert_ne "$sent" "" "#328 AC3: infra cap sentence exists" || return 1
+  local full sent; full=$(p328_cap_sentence)
+  assert_ne "$full" "" "#328 AC3: infra cap sentence exists" || return 1
+  # scope to the PLAN FAIL clause only (the code-track text earlier on the same line is out of scope)
+  sent="${full#*'The infra `PLAN FAIL` loop cap'}"
   assert_not_contains "$sent" ':96' "#328 AC3: stale :96 pointer gone" || return 1
   assert_contains "$sent" 'PLAN FAIL row' "#328 AC3: pointer names the PLAN FAIL row" || return 1
   assert_not_contains "$sent" 'is unchanged' "#328 AC3: cap is no longer 'unchanged' (JP go now extends it)" || return 1
-  assert_contains "$sent" 'JP' "#328 AC3: sentence mentions the JP-go exit" || return 1
+  assert_contains "$sent" 'JP go' "#328 AC3: PLAN FAIL clause names the JP-go exit" || return 1
 }
 
 test_p328_ac4_validation_row_for_jp_go_resume() {
@@ -84,10 +93,7 @@ test_p328_ac4_validation_row_for_jp_go_resume() {
 test_p328_ac7_no_new_marker_or_state_and_supervisor_unchanged() {
   local base diff
   base=$(cd "$ROOT_P328" && git merge-base HEAD origin/main 2>/dev/null)
-  if [ -z "$base" ]; then
-    printf '    (AC7 skipped: no origin/main merge-base in this checkout)\n' >&2
-    return 0
-  fi
+  assert_ne "$base" "" "#328 AC7: origin/main merge-base must resolve (fetch origin main); cannot verify supervisor.sh unchanged otherwise" || return 1
   diff=$(cd "$ROOT_P328" && git diff --stat "$base" -- skills/orchestrate/supervisor.sh)
   assert_eq "$diff" "" "#328 AC7: supervisor.sh unchanged" || return 1
   # the resume clause must name no new marker / counter / state file
@@ -99,6 +105,7 @@ run_test test_p328_ac1_plan_fail_row_resumes_on_jp_go
 run_test test_p328_ac1_go_may_name_a_stage_like_the_blocked_row
 run_test test_p328_ac1_next_fail_recaps_and_needs_new_go
 run_test test_p328_ac1_no_loop_cap_row_when_go_exists
+run_test test_p328_ac5_go_dated_before_capped_fail_does_not_count
 run_test test_p328_ac2_delivery_lead_cannot_extend_plan_fail_cap
 run_test test_p328_ac3_para_no_longer_leaves_plan_fail_cap_with_jp
 run_test test_p328_ac3_stale_line_96_pointer_replaced
