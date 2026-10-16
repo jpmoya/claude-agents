@@ -136,11 +136,21 @@ pipeline_error_alert() {
 boot_epoch() {
   local b=${PIPELINE_BOOT_EPOCH:-}
   if [ -z "$b" ]; then
-    if [ -r /proc/stat ]; then b=$(awk '/^btime/ {print $2}' /proc/stat)
-    else b=$(sysctl -n kern.boottime 2>/dev/null | sed -n 's/.*sec = \([0-9]*\).*/\1/p'); fi
+    if [ "$(uname -s 2>/dev/null)" = Darwin ]; then b=$(sysctl -n kern.boottime 2>/dev/null | sed -n 's/^{ *sec = \([0-9]*\).*/\1/p')
+    else b=$(awk '/^btime/ {print $2}' "${PIPELINE_PROC_STAT:-/proc/stat}" 2>/dev/null); fi
   fi
   case "$b" in ''|*[!0-9]*) return 1 ;; esac
   printf '%s' "$b"
+}
+
+# iso_to_epoch <YYYY-MM-DDTHH:MM:SSZ> — UTC epoch by pure arithmetic (no BSD/GNU date split); prints nothing on a bad shape
+iso_to_epoch() {
+  case "$1" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) ;; *) return 1 ;; esac
+  local y=$((10#${1:0:4})) m=$((10#${1:5:2})) d=$((10#${1:8:2})) era yoe doy doe
+  [ "$m" -le 2 ] && y=$((y - 1))
+  era=$((y / 400)); yoe=$((y - era * 400))
+  doy=$(( (153 * (m > 2 ? m - 3 : m + 9) + 2) / 5 + d - 1 )); doe=$((yoe * 365 + yoe / 4 - yoe / 100 + doy))
+  echo $(( (era * 146097 + doe - 719468) * 86400 + 10#${1:11:2} * 3600 + 10#${1:14:2} * 60 + 10#${1:17:2} ))
 }
 
 # pid_alive <pidfile> — kill -0 on the stored pid AND the sibling .launched-at later than host boot (a pid stored before a
@@ -151,6 +161,6 @@ pid_alive() {
   kill -0 "$pid" 2>/dev/null || return 1
   la=$(cat "${pf%.pid}.launched-at" 2>/dev/null); [ -n "$la" ] || return 0
   boot=$(boot_epoch) || { pipeline_error_alert pid_alive "boot time unreadable; falling back to kill -0"; return 0; }
-  le=$(python3 -c "import datetime,sys; print(int(datetime.datetime.strptime(sys.argv[1],'%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=datetime.timezone.utc).timestamp()))" "$la" 2>/dev/null) || return 0
+  le=$(iso_to_epoch "$la"); case "$le" in ''|*[!0-9]*) return 0 ;; esac
   [ "$le" -gt "$boot" ]
 }
