@@ -23,7 +23,7 @@ mkdir -p "$PIPE" "$QUEUE"
 # RUN_SLUG. Reads the new key first, then a legacy orch-<N>.* set only when its .repo names the same repo (#318 read-both).
 # A bare number resolves only when exactly one run matches; zero or several return 1 with the candidates on stderr.
 resolve_run() {
-  local spec=$1 n slug k f rf cands="" count=0 line
+  local spec=$1 n slug k f rf cands="" count=0 line; CANDS_TXT=""
   case "$spec" in
     */*#*) slug=${spec%#*}; n=${spec##*#}
       case "$n" in ''|*[!0-9]*) echo "bad run spec: $spec" >&2; return 1 ;; esac
@@ -49,7 +49,7 @@ resolve_run() {
     CANDS_TXT="${CANDS_TXT:-}${slug:-?}#$n"$'\n'; RUN_KEY=$k; RUN_ISSUE=$n; RUN_SLUG=${slug:-}
   done
   if [ "$count" -eq 1 ]; then return 0; fi
-  if [ "$count" -eq 0 ]; then echo "no run matches #$n; nothing done" >&2
+  if [ "$count" -eq 0 ]; then echo "no run matches #$n; nothing done" >&2; return 2
   else echo "#$n matches $count runs; refusing. Use <owner/repo>#$n with one of:" >&2; printf '%s\n' "$CANDS_TXT" | sed '/^$/d; s/^/  /' >&2; fi
   return 1
 }
@@ -60,7 +60,11 @@ set -- "${args[@]}"
 case "${1:-}" in
   status)
     ISSUE="${2:-}"; FILTER_KEY=""
-    if [ -n "$ISSUE" ]; then resolve_run "$ISSUE" || exit 1; FILTER_KEY=$RUN_KEY; fi
+    if [ -n "$ISSUE" ]; then
+      rc=0; resolve_run "$ISSUE" 2>/dev/null || rc=$?
+      # no match keeps the pre-#318 output (an empty filter result, alerts and queue still shown); ambiguity refuses
+      if [ "$rc" = 2 ]; then FILTER_KEY="__no-match__"; elif [ "$rc" != 0 ]; then resolve_run "$ISSUE" || exit 1; else FILTER_KEY=$RUN_KEY; fi
+    fi
     # State derivation is shared with the reporter (run-state.sh's derive_runs) — issue #10 AC14:
     # only this derivation moved; every echo/printf format string, the found=1-after-issue-filter
     # behaviour ("no orchestrators recorded" fires only when the orch-*.pid glob itself is empty,
@@ -127,7 +131,6 @@ except Exception: print('?')
       for qf in $(ls -1 "$QUEUE"/*.json 2>/dev/null | sort); do
         q_issue=$(python3 -c "import json; d=json.load(open('$qf')); print(d['issue'])")
         q_repo=$(python3 -c "import json; d=json.load(open('$qf')); print(d['repo'])")
-        if [ -n "$FILTER_KEY" ]; then qk=${qf##*/orch-}; [ "${qk%.json}" = "$FILTER_KEY" ] || continue; fi
         queued_at=$(python3 -c "import json; d=json.load(open('$qf')); print(d.get('queued_at','?'))")
         nb=$(python3 -c "import json,time; nb=json.load(open('$qf')).get('not_before',0); d=int(nb-time.time()); print(f'ready' if d<=0 else f'in {d}s')" 2>/dev/null)
         echo "#$q_issue  queued since $queued_at  $nb  repo=$q_repo"

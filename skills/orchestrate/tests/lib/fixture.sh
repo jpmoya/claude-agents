@@ -291,3 +291,15 @@ gh_call_count() {
     grep -c -- "$pattern" "$dir/gh-calls.log" 2>/dev/null | tr -d ' '
   fi
 }
+
+# rkp <legacy-style path> — #318: per-run files are keyed orch-<owner>_<repo>-<N>.*; given the old orch-<N>.<suffix> path,
+# print the keyed file when one exists (else the path unchanged), so pre-#318 assertions follow the rename.
+rkp() {
+  local dir=${1%/*} base=${1##*/} n suf g
+  case "$base" in
+    orch-[0-9]*.*) n=${base#orch-}; n=${n%%.*}; suf=${base#orch-$n.}
+      g=$(ls "$dir"/orch-*-"$n"."$suf" 2>/dev/null | head -1)
+      [ -n "$g" ] && { printf '%s' "$g"; return; } ;;
+  esac
+  printf '%s' "$1"
+}

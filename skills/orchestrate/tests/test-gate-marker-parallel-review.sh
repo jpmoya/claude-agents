@@ -111,8 +111,8 @@ test_gm_ac1_tick_holds_for_jp_and_does_not_restart() {
   HOME="$GM_HOME" PATH="$GM_GH:/usr/bin:/bin" PIPE="$GM_PIPE" QUEUE="$GM_PIPE/queue" LOGDIR="$GM_HOME/logs/pipeline" \
     SLACK_BOT_TOKEN="" SLACK_ENGINEERING_CHANNEL="" "$SUP_GM" >/dev/null 2>&1
   local held log queued
-  held=$([ -e "$GM_PIPE/orch-42.held" ] && echo present || echo absent)
-  queued=$([ -e "$GM_PIPE/queue/orch-42.json" ] && echo present || echo absent)
+  held=$([ -e "$(rkp "$GM_PIPE/orch-42.held")" ] && echo present || echo absent)
+  queued=$([ -e "$(rkp "$GM_PIPE/queue/orch-42.json")" ] && echo present || echo absent)
   log=$(cat "$GM_HOME/logs/pipeline/supervisor.log" 2>/dev/null)
   gm_cleanup
   assert_eq "$held" "present" "AC1: .held" || return 1
@@ -137,7 +137,7 @@ test_gm_ac2_tick_with_decision_takes_the_restart_path() {
   HOME="$GM_HOME" PATH="$GM_GH:/usr/bin:/bin" PIPE="$GM_PIPE" QUEUE="$GM_PIPE/queue" LOGDIR="$GM_HOME/logs/pipeline" \
     SLACK_BOT_TOKEN="" SLACK_ENGINEERING_CHANNEL="" "$SUP_GM" >/dev/null 2>&1
   local held log
-  held=$([ -e "$GM_PIPE/orch-42.held" ] && echo present || echo absent)
+  held=$([ -e "$(rkp "$GM_PIPE/orch-42.held")" ] && echo present || echo absent)
   log=$(cat "$GM_HOME/logs/pipeline/supervisor.log" 2>/dev/null)
   gm_cleanup
   assert_eq "$held" "absent" "AC2: not held" || return 1
@@ -269,7 +269,7 @@ test_gm_169_tick_holds_and_does_not_restart() {
   HOME="$GM_HOME" PATH="$GM_GH:/usr/bin:/bin" PIPE="$GM_PIPE" QUEUE="$GM_PIPE/queue" LOGDIR="$GM_HOME/logs/pipeline" \
     SLACK_BOT_TOKEN="" SLACK_ENGINEERING_CHANNEL="" "$SUP_GM" >/dev/null 2>&1
   local held log
-  held=$([ -e "$GM_PIPE/orch-42.held" ] && echo present || echo absent)
+  held=$([ -e "$(rkp "$GM_PIPE/orch-42.held")" ] && echo present || echo absent)
   log=$(cat "$GM_HOME/logs/pipeline/supervisor.log" 2>/dev/null)
   gm_cleanup
   assert_eq "$held" "present" "169: .held" || return 1
