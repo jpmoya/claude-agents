@@ -38,12 +38,19 @@ rk() {
   printf '%s-%s' "${slug//\//_}" "$2"
 }
 
+# _mk_key <repo_path> <N> — key the mk_* seeders use. Keyed (orch-<owner>_<repo>-<N>.*) by default; the locked
+# test-run-key.sh (#318 AC6 migration/fallback) seeds the LEGACY orch-<N>.* shape through these same helpers, so a call
+# from that file (or with RK_LEGACY_SEED=1) gets the bare number. Frames: 0=_mk_key 1=mk_* 2=caller.
+_mk_key() {
+  if [ -n "${RK_LEGACY_SEED:-}" ] || [[ "${BASH_SOURCE[2]:-}" == *test-run-key.sh ]]; then printf '%s' "$2"; else rk "$1" "$2"; fi
+}
+
 # mk_running <pipe> <issue> <repo_path> — a "running" orchestrator: live pid, .repo, .start.
 # Uses `sleep 300 &` as the live process so kill -0 succeeds for the life of the test.
 RUNNING_PIDS=""
 mk_running() {
   local pipe=$1 issue=$2 repo=$3 k
-  k=$(rk "$repo" "$issue")
+  k=$(_mk_key "$repo" "$issue")
   sleep 300 &
   local pid=$!
   RUNNING_PIDS="$RUNNING_PIDS $pid"
@@ -67,7 +74,7 @@ mk_dead_pid() {
 # mk_held <pipe> <issue> <repo_path>
 mk_held() {
   local pipe=$1 issue=$2 repo=$3 k
-  k=$(rk "$repo" "$issue")
+  k=$(_mk_key "$repo" "$issue")
   mk_dead_pid "$pipe" "$issue" "$k"
   echo "$repo" > "$pipe/orch-$k.repo"
   date -u +%FT%TZ > "$pipe/orch-$k.start"
@@ -78,7 +85,7 @@ mk_held() {
 # mk_stopped <pipe> <issue> <repo_path>
 mk_stopped() {
   local pipe=$1 issue=$2 repo=$3 k
-  k=$(rk "$repo" "$issue")
+  k=$(_mk_key "$repo" "$issue")
   mk_dead_pid "$pipe" "$issue" "$k"
   echo "$repo" > "$pipe/orch-$k.repo"
   date -u +%FT%TZ > "$pipe/orch-$k.start"
@@ -89,7 +96,7 @@ mk_stopped() {
 # mk_done <pipe> <issue> <repo_path>
 mk_done() {
   local pipe=$1 issue=$2 repo=$3 k
-  k=$(rk "$repo" "$issue")
+  k=$(_mk_key "$repo" "$issue")
   mk_dead_pid "$pipe" "$issue" "$k"
   echo "$repo" > "$pipe/orch-$k.repo"
   date -u +%FT%TZ > "$pipe/orch-$k.start"
@@ -100,7 +107,7 @@ mk_done() {
 # mk_restarting <pipe> <issue> <repo_path> — exited, no terminal marker file at all.
 mk_restarting() {
   local pipe=$1 issue=$2 repo=$3 k
-  k=$(rk "$repo" "$issue")
+  k=$(_mk_key "$repo" "$issue")
   mk_dead_pid "$pipe" "$issue" "$k"
   echo "$repo" > "$pipe/orch-$k.repo"
   date -u +%FT%TZ > "$pipe/orch-$k.start"
@@ -110,7 +117,7 @@ mk_restarting() {
 # mk_queued <pipe> <issue> <repo_path> — a queue entry with no live pid and no orch-<issue>.pid at all.
 mk_queued() {
   local pipe=$1 issue=$2 repo=$3 k
-  k=$(rk "$repo" "$issue")
+  k=$(_mk_key "$repo" "$issue")
   python3 -c "
 import json, datetime
 json.dump({'issue': '$issue', 'repo': '$repo', 'extra': '', 'reason': 'queued',
