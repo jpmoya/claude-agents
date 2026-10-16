@@ -113,3 +113,47 @@ describe('AC5: no new mechanism', () => {
     }
   });
 });
+
+describe('#279: docs describe live continuous deployment, not manual production review', () => {
+  const deployer = read('agents/deployer.md');
+  const orchestrator = read('agents/orchestrator.md');
+  const descLine = deployer.split('\n').find((l) => l.startsWith('description:'));
+
+  it('deployer.md description names the release bot / direct route and says only staging-route changes need JP', () => {
+    expect(descLine).toMatch(/release bot/i);
+    expect(descLine).toMatch(/direct route/i);
+    expect(descLine).toMatch(/staging route/i);
+    expect(descLine).not.toMatch(/manual review/i);
+  });
+
+  it('no agent text or CLAUDE.md claims production needs JP\'s manual review', () => {
+    for (const f of ['CLAUDE.md', ...readdirSync(join(root, 'agents')).filter((x) => x.endsWith('.md')).map((x) => `agents/${x}`)]) {
+      expect(read(f), f).not.toMatch(/manual review/i);
+    }
+  });
+
+  it('deployer.md and orchestrator.md no longer say production is pending JP\'s review for every change', () => {
+    expect(deployer).not.toMatch(/Production deploy pending JP's review on staging\./);
+    expect(orchestrator).not.toMatch(/production promotion \(`staging` → `main`\) pending JP's review/);
+  });
+
+  it('CLAUDE.md promotion-PR and releases exceptions are stated as fallbacks', () => {
+    const promo = claudeMd.split('\n').find((l) => l.startsWith('**Exception — promotion PRs'));
+    const rel = claudeMd.split('\n').find((l) => l.startsWith('**Exception — releases**'));
+    for (const para of [promo, rel]) {
+      expect(para).toMatch(/fallback/i);
+      expect(para).toMatch(/AUTO_PROMOTE_ENABLED/);
+      expect(para).toMatch(/risky-list/i);
+    }
+  });
+
+  it('CLAUDE.md carries the verbatim sessions-never-promote sentence', () => {
+    expect(claudeMd).toContain(
+      'Production release is automatic for direct-route changes (release bot, `release/auto-*` PRs). Sessions never promote by hand and never tell JP prod is his to approve unless the router put the change on the staging route. Check recent `release/auto-*` PRs on `main` before describing the release flow; fetch `origin/main` before quoting a repo doc — local checkouts go stale.',
+    );
+  });
+
+  it('delivery-lead.md never hand-promotes direct-route changes', () => {
+    expect(deliveryLead).toMatch(/never hand-promotes? direct-route changes/i);
+  });
+});
