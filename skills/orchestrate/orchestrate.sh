@@ -127,7 +127,12 @@ except Exception: print('?')
     fi
     ;;
   *)
-    REPO="${1:?repo path required}"; ISSUE="${2:?issue number required}"; shift 2; EXTRA="$*"
+    REPO="${1:?repo path required}"; ISSUE="${2-}"
+    # Same rule as pipeline-bridge-dispatch.sh; before any gh call or state file (#123: "stop" became a phantom run).
+    if ! [[ "$ISSUE" =~ ^[0-9]+$ ]]; then
+      echo "issue must be a number (got \"$ISSUE\") — did you mean 'orchestrate.sh stop <N>'?" >&2; exit 2
+    fi
+    shift 2; EXTRA="$*"
     REPO=$(cd "$REPO" && pwd)
     OWNER_REPO=$(cd "$REPO" && gh repo view --json nameWithOwner --jq .nameWithOwner)
     if [ -f "$PIPE/orch-$ISSUE.pid" ] && kill -0 "$(cat "$PIPE/orch-$ISSUE.pid")" 2>/dev/null; then
