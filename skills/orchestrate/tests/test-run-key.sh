@@ -27,6 +27,7 @@ rk_tree_init() {
 rk_env() {
   rk_tree_init
   RK_HOME=$(new_home); RK_PIPE=$(new_pipe)
+  RK_HOME=${RK_HOME//\/\//\/}; RK_PIPE=${RK_PIPE//\/\//\/}  # TMPDIR ending in / must not leave // in paths
   RK_REPO_A="$RK_HOME/repo-a"; RK_REPO_B="$RK_HOME/repo-b"
   fixture_repo "$RK_REPO_A" "$RK_A"; fixture_repo "$RK_REPO_B" "$RK_B"
   RK_BIN="$RK_HOME/.local/bin"; mkdir -p "$RK_BIN"
@@ -69,6 +70,11 @@ rk_orch() {  # rk_orch <args…> — shipped orchestrate.sh from the copied tree
   ( cd "$RK_HOME" && env HOME="$RK_HOME" PATH="$RK_BIN:/usr/bin:/bin" PIPE="$RK_PIPE" QUEUE="$RK_PIPE/queue" LOGDIR="$RK_HOME/logs/pipeline" \
       PIPELINE_TEST_CLAIM_SETTLE_SECS=0 bash "$RK_TREE/skills/orchestrate/orchestrate.sh" "$@" ) 2>&1 || RK_RC=$?
 }
+# rk_orch_out <args…> — like rk_orch but sets RK_OUT and RK_RC in the CURRENT shell (no $(…) subshell, which would lose RK_RC).
+rk_orch_out() {
+  local f; f=$(mktemp "${TMPDIR:-/tmp}/orch-test-rkout.XXXXXX")
+  rk_orch "$@" >"$f"; RK_OUT=$(cat "$f"); rm -f "$f"
+}
 rk_tick() {
   RK_RC=0
   ( cd "$RK_HOME" && env HOME="$RK_HOME" PATH="$RK_BIN:/usr/bin:/bin" PIPE="$RK_PIPE" QUEUE="$RK_PIPE/queue" LOGDIR="$RK_HOME/logs/pipeline" \
@@ -85,6 +91,8 @@ rk_settle() {  # bounded poll (max ~5s): wait until the PIPE file listing is unc
   done
   return 0
 }
+# rk_pid_alive <pid> — alive and not a zombie (a killed fixture child of this shell stays a zombie until reaped).
+rk_pid_alive() { local st; st=$(ps -o stat= -p "$1" 2>/dev/null | tr -d ' '); [ -n "$st" ] && [ "${st#Z}" = "$st" ]; }
 rk_alive() { local p; p=$(cat "$1" 2>/dev/null); [ -n "$p" ] && kill -0 "$p" 2>/dev/null; }
 rk_legacy_names() {  # basenames in PIPE (recursive) that match the forbidden legacy shapes
   find "$RK_PIPE" -type f 2>/dev/null | sed 's#.*/##' | grep -E '^orch-[0-9]+\.|^[0-9]+-[a-z-]+-(before|nags)\.txt' || true
@@ -147,7 +155,7 @@ test_rk_stop_by_owner_repo_leaves_the_other_running() {
 
 test_rk_stop_bare_number_ambiguous_refuses_and_lists_candidates() {
   rk_env; rk_launch2
-  local out rc; out=$(rk_orch stop 100); rc=$RK_RC
+  local out rc; rk_orch_out stop 100; out=$RK_OUT; rc=$RK_RC
   local a_alive=no b_alive=no stopped
   rk_alive "$RK_PIPE/orch-$RK_KA-100.pid" && a_alive=yes; rk_alive "$RK_PIPE/orch-$RK_KB-100.pid" && b_alive=yes
   stopped=$(ls "$RK_PIPE"/orch-*.stopped 2>/dev/null | wc -l | tr -d ' ')
@@ -172,7 +180,7 @@ test_rk_stop_bare_number_single_match_resolves() {
 test_rk_stop_bare_number_no_match_refuses_without_tombstone() {
   rk_env; rk_orch --force "$RK_REPO_A" 100 >/dev/null
   local out rc n alive=no
-  out=$(rk_orch stop 999); rc=$RK_RC
+  rk_orch_out stop 999; out=$RK_OUT; rc=$RK_RC
   n=$(ls "$RK_PIPE"/*999*.stopped 2>/dev/null | wc -l | tr -d ' ')
   rk_alive "$RK_PIPE/orch-$RK_KA-100.pid" && alive=yes
   rk_cleanup
@@ -189,7 +197,7 @@ test_rk_status_by_owner_repo_shows_only_that_run() {
 
 test_rk_status_bare_number_ambiguous_lists_candidates() {
   rk_env; rk_launch2
-  local out rc; out=$(rk_orch status 100); rc=$RK_RC
+  local out rc; rk_orch_out status 100; out=$RK_OUT; rc=$RK_RC
   rk_cleanup
   assert_ne "$rc" "0" "AC3: ambiguous bare number refused" || return 1
   assert_contains "$out" "$RK_A" "lists A" && assert_contains "$out" "$RK_B" "lists B"
@@ -276,7 +284,8 @@ test_rk_legacy_fallback_status_and_stop_read_matching_legacy_set() {
   local out stopped=no alive=yes pid; pid=$(cat "$RK_PIPE/orch-100.pid")
   out=$(rk_orch status "$RK_A#100")
   rk_orch stop "$RK_A#100" >/dev/null
-  kill -0 "$pid" 2>/dev/null || alive=no
+  local i; for i in $(seq 1 30); do rk_pid_alive "$pid" || break; sleep 0.1; done
+  rk_pid_alive "$pid" || alive=no
   { [ -e "$RK_PIPE/orch-100.stopped" ] || [ -e "$RK_PIPE/orch-$RK_KA-100.stopped" ]; } && stopped=yes
   cleanup_running; rk_cleanup
   assert_contains "$out" "running (pid $pid)" "fallback: status for A #100 reads the legacy set whose .repo is A" || return 1
@@ -313,8 +322,10 @@ test_rk_status_payload_two_same_number_runs() {
   touch "$RK_PIPE/orch-$RK_KB-100.held"
   printf 'STATUS_REPO_ALIASES=("%s:alias-a" "%s:alias-b")\n' "$RK_A" "$RK_B" >> "$RK_HOME/.claude/pipeline/config.local.sh"
   local out sa sb n
+  # rk_tree_init stubs report-status.sh to a no-op; run the shipped script under a side name (same dir, same relative sourcing).
+  cp "$RK_SKILL/report-status.sh" "$RK_TREE/skills/orchestrate/report-status-real.sh"
   out=$( cd "$RK_HOME" && env HOME="$RK_HOME" PATH="$RK_BIN:/usr/bin:/bin" PIPE="$RK_PIPE" QUEUE="$RK_PIPE/queue" LOGDIR="$RK_HOME/logs/pipeline" \
-      bash "$RK_TREE/skills/orchestrate/report-status.sh" --print 2>/dev/null )
+      bash "$RK_TREE/skills/orchestrate/report-status-real.sh" --print 2>/dev/null )
   n=$(printf '%s' "$out" | jq '[.runs[] | select(.issue==100)] | length' 2>/dev/null)
   sa=$(printf '%s' "$out" | jq -r '[.runs[] | select(.issue==100 and .repo=="alias-a")][0].state' 2>/dev/null)
   sb=$(printf '%s' "$out" | jq -r '[.runs[] | select(.issue==100 and .repo=="alias-b")][0].state' 2>/dev/null)
