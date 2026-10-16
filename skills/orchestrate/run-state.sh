@@ -9,6 +9,7 @@
 # being re-sourced here).
 RS_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 . "$RS_DIR/config.sh"
+. "$RS_DIR/pipeline-lib.sh"
 
 # derive_runs — prints one tab-separated record per recorded orchestrator:
 #   issue, repo_path, state_code, pid, started_at, last_activity_at, restarts, stage
@@ -89,7 +90,7 @@ derive_runs() {
     issue=$(basename "$f" .pid); issue=${issue#orch-}
     pid=$(cat "$f" 2>/dev/null)
     repo=$(cat "$PIPE/orch-$issue.repo" 2>/dev/null || echo "?")
-    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    if [ -n "$pid" ] && pid_alive "$f"; then
       state_code=running
     elif [ -f "$PIPE/orch-$issue.closed" ]; then
       state_code=closed

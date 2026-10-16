@@ -3,17 +3,8 @@
 # Per-machine overrides (DISPATCH_REPOS, caps) go in ~/.claude/pipeline/config.local.sh — untracked, no secrets here.
 
 # Run state must survive a reboot (/tmp is emptied): the single persistent default lives here (#332).
-if [ -z "${PIPE:-}" ]; then
-  PIPE="$HOME/.local/state/pipeline"
-  PIPE_LEGACY="${PIPE_LEGACY:-/tmp/pipeline}"
-  # one-time move, only when the new path is absent and the legacy one present; before any tick reads state
-  if [ ! -e "$PIPE" ] && [ -d "$PIPE_LEGACY" ]; then
-    if ! { mkdir -p "$(dirname "$PIPE")" && mv "$PIPE_LEGACY" "$PIPE"; } 2>/dev/null; then
-      . "$(dirname "${BASH_SOURCE[0]}")/pipeline-lib.sh"
-      pipeline_error_alert pipe_move "could not move $PIPE_LEGACY to $PIPE"
-    fi
-  fi
-fi
+PIPE_DEFAULTED=0
+if [ -z "${PIPE:-}" ]; then PIPE="$HOME/.local/state/pipeline"; PIPE_DEFAULTED=1; fi
 QUEUE="${QUEUE:-$PIPE/queue}"
 LOGDIR="${LOGDIR:-$HOME/logs/pipeline}"
 
@@ -63,3 +54,16 @@ GOAL_MAX_NO_PROGRESS=3      # relaunch decisions with an unchanged scope snapsho
 [ -f "$HOME/.claude/pipeline/config.local.sh" ] && source "$HOME/.claude/pipeline/config.local.sh"
 
 export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:/opt/homebrew/bin:$PATH"
+
+# One-time move of the legacy state dir, only for the defaulted PIPE, only when the new path is absent and the legacy one
+# present. After config.local.sh so a failed-move alert sees SLACK_WEBHOOK_URL; before any tick reads state.
+if [ "$PIPE_DEFAULTED" = 1 ]; then
+  PIPE_LEGACY="${PIPE_LEGACY:-/tmp/pipeline}"
+  if [ ! -e "$PIPE" ] && [ -d "$PIPE_LEGACY" ]; then
+    if ! { mkdir -p "$(dirname "$PIPE")" && mv "$PIPE_LEGACY" "$PIPE"; } 2>/dev/null; then
+      . "$(dirname "${BASH_SOURCE[0]}")/pipeline-lib.sh"
+      pipeline_error_alert pipe_move "could not move legacy pipeline dir to $(basename "$PIPE") (full paths in errors.log)"
+      printf '[%s] pipeline error route=pipe_move: full paths: %s -> %s\n' "$(date -u +%FT%TZ)" "$PIPE_LEGACY" "$PIPE" >> "${LOGDIR:-$HOME/logs/pipeline}/errors.log" 2>/dev/null || true
+    fi
+  fi
+fi

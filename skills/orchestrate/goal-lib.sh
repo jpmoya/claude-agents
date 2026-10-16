@@ -199,7 +199,7 @@ goal_kill() {
   local pid
   pid=$(cat "$PIPE/goal-$1.pid" 2>/dev/null) || return 0
   [ -n "$pid" ] || return 0
-  if kill -0 "$pid" 2>/dev/null; then
+  if pid_alive "$PIPE/goal-$1.pid"; then
     pkill -TERM -P "$pid" 2>/dev/null || true
     kill "$pid" 2>/dev/null || true
   fi
@@ -222,9 +222,9 @@ goal_launch() {
       claude --dangerously-skip-permissions --agent "$1" -p "$2"
       echo $? > "$3"
     ' _ "$GOAL_AGENT" "$brief" "$PIPE/goal-$id.exit" >> "$PIPE/goal-$id.log" 2>&1 9>&- &
-    echo $! > "$PIPE/goal-$id.pid"
+    date -u +%FT%TZ > "$PIPE/goal-$id.launched-at"; echo $! > "$PIPE/goal-$id.pid"
   ) || return 1
-  date -u +%FT%TZ > "$PIPE/goal-$id.start"; date -u +%FT%TZ > "$PIPE/goal-$id.launched-at"
+  date -u +%FT%TZ > "$PIPE/goal-$id.start"
 }
 
 # ---- supervisor goal step (#195) ------------------------------------------------------------------------------
@@ -474,7 +474,7 @@ goal_tick_one() {  # <id>
   spec=$(jq -r '.spec // empty' "$cache" 2>/dev/null); issue=$(jq -r '.issue // empty' "$cache" 2>/dev/null)
   [ -n "$spec" ] && [ -n "$issue" ] || return 0
   pid=$(cat "$PIPE/goal-$id.pid" 2>/dev/null)
-  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then alive=1; fi
+  if [ -n "$pid" ] && pid_alive "$PIPE/goal-$id.pid"; then alive=1; fi
   if [ -f "$PIPE/goal-$id.stopped" ]; then [ "$alive" -eq 0 ] || goal_kill "$id"; return 0; fi
   if [ -f "$PIPE/goal-$id.held" ]; then goal_mirror "$id" held; return 0; fi
 
@@ -570,7 +570,7 @@ goal_step() {
     [ "$h" = "$GOAL_THIS_HOST" ] || continue
     GOAL_OWNED="$GOAL_OWNED $id"
     [ -f "$PIPE/goal-$id.stopped" ] && continue
-    if kill -0 "$(cat "$PIPE/goal-$id.pid" 2>/dev/null)" 2>/dev/null; then live=$((live + 1)); fi
+    if pid_alive "$PIPE/goal-$id.pid"; then live=$((live + 1)); fi
   done
   GOAL_CAN_LAUNCH=1
   power_ok || GOAL_CAN_LAUNCH=0

@@ -100,7 +100,7 @@ except Exception: print('?')
     ;;
   stop)
     pid=$(cat "$PIPE/orch-$2.pid" 2>/dev/null || true)
-    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    if [ -n "$pid" ] && pid_alive "$PIPE/orch-$2.pid"; then
       # $pid is the nohup'd bash wrapper; SIGTERM does not reach its claude child,
       # which kept driving #611 for 14 min after a stop (2026-09-13). Kill the
       # child too. Stage processes the orchestrator launched are left alone.
@@ -130,7 +130,7 @@ except Exception: print('?')
     REPO="${1:?repo path required}"; ISSUE="${2:?issue number required}"; shift 2; EXTRA="$*"
     REPO=$(cd "$REPO" && pwd)
     OWNER_REPO=$(cd "$REPO" && gh repo view --json nameWithOwner --jq .nameWithOwner)
-    if [ -f "$PIPE/orch-$ISSUE.pid" ] && kill -0 "$(cat "$PIPE/orch-$ISSUE.pid")" 2>/dev/null; then
+    if [ -f "$PIPE/orch-$ISSUE.pid" ] && pid_alive "$PIPE/orch-$ISSUE.pid"; then
       echo "orchestrator for #$ISSUE already running (pid $(cat "$PIPE/orch-$ISSUE.pid")); use 'stop' first" >&2; exit 1
     fi
     # Cross-machine guard: agent-in-progress on an issue this machine does not own (never launched here, or launched
@@ -186,8 +186,8 @@ with open('$QUEUE/orch-$ISSUE.json', 'w') as f:
       claude --dangerously-skip-permissions --agent orchestrator -p "$1"
       echo $? > "$2"
     ' _ "$PROMPT" "$PIPE/orch-$ISSUE.exit" >> "$PIPE/orch-$ISSUE.log" 2>&1 9>&- &
-    echo $! > "$PIPE/orch-$ISSUE.pid"; echo "$REPO" > "$PIPE/orch-$ISSUE.repo"
-    date -u +%FT%TZ > "$PIPE/orch-$ISSUE.start"; date -u +%FT%TZ > "$PIPE/orch-$ISSUE.launched-at"
+    date -u +%FT%TZ > "$PIPE/orch-$ISSUE.launched-at"; echo $! > "$PIPE/orch-$ISSUE.pid"; echo "$REPO" > "$PIPE/orch-$ISSUE.repo"
+    date -u +%FT%TZ > "$PIPE/orch-$ISSUE.start"
     log_run_launch "$OWNER_REPO" "$ISSUE" "${LAUNCH_REASON:-manual}" 0 ""
     report_status_async "launch"   # event push: run launched (design #10 §4.4)
     echo "launched orchestrator for $OWNER_REPO#$ISSUE  pid=$!  log=$PIPE/orch-$ISSUE.log"

@@ -257,10 +257,9 @@ do_launch() {
     echo $? > "$2"
   ' _ "$prompt" "$PIPE/orch-$issue.exit" >> "$PIPE/orch-$issue.log" 2>&1 9>&- &
 
-  echo $! > "$PIPE/orch-$issue.pid"
+  date -u +%FT%TZ > "$PIPE/orch-$issue.launched-at"; echo $! > "$PIPE/orch-$issue.pid"
   echo "$repo" > "$PIPE/orch-$issue.repo"
   [ -f "$PIPE/orch-$issue.start" ] || date -u +%FT%TZ > "$PIPE/orch-$issue.start"
-  date -u +%FT%TZ > "$PIPE/orch-$issue.launched-at"
   rm -f "$PIPE/orch-$issue.label-cleared"
   local ev_reason=manual
   case "$reason" in auto-restart) ev_reason=auto-restart ;; queued) ev_reason=queue ;; esac
@@ -853,7 +852,7 @@ intake_launch() {  # <owner/repo> <local path> <issue> <prompt>
     *" source:sentry "*) touch "$PIPE/$k.sentry" ;; esac
   ( cd "$PIPE" && PIPELINE_ISSUE="$3" PIPELINE_AGENT=intake PIPELINE_REPO="$1" PIPE="$PIPE" CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 \
     nohup $SETSID bash -c 'claude --dangerously-skip-permissions --agent intake -p "$1"; echo $? > "$2"' _ "$4" "$PIPE/$k.exit" \
-    >> "$PIPE/$k.log" 2>&1 9>&- & echo $! > "$PIPE/$k.pid" )
+    >> "$PIPE/$k.log" 2>&1 9>&- & date -u +%FT%TZ > "$PIPE/$k.launched-at"; echo $! > "$PIPE/$k.pid" )
   echo "$2" > "$PIPE/$k.path"; echo "$1 $3" > "$PIPE/$k.id"
   echo $(( $(cat "$PIPE/$k.attempts" 2>/dev/null || echo 0) + 1 )) > "$PIPE/$k.attempts"
   slog "[intake] $1#$3 launched (attempt $(cat "$PIPE/$k.attempts"))"
@@ -972,7 +971,7 @@ if [ "$launched" -eq 0 ] && [ "$HAS_CAP" -eq 1 ] && [ "${#DISPATCH_REPOS[@]}" -g
       ( cd "$PIPE" && PIPELINE_ISSUE="$num" PIPELINE_AGENT=product-manager PIPELINE_REPO="$owner_repo" PIPE="$PIPE" CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 \
         nohup $SETSID bash -c 'claude --dangerously-skip-permissions --agent product-manager -p "$1"; echo $? > "$2"' _ \
         "Write the spec for $owner_repo#$num as the product-manager (spec-only run for a user-feedback idea): do not add agent-go; do not file dependency follow-ups on this issue; post your READY marker." "$PIPE/$k.exit" \
-        >> "$PIPE/$k.log" 2>&1 9>&- & echo $! > "$PIPE/$k.pid" )
+        >> "$PIPE/$k.log" 2>&1 9>&- & date -u +%FT%TZ > "$PIPE/$k.launched-at"; echo $! > "$PIPE/$k.pid" )
       echo "$owner_repo $num" > "$PIPE/$k.id"; echo $(( $(cat "$PIPE/$k.attempts" 2>/dev/null || echo 0) + 1 )) > "$PIPE/$k.attempts"
       slog "[spec] $owner_repo#$num launched (attempt $(cat "$PIPE/$k.attempts"))"; launched=1; break
     done
