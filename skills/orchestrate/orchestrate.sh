@@ -145,7 +145,7 @@ except Exception: print('?')
       # $pid is the nohup'd bash wrapper; SIGTERM does not reach its claude child,
       # which kept driving #611 for 14 min after a stop (2026-09-13). Kill the
       # child too. Stage processes the orchestrator launched are left alone.
-      pkill -TERM -P "$pid" 2>/dev/null
+      pkill -TERM -P "$pid" 2>/dev/null || true   # set -e: no children (pid not a wrapper) must not abort before the kill
       kill "$pid" && echo "stopped orchestrator for ${RUN_SLUG:+$RUN_SLUG}#$RUN_ISSUE (pid $pid)"
     else
       echo "orchestrator for ${RUN_SLUG:+$RUN_SLUG}#$RUN_ISSUE not running"
