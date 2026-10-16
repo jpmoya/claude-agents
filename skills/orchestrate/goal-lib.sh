@@ -351,7 +351,8 @@ goal_sync() {  # registry -> local: rebuild missing caches, propagate stop/close
         # act only on the issue the cache tracks: an old closed issue sharing the id must not kill a re-registered goal
         [ "$(jq -r '.issue // empty' "$PIPE/goal-$id.json" 2>/dev/null)" = "$n" ] || continue
         goal_kill "$id"
-        echo registry > "$PIPE/goal-$id.stopped"   # confirmed by the registry
+        # drop the local files (as the re-pin branch does) so the next sync does not match this goal again; resume rebuilds the cache
+        rm -f "$PIPE"/goal-"$id".* || goal_err "cannot remove the local files of $id"
         slog "[goal] $id closed in the registry ($st) — stopped" ;;
       unreadable) ;;
       *)

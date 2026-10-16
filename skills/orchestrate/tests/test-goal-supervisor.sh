@@ -728,14 +728,14 @@ test_gs_ac7_stopped_registry_kills_pid_and_child_and_never_relaunches() {
   gs_tick
   local pd cd=no; gs_wait_dead "$p" && pd=yes || pd=no
   gs_wait_dead "$c" && cd=yes || cd=no
-  local stopped=absent; [ -e "$GS_PIPE/goal-$GS_ID_T7.stopped" ] && stopped=present
+  local left; left=$(gs_goal_file_count "$GS_ID_T7")
   gs_launch_state "$GS_ID_T7" 3600 ""   # launch-eligible shape, to prove the tombstone is what holds it
   gs_tick; gs_settle
   local cnt; cnt=$(gs_claude_count)
   gs_cleanup
   assert_eq "$pd" "yes" "AC7: the goal pid is killed" || return 1
   assert_eq "$cd" "yes" "AC7: its child is killed" || return 1
-  assert_eq "$stopped" "present" "AC7: .stopped written" || return 1
+  assert_eq "$left" "0" "AC7: local files dropped once the registry confirms the stop" || return 1
   assert_eq "$cnt" "0" "AC7: never relaunched" || return 1
 }
 
@@ -750,6 +750,54 @@ test_gs_ac7_registry_closed_without_goal_stopped_also_kills() {
   gs_wait_dead "$p" && r=yes || r=no
   gs_cleanup
   assert_eq "$r" "yes" "AC7: a goal closed in the registry loses its live local pid" || return 1
+}
+
+# #302: a closed registry goal is acted on once — first sync kills and drops the local files, the second finds nothing.
+test_gs_302_closed_goal_logs_once_and_leaves_no_files() {
+  gs_env
+  gs_reg 50 "$GS_SPEC_T7" "$GS_ID_T7" host-a stopped
+  gs_cache 50 "$GS_ID_T7" "$GS_SPEC_T7" host-a
+  gs_live "$GS_ID_T7"
+  local p=$GS_P
+  gs_tick; gs_tick
+  local n left dead=no; n=$(gs_log | grep -c "$GS_ID_T7 closed in the registry"); left=$(gs_goal_file_count "$GS_ID_T7")
+  gs_wait_dead "$p" && dead=yes
+  gs_cleanup
+  assert_eq "$n" "1" "#302: one 'closed in the registry' line over two syncs" || return 1
+  assert_eq "$left" "0" "#302: no goal-<id>.* file remains" || return 1
+  assert_eq "$dead" "yes" "#302: the pid was still killed" || return 1
+}
+
+# #302: after the stop, the registry goal reopening (deliver.sh resume) rebuilds the cache and the goal relaunches.
+test_gs_302_reopened_goal_rebuilds_cache_and_relaunches() {
+  gs_env
+  gs_reg 50 "$GS_SPEC_T7" "$GS_ID_T7" host-a stopped
+  gs_cache 50 "$GS_ID_T7" "$GS_SPEC_T7" host-a
+  gs_tick
+  gs_reg 50 "$GS_SPEC_T7" "$GS_ID_T7" host-a active
+  gs_tick
+  local issue; issue=$(gs_json "$GS_ID_T7" issue)
+  gs_launch_state "$GS_ID_T7" 3600 ""
+  gs_tick; gs_settle
+  local cnt; cnt=$(gs_claude_count)
+  gs_cleanup
+  assert_eq "$issue" "50" "#302: cache rebuilt from the reopened registry goal" || return 1
+  [ "$cnt" -ge 1 ] || { fail "#302: the reopened goal never relaunched"; return 1; }
+}
+
+# #302: a closed issue that is not the one the cache tracks (re-registered goal) kills and deletes nothing.
+test_gs_302_closed_issue_not_matching_cache_is_left_alone() {
+  gs_env
+  gs_reg 49 "$GS_SPEC_T7" "$GS_ID_T7" host-a stopped
+  gs_cache 50 "$GS_ID_T7" "$GS_SPEC_T7" host-a
+  gs_live "$GS_ID_T7"
+  local p=$GS_P alive=no
+  gs_tick
+  gs_alive "$p" && alive=yes
+  local left; left=$(gs_goal_file_count "$GS_ID_T7")
+  gs_cleanup
+  assert_eq "$alive" "yes" "#302: the re-registered goal's pid survives" || return 1
+  [ "$left" -ge 1 ] || { fail "#302: the re-registered goal's files were deleted"; return 1; }
 }
 
 # ---------------------------------------------------------------- AC8: host pin ------------------------------
@@ -1004,6 +1052,9 @@ run_test test_gs_ac6_three_unchanged_cycles_park_the_goal
 run_test test_gs_ac6_changed_snapshot_resets_no_progress
 run_test test_gs_ac7_stopped_registry_kills_pid_and_child_and_never_relaunches
 run_test test_gs_ac7_registry_closed_without_goal_stopped_also_kills
+run_test test_gs_302_closed_goal_logs_once_and_leaves_no_files
+run_test test_gs_302_reopened_goal_rebuilds_cache_and_relaunches
+run_test test_gs_302_closed_issue_not_matching_cache_is_left_alone
 run_test test_gs_ac8_goal_pinned_to_other_host_is_ignored
 run_test test_gs_ac9_max_goals_and_one_launch_per_tick
 run_test test_gs_ac9_power_off_ac_blocks_launch_then_ac_power_launches
