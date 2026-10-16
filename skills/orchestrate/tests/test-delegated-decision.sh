@@ -397,8 +397,8 @@ test_dd_ac18_project_manager_sections_and_untouched_parts_byte_identical() {
   # re-pinned for #98 (model line only)
   # re-pinned for #106 (tail hash: project-manager.md line 104 only)
   # re-pinned for #168 (promotion-PR exception, §1 only) and #192 (delivery-lead.md: name, intro sentence, DECISION marker spelling)
-  assert_eq "$head" "78b23f37ca330ae07e1807c147dc04a827a7b5da95e5f1a1b3030eb05b60d3fe" "AC18: frontmatter + section 1 (re-pinned for #117, JP-only paragraph Slack carve-out only)" || return 1
-  # re-pinned for #311 PR: hash was already stale at the merge-base (delivery-lead.md is untouched by #311)
+  assert_eq "$head" "bb79605d8b091cca914ce4706ccc5f00a73dc95e6b5fcf3317102a925ca52dae" "AC18: frontmatter + section 1 (re-pinned for #117, JP-only paragraph Slack carve-out only)" || return 1
+  # re-pinned for #311 PR: head hash set to origin/main's current delivery-lead.md (#335 changed §1); #311 itself does not touch delivery-lead.md
   # re-pinned for #198 (§3 pacing sentence and §4 headless line) and #192 (status-card sentence rename only)
   # re-pinned for #236 (§5 deployer-merged-no-marker row narrowed; no no-decision relaunch for a deployer BLOCKED)
   assert_eq "$tail" "ec321064f2580e6f274bc769a893ece66078e0355f3e57418ef93fab96863f95" "AC18: sections 3-8 (re-pinned for #198 + #192, rename only; #236 playbook row)" || return 1
