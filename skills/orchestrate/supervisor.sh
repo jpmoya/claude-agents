@@ -668,7 +668,7 @@ autoretry_cleared() {
   AR_ERR=""
   case "$cls" in
     dependency)
-      deps=$(printf '%s' "$info" | jq -r '.body // ""' | grep -iE '^depends on ' | grep -oE '#[0-9]+' | tr -d '#')
+      deps=$(printf '%s' "$info" | jq -r '.body // ""' | grep -iE '^[[:space:]]*([-*][[:space:]]+)?depends on ' | grep -oE '#[0-9]+' | tr -d '#')
       [ -n "$deps" ] || return 1
       for dep in $deps; do
         [ "$(cd "$repo" && gh issue view "$dep" --json state --jq .state 2>/dev/null </dev/null)" = "CLOSED" ] || return 1
