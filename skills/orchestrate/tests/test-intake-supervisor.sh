@@ -73,7 +73,7 @@ test_si_ac2_launches_once_with_env_claim_and_label_swap() {
   si_env; si_issue 7 project-a/repo-a user-feedback-intake
   si_tick
   local n log labels calls before; n=$(si_launches); log=$(cat "$SI_D/claude.log"); labels=$(si_labels 7); calls=$(cat "$SI_D/gh-calls.log")
-  before=$(cat "$SI_PIPE/7-intake-before.txt" 2>/dev/null)
+  before=$(cat "$SI_PIPE/project-a_repo-a-7-intake-before.txt" 2>/dev/null)
   si_tick; local n2; n2=$(si_launches)
   si_cleanup
   assert_eq "$n" "1" "AC2: first tick launches intake once" || return 1

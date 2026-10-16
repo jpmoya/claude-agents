@@ -124,8 +124,7 @@ test_extra_supervisor_reenqueue_keeps_extra() {
   # (#318: the launch wrote the run under its owner_repo-keyed names; seed and drop those, not legacy orch-42.*.)
   local qf stem
   qf=$(rkp "$EXT_PIPE/queue/orch-42.json"); stem=${qf##*/}; stem="$EXT_PIPE/${stem%.json}"
-  mk_dead_pid "$EXT_PIPE" 42
-  mv "$(rkp "$EXT_PIPE/orch-42.pid")" "$stem.pid"
+  mk_dead_pid "$EXT_PIPE" 42 "${stem##*/orch-}"
   echo "$EXT_REPO" > "$stem.repo"
   echo 1 > "$stem.exit"
   rm -f "$qf"
