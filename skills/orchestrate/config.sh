@@ -2,7 +2,18 @@
 # Shared pipeline defaults, sourced by orchestrate.sh and supervisor.sh.
 # Per-machine overrides (DISPATCH_REPOS, caps) go in ~/.claude/pipeline/config.local.sh — untracked, no secrets here.
 
-PIPE="${PIPE:-/tmp/pipeline}"
+# Run state must survive a reboot (/tmp is emptied): the single persistent default lives here (#332).
+if [ -z "${PIPE:-}" ]; then
+  PIPE="$HOME/.local/state/pipeline"
+  PIPE_LEGACY="${PIPE_LEGACY:-/tmp/pipeline}"
+  # one-time move, only when the new path is absent and the legacy one present; before any tick reads state
+  if [ ! -e "$PIPE" ] && [ -d "$PIPE_LEGACY" ]; then
+    if ! { mkdir -p "$(dirname "$PIPE")" && mv "$PIPE_LEGACY" "$PIPE"; } 2>/dev/null; then
+      . "$(dirname "${BASH_SOURCE[0]}")/pipeline-lib.sh"
+      pipeline_error_alert pipe_move "could not move $PIPE_LEGACY to $PIPE"
+    fi
+  fi
+fi
 QUEUE="${QUEUE:-$PIPE/queue}"
 LOGDIR="${LOGDIR:-$HOME/logs/pipeline}"
 

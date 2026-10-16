@@ -10,7 +10,7 @@ count_running() {
   local n=0
   for f in "$PIPE"/orch-*.pid "$PIPE"/intake-*.pid; do   # intake runs (#114) count against MAX_CONCURRENT too
     [ -e "$f" ] || continue
-    kill -0 "$(cat "$f")" 2>/dev/null && n=$((n + 1))
+    pid_alive "$f" && n=$((n + 1))
   done
   echo "$n"
 }
@@ -119,4 +119,48 @@ claim_winner() {
     --jq "[.comments[] | select(.body | startswith(\"**[supervisor] NOTE** claim: \")) | select(.createdAt > \"$cutoff\")] | sort_by(.createdAt) | first | .body // \"\"" 2>/dev/null) \
     || { pipeline_event claim_lookup_failed --argjson issue "${issue:-0}" --arg stage gh; claim_alert "$issue" gh; return 1; }
   printf '%s\n' "$out" | awk '{print $4}'
+}
+
+# pipeline_error_alert <route> <message> — #332: one Slack alert on the existing webhook; tags release (commit SHA), environment (host), route.
+pipeline_error_alert() {
+  local rel env; rel=$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --short HEAD 2>/dev/null || echo nogit); env=$(pipeline_host)
+  mkdir -p "${LOGDIR:-$HOME/logs/pipeline}" 2>/dev/null
+  printf '[%s] pipeline error route=%s: %s\n' "$(date -u +%FT%TZ)" "$1" "$2" >> "${LOGDIR:-$HOME/logs/pipeline}/errors.log" 2>/dev/null || true
+  [ -n "${SLACK_WEBHOOK_URL:-}" ] || return 0
+  curl -s --max-time 10 -X POST -H 'Content-Type: application/json' \
+    --data "{\"text\":\"pipeline error release=$rel environment=${env:-unknown} route=$1: $2\"}" \
+    "$SLACK_WEBHOOK_URL" >/dev/null 2>&1 </dev/null || true
+}
+
+# boot_epoch — host boot time in epoch seconds; PIPELINE_BOOT_EPOCH overrides (tests). Fails if unreadable.
+boot_epoch() {
+  local b=${PIPELINE_BOOT_EPOCH:-}
+  if [ -z "$b" ]; then
+    if [ "$(uname -s 2>/dev/null)" = Darwin ]; then b=$(sysctl -n kern.boottime 2>/dev/null | sed -n 's/^{ *sec = \([0-9]*\).*/\1/p')
+    else b=$(awk '/^btime/ {print $2}' "${PIPELINE_PROC_STAT:-/proc/stat}" 2>/dev/null); fi
+  fi
+  case "$b" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s' "$b"
+}
+
+# iso_to_epoch <YYYY-MM-DDTHH:MM:SSZ> — UTC epoch by pure arithmetic (no BSD/GNU date split); prints nothing on a bad shape
+iso_to_epoch() {
+  case "$1" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) ;; *) return 1 ;; esac
+  local y=$((10#${1:0:4})) m=$((10#${1:5:2})) d=$((10#${1:8:2})) era yoe doy doe
+  [ "$m" -le 2 ] && y=$((y - 1))
+  era=$((y / 400)); yoe=$((y - era * 400))
+  doy=$(( (153 * (m > 2 ? m - 3 : m + 9) + 2) / 5 + d - 1 )); doe=$((yoe * 365 + yoe / 4 - yoe / 100 + doy))
+  echo $(( (era * 146097 + doe - 719468) * 86400 + 10#${1:11:2} * 3600 + 10#${1:14:2} * 60 + 10#${1:17:2} ))
+}
+
+# pid_alive <pidfile> — kill -0 on the stored pid AND the sibling .launched-at later than host boot (a pid stored before a
+# reboot may belong to an unrelated new process). No .launched-at: kill -0 alone. Unreadable boot time: alert, kill -0 alone.
+pid_alive() {
+  local pf=$1 pid la boot le
+  pid=$(cat "$pf" 2>/dev/null); [ -n "$pid" ] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  la=$(cat "${pf%.pid}.launched-at" 2>/dev/null); [ -n "$la" ] || return 0
+  boot=$(boot_epoch) || { pipeline_error_alert pid_alive "boot time unreadable; falling back to kill -0"; return 0; }
+  le=$(iso_to_epoch "$la"); case "$le" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$le" -gt "$boot" ]
 }
