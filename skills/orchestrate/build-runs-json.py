@@ -326,6 +326,47 @@ def build_goals():
         out.append(entry)
         if len(out) >= GOALS_MAX:
             break
+    # queued goals (#320): the supervisor's sync writes goalqueue.json (queued goals in queue order); a goal that has a
+    # local cache is already started here and is reported above. `paused` is the one reason the head of the queue waits.
+    try:
+        with open(os.path.join(pipe_dir, "goalqueue.json"), encoding="utf-8") as f:
+            q = json.load(f)
+        queued = q.get("queued") if isinstance(q, dict) else None
+    except (OSError, ValueError):
+        queued = None
+    paused = ""
+    try:
+        with open(os.path.join(pipe_dir, "goal-paused"), encoding="utf-8") as f:
+            paused = f.readline(64).strip()
+    except OSError:
+        pass
+    if isinstance(queued, list):
+        started = set(e["id"] for e in out)
+        pos = 0
+        for d in queued:
+            if len(out) >= GOALS_MAX:
+                break
+            if not isinstance(d, dict) or not (isinstance(d.get("id"), str) and d.get("id")):
+                continue
+            pos += 1
+            if d["id"] in started or os.path.exists(os.path.join(pipe_dir, "goal-" + d["id"] + ".json")):
+                continue
+            entry = {"id": d["id"]}
+            if isinstance(d.get("spec"), str) and d.get("spec"):
+                entry["spec"] = d["spec"]
+            entry["host"] = ""
+            entry["state"] = "queued"
+            entry["queue_pos"] = pos
+            if isinstance(d.get("title"), str) and d.get("title"):
+                entry["title"] = d["title"]
+            repos = d.get("repos")
+            if isinstance(repos, list) and repos and all(isinstance(r, str) and r for r in repos):
+                entry["repos"] = repos
+            if isinstance(d.get("order"), int) and not isinstance(d.get("order"), bool):
+                entry["order"] = d["order"]
+            if pos == 1 and paused:
+                entry["paused"] = paused
+            out.append(entry)
     return out
 
 

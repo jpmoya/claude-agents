@@ -156,11 +156,25 @@ function renderGroupSection(group) {
   </section>`;
 }
 
-const GOAL_STATE_LABELS = { waiting_jp: 'waiting on JP', held: 'held', running: 'running', between_cycles: 'between cycles' };
-const GOAL_STATE_ORDER = ['waiting_jp', 'held', 'running', 'between_cycles'];
+const GOAL_STATE_LABELS = { waiting_jp: 'waiting on JP', held: 'held', running: 'running', between_cycles: 'between cycles', queued: 'queued' };
+const GOAL_STATE_ORDER = ['waiting_jp', 'held', 'running', 'between_cycles', 'queued'];
 const GOAL_COLUMNS = ['Goal', 'Host', 'State', 'Delivered', 'Last cycle'];
 
-/** Merges both hosts' goals: one entry per id — the goal's own host's report wins, else the newer received_at. */
+/**
+ * True when report `a` of a goal beats report `b`: a started goal beats a queued one (a stale queue view), then the goal's
+ * own host's report, then a queued report that carries the pause reason (#320: only the Mac knows it is on battery),
+ * then the newer received_at.
+ */
+function beats(a, b) {
+  const started = (c) => (c.goal.state === 'queued' ? 0 : 1);
+  if (started(a) !== started(b)) return started(a) > started(b);
+  if (a.own !== b.own) return a.own;
+  const paused = (c) => (c.goal.paused ? 1 : 0);
+  if (paused(a) !== paused(b)) return paused(a) > paused(b);
+  return a.receivedMs > b.receivedMs;
+}
+
+/** Merges both hosts' goals: one entry per id — see beats(). */
 function mergeGoals(hosts) {
   const winners = new Map();
   for (const hostKey of ['mac', 'vm']) {
@@ -172,9 +186,7 @@ function mergeGoals(hosts) {
       if (!g || typeof g !== 'object' || typeof g.id !== 'string') continue;
       const cand = { goal: g, own: g.host === hostKey, receivedMs };
       const cur = winners.get(g.id);
-      if (!cur || (cand.own && !cur.own) || (cand.own === cur.own && cand.receivedMs > cur.receivedMs)) {
-        winners.set(g.id, cand);
-      }
+      if (!cur || beats(cand, cur)) winners.set(g.id, cand);
     }
   }
   const rank = (g) => {
@@ -183,7 +195,18 @@ function mergeGoals(hosts) {
   };
   return [...winners.values()]
     .map((w) => w.goal)
-    .sort((a, b) => rank(a) - rank(b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    .sort(
+      (a, b) =>
+        rank(a) - rank(b) ||
+        (a.state === 'queued' && b.state === 'queued' ? (a.queue_pos || 0) - (b.queue_pos || 0) : 0) ||
+        (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+    );
+}
+
+/** "queued #2" for a queued goal (position in the queue, 1 = next), else the plain state label. */
+function goalStateText(g) {
+  const label = GOAL_STATE_LABELS[g.state] || g.state;
+  return g.state === 'queued' && Number.isInteger(g.queue_pos) ? `${label} #${g.queue_pos}` : label;
 }
 
 function renderGoalsSection(hosts) {
@@ -198,8 +221,8 @@ function renderGoalsSection(hosts) {
       : esc(g.spec);
   const cells = (g) => [
     goalCell(g),
-    esc(HOST_LABELS[g.host] || g.host),
-    `<span class="badge goal-${esc(g.state)}">${esc(GOAL_STATE_LABELS[g.state] || g.state)}</span>`,
+    esc(HOST_LABELS[g.host] || g.host || '–'),
+    `<span class="badge goal-${esc(g.state)}${g.state === 'queued' ? ' goal-between_cycles' : ''}">${esc(goalStateText(g))}</span>${g.paused ? `<br><small>paused: ${esc(g.paused)}</small>` : ''}`,
     esc(delivered(g)),
     esc(formatCet(g.last_cycle_at) || '–'),
   ];

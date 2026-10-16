@@ -23,7 +23,9 @@ const MAX_APPROVED = 20;
 const MILESTONE = /^[\w .,()&/+:-]{1,60}$/;
 const RELEASE = /^v\d+\.\d+\.\d+$/;
 const MAX_GOALS = 50;
-const GOAL_STATES = ['running', 'between_cycles', 'waiting_jp', 'held'];
+const GOAL_STATES = ['running', 'between_cycles', 'waiting_jp', 'held', 'queued'];
+// why the head of the queue is not starting (#320): a closed list, never free text
+const GOAL_PAUSED = ['Mac on battery'];
 const GOAL_HOSTS = ['mac', 'vm'];
 const GOAL_UNSAFE = /[<>&"`]/;
 
@@ -186,8 +188,10 @@ function sanitiseGoal(raw) {
   const title = raw.title === undefined ? undefined : sanitiseGoalText(raw.title);
   if (id === null || spec === null || title === null) return null;
   if (spec === undefined && title === undefined) return null;
-  if (!GOAL_HOSTS.includes(raw.host) || !GOAL_STATES.includes(raw.state)) return null;
-  const goal = { id, host: raw.host, state: raw.state };
+  if (!GOAL_STATES.includes(raw.state)) return null;
+  // a queued goal (#320) has no host yet
+  if (!GOAL_HOSTS.includes(raw.host) && !(raw.state === 'queued' && (raw.host === '' || raw.host === undefined))) return null;
+  const goal = { id, host: raw.host === undefined ? '' : raw.host, state: raw.state };
   if (spec !== undefined) goal.spec = spec;
   if (title !== undefined) goal.title = title;
   if (raw.repos !== undefined) {
@@ -202,6 +206,10 @@ function sanitiseGoal(raw) {
   const delivered = clampInt(raw.scope_delivered, 0, 9999);
   if (delivered !== null) goal.scope_delivered = delivered;
   if (isIsoTimestamp(raw.last_cycle_at)) goal.last_cycle_at = raw.last_cycle_at;
+  if (raw.state === 'queued') {
+    if (isIntInRange(raw.queue_pos, 1, 9999)) goal.queue_pos = raw.queue_pos;
+    if (GOAL_PAUSED.includes(raw.paused)) goal.paused = raw.paused;
+  }
   return goal;
 }
 
