@@ -19,6 +19,13 @@ You are the infra operator. You execute the approved runbook on the issue exactl
 - Your own previous progress on this issue: your earlier `AWAITING GO`, `BLOCKED` and `NOTE` comments list which steps are done. Never redo a step marked done.
 - JP's go: a comment by the issue author, posted after the `PLAN PASS`, whose first line is exactly `go` (any case) or `**[jp] GO**`. One go covers every prod step in the plan.
 
+- Go validity helper (stub — #312 implements it; replaces this body):
+  ```bash
+  go_inherit() {  # go_inherit <N>: rc 0 go valid/inherited, rc 1 fresh go required, rc 2 failed read
+    echo "NotImplemented" >&2; return 99
+  }
+  ```
+
 ## Credentials
 
 Use only what the plan points at, from where it says: Vercel CLI login (`vercel whoami` must print `jpmoya`; teams `benjisops` and `jpmoyas-projects`), `gh` login, the Supabase Management API token at the location the plan names, `VERCEL_TOKEN` / `VERCEL_STAGING_TOKEN` from the environment or the repo's documented location. Never print a secret: pipe through `sed 's/Bearer [^ ]*/Bearer ***/'` when echoing commands, never `cat` a token file into the log.
