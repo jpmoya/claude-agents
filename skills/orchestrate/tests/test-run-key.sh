@@ -74,7 +74,16 @@ rk_tick() {
   ( cd "$RK_HOME" && env HOME="$RK_HOME" PATH="$RK_BIN:/usr/bin:/bin" PIPE="$RK_PIPE" QUEUE="$RK_PIPE/queue" LOGDIR="$RK_HOME/logs/pipeline" \
       SLACK_BOT_TOKEN="xoxb-SENTINEL-TOKEN" SLACK_ENGINEERING_CHANNEL="" GH_TOKEN="ghp_SENTINEL" \
       bash "$RK_TREE/skills/orchestrate/supervisor.sh" >"$RK_HOME/tick.out" 2>&1 </dev/null ) || RK_RC=$?
-  sleep 0.4
+  rk_settle
+}
+rk_settle() {  # bounded poll (max ~5s): wait until the PIPE file listing is unchanged for 3 consecutive 0.1s checks
+  local prev cur same=0 i
+  for i in $(seq 1 50); do
+    cur=$(find "$RK_PIPE" -type f 2>/dev/null | sort | xargs cat 2>/dev/null | cksum; find "$RK_PIPE" -type f | sort)
+    if [ "$cur" = "$prev" ]; then same=$((same+1)); [ "$same" -ge 3 ] && return 0; else same=0; fi
+    prev=$cur; sleep 0.1
+  done
+  return 0
 }
 rk_alive() { local p; p=$(cat "$1" 2>/dev/null); [ -n "$p" ] && kill -0 "$p" 2>/dev/null; }
 rk_legacy_names() {  # basenames in PIPE (recursive) that match the forbidden legacy shapes
@@ -192,11 +201,18 @@ test_rk_held_tombstone_survives_other_repo_same_number() {
   rk_env
   mk_held "$RK_PIPE" 703 "$RK_REPO_A"          # legacy A #703, held
   rk_orch --force "$RK_REPO_B" 703 >/dev/null  # B #703 launched on the same host
-  local held=no b=no
+  rk_tick                                      # supervisor must neither restart A's held run nor drop its tombstone
+  local held=no b=no a_run=no st
   { [ -e "$RK_PIPE/orch-703.held" ] || [ -e "$RK_PIPE/orch-$RK_KA-703.held" ]; } && held=yes
   [ -e "$RK_PIPE/orch-$RK_KB-703.pid" ] && b=yes
+  rk_alive "$RK_PIPE/orch-$RK_KA-703.pid" && a_run=yes
+  rk_alive "$RK_PIPE/orch-703.pid" && a_run=yes
+  st=$(rk_orch status "$RK_A#703")
   rk_cleanup
-  assert_eq "$held" "yes" "A's held tombstone survives" && assert_eq "$b" "yes" "B's run is keyed to B"
+  assert_eq "$held" "yes" "A's held tombstone survives" || return 1
+  assert_eq "$a_run" "no" "A's held run is not auto-restarted" || return 1
+  assert_contains "$st" "held" "status for A #703 still reports it held" || return 1
+  assert_eq "$b" "yes" "B's run is keyed to B"
 }
 
 # ---------------------------------------------------------------- migration ----------------------------------------
@@ -246,7 +262,66 @@ test_rk_migration_negative_repo_file_names_other_repo() {
   rk_cleanup
   assert_eq "$b" "yes" "B's own legacy set migrates to B's key" || return 1
   assert_eq "$a" "" "no scheduler-keyed file appears" || return 1
-  assert_not_contains "$out" "held" "status for A #100 does not read B's legacy set"
+  assert_not_contains "$out" "repo=$RK_REPO_B" "status for A #100 does not read B's legacy set (no B run line)" || return 1
+  assert_not_contains "$out" "#100  " "status for A #100 shows no #100 run line at all"
+}
+
+
+# ---------------------------------------------------------------- read-both fallback (pre-migration) ---------------
+
+# Legacy orch-100.* whose .repo names A, BEFORE any supervisor tick: A-scoped readers must still see and act on it.
+test_rk_legacy_fallback_status_and_stop_read_matching_legacy_set() {
+  rk_env
+  mk_running "$RK_PIPE" 100 "$RK_REPO_A"
+  local out stopped=no alive=yes pid; pid=$(cat "$RK_PIPE/orch-100.pid")
+  out=$(rk_orch status "$RK_A#100")
+  rk_orch stop "$RK_A#100" >/dev/null
+  kill -0 "$pid" 2>/dev/null || alive=no
+  { [ -e "$RK_PIPE/orch-100.stopped" ] || [ -e "$RK_PIPE/orch-$RK_KA-100.stopped" ]; } && stopped=yes
+  cleanup_running; rk_cleanup
+  assert_contains "$out" "running (pid $pid)" "fallback: status for A #100 reads the legacy set whose .repo is A" || return 1
+  assert_eq "$alive" "no" "fallback: stop A#100 stops the legacy-named run" || return 1
+  assert_eq "$stopped" "yes" "fallback: tombstone written"
+}
+
+# The same legacy set must NOT be visible to B #100 (repo file names A).
+test_rk_legacy_fallback_not_read_for_other_repo() {
+  rk_env
+  mk_running "$RK_PIPE" 100 "$RK_REPO_A"
+  local out alive=no
+  local ctl pid; pid=$(cat "$RK_PIPE/orch-100.pid")
+  ctl=$(rk_orch status "$RK_A#100")             # positive control: the same set IS visible to A
+  out=$(rk_orch status "$RK_B#100")
+  rk_orch stop "$RK_B#100" >/dev/null
+  rk_alive "$RK_PIPE/orch-100.pid" && alive=yes
+  cleanup_running; rk_cleanup
+  assert_contains "$ctl" "running (pid $pid)" "control: A #100 sees its own legacy set" || return 1
+  assert_not_contains "$out" "running (pid" "B #100 query does not read A's legacy set" || return 1
+  assert_eq "$alive" "yes" "stop B#100 does not stop A's legacy run"
+}
+
+# ---------------------------------------------------------------- status page payload -------------------------------
+
+# Two same-numbered runs from different repos both appear in the payload, each with its own repo alias and state.
+test_rk_status_payload_two_same_number_runs() {
+  rk_env; rk_launch2
+  local pa pb
+  pa=$(cat "$RK_PIPE/orch-$RK_KA-100.pid" 2>/dev/null); pb=$(cat "$RK_PIPE/orch-$RK_KB-100.pid" 2>/dev/null)
+  if [ -z "$pa" ] || [ -z "$pb" ]; then rk_cleanup; fail "both runs must have pid files under their own keys"; return 1; fi
+  kill "$pb" 2>/dev/null; pkill -TERM -P "$pb" 2>/dev/null
+  local i; for i in $(seq 1 50); do kill -0 "$pb" 2>/dev/null || break; sleep 0.1; done   # B's process dies, then it is held
+  touch "$RK_PIPE/orch-$RK_KB-100.held"
+  printf 'STATUS_REPO_ALIASES=("%s:alias-a" "%s:alias-b")\n' "$RK_A" "$RK_B" >> "$RK_HOME/.claude/pipeline/config.local.sh"
+  local out sa sb n
+  out=$( cd "$RK_HOME" && env HOME="$RK_HOME" PATH="$RK_BIN:/usr/bin:/bin" PIPE="$RK_PIPE" QUEUE="$RK_PIPE/queue" LOGDIR="$RK_HOME/logs/pipeline" \
+      bash "$RK_TREE/skills/orchestrate/report-status.sh" --print 2>/dev/null )
+  n=$(printf '%s' "$out" | jq '[.runs[] | select(.issue==100)] | length' 2>/dev/null)
+  sa=$(printf '%s' "$out" | jq -r '[.runs[] | select(.issue==100 and .repo=="alias-a")][0].state' 2>/dev/null)
+  sb=$(printf '%s' "$out" | jq -r '[.runs[] | select(.issue==100 and .repo=="alias-b")][0].state' 2>/dev/null)
+  rk_cleanup
+  assert_eq "$n" "2" "both #100 runs are in runs[] (hand: 2 distinct repos)" || return 1
+  assert_eq "$sa" "running" "A's #100 is running" || return 1
+  assert_eq "$sb" "held" "B's #100 is held (its own state, not A's)"
 }
 
 # ---------------------------------------------------------------- AC2: full cycle leaves no legacy names ------------
@@ -388,6 +463,9 @@ run_test test_rk_held_tombstone_survives_other_repo_same_number
 run_test test_rk_migration_renames_legacy_set_on_tick_and_later_launch_leaves_it
 run_test test_rk_migration_negative_missing_repo_file
 run_test test_rk_migration_negative_repo_file_names_other_repo
+run_test test_rk_legacy_fallback_status_and_stop_read_matching_legacy_set
+run_test test_rk_legacy_fallback_not_read_for_other_repo
+run_test test_rk_status_payload_two_same_number_runs
 run_test test_rk_full_cycle_creates_no_legacy_names
 run_test test_rk_reconcile_reads_new_keys_per_repo
 run_test test_rk_hook_same_issue_different_repo_uses_different_files
