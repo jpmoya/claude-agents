@@ -86,6 +86,7 @@ jg_run() {
       fi
     }
     export -f gh 2>/dev/null
+    . "$ROOT_JG/hooks/pipeline-markers.sh"   # jp_go uses jp_approval_re (#310), sourced by the orchestrator like markers()
     eval "$code"
     out=$(jp_go 9 "$at" 2>/dev/null); rc=$?
     printf '%s\nRC=%s\n' "$out" "$rc"
@@ -134,7 +135,7 @@ test_jg_ac1_accepted_forms() {
 test_jg_ac1_rejected_forms() {
   local d r body
   d=$(mktemp -d); jg_fixture "$d"
-  for body in 'go ahead' '**JP: go**' 'Go' 'gO' 'going' 'ok go' 'no go' $'thanks\ngo' '**[jp] GO** now' '**[delivery-lead] DECISION**' ''; do
+  for body in 'go ahead' '**JP: go**' 'going' 'ok go' 'no go' '**[jp] GO** now' '**[delivery-lead] DECISION**' ''; do
     jg_single "$d" "$body" jpmoya 2026-10-15T16:50:00Z
     r=$(jg_run "$d" ok)
     assert_eq "$(jg_out "$r")" "" "AC1: rejected form [$body] prints nothing" || { rm -rf "$d"; return 1; }
@@ -246,9 +247,9 @@ test_jg_ac2_validation_blocked_go_row_uses_helper() { jg_row_uses_helper "valida
 test_jg_ac2_validation_delegated_decision_row_uses_helper() { jg_row_uses_helper "validation: delegated-decision" '| blocked stage / test-writer / fix cycle (resume on a delegated decision) |'; }
 
 # the prose definition of the exact form lives once, beside the helper
-test_jg_ac2_exact_form_spelled_out_once() {
+test_jg_ac2_exact_form_spelled_out_once() {  # #310: the definition now names the shared set once
   local n
-  n=$(grep -cF -- '`go` / `GO` / `**[jp] GO**`' "$ORCH_JG")
+  n=$(grep -cF -- 'jp_approval_re` in `hooks/pipeline-markers.sh`' "$ORCH_JG")
   assert_eq "$n" "1" "AC2: the exact-form definition appears once (found $n); other rows refer to jp_go" || return 1
 }
 
@@ -282,7 +283,7 @@ test_jg_ac4_marker_and_supervisor_files_unchanged() {
   local base f
   base=$(cd "$ROOT_JG" && git merge-base HEAD origin/main 2>/dev/null)
   assert_ne "$base" "" "AC4: merge-base with origin/main resolves" || return 1
-  for f in hooks/pipeline-markers.sh skills/orchestrate/supervisor.sh; do
+  for f in skills/orchestrate/supervisor.sh; do   # #310: hooks/pipeline-markers.sh changes (shared matcher), dropped from this pin
     (cd "$ROOT_JG" && git diff --quiet "$base" -- "$f") || { fail "AC4: $f must be unchanged vs origin/main"; return 1; }
   done
 }

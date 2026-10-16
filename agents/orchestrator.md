@@ -29,16 +29,17 @@ markers() {  # timestamp + first line of every routing-marker comment, oldest fi
 markers <N>                 # the whole marker trail
 markers <N> | tail -1       # the current state
 jp_go() {  # jp_go <N> <blocked_created_at>: URL + timestamp of each JP go after that BLOCKED/AWAITING GO; non-zero + no output on a failed read
-  local a c
+  local a c re
+  re=$(jp_approval_re) && [ -n "$re" ] || return 1   # fail closed: an empty regex would match every comment
   a=$(gh api "repos/{owner}/{repo}/issues/$1" --jq '.user.login') && [ -n "$a" ] || return 1
   c=$(gh api "repos/{owner}/{repo}/issues/$1/comments?per_page=100" --paginate \
-    --jq ".[] | select(.user.login == \"$a\" and .created_at > \"$2\" and ((.body | split(\"\n\")[0] | sub(\"[ \\t\\r]+$\"; \"\")) as \$l | [\"go\", \"GO\", \"**[jp] GO**\"] | index(\$l))) | .html_url + \" \" + .created_at") || return 1
+    --jq ".[] | select(.user.login == \"$a\" and .created_at > \"$2\" and (.body | test($(printf '%s' "$re" | jq -Rs .)))) | .html_url + \" \" + .created_at") || return 1
   printf '%s\n' "$c" | sed '/^$/d'
 }
 jp_go <N> <blocked_created_at>   # JP's go: print URL + timestamp of each match
 ```
 
-**JP's go — one definition, one command.** A JP go is a comment by the issue author, created strictly after the `BLOCKED` / `AWAITING GO` it clears, whose first line (trailing whitespace trimmed) is exactly `go` / `GO` / `**[jp] GO**` — a sentence containing "go" is not a go, and a go dated before or at the stamp clears nothing. Every row below that resumes on JP's go runs `jp_go <N> <created_at of that comment>` instead of writing its own search. Its output is the go list (the first line is the oldest). A non-zero exit is a failed lookup: report it as a failed lookup, retry once, never treat it as "no go". A status card or `delegated-decision` fail that says there is no go (e.g. "no go after it", "Nothing new has been posted since") is allowed only after `jp_go` ran, exited 0 and printed nothing.
+**JP's go — one definition, one command.** A JP go is a comment by the issue author, created strictly after the `BLOCKED` / `AWAITING GO` it clears, whose first non-empty line, or any standalone line, is one of the shared approval phrases (`jp_approval_re` in `hooks/pipeline-markers.sh`, case-insensitive, the one word set) — a sentence containing "go" is not a go, and a go dated before or at the stamp clears nothing. Every row below that resumes on JP's go runs `jp_go <N> <created_at of that comment>` instead of writing its own search. Its output is the go list (the first line is the oldest). A non-zero exit is a failed lookup: report it as a failed lookup, retry once, never treat it as "no go". A status card or `delegated-decision` fail that says there is no go (e.g. "no go after it", "Nothing new has been posted since") is allowed only after `jp_go` ran, exited 0 and printed nothing.
 
 When a route needs a field from inside one comment (the `Locked test files:` block, the PR number, the approved sha, a review URL), fetch that one comment body only:
 
@@ -407,6 +408,8 @@ log_run '"event":"terminal","repo":"jpmoya/scheduler","issue":42,"state":"awaiti
 # resume on a delegated decision: the check is a validate line, the resumed run an ordinary dispatch line
 log_run '"event":"validate","repo":"jpmoya/scheduler","issue":42,"stage":"delegated-decision","result":"pass"'
 log_run '"event":"validate","repo":"jpmoya/scheduler","issue":42,"stage":"delegated-decision","result":"fail","reason":"Resolves: URL is not the BLOCKED comment"'
+# JP approval word check (#310): log the refusal reason, never the comment body
+log_run '"event":"validate","repo":"jpmoya/scheduler","issue":42,"stage":"jp-go","result":"fail","reason":"no approval-word comment from the issue author after the stamp"'
 # loop cap hit (pre-impl, post-impl, TEST DEFECT second round): logged before the terminal event
 log_run '"event":"validate","repo":"jpmoya/scheduler","issue":42,"stage":"loop-cap","result":"fail","reason":"post-impl cap: 3rd FAIL"'
 # post-PASS hand to JP (main-base promotion PR, unsupported project): logged before the terminal event
