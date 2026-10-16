@@ -110,17 +110,23 @@ test_aw_ac1_not_approved_yet_is_not_an_approval() {
   assert_eq "$(aw_jpgo $'Please change the header.\nnot approved yet')" "no" "AC1: later-line 'not approved yet'" || return 1
 }
 
-# NOT widened: a delegate's comment is posted from JP's own account, so its approval-looking body
+# NOT widened (one case per body so a failure cannot hide the others): a delegate's comment is posted from JP's own account, so its approval-looking body
 # must not count. Only a first line `**[jp] ...**` or plain prose can be JP's.
-test_aw_ac1_delegate_markers_never_act_as_a_go_or_approval() {
-  local b
+aw_delegate_case() {  # aw_delegate_case <body>: control passes, the agent-marker body must not
   assert_eq "$(aw_jpgo 'approved')" "yes" "control" || return 1
-  for b in $'**[delivery-lead] JP CONFIRMED**\nResolves: https://github.com/o/r/issues/9#issuecomment-1\napproved' \
-           $'**[delivery-lead] DECISION**\nResolves: https://github.com/o/r/issues/9#issuecomment-1\ngo' \
-           $'**[project-manager] JP CONFIRMED**\nResolves: https://github.com/o/r/issues/9#issuecomment-1\nlgtm' \
-           $'**[test-writer] NOTE**\nproceed'; do
-    assert_eq "$(aw_jpgo "$b")" "no" "AC1: agent-marker comment must not clear AWAITING GO / mockups [${b%%$'\n'*}]" || return 1
-  done
+  assert_eq "$(aw_jpgo "$1")" "no" "AC1: agent-marker comment must not clear AWAITING GO / mockups [${1%%$'\n'*}]" || return 1
+}
+test_aw_ac1_delegate_jp_confirmed_approved_is_not_a_go() {
+  aw_delegate_case $'**[delivery-lead] JP CONFIRMED**\nResolves: https://github.com/o/r/issues/9#issuecomment-1\napproved'
+}
+test_aw_ac1_delegate_decision_go_is_not_a_go() {
+  aw_delegate_case $'**[delivery-lead] DECISION**\nResolves: https://github.com/o/r/issues/9#issuecomment-1\ngo'
+}
+test_aw_ac1_legacy_pm_jp_confirmed_lgtm_is_not_a_go() {
+  aw_delegate_case $'**[project-manager] JP CONFIRMED**\nResolves: https://github.com/o/r/issues/9#issuecomment-1\nlgtm'
+}
+test_aw_ac1_test_writer_note_proceed_is_not_a_go() {
+  aw_delegate_case $'**[test-writer] NOTE**\nproceed'
 }
 
 # ---------------------------------------------------------------------------- AC1/AC3: 1478 repro
@@ -242,23 +248,92 @@ test_aw_ac5_gate_log_lines_name_the_form_checked_not_the_author() {
   [ -n "$pass" ] && [ -n "$fail_l" ] || { fail "mockup-gate pass+fail log examples missing in Run log"; return 1; }
   case "$pass" in *'approval word matched'*) ;; *) fail "mockup-gate pass reason must be 'approval word matched'"; return 1 ;; esac
   case "$fail_l" in *'approval word'*) ;; *) fail "mockup-gate fail reason must name the approval-word form"; return 1 ;; esac
+  # keeps test-mockup-gate-exact-marker AC6 ('MOCKUPS APPROVED' in the lines) green without editing it
+  case "$fail_l" in *'MOCKUPS APPROVED'*) ;; *) fail "mockup-gate fail reason must still list **[jp] MOCKUPS APPROVED** among the accepted forms"; return 1 ;; esac
   case "$pass$fail_l" in *'not exactly'*|*'jpmoya'*) fail "mockup-gate log reasons must not say 'exactly' or name the author"; return 1 ;; esac
   # the prose at the gate agrees
   grep -F 'Log the outcome (pass on approval' "$ORCH_AW" | grep -qF 'approval word matched' || { fail "gate prose must give 'approval word matched' as the pass reason"; return 1; }
 }
 
-test_aw_ac5_jp_go_refusal_line_documented_with_repo_issue_reason() {
-  local l
-  l=$(grep -F '"event":"validate"' "$ORCH_AW" | grep -E '"stage":"(jp-go|jp-approval)"' | grep -F '"result":"fail"' | head -1)
-  [ -n "$l" ] || { fail "jp-go/jp-approval fail log line missing"; return 1; }
-  case "$l" in *'"repo"'*'"issue"'*'"reason"'*) ;; *) fail "jp-go fail line must carry repo, issue, reason"; return 1 ;; esac
+# AC5: "a test asserts the log line is written on a refusal". The orchestrator is prose, so the contract
+# is the Run log + the JP's-go paragraph: the NEW refusal path (jp_go skipping an agent-marker comment,
+# which #310 did not have) must have its own validate example carrying repo, issue, stage and reason, and
+# the paragraph must tell the orchestrator to write it. The #310 line "no approval-word comment ... after
+# the stamp" is deliberately NOT accepted here (it already exists and proves nothing for #311).
+test_aw_ac5_agent_marker_refusal_is_logged_with_repo_issue_reason() {
+  local l para
+  l=$(grep -F '"event":"validate"' "$ORCH_AW" | grep -E '"stage":"jp-go"' | grep -F '"result":"fail"' | grep -iF 'agent marker' | head -1)
+  [ -n "$l" ] || { fail "Run log has no jp-go fail example whose reason names the ignored agent marker"; return 1; }
+  case "$l" in *'"repo"'*'"issue"'*'"reason"'*) ;; *) fail "agent-marker refusal line must carry repo, issue, reason"; return 1 ;; esac
+  case "$l" in *jpmoya\"*|*'"author"'*|*'"body"'*) fail "refusal line must not carry the author or a comment body"; return 1 ;; esac
+  para=$(grep -F "**JP's go" "$ORCH_AW" | head -1)
+  case "$para" in *'agent marker'*|*'agent-marker'*) ;; *) fail "JP's-go paragraph must say jp_go skips agent-marker comments"; return 1 ;; esac
+  case "$para" in *'"stage":"jp-go"'*|*'stage` `jp-go`'*|*'jp-go'*) ;; *) fail "JP's-go paragraph must tell the orchestrator to log the jp-go refusal"; return 1 ;; esac
+}
+
+# AC5, AWAITING GO / JP-only BLOCKED refusals: the "no go" report is logged (delegated-decision / jp-go)
+test_aw_ac5_awaiting_go_refusal_is_logged() {
+  local row
+  row=$(aw_row "$ORCH_AW" '`[infra-operator] AWAITING GO` + JP go comment' 'Re-dispatch')
+  case "$row" in *'jp-go'*) ;; *) fail "AWAITING GO row must say a refused/premature go is logged as a jp-go validate line"; return 1 ;; esac
+}
+
+# ------------------------------------------------------------------------------------------ AC4
+# AC4 "no re-baselining to pass". These pre-existing assertions encode the old exact-form wording and
+# cannot stay green once the rows are widened (AC1/AC2). Each is superseded HERE, in the locked file,
+# by an assertion on the widened wording, so the replacements are reviewed before the developer starts.
+# The developer removes ONLY the superseded assertions listed below (PM approval requested in the handoff).
+#   test-mockup-gate-exact-marker.sh
+#     test_mg_ac1_approval_row_is_exact_first_line_form        (needs 'first line' + 'exactly')
+#     test_mg_ac1_prose_alternatives_deleted_from_approval_row (forbids 'lgtm' / '`approved`,' in the row)
+#     test_mg_ac2_outcome1_is_single_exact_form_no_prose       (forbids "approved" / lgtm in the gate item)
+#     test_mg_ac5_incident_bodies_are_not_the_rewritten_exact_form (requires the ONE backtick form)
+#   test-delegated-decision.sh
+#     test_dd_i108_infra_go_row: the line asserting "JP's exact-form go also resumes a planner/operator"
+#   test-gate-marker-parallel-review.sh
+#     test_gm_ac2_orchestrator_resume_rows_still_present: 'first line is exactly `go` / `GO` / ...' —
+#       ALREADY red on the #310 base (not caused by this ticket); same supersession.
+# Unchanged-and-still-green by construction: mg AC6 run-log cases (the fail line keeps MOCKUPS APPROVED),
+# mg_294 (designer keeps the marker), i76_ac5 ('exact' survives in "routes exactly like").
+
+test_aw_ac4_replaces_mg_ac1_ac2_ac5_mockup_approval_row_names_the_set() {
+  local row sec s
+  row=$(aw_row "$ORCH_AW" '`[ui-ux-designer] MOCKUPS PENDING APPROVAL` + JP approval' 'Proceed to next stage')
+  [ -n "$row" ] || { fail "mockup approval routing row not found"; return 1; }
+  for s in 'jp_go' '**[jp] MOCKUPS APPROVED**' 'approved' 'lgtm' 'not an approval'; do
+    case "$row" in *"$s"*) ;; *) fail "approval row must contain [$s]"; return 1 ;; esac
+  done
+  case "$row" in *'first line exactly'*) fail "approval row still demands first line exactly"; return 1 ;; esac
+  sec=$(grep -F '1. **JP approves**' "$ORCH_AW" | head -1)
+  for s in 'jp_go' 'approved' 'lgtm'; do
+    case "$sec" in *"$s"*) ;; *) fail "gate item 1 must contain [$s]"; return 1 ;; esac
+  done
+}
+
+test_aw_ac4_replaces_dd_i108_go_path_prose_names_the_set_not_exact_form() {
+  local prose
+  prose=$(grep -F 'resume only a staging-only planner/operator' "$ORCH_AW" | head -1)
+  [ -n "$prose" ] || { fail "go-path prose line not found"; return 1; }
+  case "$prose" in *"also resumes a planner/operator"*) ;; *) fail "prose must still say JP's go also resumes a planner/operator"; return 1 ;; esac
+  case "$prose" in *'exact-form'*) fail "prose still says exact-form go"; return 1 ;; esac
+  case "$prose" in *'jp_go'*|*'approval word'*|*'approval phrase'*) ;; *) fail "prose must name jp_go / the approval words"; return 1 ;; esac
+}
+
+test_aw_ac4_replaces_gm_ac2_go_clause_names_the_shared_set() {
+  local d
+  d=$(grep -F '**JP'"'"'s go' "$ORCH_AW" | head -1)
+  case "$d" in *'jp_approval_re'*) ;; *) fail "JP's go definition must name jp_approval_re (the one word set)"; return 1 ;; esac
+  case "$d" in *'first line is exactly'*) fail "JP's go definition still says first line is exactly"; return 1 ;; esac
 }
 
 run_test test_aw_ac1_set_words_clear_every_gate
 run_test test_aw_ac1_non_author_never_clears_a_gate
 run_test test_aw_ac1_approval_dated_before_the_stamp_does_nothing
 run_test test_aw_ac1_not_approved_yet_is_not_an_approval
-run_test test_aw_ac1_delegate_markers_never_act_as_a_go_or_approval
+run_test test_aw_ac1_delegate_jp_confirmed_approved_is_not_a_go
+run_test test_aw_ac1_delegate_decision_go_is_not_a_go
+run_test test_aw_ac1_legacy_pm_jp_confirmed_lgtm_is_not_a_go
+run_test test_aw_ac1_test_writer_note_proceed_is_not_a_go
 run_test test_aw_1478_mockups_pending_then_approved_passes
 run_test test_aw_1478_awaiting_go_then_approved_proceed_passes
 run_test test_aw_revision_rows_treat_a_matching_approval_as_approval
@@ -270,4 +345,8 @@ run_test test_aw_mockup_review_request_names_the_accepted_words
 run_test test_aw_ac2_no_sole_exact_form_text_left_in_agents_and_hooks
 run_test test_aw_ac2_no_approved_for_file_consumer_bypasses_the_matcher
 run_test test_aw_ac5_gate_log_lines_name_the_form_checked_not_the_author
-run_test test_aw_ac5_jp_go_refusal_line_documented_with_repo_issue_reason
+run_test test_aw_ac5_agent_marker_refusal_is_logged_with_repo_issue_reason
+run_test test_aw_ac5_awaiting_go_refusal_is_logged
+run_test test_aw_ac4_replaces_mg_ac1_ac2_ac5_mockup_approval_row_names_the_set
+run_test test_aw_ac4_replaces_dd_i108_go_path_prose_names_the_set_not_exact_form
+run_test test_aw_ac4_replaces_gm_ac2_go_clause_names_the_shared_set
