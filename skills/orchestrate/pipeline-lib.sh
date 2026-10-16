@@ -6,6 +6,9 @@ pipeline_host() { hostname -s 2>/dev/null | tr '[:upper:]' '[:lower:]'; }
 
 SETSID=$(command -v setsid >/dev/null 2>&1 && echo setsid || true)   # absent on macOS; nohup + & is enough there
 
+# run_key <owner/repo> <issue> — STUB (#318): the developer replaces this. Prints <owner>_<repo>-<N>.
+run_key() { echo "run_key: NotImplemented" >&2; return 1; }
+
 count_running() {
   local n=0
   for f in "$PIPE"/orch-*.pid "$PIPE"/intake-*.pid; do   # intake runs (#114) count against MAX_CONCURRENT too
