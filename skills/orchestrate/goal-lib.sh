@@ -146,7 +146,7 @@ _goal_scope_rows() {
 goal_scope() { local r; r=$(_goal_scope_rows "$@") || return 1; [ -z "$r" ] || printf '%s\n' "$r" | cut -f1; }
 
 # _goal_registry_json [all] -> JSON array of registry goals: open ones plus those closed within GOAL_RECENT_DAYS
-# (`all`: every closed one). state: active | held | waiting_jp | stopped | delivered.
+# (`all`: every closed one). state: queued | active | held | waiting_jp | stopped | delivered.
 # Per-issue mapping shared by _goal_registry_json and register (#292): one issue -> goal object (empty for an unreadable closed one).
 _GOAL_ISSUE_JQ='def goal_of: . as $i
           | ([try (($i.body // "") | capture("```json\\n(?<j>[^\\n]*)\\n```") | .j | fromjson) catch null] | .[0]) as $b
@@ -162,6 +162,7 @@ _GOAL_ISSUE_JQ='def goal_of: . as $i
                   elif ($l | index("goal-stopped")) then "stopped"
                   elif ($l | index("goal-held")) then "held"
                   elif ($l | index("goal-waiting-jp")) then "waiting_jp"
+                  elif ($l | index("goal-queued")) then "queued"
                   else "active" end)}
             end;'
 
@@ -507,7 +508,7 @@ _goal_cleanup_retry() {
     id=$(basename "$f" .json); id=${id#goalclean-}
     label=$(jq -r '.label // empty' "$f" 2>/dev/null); repos=$(jq -r '.repos // empty' "$f" 2>/dev/null)
     if [ -z "$label" ] || [ -z "$repos" ]; then rm -f "$f"; continue; fi
-    if printf '%s' "$1" | jq -e --arg l "$label" 'any(.[]; (.block.label // "") == $l and (.st == "active" or .st == "held" or .st == "waiting_jp"))' >/dev/null; then
+    if printf '%s' "$1" | jq -e --arg l "$label" 'any(.[]; (.block.label // "") == $l and (.st == "queued" or .st == "active" or .st == "held" or .st == "waiting_jp"))' >/dev/null; then
       rm -f "$f"; continue
     fi
     goal_label_close "$id" "$label" "$repos"
@@ -531,6 +532,7 @@ goal_mirror() {  # <id> <state> [<scope_total> <scope_delivered>] — the cache 
 goal_sync() {  # registry -> local: rebuild missing caches, propagate stop/close; goals pinned to another host are ignored
   local reg g id n st host block f cur
   reg=$(_goal_registry_json) || { goal_err "cannot read the goal registry"; return 0; }
+  goal_queue_save "$reg"
   while IFS= read -r g; do
     [ -n "$g" ] || continue
     host=$(printf '%s' "$g" | jq -r '(.host // "") | ascii_downcase')
@@ -760,6 +762,162 @@ goal_tick_one() {  # <id>
   fi
 }
 
+# ---- goal queue (#320) ------------------------------------------------------------------------------------------
+# deliver.sh register only enqueues (registry label goal-queued, st "queued", block host ""). The supervisor starts the
+# lead of the next queued goal when it is that goal's turn and this host can take it. Everything is read from the
+# registry (order, host_pref, state); $PIPE/goalqueue.json is only a prefilter the sync refreshes, never the authority:
+# the start re-reads the registry, posts a claim on the registry issue and launches only if claim_winner names this host.
+
+GOAL_QUEUE_FILE_NAME=goalqueue.json
+
+# _GOAL_QUEUE_JQ: registry goals (array) -> {queued: [goals in queue order], candidate: goal | null}. Goals sort by the
+# block's `order` (the registry issue number when absent), then by registry issue number. The candidate is the FIRST goal
+# in that order that is not delivered / stopped / waiting on JP, provided it is queued: any earlier goal that is active,
+# held, queued or unreadable holds the line.
+_GOAL_QUEUE_JQ='def okey: [((.block.order? // .issue) | if type == "number" then . else 1e12 end), .issue];
+  sort_by(okey) as $all
+  | ($all | map(select(.st == "queued"))) as $q
+  | ($all | map(select((.st == "delivered" or .st == "stopped" or .st == "waiting_jp") | not)) | first // null) as $f
+  | {queued: $q, candidate: (if $f != null and $f.st == "queued" then $f else null end)}'
+
+# goal_queue_save <registry json> — the sync's prefilter and the status page's queue view (id, issue, title/spec, order,
+# host_pref, label per queued goal, in queue order). Best effort: a write failure is only an error row.
+goal_queue_save() {
+  local f="$PIPE/$GOAL_QUEUE_FILE_NAME" v
+  v=$(printf '%s' "$1" | jq -c "$_GOAL_QUEUE_JQ"'
+    | {at: (now | floor),
+       candidate: (.candidate.id // null),
+       queued: (.queued | map({id, issue, spec, title: (.block.title // ""), label: (.block.label // ""),
+                               repos: (.block.repos // []), order: (.block.order? // .issue), host_pref: (.block.host_pref // "")}))}' 2>/dev/null) \
+    || { goal_err "cannot compute the goal queue"; return 0; }
+  mkdir -p "$PIPE" 2>/dev/null
+  printf '%s\n' "$v" > "$f.tmp" 2>/dev/null && mv "$f.tmp" "$f" || { rm -f "$f.tmp"; goal_err "cannot write the goal queue cache"; }
+  return 0
+}
+
+# goal_is_mac — the laptop (battery rules, VM-first). Same test as power_ok.
+goal_is_mac() { [ "$(uname)" = "Darwin" ]; }
+
+# goal_queued_labels — the goal labels of queued goals (from the sync's cache), one per line: their tickets wait for the
+# goal's turn, so step 5 of the supervisor must not dispatch them one by one.
+goal_queued_labels() { jq -r '.queued[]? | .label | select(. != "")' "$PIPE/$GOAL_QUEUE_FILE_NAME" 2>/dev/null; }
+
+# goal_live_labels — the goal labels (cross-repo goals, #319) whose delivery lead is alive on THIS host, one per line.
+goal_live_labels() {
+  local f id h pid l
+  for f in "$PIPE"/goal-*.json; do
+    [ -e "$f" ] || break
+    id=$(basename "$f" .json); id=${id#goal-}
+    h=$(jq -r '(.host // "") | ascii_downcase' "$f" 2>/dev/null)
+    [ "$h" = "$(pipeline_host)" ] || continue
+    [ -f "$PIPE/goal-$id.stopped" ] && continue
+    pid=$(cat "$PIPE/goal-$id.pid" 2>/dev/null)
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || continue
+    l=$(jq -r '.label // empty' "$f" 2>/dev/null)
+    [ -z "$l" ] || printf '%s\n' "$l"
+  done
+}
+
+# _goal_queue_wait <id> — bumps and prints the number of consecutive ticks this host has seen <id> next in line and still
+# unclaimed (reset by _goal_queue_wait_reset whenever it is not).
+_goal_queue_wait() {
+  local f="$PIPE/goalq-wait" cur_id cur_n
+  read -r cur_id cur_n < "$f" 2>/dev/null || { cur_id=""; cur_n=0; }
+  case "$cur_n" in ''|*[!0-9]*) cur_n=0 ;; esac
+  if [ "$cur_id" = "$1" ]; then cur_n=$((cur_n + 1)); else cur_n=1; fi
+  printf '%s %s\n' "$1" "$cur_n" > "$f" 2>/dev/null
+  printf '%s\n' "$cur_n"
+}
+_goal_queue_wait_reset() { rm -f "$PIPE/goalq-wait"; }
+
+_goal_queue_body() {  # <goal json with the new block> -> the registry issue body for that block
+  local g=$1 block date
+  block=$(printf '%s' "$g" | jq -c '.block')
+  if [ "$(printf '%s' "$block" | jq -r '(.v // 1)')" = 2 ]; then
+    date=$(printf '%s' "$block" | jq -r '(.granted_at // empty)'); [ -n "$date" ] || date=$(date -u +%F)
+    goal_body_v2 "$block" "$date"
+  else
+    printf 'Goal: %s\n\n```json\n%s\n```\n' "$(printf '%s' "$g" | jq -r .spec)" "$block"
+  fi
+}
+
+# goal_queue_step — called from goal_step once per tick, after the live goals were ticked.
+goal_queue_step() {
+  local qf="$PIPE/$GOAL_QUEUE_FILE_NAME" cand pin n fresh g id issue winner rc ts lost now g2 body
+  rm -f "$PIPE/goal-paused"
+  [ -f "$qf" ] || return 0
+  cand=$(jq -r '.candidate // empty' "$qf" 2>/dev/null)
+  if [ -z "$cand" ]; then _goal_queue_wait_reset; return 0; fi
+  pin=$(jq -r --arg c "$cand" '[.queued[] | select(.id == $c)][0].host_pref // "" | ascii_downcase' "$qf" 2>/dev/null)
+  if [ -f "$PIPE/goal-$cand.stopped" ]; then _goal_queue_wait_reset; return 0; fi
+  # pinned goals run only on their host; unpinned ones are VM-first: the Mac waits two ticks for the VM to take it
+  if [ -n "$pin" ]; then
+    [ "$pin" = "$GOAL_THIS_HOST" ] || { _goal_queue_wait_reset; return 0; }
+  elif goal_is_mac; then
+    n=$(_goal_queue_wait "$cand")
+    [ "$n" -ge 2 ] || return 0
+  fi
+  # capacity: a free goal slot, memory above the floor, AC power on the Mac (GOAL_CAN_LAUNCH folds the three together)
+  if [ "$GOAL_CAN_LAUNCH" -ne 1 ]; then
+    if goal_is_mac && ! power_ok && [ "$(mem_available_mb)" -ge "$MEM_FLOOR_MB" ] 2>/dev/null && [ "$GOAL_LIVE" -lt "$MAX_GOALS" ]; then
+      echo "Mac on battery" > "$PIPE/goal-paused"
+    fi
+    return 0
+  fi
+  # a failed or lost attempt is not repeated within the claim window (no claim comment spam on the registry issue)
+  now=$(date +%s)
+  lost=$(cat "$PIPE/goalq-lost-$cand" 2>/dev/null); case "$lost" in ''|*[!0-9]*) lost=0 ;; esac
+  [ $((now - lost)) -ge "${CLAIM_WINDOW_SECS:-600}" ] || return 0
+
+  # the registry is the authority: re-read it, and start only if this goal is still the queued candidate
+  fresh=$(_goal_registry_json) || { goal_err "cannot read the goal registry to start $cand"; return 0; }
+  g=$(printf '%s' "$fresh" | jq -c "$_GOAL_QUEUE_JQ"' | .candidate // empty')
+  if [ -z "$g" ] || [ "$(printf '%s' "$g" | jq -r .id)" != "$cand" ]; then
+    goal_queue_save "$fresh"; _goal_queue_wait_reset; return 0
+  fi
+  id=$cand; issue=$(printf '%s' "$g" | jq -r .issue)
+  [ -f "$PIPE/goal-$id.stopped" ] && return 0
+  _goal_checkout "$(_goal_primary_repo "$g")" >/dev/null 2>&1 || { goal_err "$id: its repo is not in DISPATCH_REPOS on this host"; return 0; }
+
+  # two-host race: post a claim on the registry issue and go on only if claim_winner names this host
+  ts=$(date -u +%FT%TZ)
+  _goal_note "$issue" "**[supervisor] NOTE** claim: $GOAL_THIS_HOST $ts" || { goal_err "cannot post the start claim of $id"; echo "$now" > "$PIPE/goalq-lost-$id"; return 0; }
+  sleep "${CLAIM_SETTLE_SECS:-15}"
+  winner=$(claim_winner "$_GOAL_LIB_DIR" "$issue" "$GOAL_REGISTRY_REPO") \
+    || { goal_err "cannot read the start claims of $id"; echo "$now" > "$PIPE/goalq-lost-$id"; return 0; }
+  if [ "$winner" != "$GOAL_THIS_HOST" ]; then
+    slog "[goal] $id — lost the start claim to ${winner:-?}"
+    echo "$now" > "$PIPE/goalq-lost-$id"
+    return 0
+  fi
+  [ -f "$PIPE/goal-$id.stopped" ] && return 0
+
+  # won: pin the goal here (block host), leave the queue, write the cache and launch
+  g2=$(printf '%s' "$g" | jq -c --arg h "$GOAL_THIS_HOST" '.block.host = $h | .host = $h')
+  body=$(_goal_queue_body "$g2")
+  _goal_patch_body "$issue" "$body" >/dev/null 2>&1 || { goal_err "cannot pin $id to $GOAL_THIS_HOST on the registry issue"; echo "$now" > "$PIPE/goalq-lost-$id"; return 0; }
+  _goal_label_del "$issue" goal-queued
+  printf '%s' "$g2" | jq -c --argjson n "$issue" '.block + {issue: $n}' > "$PIPE/goal-$id.json" 2>/dev/null \
+    || { goal_err "cannot write the cache of $id"; return 0; }
+  mkdir -p "$LOGDIR/goals" 2>/dev/null
+  if goal_launch "$id" "$g2" >/dev/null 2>&1; then
+    slog "[goal] $id started from the queue on $GOAL_THIS_HOST (issue #$issue) pid=$(cat "$PIPE/goal-$id.pid" 2>/dev/null) mem=$(mem_available_mb)MB"
+    GOAL_CAN_LAUNCH=0; GOAL_LIVE=$((GOAL_LIVE + 1))
+    _goal_queue_wait_reset
+    report_status_async "goal"
+  else
+    goal_err "launch of $id from the queue failed"
+    # back to the queue: unpin, re-label, drop the cache
+    rc=0
+    _goal_patch_body "$issue" "$(_goal_queue_body "$g")" >/dev/null 2>&1 || rc=1
+    _goal_label_add "$issue" goal-queued || rc=1
+    [ "$rc" -eq 0 ] || goal_err "cannot put $id back in the queue"
+    rm -f "$PIPE"/goal-"$id".*
+    echo "$now" > "$PIPE/goalq-lost-$id"
+  fi
+  return 0
+}
+
 goal_step() {
   local last now f id h live=0
   GOAL_THIS_HOST=$(pipeline_host)
@@ -784,5 +942,7 @@ goal_step() {
   power_ok || GOAL_CAN_LAUNCH=0
   [ "$(mem_available_mb)" -ge "$MEM_FLOOR_MB" ] 2>/dev/null || GOAL_CAN_LAUNCH=0
   [ "$live" -lt "$MAX_GOALS" ] || GOAL_CAN_LAUNCH=0
+  GOAL_LIVE=$live
   for id in $GOAL_OWNED; do goal_tick_one "$id"; done
+  goal_queue_step
 }

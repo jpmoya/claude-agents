@@ -1,10 +1,14 @@
 #!/bin/bash
-# Goal-bound delivery lead launcher / operator CLI (#193). A goal is a registry issue on GitHub; this registers it
-# and starts one cycle of $GOAL_AGENT. Keep-alive and completion are the supervisor's job (#195).
+# Goal-bound delivery lead launcher / operator CLI (#193). A goal is a registry issue on GitHub; this registers it.
+# Registration only ENQUEUES the goal (#320): the supervisor starts its delivery lead when it is the goal's turn and a
+# host has capacity. Keep-alive and completion are the supervisor's job (#195).
 # Usage:
-#   deliver.sh <goal> [instructions...]   register + launch one cycle. <goal> = owner/repo:milestone:<number|exact title>
+#   deliver.sh <goal> [--now] [--host <hostname>] [instructions...]
+#                                         register (state queued). <goal> = owner/repo:milestone:<number|exact title>
 #                                         | owner/repo:milestones:all | owner/repo#N
-#   deliver.sh --repos a/b,c/d --title "<title>" [--requirements owner/repo#N] [--include-sentry] [--mockups review|skip] [instructions...]
+#                                         --now: also launch one cycle here at once (hand use, skips the queue)
+#                                         --host: pin the goal to that host (advisory for single tickets, see delivery-lead.md)
+#   deliver.sh --repos a/b,c/d --title "<title>" [--requirements owner/repo#N] [--include-sentry] [--mockups review|skip] [--now] [--host <hostname>] [instructions...]
 #                                         cross-repo goal (#319): a `goal: <short title>` label in every repo; also
 #                                         deliver.sh "label:<exact label>" --repos a/b,c/d ... to bind an existing label
 #   deliver.sh status [goal|id]           one line per registry goal (open, plus closed within 7 days)
@@ -54,7 +58,7 @@ check_overlap() {
       die "cannot read a live registry entry (issue #${o_issue}); refusing to go on blind"
     fi
     case "$o_st" in
-      active|held|waiting_jp) ;;
+      queued|active|held|waiting_jp) ;;
       unreadable) die "cannot read the registry block of $o_id (issue #$o_issue); refusing to go on blind" ;;
       *) continue ;;
     esac
@@ -91,6 +95,7 @@ goal_state_label() {  # <registry goal json> -> status word
   case "$st" in
     stopped|delivered|held|unreadable) echo "$st" ;;
     waiting_jp) echo "waiting on JP" ;;
+    queued) echo "queued" ;;
     *)
       if [ "$host" = "$THIS_HOST" ]; then
         pid=$(cat "$PIPE/goal-$(printf '%s' "$g" | jq -r .id).pid" 2>/dev/null || true)
@@ -102,7 +107,7 @@ goal_state_label() {  # <registry goal json> -> status word
 }
 
 cmd_register_args() {
-  local spec="" repos="" title="" req="" sentry=0 mockups=review instr="" a
+  local spec="" repos="" title="" req="" sentry=0 mockups=review instr="" now=0 pin="" a
   case "${1:-}" in --*|'') ;; *) spec="$1"; shift ;; esac
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -111,20 +116,22 @@ cmd_register_args() {
       --requirements) req="${2:-}"; [ -n "$req" ] || die "--requirements needs a value (owner/repo#N)"; shift 2 ;;
       --mockups) mockups="${2:-}"; case "$mockups" in review|skip) ;; *) die "--mockups takes review or skip" ;; esac; shift 2 ;;
       --include-sentry) sentry=1; shift ;;
+      --now) now=1; shift ;;
+      --host) pin=$(printf '%s' "${2:-}" | tr '[:upper:]' '[:lower:]'); [ -n "$pin" ] || die "--host needs a hostname"; shift 2 ;;
       *) instr="${instr:+$instr }$1"; shift ;;
     esac
   done
   case "$spec" in
-    ''|label:*) cmd_register_label "$spec" "$repos" "$title" "$req" "$sentry" "$mockups" "$instr" ;;
+    ''|label:*) cmd_register_label "$spec" "$repos" "$title" "$req" "$sentry" "$mockups" "$instr" "$now" "$pin" ;;
     *)
       if [ -n "$repos$title$req" ] || [ "$sentry" = 1 ]; then die "--repos/--title/--requirements/--include-sentry only apply to label goals"; fi
-      cmd_register "$spec" "$instr" ;;
+      cmd_register "$spec" "$instr" "$now" "$pin" ;;
   esac
 }
 
 cmd_register() {
-  local spec="$1"; shift
-  local instr="$*" line repo id checkout rows block body resp n
+  local spec="$1" instr="$2" now="${3:-0}" pin="${4:-}"
+  local line repo id checkout rows block body resp n host=""
   line=$(goal_parse "$spec") || exit 1
   repo=$(printf '%s' "$line" | cut -f1)
   checkout=$(_goal_checkout "$repo") || die "$repo is not in DISPATCH_REPOS; goals only run on dispatched repos"
@@ -133,14 +140,18 @@ cmd_register() {
   rows=$(_goal_scope_rows "$spec") || die "cannot read the scope of $spec"
   [ -n "$rows" ] || die "empty scope: $spec has no tickets; a goal must start with at least one"
   check_overlap "$spec" "$id"
-  block=$(jq -nc --arg id "$id" --arg spec "$spec" --arg host "$THIS_HOST" --arg created "$(now_utc)" --arg ins "$instr" \
-    '{v:1,id:$id,spec:$spec,host:$host,created:$created,instructions:$ins}')
+  [ "$now" = 1 ] && host="$THIS_HOST"   # queued goals have no host until the supervisor starts them (#320)
+  block=$(jq -nc --arg id "$id" --arg spec "$spec" --arg host "$host" --arg pin "$pin" --arg created "$(now_utc)" --arg ins "$instr" \
+    '{v:1,id:$id,spec:$spec,host:$host,host_pref:$pin,created:$created,instructions:$ins}')
   body=$(body_for "$spec" "$block")
   ensure_label delivery-goal
+  [ "$now" = 1 ] || ensure_label goal-queued
   resp=$(api_json POST "repos/$GOAL_REGISTRY_REPO/issues" \
-    "$(jq -nc --arg t "Goal: $spec" --arg b "$body" '{title:$t, body:$b, labels:["delivery-goal"]}')") \
+    "$(jq -nc --arg t "Goal: $spec" --arg b "$body" --argjson now "$now" \
+       '{title:$t, body:$b, labels:(["delivery-goal"] + (if $now == 1 then [] else ["goal-queued"] end))}')") \
     || die "could not create the registry issue"
   n=$(printf '%s' "$resp" | jq -r .number)
+  if [ "$now" != 1 ]; then echo "queued $id (issue #$n)"; return 0; fi
   mkdir -p "$LOGDIR/goals"
   write_cache "$id" "$block" "$n"
   if ! goal_launch "$id" "$(printf '%s' "$resp" | _goal_issue_to_goal)"; then
@@ -163,7 +174,7 @@ register_rollback() {
 
 # cmd_register_label — a cross-repo goal (#319): the label "goal: <short title>" in every repo + the registry issue.
 cmd_register_label() {
-  local spec=$1 repos_in=$2 title=$3 req=$4 sentry=$5 mockups=$6 instr=$7
+  local spec=$1 repos_in=$2 title=$3 req=$4 sentry=$5 mockups=$6 instr=$7 now=${8:-0} pin=${9:-} host=""
   local label id r kept="" checkout seed_ok=0 req_ok=0 seed_repo="" seed_n="" rows block body resp n url room desc
   local granted='[]' granted_at="" go=false repos_json out
   [ -n "$repos_in" ] || die "a label goal needs --repos owner/repo,owner/repo"
@@ -198,14 +209,17 @@ cmd_register_label() {
   check_overlap "$spec" "$id" "" "$kept" "$([ "$seed_ok" = 1 ] && printf '%s' "$req")"
   rows=$(_goal_scope_rows "$spec" "$id" "$kept") || die "cannot read the scope of $spec"
   { [ -n "$rows" ] || [ "$seed_ok" = 1 ]; } || die "empty scope: no ticket carries '$label' and there is no requirements ticket to label; a goal must start with at least one"
-  block=$(jq -nc --arg id "$id" --arg spec "$spec" --arg host "$THIS_HOST" --arg created "$(now_utc)" --arg ins "$instr" \
+  [ "$now" = 1 ] && host="$THIS_HOST"   # queued goals have no host until the supervisor starts them (#320)
+  block=$(jq -nc --arg id "$id" --arg spec "$spec" --arg host "$host" --arg pin "$pin" --arg created "$(now_utc)" --arg ins "$instr" \
     --arg title "$title" --arg label "$label" --argjson repos "$repos_json" --arg mockups "$mockups" --arg req "$req" \
     --argjson sentry "$([ "$sentry" = 1 ] && echo true || echo false)" \
-    '{v:2,id:$id,title:$title,label:$label,repos:$repos,order:0,mockups:$mockups,go:false,host_pref:"",requirements:$req,
+    '{v:2,id:$id,title:$title,label:$label,repos:$repos,order:0,mockups:$mockups,go:false,host_pref:$pin,requirements:$req,
       include_sentry:$sentry,spec:$spec,host:$host,created:$created,instructions:$ins}')
   ensure_label delivery-goal
+  [ "$now" = 1 ] || ensure_label goal-queued
   resp=$(api_json POST "repos/$GOAL_REGISTRY_REPO/issues" \
-    "$(jq -nc --arg t "Goal: $title" --arg b "$(goal_body_v2 "$block" "")" '{title:$t, body:$b, labels:["delivery-goal"]}')") \
+    "$(jq -nc --arg t "Goal: $title" --arg b "$(goal_body_v2 "$block" "")" --argjson now "$now" \
+       '{title:$t, body:$b, labels:(["delivery-goal"] + (if $now == 1 then [] else ["goal-queued"] end))}')") \
     || die "could not create the registry issue"
   n=$(printf '%s' "$resp" | jq -r .number)
   # the label: full title (cut to fit) then the registry issue URL, same colour in every repo
@@ -233,6 +247,11 @@ cmd_register_label() {
   if [ "$go" = true ]; then
     post_note "$n" "**[supervisor] NOTE** go granted: label \`$label\` on the requirements ticket, agent-go on $(printf '%s' "$granted" | jq 'length') open ticket(s) in $kept" || true
 
+  fi
+  if [ "$now" != 1 ]; then
+    echo "queued $id (issue #$n)"
+    echo "label=$label repos=$kept go=$go"
+    return 0
   fi
   mkdir -p "$LOGDIR/goals"
   write_cache "$id" "$block" "$n"
@@ -303,13 +322,18 @@ cmd_resume() {
   case "$st" in
     delivered) die "$id is delivered; register a new goal instead" ;;
     unreadable) die "cannot read the registry block of $id; fix or close its issue by hand" ;;
-    active|waiting_jp) echo "$id is already $st"; return 0 ;;
+    queued|active|waiting_jp) echo "$id is already $st"; return 0 ;;
   esac
   case "$spec" in label:*) die "$id is a label goal: its label was stripped at close; register a new goal instead" ;; esac
   check_overlap "$spec" "$id" "$issue"
   set_state "$issue" open
   del_label "$issue" goal-stopped; del_label "$issue" goal-held
   rm -f "$PIPE/goal-$id".stopped "$PIPE/goal-$id".held "$PIPE/goal-$id".restarts "$PIPE/goal-$id".np "$PIPE/goal-$id".snap
+  if [ -z "$host" ] && [ "$here" != 1 ]; then   # stopped while still queued (#320): back in the queue, no host yet
+    add_label "$issue" goal-queued
+    echo "resumed $id (issue #$issue); queued again"
+    return 0
+  fi
   if [ "$here" = 1 ] && [ "$host" != "$THIS_HOST" ]; then
     block=$(printf '%s' "$block" | jq -c --arg h "$THIS_HOST" '.host = $h')
     api_json PATCH "repos/$GOAL_REGISTRY_REPO/issues/$issue" \
@@ -337,6 +361,6 @@ case "${1:-}" in
   status) shift; cmd_status "$@" ;;
   stop) shift; cmd_stop "$@" ;;
   resume) shift; cmd_resume "$@" ;;
-  ''|-h|--help) sed -n '2,10p' "$0"; exit 2 ;;
+  ''|-h|--help) sed -n '2,14p' "$0"; exit 2 ;;
   *) cmd_register_args "$@" ;;
 esac
