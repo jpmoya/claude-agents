@@ -254,17 +254,26 @@ test_jg_ac2_exact_form_spelled_out_once() {
 
 # ---------------------------------------------------------------------------------------- AC3
 
+# True when one blank-line-separated paragraph of orchestrator.md matches every given ERE (case-insensitive).
+# Keeps the AC3 rule as ONE statement, not words scattered across the file (the helper's own comment must not satisfy it).
+jg_para_has_all() {
+  JG_PATS="$(printf '%s\n' "$@")" awk -v RS= '
+    BEGIN { n = split(ENVIRON["JG_PATS"], P, "\n") }
+    { ok = 1; for (i = 1; i <= n; i++) if (tolower($0) !~ tolower(P[i])) { ok = 0; break }
+      if (ok) { found = 1 } }
+    END { exit found ? 0 : 1 }' "$ORCH_JG"
+}
+
 test_jg_ac3_no_go_claims_gated_on_helper_output() {
-  local hits
-  hits=$(grep -nE 'jp_go' "$ORCH_JG" | grep -ciE 'prints? nothing|printed nothing|no output|empty')
-  [ "$hits" -ge 1 ] || { fail "AC3: orchestrator.md must say a 'no go' status card / delegated-decision fail is allowed only after jp_go ran and printed nothing"; return 1; }
-  grep -qiE 'no go|"no go"|Nothing new has been posted' "$ORCH_JG" \
-    || { fail "AC3: the rule must name the 'no go' claim it gates"; return 1; }
+  # One paragraph: names the no-go claims, names jp_go, and allows the claim only after it ran and printed nothing.
+  jg_para_has_all 'jp_go' 'no go after it|nothing new has been posted' 'only after' 'exited 0|exit(ed)? 0|succeeded' 'print(ed|s) nothing' \
+    || { fail "AC3: one paragraph must allow a 'no go' card / delegated-decision fail only after jp_go ran, exited 0 and printed nothing"; return 1; }
 }
 
 test_jg_ac3_failed_lookup_is_not_a_no_go() {
-  grep -iE 'jp_go' "$ORCH_JG" | grep -qiE 'non-?zero|fail(ed|s)? (read|lookup)|lookup fail' \
-    || { fail "AC3/AC1: orchestrator.md must say a non-zero jp_go is a failed lookup, reported as such, never 'no go'"; return 1; }
+  # One paragraph: non-zero jp_go = failed lookup, reported as such, never treated as no go.
+  jg_para_has_all 'jp_go' 'non-zero (exit )?is a failed lookup' 'never (treat|report)[a-z ]* (it )?as "?no go' \
+    || { fail "AC3/AC1: one paragraph must say a non-zero jp_go is a failed lookup and is never treated as 'no go'"; return 1; }
 }
 
 # ---------------------------------------------------------------------------------------- AC4
