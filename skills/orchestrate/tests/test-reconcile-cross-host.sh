@@ -214,7 +214,7 @@ GH_EOF
   chmod +x "$RO_BIN/gh"
   rh_o_launch 43
   local out="$RO_OUT" rc="$RO_RC" started=no
-  [ -f "$RO_PIPE/orch-43.pid" ] && started=yes
+  [ -f "$(rkp "$RO_PIPE/orch-43.pid")" ] && started=yes
   rh_o_cleanup
   assert_exit0 "$rc" "#119/AC1: launch still exits 0 when the claim comment fails" || return 1
   assert_contains "$out" "launched orchestrator" "#119/AC1: still launched" || return 1

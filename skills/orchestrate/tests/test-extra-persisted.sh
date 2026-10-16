@@ -77,7 +77,7 @@ test_extra_queued_path_roundtrips_multiline_apostrophe() {
 
 test_extra_queued_path_overwrites_stale_extra() {
   ext_env full
-  printf '%s' "old" > "$EXT_PIPE/orch-42.extra"
+  printf '%s' "old" > "$(rkp "$EXT_PIPE/orch-42.extra")"
   local out rc
   out=$(ext_launch 42 "new"); rc=$?
   local same=1; file_equals "$(rkp $EXT_PIPE/orch-42.extra)" "new" && same=0
@@ -88,7 +88,7 @@ test_extra_queued_path_overwrites_stale_extra() {
 
 test_extra_queued_path_no_extra_empties_stale_extra() {
   ext_env full
-  printf '%s' "old" > "$EXT_PIPE/orch-42.extra"
+  printf '%s' "old" > "$(rkp "$EXT_PIPE/orch-42.extra")"
   local out rc
   out=$(ext_launch 42); rc=$?
   local exists=no size=-1
@@ -125,7 +125,7 @@ test_extra_supervisor_reenqueue_keeps_extra() {
   local qf stem
   qf=$(rkp "$EXT_PIPE/queue/orch-42.json"); stem=${qf##*/}; stem="$EXT_PIPE/${stem%.json}"
   mk_dead_pid "$EXT_PIPE" 42
-  mv "$EXT_PIPE/orch-42.pid" "$stem.pid"
+  mv "$(rkp "$EXT_PIPE/orch-42.pid")" "$stem.pid"
   echo "$EXT_REPO" > "$stem.repo"
   echo 1 > "$stem.exit"
   rm -f "$qf"

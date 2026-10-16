@@ -25,7 +25,7 @@ ar_file() { if [ -f "$1" ]; then head -n1 "$1"; else echo ABSENT; fi; }
 ar_gate() {
   local n=$1 body=$2
   [ -z "${3-}" ] || body="$body"$'\n'"$3"
-  mk_held "$AR_PIPE" "$n" "$AR_REPO"; printf 'Title of %s\n' "$n" > "$AR_PIPE/orch-$n.title"
+  mk_held "$AR_PIPE" "$n" "$AR_REPO"; printf 'Title of %s\n' "$n" > "$(rkp "$AR_PIPE/orch-$n.title")"
   jq -nc --arg b "$body" --arg t "$AR_GATE_T" '[{body:$b, createdAt:$t, author:{login:"x"}}]' > "$AR_BIN/gh-issue-comments-json-$n"
 }
 ar_reconcile() {
@@ -45,7 +45,7 @@ BLK='**[fullstack-developer] BLOCKED**'
 test_ar_ci_red_is_auto_retry_with_empty_needs() {
   ar_env; ar_gate 501 "$BLK" 'Blocked on: ci_red — checks failing on the PR'
   ar_reconcile
-  local r n; r=$(ar_file "$AR_PIPE/orch-501.parked_reason"); n=$(ar_file "$AR_PIPE/orch-501.needs")
+  local r n; r=$(ar_file "$AR_PIPE/orch-501.parked_reason"); n=$(ar_file "$(rkp "$AR_PIPE/orch-501.needs")")
   ar_cleanup
   assert_eq "$r" "auto_retry" "decision 2: Blocked on: ci_red -> parked_reason auto_retry" || return 1
   assert_eq "$n" "ABSENT" "decision 2: .needs is empty for a non-JP-only BLOCKED" || return 1
@@ -65,7 +65,7 @@ test_ar_every_non_jp_only_class_is_auto_retry() {
 test_ar_needs_jp_class_stays_a_jp_gate() {
   ar_env; ar_gate 520 "$BLK" 'Blocked on: needs_jp — which vendor should we pick?'
   ar_reconcile
-  local r n; r=$(ar_file "$AR_PIPE/orch-520.parked_reason"); n=$(ar_file "$AR_PIPE/orch-520.needs")
+  local r n; r=$(ar_file "$AR_PIPE/orch-520.parked_reason"); n=$(ar_file "$(rkp "$AR_PIPE/orch-520.needs")")
   ar_cleanup
   assert_eq "$r" "ABSENT" "decision 1: needs_jp -> no parked_reason" || return 1
   assert_eq "$n" "Decision needed" "decision 1: needs_jp keeps its Needs label" || return 1
@@ -86,7 +86,7 @@ test_ar_unparsable_or_missing_class_stays_a_jp_gate() {
 test_ar_class_on_a_non_blocked_gate_is_ignored() {
   ar_env; ar_gate 540 '**[infra-operator] AWAITING GO**' 'Blocked on: ci_red — not a BLOCKED marker'
   ar_reconcile
-  local r n; r=$(ar_file "$AR_PIPE/orch-540.parked_reason"); n=$(ar_file "$AR_PIPE/orch-540.needs")
+  local r n; r=$(ar_file "$AR_PIPE/orch-540.parked_reason"); n=$(ar_file "$(rkp "$AR_PIPE/orch-540.needs")")
   ar_cleanup
   assert_eq "$r" "ABSENT" "AWAITING GO is always JP-only" || return 1
   assert_eq "$n" "Say go" "AWAITING GO keeps Say go" || return 1
@@ -129,7 +129,7 @@ test_ar_payload_has_no_block_class_for_jp_gates() {
 test_ar_closed_file_held_run_is_not_published_as_a_run() {
   ar_env; ar_gate 580 "$BLK" 'Blocked on: needs_jp — pick a vendor'
   ar_gate 581 "$BLK" 'Blocked on: needs_jp — pick a vendor'
-  echo "$AR_GATE_T" > "$AR_PIPE/orch-580.closed"          # 580 closed; 581 is the open control
+  echo "$AR_GATE_T" > "$(rkp "$AR_PIPE/orch-580.closed")"          # 580 closed; 581 is the open control
   ar_reconcile
   local out; out=$(ar_print)
   ar_cleanup

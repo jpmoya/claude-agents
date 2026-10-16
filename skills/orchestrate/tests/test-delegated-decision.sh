@@ -140,7 +140,7 @@ dd_thread() {
   local arr='[]' b i=0
   dd_env
   mk_restarting "$DD_PIPE" 42 "$DD_REPO"
-  dd_iso_ago 1300 > "$DD_PIPE/orch-42.start"
+  dd_iso_ago 1300 > "$(rkp "$DD_PIPE/orch-42.start")"
   for b in "$@"; do
     i=$((i + 1))
     arr=$(printf '%s' "$arr" | jq --arg b "$b" --arg t "2026-09-21T0$i:00:00Z" '. + [{body: $b, createdAt: $t}]')

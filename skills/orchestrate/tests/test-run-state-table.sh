@@ -22,7 +22,7 @@ test_state_table_running_precedes_stopped_when_pid_is_alive() {
   local pipe out
   pipe=$(new_pipe)
   mk_running "$pipe" 801 "$pipe/repo-a"
-  touch "$pipe/orch-801.stopped"   # stale marker from a previous lifecycle; must not win
+  touch "$(rkp "$pipe/orch-801.stopped")"   # stale marker from a previous lifecycle; must not win
   out=$(derive_runs_lines "$pipe")
   cleanup_running; rm -rf "$pipe"
   assert_eq "$(field_for_issue "$out" 801 3)" "running" "state-table: pid-alive beats a stale .stopped marker (order matters)" || return 1
@@ -32,8 +32,8 @@ test_state_table_stopped_precedes_held_when_both_files_present() {
   local pipe out
   pipe=$(new_pipe)
   mk_dead_pid "$pipe" 802
-  echo "$pipe/repo-a" > "$pipe/orch-802.repo"
-  touch "$pipe/orch-802.stopped" "$pipe/orch-802.held"
+  echo "$pipe/repo-a" > "$(rkp "$pipe/orch-802.repo")"
+  touch "$(rkp "$pipe/orch-802.stopped")" "$(rkp "$pipe/orch-802.held")"
   out=$(derive_runs_lines "$pipe")
   rm -rf "$pipe"
   assert_eq "$(field_for_issue "$out" 802 3)" "stopped" "state-table: .stopped is checked before .held" || return 1
@@ -43,8 +43,8 @@ test_state_table_held_precedes_done_when_both_files_present() {
   local pipe out
   pipe=$(new_pipe)
   mk_dead_pid "$pipe" 803
-  echo "$pipe/repo-a" > "$pipe/orch-803.repo"
-  touch "$pipe/orch-803.held" "$pipe/orch-803.done"
+  echo "$pipe/repo-a" > "$(rkp "$pipe/orch-803.repo")"
+  touch "$(rkp "$pipe/orch-803.held")" "$(rkp "$pipe/orch-803.done")"
   out=$(derive_runs_lines "$pipe")
   rm -rf "$pipe"
   assert_eq "$(field_for_issue "$out" 803 3)" "held" "state-table: .held is checked before .done" || return 1

@@ -15,13 +15,13 @@ i271_run() {
   local body="$AR2_BLK"
   [ -n "$1" ] && body="$body"$'\n'"$1"
   sq_env open; sq_free_slots; ar2_install_gh
-  mk_restarting "$SQ_PIPE" 42 "$SQ_REPO"; sq_iso_ago 7200 > "$SQ_PIPE/orch-42.start"
+  mk_restarting "$SQ_PIPE" 42 "$SQ_REPO"; sq_iso_ago 7200 > "$(rkp "$SQ_PIPE/orch-42.start")"
   jq -nc --arg b "$body" '[{body:$b, createdAt:"2026-09-20T10:00:00Z", author:{login:"x"}}]' > "$SQ_GH/gh-issue-comments-json-42"
   echo fail > "$SQ_GH/gh-pr-checks"
   sq_tick
-  I271_ALERT=$(cat "$SQ_PIPE/orch-42.alert" 2>/dev/null)
+  I271_ALERT=$(cat "$(rkp "$SQ_PIPE/orch-42.alert")" 2>/dev/null)
   I271_LOG=$(sq_log); [ -n "${I271_DEBUG:-}" ] && echo "LOG: $I271_LOG" >&2
-  I271_HELD=$(sq_present "$SQ_PIPE/orch-42.held")
+  I271_HELD=$(sq_present "$(rkp "$SQ_PIPE/orch-42.held")")
   sq_cleanup
 }
 

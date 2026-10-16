@@ -21,8 +21,8 @@ L8_STAGE="printf '1000\t42\tclaude --agent test-writer -p\n'"
 l8_fixture() {
   sq_env open
   mk_restarting "$SQ_PIPE" 42 "$SQ_REPO"
-  sq_iso_ago 600 > "$SQ_PIPE/orch-42.launched-at"
-  echo 0 > "$SQ_PIPE/orch-42.exit"
+  sq_iso_ago 600 > "$(rkp "$SQ_PIPE/orch-42.launched-at")"
+  echo 0 > "$(rkp "$SQ_PIPE/orch-42.exit")"
   mkdir -p "$SQ_HOME/.claude/pipeline"
   printf '{"ts":"%s","host":"h","event":"terminal","repo":"project-a/repo-a","issue":42,"state":"stage running at cap","next_action":"supervisor relaunch picks up result"}\n' \
     "$(sq_iso_ago 10)" >> "$SQ_HOME/.claude/pipeline/runs.jsonl"
@@ -33,7 +33,7 @@ l8_removed() { grep -c "issue edit 42 --remove-label agent-in-progress" "$SQ_GH/
 
 test_l8_1_unhandled_death_keeps_label_and_warns() {
   l8_fixture
-  echo "h-orch-42-1700000000" > "$SQ_PIPE/orch-42.run-id"
+  echo "h-orch-42-1700000000" > "$(rkp "$SQ_PIPE/orch-42.run-id")"
   l8_tick "$L8_STAGE"
   local n log row sha want
   n=$(l8_removed); log=$(sq_log)
@@ -50,8 +50,8 @@ test_l8_1_unhandled_death_keeps_label_and_warns() {
 
 test_l8_2_exit_logged_present_step3_clears() {
   l8_fixture
-  echo "h-orch-42-1700000000" > "$SQ_PIPE/orch-42.run-id"
-  touch "$SQ_PIPE/orch-42.exit-logged"
+  echo "h-orch-42-1700000000" > "$(rkp "$SQ_PIPE/orch-42.run-id")"
+  touch "$(rkp "$SQ_PIPE/orch-42.exit-logged")"
   l8_tick "$L8_STAGE"
   local n; n=$(l8_removed)
   sq_cleanup
@@ -87,7 +87,7 @@ GH_EOF
 
 test_l8_4_dead_pid_file_step4_skips() {
   l8_fixture   # cap exit: step 1 defers, so no queue entry and no .exit-logged
-  echo "h-orch-42-1700000000" > "$SQ_PIPE/orch-42.run-id"
+  echo "h-orch-42-1700000000" > "$(rkp "$SQ_PIPE/orch-42.run-id")"
   printf 'MEM_FLOOR_MB=0\nDISPATCH_REPOS=("project-a/repo-a:%s")\n' "$SQ_REPO" > "$SQ_HOME/.claude/pipeline/config.local.sh"
   mv "$SQ_GH/gh" "$SQ_GH/gh-real"
   printf '#!/bin/bash\nHERE=$(cd "$(dirname "$0")" && pwd)\ncase "$*" in\n  "issue list"*"--label agent-in-progress"*) echo "$*" >> "$HERE/gh-calls.log"; echo 42; exit 0 ;;\n  "issue view"*"--json comments,updatedAt"*) echo "$*" >> "$HERE/gh-calls.log"; cat "$HERE/view-out"; exit 0 ;;\nesac\nexec "$HERE/gh-real" "$@"\n' > "$SQ_GH/gh"

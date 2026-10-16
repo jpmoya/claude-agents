@@ -103,14 +103,14 @@ test_hc_a_other_host_earlier_claim_refuses() {
   local me; me=$(hostname -s)
   # hostb claimed 3s before this host (hand arithmetic: 13s ago vs 10s ago)
   hc_claims otherhost:13 "$me:10"
-  touch "$HC_PIPE/orch-42.stopped"
+  touch "$(rkp "$HC_PIPE/orch-42.stopped")"
   local out rc
   out=$(hc_launch 42); rc=$?
   local stopped=gone extra=present pidf=present q=present ev=0
-  [ -f "$HC_PIPE/orch-42.stopped" ] && stopped=kept
-  [ -f "$HC_PIPE/orch-42.extra" ] || extra=absent
-  [ -f "$HC_PIPE/orch-42.pid" ] || pidf=absent
-  [ -f "$HC_PIPE/queue/orch-42.json" ] || q=absent
+  [ -f "$(rkp "$HC_PIPE/orch-42.stopped")" ] && stopped=kept
+  [ -f "$(rkp "$HC_PIPE/orch-42.extra")" ] || extra=absent
+  [ -f "$(rkp "$HC_PIPE/orch-42.pid")" ] || pidf=absent
+  [ -f "$(rkp "$HC_PIPE/queue/orch-42.json")" ] || q=absent
   [ -f "$HC_HOME/logs/pipeline/events.jsonl" ] && ev=$(grep -c run_launch "$HC_HOME/logs/pipeline/events.jsonl")
   local removed=0; grep -q -- "--remove-label agent-in-progress" "$HC_BIN/gh-calls.log" && removed=1
   hc_cleanup
@@ -176,10 +176,10 @@ test_hc_gh_failure_fails_closed_and_is_recorded() {
   hc_env
   hc_claims "$(hostname -s):1"
   : > "$HC_BIN/comments-fail"   # gh issue view --json comments exits 1
-  touch "$HC_PIPE/orch-42.stopped"
+  touch "$(rkp "$HC_PIPE/orch-42.stopped")"
   local out rc stopped=gone ev=""
   out=$(hc_launch 42); rc=$?
-  [ -f "$HC_PIPE/orch-42.stopped" ] && stopped=kept
+  [ -f "$(rkp "$HC_PIPE/orch-42.stopped")" ] && stopped=kept
   # a structured row: event name mentions claim AND some field is exactly the issue number 42
   [ -f "$HC_HOME/logs/pipeline/events.jsonl" ] && ev=$(jq -c 'select((.event|tostring|test("claim";"i")) and ([.[]|tostring]|any(.=="42")))' \
     "$HC_HOME/logs/pipeline/events.jsonl" 2>/dev/null)

@@ -888,7 +888,7 @@ test_gs_ac9_goal_pids_do_not_consume_orchestrator_slots() {
   gs_tick; gs_settle
   gs_tick; gs_settle
   local pid42=absent d agents="" log
-  [ -e "$GS_PIPE/orch-42.pid" ] && pid42=present
+  [ -e "$(rkp "$GS_PIPE/orch-42.pid")" ] && pid42=present
   for d in "$GS_BIN"/claude-calls.*; do [ -e "$d" ] && agents="$agents $(gs_argv_after "$d" --agent)"; done
   log=$(gs_log)
   gs_cleanup
