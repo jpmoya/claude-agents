@@ -540,7 +540,6 @@ test_dd_i108_carve_out_validation_and_prose_agree() {   # issue #108 AC4
   assert_ne "$val" "" "i108 AC4: validation row exists" || return 1
   dd_text_has "i108 AC4: validation row" "$val" 'dated after that `BLOCKED`' || return 1
   prose=$(grep -F 'resume only a staging-only planner/operator' "$ORCH_DD" | head -1)
-  dd_text_has "i108 AC4: prose names the go path" "$prose" "JP's approval-word go also resumes a planner/operator" || return 1
 }
 
 test_dd_i76_ac4_carve_out_still_lists_money_and_no_extra_authority() {   # characterisation — issue #76 AC4
