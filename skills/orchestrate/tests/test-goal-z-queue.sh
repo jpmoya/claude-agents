@@ -540,6 +540,27 @@ test_zq_register_host_flag_sets_host_pref() {
   assert_eq "$pin" "mac-studio" "item 2: --host stores host_pref (lower-cased)" || return 1
 }
 
+test_zq_register_label_goal_enqueues_with_order_and_pin() {
+  dg_setup
+  local reg labels blk n files
+  dg_run --repos "example-owner/project-a" --title "Queue label" --requirements "example-owner/project-a#7" --host Host-B
+  reg=$(ls "$DG_ST/issues/$DG_REG"/*.json 2>/dev/null | head -1)
+  labels=$(jq -r '[.labels[].name] | sort | join(",")' "$reg" 2>/dev/null)
+  blk=$(dg_block "$reg"); n=$(basename "$reg" .json)
+  files=$(ls "$DG_PIPE"/goal-* 2>/dev/null | wc -l | tr -d ' ')
+  local rc=$DG_RC out="$DG_OUT" cl; cl=$(dg_claude_count)
+  dg_teardown
+  assert_eq "$rc" "0" "item 1: label goal register succeeds" || return 1
+  assert_contains "$out" "queued " "item 1: label goal reported as queued" || return 1
+  assert_eq "$labels" "delivery-goal,goal-queued" "item 1: label goal is queued" || return 1
+  assert_eq "$(printf '%s' "$blk" | jq -r .host)" "" "item 1: label goal has no host yet" || return 1
+  assert_eq "$(printf '%s' "$blk" | jq -r .host_pref)" "host-b" "item 2: --host stored as host_pref" || return 1
+  assert_eq "$(printf '%s' "$blk" | jq -r .order)" "$n" "item 2: order = registry issue number at registration" || return 1
+  assert_eq "$(printf '%s' "$blk" | jq -r .go)" "true" "item 1: go is still granted at registration" || return 1
+  assert_eq "$cl" "0" "item 1: nothing launched" || return 1
+  assert_eq "$files" "0" "item 1: no local goal files" || return 1
+}
+
 test_zq_queued_goals_count_in_the_overlap_guard_and_status() {
   dg_setup
   local rc=0 out st
@@ -613,6 +634,7 @@ run_test test_zq_step5_holds_back_tickets_of_a_goal_still_in_the_queue
 run_test test_zq_register_enqueues_without_launching
 run_test test_zq_register_now_keeps_the_immediate_launch
 run_test test_zq_register_host_flag_sets_host_pref
+run_test test_zq_register_label_goal_enqueues_with_order_and_pin
 run_test test_zq_queued_goals_count_in_the_overlap_guard_and_status
 run_test test_zq_reporter_emits_queue_position_and_pause_reason
 run_test test_zq_reporter_marks_the_head_of_the_queue_paused_on_a_battery_mac
