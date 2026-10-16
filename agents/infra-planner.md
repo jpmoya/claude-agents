@@ -57,6 +57,7 @@ Manual steps: <count> (see below)
 ## Steps
 ### Step 1 — <imperative title>  [staging|prod]
 Depends on: <none | PR #M on main and deployed | Step k>
+Prod effect: <[prod] steps only: target=<system/project>; env=prod; data=<what is touched>; irreversible=<yes|no>>
 Command:
 ```bash
 <exact command, secrets referenced by env var / keychain, never inline>
@@ -89,6 +90,7 @@ Rules for the fields:
 - **Command** is copy-paste runnable from the repo root on JP's Mac, with `--scope <team>` on every Vercel call and the full curl for API calls. No placeholders except secrets, which are `$VAR` with a line saying where `$VAR` comes from.
 - **Expected** for Verify is a value the operator can compare with `grep`/eye: an IP, a CNAME, an HTTP status and `location:` header, a JSON field. "Works" is not an expected value.
 - **Rollback** must reverse exactly this step. If a step is not reversible (a webhook secret rotated, a record deleted after TTL), say `Rollback: none — <why>` and set Risk high.
+- **Prod effect** is required on every `[prod]` step (one line each, none on staging): target, environment, data touched, irreversibility. A revision that keeps these lines identical lets JP's earlier `go` stand (operator `go_inherit`); any change or added prod step needs a fresh `go`.
 - **Depends on** for prod steps names the PR that must be on `main`, when the app's behaviour depends on the change.
 
 ## Revision (after `PLAN FAIL`)
