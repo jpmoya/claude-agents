@@ -1014,7 +1014,7 @@ promote_deferred() {
       done
       if [ "$ok" -ne 1 ]; then
         if [ -n "$why" ]; then
-          seen="$PIPE/promote-${owner_repo//\//_}-$num.${why%%,*}"; seen="${seen//[ #\/]/_}"
+          seen="promote-${owner_repo//\//_}-$num.${why%%,*}"; seen="$PIPE/${seen//[ #\/]/_}"
           [ -e "$seen" ] || { slog "[promote] $owner_repo#$num — not promoted: $why"; : > "$seen"; }
         fi
         continue
