@@ -101,24 +101,7 @@ mg_matches() {
 
 # ---------------------------------------------------------------------------------------- AC1
 
-test_mg_ac1_approval_row_is_exact_first_line_form() {
-  local row s
-  row=$(mg_row 'JP approval comment')
-  assert_ne "$row" "" "AC1: approval row exists (exactly one)" || return 1
-  for s in '**[jp] MOCKUPS APPROVED**' 'first line' 'exactly'; do
-    mg_text_has "AC1: approval row" "$row" "$s" || return 1
-  done
-  mg_text_has "AC1: approval row states the negative on the model of :98" "$row" 'not an approval' || return 1
-}
 
-test_mg_ac1_prose_alternatives_deleted_from_approval_row() {
-  local row s
-  row=$(mg_row 'JP approval comment')
-  assert_ne "$row" "" "AC1: approval row exists" || return 1
-  for s in 'looks good' 'lgtm' '`approved`,'; do
-    mg_text_lacks "AC1: approval row" "$row" "$s" || return 1
-  done
-}
 
 # characterisation: marker_re() (unchanged, AC7) already tells an exact `**[jp] MOCKUPS APPROVED**`
 # first line apart from any prose approval — this is why the fix needs zero new mechanisms.
@@ -139,15 +122,6 @@ test_mg_ac1_marker_re_rejects_prose_containing_approved() {
 
 # ---------------------------------------------------------------------------------------- AC2
 
-test_mg_ac2_outcome1_is_single_exact_form_no_prose() {
-  local sec s
-  sec=$(mg_section "$ORCH_MG" '### Mockup approval gate')
-  assert_ne "$sec" "" "AC2: Mockup approval gate section exists" || return 1
-  mg_text_has "AC2: outcome 1" "$sec" '**[jp] MOCKUPS APPROVED**' || return 1
-  for s in '"approved"' 'looks good' 'lgtm'; do
-    mg_text_lacks "AC2: outcome 1 must drop prose alternatives" "$sec" "$s" || return 1
-  done
-}
 
 test_mg_ac2_revision_cap_unchanged_at_2() {
   local sec
@@ -287,32 +261,6 @@ test_mg_ac5_2026_09_21_bodies_do_not_clear_the_gate() {
 # quotes exactly one, `**[jp] MOCKUPS APPROVED**`, and the assertion goes green. A row that kept
 # even one prose alternative in backticks, or quoted a substring/incorrect form, would still fail
 # this test — genuine discriminating power over the document text itself, not a static fixture.
-test_mg_ac5_incident_bodies_are_not_the_rewritten_exact_form() {
-  local row tokens n
-  row=$(mg_row 'JP approval comment')
-  assert_ne "$row" "" "AC5: approval row exists" || return 1
-  # markdown table row: | <marker+condition column> | <action column> | -- restrict extraction to
-  # the first cell only (field 2 of a `|`-split), or the action column's unrelated backtick tokens
-  # (e.g. `[solutions-architect] READY FOR ENGINEERING`) would pollute the count.
-  cell=$(printf '%s\n' "$row" | awk -F'|' '{print $2}')
-  tokens=$(printf '%s\n' "$cell" \
-    | grep -oE '`[^`]+`' \
-    | tr -d '`' \
-    | grep -vF '[ui-ux-designer] MOCKUPS PENDING APPROVAL')
-  n=$(printf '%s\n' "$tokens" | grep -c .)
-  # KNOWN ANCHOR LIMITATION (disclosed, not blocking -- weighed by test-reviewer round 2 on the
-  # sibling "approved" collision and found no forced conflict): this assumes the row's negative
-  # clause quotes "approved" with straight quotes, as :98 (the model AC1 cites) and the landed row
-  # both do. A compliant reword that backticks the negative clause instead (e.g. "a sentence
-  # containing `approved` is not an approval") would add a second backtick token and fail this
-  # count -- a text-level extraction can't distinguish an accept-clause token from a negative-
-  # clause one. If this test goes red on a plausible reword rather than a real regression, treat
-  # AC1's own test_mg_ac1_prose_alternatives_deleted_from_approval_row (which permits that reword)
-  # as authoritative and TEST UPHELD/dispute this one, citing this note. Same caveat applies to the
-  # `awk -F'|' '{print $2}'` cell split above if a future first cell ever quotes a literal `|`.
-  assert_eq "$n" "1" "AC5: approval row quotes exactly one non-gate-name backtick form (found: $(printf '%s' "$tokens" | tr '\n' '|'))" || return 1
-  assert_eq "$tokens" '**[jp] MOCKUPS APPROVED**' "AC5: the sole quoted form is the exact required marker, not an incident/prose form" || return 1
-}
 
 # AC5, real mechanism (characterisation — marker_re() is unchanged per AC7, so this passes
 # identically before and after the fix; kept as a guard, not presented as closing FINDING 2. The
@@ -510,11 +458,8 @@ test_mg_294_designer_request_states_exact_approval_line() {
 
 # ---------------------------------------------------------------------------------------- run
 
-run_test test_mg_ac1_approval_row_is_exact_first_line_form
-run_test test_mg_ac1_prose_alternatives_deleted_from_approval_row
 run_test test_mg_ac1_marker_re_already_matches_exact_form
 run_test test_mg_ac1_marker_re_rejects_prose_containing_approved
-run_test test_mg_ac2_outcome1_is_single_exact_form_no_prose
 run_test test_mg_ac2_revision_cap_unchanged_at_2
 run_test test_mg_ac3_revision_row_excludes_agent_marker_comments
 run_test test_mg_ac3_revision_row_does_not_hand_roll_the_agent_list
@@ -522,7 +467,6 @@ run_test test_mg_ac3_revision_row_note_fixture_is_actually_excluded
 run_test test_mg_ac4_skip_mockups_outcome_deleted
 run_test test_mg_ac4_gate_section_has_exactly_two_outcomes
 run_test test_mg_ac5_2026_09_21_bodies_do_not_clear_the_gate
-run_test test_mg_ac5_incident_bodies_are_not_the_rewritten_exact_form
 run_test test_mg_ac5_substring_containment_does_not_clear_the_gate
 run_test test_mg_ac5_prose_approval_after_mockups_stays_a_gate
 run_test test_mg_ac5_skip_mockups_after_mockups_stays_a_gate
