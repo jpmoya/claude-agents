@@ -9,6 +9,9 @@ _GOAL_LIB_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 GOAL_REGISTRY_REPO="${GOAL_REGISTRY_REPO:-jpmoya/claude-agents}"
 GOAL_RECENT_DAYS=7
 
+# goal_label_name <title> -> the goal label "goal: <short>" (#319). STUB — the developer implements the rule from the ticket.
+goal_label_name() { echo "goal_label_name: not implemented (#319)" >&2; return 99; }
+
 # goal_parse <spec> -> "repo<TAB>kind<TAB>ref" (kind: ms | msall | t); exit 1 when malformed
 goal_parse() {
   local spec="${1:-}" re='^([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)(.*)$' repo rest ref
