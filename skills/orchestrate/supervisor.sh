@@ -429,6 +429,11 @@ for f in "$PIPE"/orch-*.pid; do
       # agent-go) after acting. $marker is the gate marker, never a [delivery-lead] (or legacy [project-manager]) one. A run that is already .held is
       # skipped above and stays held — held runs are not polled; the delivery lead relaunches with orchestrate.sh,
       # which clears .held (claude-agents#59).
+      # #306: a run auto-retry (step 1b) re-queued keeps its queue entry for the drain; re-holding it here would swallow the retry.
+      if [ -f "$QUEUE/orch-$issue.json" ]; then
+        slog "[queue-wait] #$issue — gate marker but already queued for relaunch, leaving the queue entry"
+        continue
+      fi
       touch "$PIPE/orch-$issue.held"
       rm -f "$QUEUE/orch-$issue.json"
       gate_reason=$(echo "$marker" | sed 's/\*\*\[[^]]*\]\*\* *//; s/^ *//; s/ *$//')
