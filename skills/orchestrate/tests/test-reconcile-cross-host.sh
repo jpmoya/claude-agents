@@ -35,6 +35,7 @@ case "$*" in
   "issue list"*"--label agent-in-progress"*) emit '[{"number":88}]' ;;
   "issue list"*) emit '[]' ;;
   "issue view"*)
+    [ -f "$HERE/view-fail" ] && exit 7
     upd=$(cat "$HERE/updated-at"); com=$(cat "$HERE/comments-json")
     emit "{\"state\":\"OPEN\",\"labels\":[{\"name\":\"agent-in-progress\"}],\"updatedAt\":\"$upd\",\"comments\":$com}" ;;
   *) exit 0 ;;
@@ -48,7 +49,8 @@ rh_cleanup() { rm -rf "$RH_PIPE" "$RH_HOME"; }
 rh_comment() { jq -cn --arg b "$1" --arg t "$(rh_iso_ago "$2")" '{body:$b,createdAt:$t}'; }
 # rh_tick <comments-json> — issue 88 has agent-in-progress, no local pid/queue; updatedAt 2h old
 rh_tick() {
-  rh_iso_ago 7200 > "$RH_GH/updated-at"; printf '%s' "$1" > "$RH_GH/comments-json"
+  if [ -n "${RH_UPDATED_AT+x}" ]; then printf '%s' "$RH_UPDATED_AT" > "$RH_GH/updated-at"; else rh_iso_ago 7200 > "$RH_GH/updated-at"; fi
+  printf '%s' "$1" > "$RH_GH/comments-json"
   HOME="$RH_HOME" PATH="$RH_GH:/usr/bin:/bin" PIPE="$RH_PIPE" QUEUE="$RH_PIPE/queue" LOGDIR="$RH_HOME/logs/pipeline" \
     SLACK_BOT_TOKEN="" SLACK_ENGINEERING_CHANNEL="" "$SUP_RH" >/dev/null 2>&1
   RH_LOG=$(cat "$RH_HOME/logs/pipeline/supervisor.log" 2>/dev/null)
@@ -125,6 +127,31 @@ test_rh_f_claim_text_not_at_start_of_comment_is_ignored() {
   rh_tick "[$(rh_comment "quoting: **[supervisor] NOTE** claim: $RH_OTHER 2026-01-01T00:00:00Z" 7200)]"
   rh_cleanup
   assert_contains "$RH_CALLS" "issue edit 88 --remove-label agent-in-progress" "#119/f: label removed" || return 1
+}
+
+# ---- #326: a failed/empty issue read must never clear the label (fail closed) ----------------------------------
+test_rh_g_failed_issue_read_keeps_label_and_logs_skip() {
+  rh_env; touch "$RH_GH/view-fail"
+  rh_tick "[]"
+  rh_cleanup
+  assert_not_contains "$RH_CALLS" "issue edit 88 --remove-label" "#326/g: label not removed" || return 1
+  assert_contains "$RH_LOG" "[reconcile] project-a/repo-a#88 — issue read failed rc=7, skipped" "#326/g: skip logged with rc" || return 1
+}
+
+test_rh_h_empty_line1_keeps_label() {
+  rh_env; RH_UPDATED_AT=""
+  rh_tick "[]"
+  unset RH_UPDATED_AT
+  rh_cleanup
+  assert_not_contains "$RH_CALLS" "issue edit 88 --remove-label" "#326/h: label not removed" || return 1
+}
+
+test_rh_i_cleared_line_logs_real_age_never_question_mark() {
+  rh_env
+  rh_tick "[$(rh_comment "**[test-writer] TESTS WRITTEN**" 7200)]"
+  rh_cleanup
+  assert_contains "$RH_LOG" "cleared orphaned" "#326/i: cleared" || return 1
+  assert_not_contains "$RH_LOG" "stale ?s" "#326/i: age is a number" || return 1
 }
 
 # ---- orchestrate.sh side ----------------------------------------------------------------------------------------
@@ -212,6 +239,9 @@ run_test test_rh_d_no_claim_stale_comment_clears_label
 run_test test_rh_d2_no_claim_fresh_comment_keeps_label
 run_test test_rh_e_this_host_claim_fresh_comment_keeps_label
 run_test test_rh_f_claim_text_not_at_start_of_comment_is_ignored
+run_test test_rh_g_failed_issue_read_keeps_label_and_logs_skip
+run_test test_rh_h_empty_line1_keeps_label
+run_test test_rh_i_cleared_line_logs_real_age_never_question_mark
 run_test test_rh_o_launch_path_posts_one_claim_line
 run_test test_rh_o_queue_path_posts_one_claim_line
 run_test test_rh_o_failed_claim_comment_never_blocks_launch
