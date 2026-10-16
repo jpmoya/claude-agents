@@ -4,7 +4,7 @@
 #   supervisor  hand-to-jp fail (this run, this issue, gate marker code-reviewer PASS) -> held
 #               controls: stale line, other issue, PASS marker with no line -> restart
 #   observ.     the hold posts through the existing Slack notify (no new webhook), payload has no secrets
-#   doc pins    orchestrator.md: hand-to-jp log line, Run log list, :65/:385 merged rule, merge-gate exit
+#   doc pins    orchestrator.md: hand-to-jp log line, Run log list, :65/:385 merged rule, merge-gate exit (inverted by #304)
 # Prefixed i129_ (all test files share one shell). Placeholder repos only.
 
 HERE_I129=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -72,10 +72,15 @@ test_i129_hand_to_jp_fail_holds() {
   i129_assert_held
 }
 
-# merge-gate wait after PASS: same stage, reason names the gate
+# #304 (inverted from #129): a merge-gate wait after PASS is NOT a hand-to-jp exit. The deployer owns the gate and
+# posts BLOCKED "Blocked on: dependency"; the orchestrator rule must not tell it to log a merge-gate hand-to-jp row.
 test_i129_merge_gate_wait_holds() {
-  i129_run 60 42 "both PASSes; merge gate: Depends on #1151 for merging, #1151 still open"
-  i129_assert_held
+  local f="$ROOT_I129/agents/orchestrator.md" row
+  row=$(grep -F 'One post-PASS hand-to-JP rule' "$f" | head -1)
+  [ -n "$row" ] || { fail "orchestrator.md: post-PASS hand-to-JP rule row missing"; return 1; }
+  assert_not_contains "$row" "merge gate:" "#304: hand-to-jp reason template has no merge-gate reason" || return 1
+  assert_not_contains "$row" "merge-gate wait" "#304: merge-gate wait is not an exit of the hand-to-jp rule" || return 1
+  assert_not_contains "$row" "Depends on #N for merging" "#304: hand-to-jp rule does not read the merge-gate line" || return 1
 }
 
 test_i129_stale_hand_to_jp_fail_restarts() {
@@ -151,7 +156,7 @@ test_i129_orchestrator_logs_hand_to_jp_before_terminal() {
   before_log=${row%%log_run*}
   assert_contains "$before_log" 'Before the `terminal` event' "#129: log line is specified as logged before the terminal event" || return 1
   # every exit kind is inside that same rule
-  assert_contains "$row" "merge-gate wait" "#129: merge-gate wait is an exit of the rule" || return 1
+  assert_not_contains "$row" "merge-gate wait" "#304: merge-gate wait is no longer an exit of the rule" || return 1
   assert_contains "$row" "unsupported project" "#129: unsupported project is an exit of the rule" || return 1
 }
 
@@ -186,8 +191,13 @@ test_i129_no_second_hand_to_jp_rule() {
 
 test_i129_orchestrator_lists_merge_gate_wait_as_hand_to_jp_exit() {
   local f="$ROOT_I129/agents/orchestrator.md"
-  grep -iE 'merge.gate|Depends on #N for merging' "$f" | grep -qF 'hand-to-jp' \
-    || { fail "orchestrator.md: no line lists the merge-gate wait as a hand-to-jp exit"; return 1; }
+  # #304: inverted — no line may list the merge-gate wait as a hand-to-jp exit
+  if grep -iE 'merge.gate|Depends on #N for merging' "$f" | grep -qF 'hand-to-jp'; then
+    fail "orchestrator.md: a line still lists the merge-gate wait as a hand-to-jp exit"; return 1
+  fi
+  if grep -iE 'merge.gate wait' "$f" | grep -qiE 'hand(ed)?[ -]to[ -]JP'; then
+    fail "orchestrator.md: merge-gate wait still handed to JP"; return 1
+  fi
 }
 
 run_test test_i129_hand_to_jp_fail_holds
