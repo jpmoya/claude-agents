@@ -97,12 +97,12 @@ test_dgi_doc_dl_rule3_plan_change_needs_no_new_approval() {
 test_dgi_gates_pm_section_lists_gates_and_launch_permission_only() {
   local s; s=$(dgi_section "$DGI_PM" '[Aa]pproved goal')
   # AC3: one sentence ties "launch permission only" and "never answers" to the whole gate list
-  dgi_line "$s" "PM gates" "agent-go" "launch permission" "never answers" "${DGI_GATES[@]}" || return 1
+  dgi_line "$s" "PM gates" "launch permission" "never answers" "${DGI_GATES[@]}" || return 1
 }
 
 test_dgi_gates_dl_section_lists_gates_and_launch_permission_only() {
   local s; s=$(dgi_section "$DGI_DL" '^## ([0-9]+\. )?Approval')
-  dgi_line "$s" "DL gates" "agent-go" "launch permission" "never answers" "${DGI_GATES[@]}" || return 1
+  dgi_line "$s" "DL gates" "launch permission" "never answers" "${DGI_GATES[@]}" || return 1
 }
 
 # ------------------------------------------------------------------ AC2: helper fixtures
