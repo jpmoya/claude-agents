@@ -92,18 +92,8 @@ goal_scope() { local r; r=$(_goal_scope_rows "$@") || return 1; [ -z "$r" ] || p
 
 # _goal_registry_json [all] -> JSON array of registry goals: open ones plus those closed within GOAL_RECENT_DAYS
 # (`all`: every closed one). state: active | held | waiting_jp | stopped | delivered.
-_goal_registry_json() {
-  local open closed cut since=""
-  cut=$(jq -nr --argjson d "$GOAL_RECENT_DAYS" '(now - $d * 86400) | strftime("%Y-%m-%dT%H:%M:%SZ")')
-  open=$(_goal_get_all "repos/$GOAL_REGISTRY_REPO/issues?labels=delivery-goal&state=open&per_page=100") || return 1
-  if [ "${1:-}" = all ]; then cut="0000"; else since="&since=$cut"; fi
-  closed=$(_goal_get_all "repos/$GOAL_REGISTRY_REPO/issues?labels=delivery-goal&state=closed&per_page=100$since") || return 1
-  jq -nc --argjson a "$open" --argjson b "$closed" --arg cut "$cut" '
-    ($a + $b)
-    | map(select(has("pull_request") | not)
-          | select(any(.labels[]; .name == "delivery-goal"))
-          | select(.state == "open" or (.closed_at != null and .closed_at >= $cut)))
-    | map(. as $i
+# Per-issue mapping shared by _goal_registry_json and register (#292): one issue -> goal object (empty for an unreadable closed one).
+_GOAL_ISSUE_JQ='def goal_of: . as $i
           | ([try (($i.body // "") | capture("```json\\n(?<j>[^\\n]*)\\n```") | .j | fromjson) catch null] | .[0]) as $b
           | ([$i.labels[].name]) as $l
           | if $b == null then
@@ -118,7 +108,23 @@ _goal_registry_json() {
                   elif ($l | index("goal-held")) then "held"
                   elif ($l | index("goal-waiting-jp")) then "waiting_jp"
                   else "active" end)}
-            end)'
+            end;'
+
+# _goal_issue_to_goal — one registry issue JSON on stdin -> its goal JSON on stdout
+_goal_issue_to_goal() { jq -c "$_GOAL_ISSUE_JQ goal_of"; }
+
+_goal_registry_json() {
+  local open closed cut since=""
+  cut=$(jq -nr --argjson d "$GOAL_RECENT_DAYS" '(now - $d * 86400) | strftime("%Y-%m-%dT%H:%M:%SZ")')
+  open=$(_goal_get_all "repos/$GOAL_REGISTRY_REPO/issues?labels=delivery-goal&state=open&per_page=100") || return 1
+  if [ "${1:-}" = all ]; then cut="0000"; else since="&since=$cut"; fi
+  closed=$(_goal_get_all "repos/$GOAL_REGISTRY_REPO/issues?labels=delivery-goal&state=closed&per_page=100$since") || return 1
+  jq -nc --argjson a "$open" --argjson b "$closed" --arg cut "$cut" "$_GOAL_ISSUE_JQ"'
+    ($a + $b)
+    | map(select(has("pull_request") | not)
+          | select(any(.labels[]; .name == "delivery-goal"))
+          | select(.state == "open" or (.closed_at != null and .closed_at >= $cut)))
+    | map(goal_of)'
 }
 
 # goal_registry_list -> <registry issue number>\t<id>\t<state>
@@ -153,10 +159,10 @@ _goal_checkout() {
 
 _goal_have_marker_re() { type marker_re >/dev/null 2>&1 || . "$_GOAL_LIB_DIR/../../hooks/pipeline-markers.sh" 2>/dev/null || . "$HOME/.claude/hooks/pipeline-markers.sh"; }
 
-# goal_brief <id> -> the delivery-lead launch prompt, generated from live registry + ticket state (never the cache)
+# goal_brief <id> [goal-json] -> the delivery-lead launch prompt, generated from live registry + ticket state (never the cache)
 goal_brief() {
   local id="$1" g spec instr repo checkout rows row ref st n owner_repo cm last
-  g=$(_goal_find "$id") || { echo "goal $id not found in the registry" >&2; return 1; }
+  if [ $# -ge 2 ] && [ -n "$2" ]; then g=$2; else g=$(_goal_find "$id") || { echo "goal $id not found in the registry" >&2; return 1; }; fi
   spec=$(printf '%s' "$g" | jq -r .spec); instr=$(printf '%s' "$g" | jq -r .instructions)
   repo=$(goal_parse "$spec" | cut -f1)
   checkout=$(_goal_checkout "$repo") || checkout="(not in DISPATCH_REPOS)"
@@ -200,13 +206,13 @@ goal_kill() {
   return 0
 }
 
-# goal_launch <id> — one detached cycle of $GOAL_AGENT in the repo's checkout; records .pid/.start/.launched-at
+# goal_launch <id> [goal-json] — one detached cycle of $GOAL_AGENT in the repo's checkout; records .pid/.start/.launched-at
 goal_launch() {
-  local id="$1" g repo checkout brief
-  g=$(_goal_find "$id") || { echo "goal $id not found in the registry" >&2; return 1; }
+  local id="$1" g="${2:-}" repo checkout brief
+  [ -n "$g" ] || g=$(_goal_find "$id") || { echo "goal $id not found in the registry" >&2; return 1; }
   repo=$(goal_parse "$(printf '%s' "$g" | jq -r .spec)" | cut -f1)
   checkout=$(_goal_checkout "$repo") || { echo "$repo is not in DISPATCH_REPOS" >&2; return 1; }
-  brief=$(goal_brief "$id") || return 1
+  brief=$(goal_brief "$id" "$g") || return 1
   mkdir -p "$PIPE" "$LOGDIR/goals"
   rm -f "$PIPE/goal-$id.exit"
   printf '\n===== [%s] LAUNCH goal=%s =====\n' "$(date -u +%FT%TZ)" "$id" >> "$PIPE/goal-$id.log"
