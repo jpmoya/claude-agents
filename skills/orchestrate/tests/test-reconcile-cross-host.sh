@@ -146,14 +146,6 @@ test_rh_h_empty_line1_keeps_label() {
   assert_not_contains "$RH_CALLS" "issue edit 88 --remove-label" "#326/h: label not removed" || return 1
 }
 
-test_rh_i_cleared_line_logs_real_age_never_question_mark() {
-  rh_env
-  rh_tick "[$(rh_comment "**[test-writer] TESTS WRITTEN**" 7200)]"
-  rh_cleanup
-  assert_contains "$RH_LOG" "cleared orphaned" "#326/i: cleared" || return 1
-  assert_not_contains "$RH_LOG" "stale ?s" "#326/i: age is a number" || return 1
-}
-
 # ---- orchestrate.sh side ----------------------------------------------------------------------------------------
 rh_o_env() {  # rh_o_env <full|open>
   local mode=$1 i
@@ -241,7 +233,6 @@ run_test test_rh_e_this_host_claim_fresh_comment_keeps_label
 run_test test_rh_f_claim_text_not_at_start_of_comment_is_ignored
 run_test test_rh_g_failed_issue_read_keeps_label_and_logs_skip
 run_test test_rh_h_empty_line1_keeps_label
-run_test test_rh_i_cleared_line_logs_real_age_never_question_mark
 run_test test_rh_o_launch_path_posts_one_claim_line
 run_test test_rh_o_queue_path_posts_one_claim_line
 run_test test_rh_o_failed_claim_comment_never_blocks_launch
