@@ -140,7 +140,7 @@ dd_thread() {
   local arr='[]' b i=0
   dd_env
   mk_restarting "$DD_PIPE" 42 "$DD_REPO"
-  dd_iso_ago 1300 > "$DD_PIPE/orch-42.start"
+  dd_iso_ago 1300 > "$(rkp "$DD_PIPE/orch-42.start")"
   for b in "$@"; do
     i=$((i + 1))
     arr=$(printf '%s' "$arr" | jq --arg b "$b" --arg t "2026-09-21T0$i:00:00Z" '. + [{body: $b, createdAt: $t}]')
@@ -151,7 +151,7 @@ dd_thread() {
 # dd_assert_not_gate <label> — after a tick: no .held/.alert/[held], restart path taken
 dd_assert_not_gate() {
   local held alert log
-  held=$(dd_present "$DD_PIPE/orch-42.held"); alert=$(dd_present "$DD_PIPE/orch-42.alert"); log=$(dd_log)
+  held=$(dd_present "$(rkp "$DD_PIPE/orch-42.held")"); alert=$(dd_present "$(rkp "$DD_PIPE/orch-42.alert")"); log=$(dd_log)
   dd_cleanup
   assert_eq "$held" "absent" "$1: .held" || return 1
   assert_eq "$alert" "absent" "$1: .alert" || return 1
@@ -162,8 +162,8 @@ dd_assert_not_gate() {
 # dd_assert_gate <label> <expected-name-in-alert> [<name-that-must-not-be-in-alert>]
 dd_assert_gate() {
   local held alert log queued
-  held=$(dd_present "$DD_PIPE/orch-42.held"); alert=$(cat "$DD_PIPE/orch-42.alert" 2>/dev/null); log=$(dd_log)
-  queued=$(dd_present "$DD_PIPE/queue/orch-42.json")
+  held=$(dd_present "$(rkp "$DD_PIPE/orch-42.held")"); alert=$(cat "$(rkp "$DD_PIPE/orch-42.alert")" 2>/dev/null); log=$(dd_log)
+  queued=$(dd_present "$(rkp "$DD_PIPE/queue/orch-42.json")")
   dd_cleanup
   assert_eq "$held" "present" "$1: .held" || return 1
   assert_contains "$alert" "waiting on JP" "$1: alert says waiting on JP" || return 1
@@ -250,7 +250,7 @@ test_dd_ac7_deployed_then_decision_is_done() {   # characterisation
   dd_thread '**[deployer] DEPLOYED**' $'**[project-manager] DECISION**\nResolves: https://example.test/c/1'
   dd_tick
   local done_f held
-  done_f=$(dd_present "$DD_PIPE/orch-42.done"); held=$(dd_present "$DD_PIPE/orch-42.held")
+  done_f=$(dd_present "$(rkp "$DD_PIPE/orch-42.done")"); held=$(dd_present "$(rkp "$DD_PIPE/orch-42.held")")
   dd_cleanup
   assert_eq "$done_f" "present" "AC7: DEPLOYED then DECISION -> .done" || return 1
   assert_eq "$held" "absent" "AC7: not held" || return 1
@@ -715,7 +715,7 @@ test_dd_i192_deployed_then_delivery_lead_decision_is_done() {
   dd_thread '**[deployer] DEPLOYED**' $'**[delivery-lead] DECISION**\nResolves: https://example.test/c/1'
   dd_tick
   local done_f held
-  done_f=$(dd_present "$DD_PIPE/orch-42.done"); held=$(dd_present "$DD_PIPE/orch-42.held")
+  done_f=$(dd_present "$(rkp "$DD_PIPE/orch-42.done")"); held=$(dd_present "$(rkp "$DD_PIPE/orch-42.held")")
   dd_cleanup
   assert_eq "$done_f" "present" "i192: DEPLOYED then delivery-lead DECISION -> .done" || return 1
   assert_eq "$held" "absent" "i192: not held" || return 1

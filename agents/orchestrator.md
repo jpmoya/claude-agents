@@ -179,16 +179,16 @@ Code-reviewer re-runs after every fix cycle — a fix can break what previously 
 
 The locked tests are the spec the developer must satisfy without touching. Three layers enforce it: the developer's prompt, the `protect-locked-tests.sh` hook, and this check.
 
-**Writing the lock (on `TESTS APPROVED`):** take the `Locked test files:` fenced block from the latest `[test-writer] TESTS WRITTEN` comment and the sha the test-reviewer says it approved. Write the paths, one per line, to `/tmp/pipeline/locked-<issue>.txt`, and note the sha in the run log. Export `PIPELINE_LOCKED_TESTS_FILE=/tmp/pipeline/locked-<issue>.txt` in the shell that launches fullstack-developer (and every fix cycle). Without the export the hook is inert.
+**Writing the lock (on `TESTS APPROVED`):** take the `Locked test files:` fenced block from the latest `[test-writer] TESTS WRITTEN` comment and the sha the test-reviewer says it approved. Write the paths, one per line, to `/tmp/pipeline/locked-<run_key>.txt`, and note the sha in the run log. Export `PIPELINE_LOCKED_TESTS_FILE=/tmp/pipeline/locked-<run_key>.txt` in the shell that launches fullstack-developer (and every fix cycle). Without the export the hook is inert.
 
-**Staging merge touching a locked test:** on a full-lane ticket with a lock file, when the PR branch must absorb `origin/staging`, run `git diff --name-only $(git merge-base origin/<branch> origin/staging) origin/staging -- $(cat /tmp/pipeline/locked-<issue>.txt)`. Empty → the merge goes to the developer as today. Non-empty → the developer's hook would refuse the merge commit, so route: (1) **test-writer**, one round, **without** exporting `PIPELINE_LOCKED_TESTS_FILE`, doing a real `git merge origin/staging` (no rebase, no force-push) and ending in `TESTS WRITTEN` with the same `Locked test files:` block and the new head sha; (2) **test-reviewer** in pre-implementation mode on that commit; (3) **fullstack-developer**, one cycle. The check runs on a developer `BLOCKED` of the form above and before any developer dispatch that would merge `origin/staging`. For this round the `TESTS WRITTEN` row's parallel developer dispatch is replaced by step (3): the developer is dispatched once, after test-reviewer approves the new commit (and the lock file is rewritten). A later re-refusal (staging moved again) is handled by the same row. This test-writer merge round is not a developer fix cycle and does not count against the 2-cycle caps below; the existing `TESTS WRITTEN` / `TESTS APPROVED` rows rewrite the lock file and the approved sha.
+**Staging merge touching a locked test:** on a full-lane ticket with a lock file, when the PR branch must absorb `origin/staging`, run `git diff --name-only $(git merge-base origin/<branch> origin/staging) origin/staging -- $(cat /tmp/pipeline/locked-<run_key>.txt)`. Empty → the merge goes to the developer as today. Non-empty → the developer's hook would refuse the merge commit, so route: (1) **test-writer**, one round, **without** exporting `PIPELINE_LOCKED_TESTS_FILE`, doing a real `git merge origin/staging` (no rebase, no force-push) and ending in `TESTS WRITTEN` with the same `Locked test files:` block and the new head sha; (2) **test-reviewer** in pre-implementation mode on that commit; (3) **fullstack-developer**, one cycle. The check runs on a developer `BLOCKED` of the form above and before any developer dispatch that would merge `origin/staging`. For this round the `TESTS WRITTEN` row's parallel developer dispatch is replaced by step (3): the developer is dispatched once, after test-reviewer approves the new commit (and the lock file is rewritten). A later re-refusal (staging moved again) is handled by the same row. This test-writer merge round is not a developer fix cycle and does not count against the 2-cycle caps below; the existing `TESTS WRITTEN` / `TESTS APPROVED` rows rewrite the lock file and the approved sha.
 
 **Checking the lock (on every `IMPLEMENTED` and after every fix cycle):**
 
 ```bash
 cd <repo-root> && git fetch -q origin <branch>
 # 1. locked files byte-identical to the approved sha
-git diff --stat <approved-sha> origin/<branch> -- $(cat /tmp/pipeline/locked-<issue>.txt)   # must print nothing
+git diff --stat <approved-sha> origin/<branch> -- $(cat /tmp/pipeline/locked-<run_key>.txt)   # must print nothing
 # 2. test files the developer added (new files matching the repo's test layout)
 git diff --name-only --diff-filter=A <approved-sha> origin/<branch> | grep -E '(^|/)(tests?|__tests__|e2e|cypress|playwright|spec)/|\.(test|spec)\.[cm]?[jt]sx?$|(^|/)test_[^/]*\.py$|_test\.py$|(^|/)conftest\.py$|_test\.go$'
 ```
@@ -276,15 +276,17 @@ Call `wait_for_capacity` before every `claude` invocation (every dispatch is det
 
 ## How to dispatch
 
-Subagents can't spawn subagents, so each stage runs as its own headless Claude Code process from the repo root, **with the stage agent as that process's main agent** (`claude --agent <agent-name> -p`). Never launch a stage as `claude -p "Use the <agent-name> subagent to …"`: that makes a generic wrapper session which has not read the agent definition, backgrounds the real agent, and — when the handoff hook stops it — posts made-up first lines like `**[deployer] MARKER** BLOCKED` that bury the real marker (claude-agents#5, 2026-09-17). **Every stage is dispatched detached** (`nohup … &`, then the bounded poll below): a stage started inside the orchestrator's own Bash call becomes a session task and is killed when the orchestrator ends its turn (scheduler#792, #882). When launching fullstack-developer, prefix the command with `PIPELINE_LOCKED_TESTS_FILE=/tmp/pipeline/locked-<issue>.txt` so the lock hook is armed in that process.
+Subagents can't spawn subagents, so each stage runs as its own headless Claude Code process from the repo root, **with the stage agent as that process's main agent** (`claude --agent <agent-name> -p`). Never launch a stage as `claude -p "Use the <agent-name> subagent to …"`: that makes a generic wrapper session which has not read the agent definition, backgrounds the real agent, and — when the handoff hook stops it — posts made-up first lines like `**[deployer] MARKER** BLOCKED` that bury the real marker (claude-agents#5, 2026-09-17). **Every stage is dispatched detached** (`nohup … &`, then the bounded poll below): a stage started inside the orchestrator's own Bash call becomes a session task and is killed when the orchestrator ends its turn (scheduler#792, #882). When launching fullstack-developer, prefix the command with `PIPELINE_LOCKED_TESTS_FILE=/tmp/pipeline/locked-<run_key>.txt` so the lock hook is armed in that process.
 
 ### Every launch: stage coordinates for the handoff hook
+
+`<run_key>` is `<owner>_<repo>-<N>` (slash in `owner/repo` becomes `_`; compute it with `. ~/.claude/skills/orchestrate/pipeline-lib.sh; run_key <owner/repo> <N>`). Every per-run and stage file under `/tmp/pipeline` uses it, so same-numbered tickets of different repos never collide.
 
 Before **every** `claude` invocation, record the agent's current routing-marker count and export the stage coordinates. The `require-handoff-marker.sh` Stop/SubagentStop hook reads them and refuses to let the stage finish until a new marker is on the issue — this is what turns a silent no-marker run into a posted handoff.
 
 ```bash
 mkdir -p /tmp/pipeline
-count <N> <agent-name> > /tmp/pipeline/<N>-<agent-name>-before.txt
+count <N> <agent-name> > /tmp/pipeline/<run_key>-<agent-name>-before.txt
 export PIPELINE_ISSUE=<N> PIPELINE_AGENT=<agent-name> PIPELINE_REPO=<owner>/<repo>
 ```
 
@@ -298,15 +300,15 @@ Launch each in its own subshell with its own stage-coordinate exports, record bo
 cd <repo-root>
 mkdir -p /tmp/pipeline
 . ~/.claude/hooks/pipeline-markers.sh   # and define count() from the single-stage section below
-BEFORE_CODE=$(count <N> code-reviewer); echo "$BEFORE_CODE" > /tmp/pipeline/<N>-code-reviewer-before.txt
-BEFORE_TEST=$(count <N> test-reviewer); echo "$BEFORE_TEST" > /tmp/pipeline/<N>-test-reviewer-before.txt
+BEFORE_CODE=$(count <N> code-reviewer); echo "$BEFORE_CODE" > /tmp/pipeline/<run_key>-code-reviewer-before.txt
+BEFORE_TEST=$(count <N> test-reviewer); echo "$BEFORE_TEST" > /tmp/pipeline/<run_key>-test-reviewer-before.txt
 ( export PIPELINE_ISSUE=<N> PIPELINE_AGENT=code-reviewer PIPELINE_REPO=<owner>/<repo>
-  nohup ~/.claude/skills/orchestrate/stage-run.sh --lane <lane> --mode <mode> --cycle <cycle> --pr <pr> -- claude --dangerously-skip-permissions --agent code-reviewer -p "<task>. Repo: <owner>/<repo>. Issue: #<N>." > /tmp/pipeline/run-<N>-code-reviewer.log 2>&1 &
-  echo $! > /tmp/pipeline/<N>-code-reviewer.pid )
+  nohup ~/.claude/skills/orchestrate/stage-run.sh --lane <lane> --mode <mode> --cycle <cycle> --pr <pr> -- claude --dangerously-skip-permissions --agent code-reviewer -p "<task>. Repo: <owner>/<repo>. Issue: #<N>." > /tmp/pipeline/run-<run_key>-code-reviewer.log 2>&1 &
+  echo $! > /tmp/pipeline/<run_key>-code-reviewer.pid )
 ( export PIPELINE_ISSUE=<N> PIPELINE_AGENT=test-reviewer PIPELINE_REPO=<owner>/<repo>
-  nohup ~/.claude/skills/orchestrate/stage-run.sh --lane <lane> --mode <mode> --cycle <cycle> --pr <pr> -- claude --dangerously-skip-permissions --agent test-reviewer -p "<task>. Repo: <owner>/<repo>. Issue: #<N>." > /tmp/pipeline/run-<N>-test-reviewer.log 2>&1 &
-  echo $! > /tmp/pipeline/<N>-test-reviewer.pid )
-PID_CODE=$(cat /tmp/pipeline/<N>-code-reviewer.pid); PID_TEST=$(cat /tmp/pipeline/<N>-test-reviewer.pid)
+  nohup ~/.claude/skills/orchestrate/stage-run.sh --lane <lane> --mode <mode> --cycle <cycle> --pr <pr> -- claude --dangerously-skip-permissions --agent test-reviewer -p "<task>. Repo: <owner>/<repo>. Issue: #<N>." > /tmp/pipeline/run-<run_key>-test-reviewer.log 2>&1 &
+  echo $! > /tmp/pipeline/<run_key>-test-reviewer.pid )
+PID_CODE=$(cat /tmp/pipeline/<run_key>-code-reviewer.pid); PID_TEST=$(cat /tmp/pipeline/<run_key>-test-reviewer.pid)
 echo "PID_CODE=$PID_CODE PID_TEST=$PID_TEST"
 ```
 
@@ -315,8 +317,8 @@ Poll both in one loop (chunks of up to 36 × 15s; repeat chunks to the 10 min re
 ```bash
 # Each Bash call is a fresh shell: reload helpers and state from disk every chunk.
 . ~/.claude/hooks/pipeline-markers.sh   # and define count() as in the launch block
-BEFORE_CODE=$(cat /tmp/pipeline/<N>-code-reviewer-before.txt); BEFORE_TEST=$(cat /tmp/pipeline/<N>-test-reviewer-before.txt)
-PID_CODE=$(cat /tmp/pipeline/<N>-code-reviewer.pid); PID_TEST=$(cat /tmp/pipeline/<N>-test-reviewer.pid)
+BEFORE_CODE=$(cat /tmp/pipeline/<run_key>-code-reviewer-before.txt); BEFORE_TEST=$(cat /tmp/pipeline/<run_key>-test-reviewer-before.txt)
+PID_CODE=$(cat /tmp/pipeline/<run_key>-code-reviewer.pid); PID_TEST=$(cat /tmp/pipeline/<run_key>-test-reviewer.pid)
 DONE_CODE=0; DONE_TEST=0
 for i in $(seq 1 36); do
   sleep 15
@@ -343,7 +345,7 @@ Every dispatch goes through the `stage-run.sh` prefix wrapper: `--lane fast|full
 ```bash
 cd <repo-root>
 nohup ~/.claude/skills/orchestrate/stage-run.sh --lane <lane> --mode <mode> --cycle <cycle> --pr <pr> -- claude --dangerously-skip-permissions --agent <agent-name> -p "<task>. Repo: <owner>/<repo>. Issue: #<N>." \
-  > /tmp/pipeline/run-<issue>-<agent>.log 2>&1 &
+  > /tmp/pipeline/run-<run_key>-<agent>.log 2>&1 &
 echo "PID=$!"
 ```
 
@@ -371,8 +373,8 @@ done
 
 When the wait ends without a marker:
 
-1. **Process exited** → go straight to the handoff recovery below (once), then the no-marker report. No further waiting. Log the dispatch with `"outcome":"stall"` (or `recovered`) and `"nag_mtime":"<epoch-or-none>"` (`stat -f %m /tmp/pipeline/<N>-<agent>-nags.txt`, read at log time, informational only).
-2. **Cap hit, process alive** → stop polling. `tail -3 /tmp/pipeline/run-<issue>-<agent>.log` (reporting only), log the dispatch with `"outcome":"no-marker"`, then `log_run '"event":"terminal","repo":"<owner/repo>","issue":<N>,"state":"stage running at cap","next_action":"supervisor relaunch picks up result"'` (the supervisor reads this exact row to tell a cap exit from a silent one), and report to JP that the stage is still running and unreported. Do not kill it, do not dispatch anything else: headless stages are one-shot and exit on their own, and the supervisor's relaunch picks up the result.
+1. **Process exited** → go straight to the handoff recovery below (once), then the no-marker report. No further waiting. Log the dispatch with `"outcome":"stall"` (or `recovered`) and `"nag_mtime":"<epoch-or-none>"` (`stat -f %m /tmp/pipeline/<run_key>-<agent>-nags.txt`, read at log time, informational only).
+2. **Cap hit, process alive** → stop polling. `tail -3 /tmp/pipeline/run-<run_key>-<agent>.log` (reporting only), log the dispatch with `"outcome":"no-marker"`, then `log_run '"event":"terminal","repo":"<owner/repo>","issue":<N>,"state":"stage running at cap","next_action":"supervisor relaunch picks up result"'` (the supervisor reads this exact row to tell a cap exit from a silent one), and report to JP that the stage is still running and unreported. Do not kill it, do not dispatch anything else: headless stages are one-shot and exit on their own, and the supervisor's relaunch picks up the result.
 
 Why the caps are tight: on 2026-09-06, 6 of 35 dispatches ended no-marker after 10–45 min of waiting each, and the old 45-minute loop waited that long even for processes that had already died. Since 2026-09-08 the launchers lift the 600s background-task ceiling that used to kill headless sessions mid-stage, so a stage alive at its cap is left running and reported, never killed.
 

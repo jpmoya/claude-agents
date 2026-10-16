@@ -38,13 +38,13 @@ ms_seed_run_line() {
 ms_exited_run() {
   sq_env open
   mk_restarting "$SQ_PIPE" 42 "$SQ_REPO"
-  sq_iso_ago 600 > "$SQ_PIPE/orch-42.launched-at"
+  sq_iso_ago 600 > "$(rkp "$SQ_PIPE/orch-42.launched-at")"
   sq_marker "$MS_IMPL"
   ms_seed_run_line "$1" "$2"
   sq_tick
   MS_LOG=$(sq_log)
-  MS_HELD=$(sq_present "$SQ_PIPE/orch-42.held")
-  MS_QUEUED=$(sq_present "$SQ_PIPE/queue/orch-42.json")
+  MS_HELD=$(sq_present "$(rkp "$SQ_PIPE/orch-42.held")")
+  MS_QUEUED=$(sq_present "$(rkp "$SQ_PIPE/queue/orch-42.json")")
   sq_cleanup
 }
 
@@ -74,14 +74,14 @@ test_ms_structural_fail_in_earlier_run_restarts() {
 test_ms_structural_fail_other_issue_does_not_hold() {
   sq_env open
   mk_restarting "$SQ_PIPE" 42 "$SQ_REPO"
-  sq_iso_ago 600 > "$SQ_PIPE/orch-42.launched-at"
+  sq_iso_ago 600 > "$(rkp "$SQ_PIPE/orch-42.launched-at")"
   sq_marker "$MS_IMPL"
   mkdir -p "$SQ_HOME/.claude/pipeline"
   printf '{"ts":"%s","host":"h","event":"validate","repo":"project-a/repo-a","issue":99,"stage":"structural","result":"fail","reason":"x"}\n' \
     "$(sq_iso_ago 60)" >> "$SQ_HOME/.claude/pipeline/runs.jsonl"
   sq_tick
   local log held
-  log=$(sq_log); held=$(sq_present "$SQ_PIPE/orch-42.held")
+  log=$(sq_log); held=$(sq_present "$(rkp "$SQ_PIPE/orch-42.held")")
   sq_cleanup
   assert_contains "$log" "[queue-restart] #42" "#92: other issue's structural fail does not hold #42" || return 1
   assert_eq "$held" "absent" "#92: no .held for #42" || return 1

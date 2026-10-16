@@ -49,15 +49,15 @@ z_tick() {
 
 test_z_a_stop_queued_only_ticket_writes_tombstone() {
   z_env
-  echo '{"issue":"917"}' > "$Z_PIPE/queue/orch-917.json"   # queued, never launched: no orch-917.pid
+  echo '{"issue":"917"}' > "$(rkp "$Z_PIPE/queue/orch-917.json")"   # queued, never launched: no orch-917.pid
   local out rc
   out=$(z_run "$ORCH_Z" stop 917 2>&1); rc=$?
   local tomb=absent queued=present
-  [ -f "$Z_PIPE/orch-917.stopped" ] && tomb=present
-  [ -f "$Z_PIPE/queue/orch-917.json" ] || queued=absent
+  [ -f "$(rkp "$Z_PIPE/orch-917.stopped")" ] && tomb=present
+  [ -f "$(rkp "$Z_PIPE/queue/orch-917.json")" ] || queued=absent
   z_cleanup
   assert_exit0 "$rc" "#93/a: stop exits 0 with no pid file" || return 1
-  assert_contains "$out" "orchestrator for #917 not running" "#93/a: says not running" || return 1
+  assert_contains "$out" "orchestrator for jpmoya/claude-agents#917 not running" "#93/a: says not running" || return 1
   assert_eq "$tomb" "present" "#93/a: orch-917.stopped written" || return 1
   assert_eq "$queued" "absent" "#93/a: queue entry removed" || return 1
 }

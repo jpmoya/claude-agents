@@ -376,22 +376,22 @@ EOF
 
 test_sg_ac6_open_issue_with_release_milestone_becomes_done_with_release() {
   sg_env
-  mk_held "$SG_PIPE" 401 "$SG_REPO"; touch "$SG_PIPE/orch-401.alert"
-  printf 'Title of 401\n' > "$SG_PIPE/orch-401.title"
+  mk_held "$SG_PIPE" 401 "$SG_REPO"; touch "$(rkp "$SG_PIPE/orch-401.alert")"
+  printf 'Title of 401\n' > "$(rkp "$SG_PIPE/orch-401.title")"
   echo "v1.3.0" > "$SG_BIN/gh-issue-milestone-401"
   local before; before=$(sg_print)
   # .stopped outranks .held in derive_runs, so add it only after the held-row control snapshot
-  touch "$SG_PIPE/orch-401.stopped"
+  touch "$(rkp "$SG_PIPE/orch-401.stopped")"
   sg_reconcile --force
   local out; out=$(sg_print)
   local age
   age=$(python3 -c "
 import datetime, sys
 t = datetime.datetime.strptime(open(sys.argv[1]).readline().strip(), '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=datetime.timezone.utc)
-print(int(abs((datetime.datetime.now(datetime.timezone.utc) - t).total_seconds())))" "$SG_PIPE/orch-401.closed" 2>/dev/null || echo BAD)
+print(int(abs((datetime.datetime.now(datetime.timezone.utc) - t).total_seconds())))" "$(rkp "$SG_PIPE/orch-401.closed")" 2>/dev/null || echo BAD)
   local log; log=$(cat "$SG_HOME/logs/pipeline/supervisor.log" 2>/dev/null)
-  local rel; rel=$(head -n1 "$SG_PIPE/orch-401.release" 2>/dev/null)
-  local st; st="$(sg_present "$SG_PIPE/orch-401.done"):$(sg_present "$SG_PIPE/orch-401.held"):$(sg_present "$SG_PIPE/orch-401.stopped"):$(sg_present "$SG_PIPE/orch-401.alert")"
+  local rel; rel=$(head -n1 "$(rkp "$SG_PIPE/orch-401.release")" 2>/dev/null)
+  local st; st="$(sg_present "$(rkp "$SG_PIPE/orch-401.done")"):$(sg_present "$(rkp "$SG_PIPE/orch-401.held")"):$(sg_present "$(rkp "$SG_PIPE/orch-401.stopped")"):$(sg_present "$(rkp "$SG_PIPE/orch-401.alert")")"
   sg_cleanup
   assert_eq "$(sg_runs_issues "$before")" "401" "AC6: control — it is a held row beforehand" || return 1
   assert_eq "$rel" "v1.3.0" "AC6: orch-<n>.release = the milestone title" || return 1
@@ -406,11 +406,11 @@ print(int(abs((datetime.datetime.now(datetime.timezone.utc) - t).total_seconds()
 
 test_sg_ac6_open_release_queued_ticket_drops_its_queue_entry() {
   sg_env
-  mk_queued "$SG_PIPE" 402 "$SG_REPO"; printf 'Title of 402\n' > "$SG_PIPE/orch-402.title"
+  mk_queued "$SG_PIPE" 402 "$SG_REPO"; printf 'Title of 402\n' > "$(rkp "$SG_PIPE/orch-402.title")"
   echo "v2.0.1" > "$SG_BIN/gh-issue-milestone-402"
   sg_reconcile --force
   local out; out=$(sg_print)
-  local q; q=$(sg_present "$SG_PIPE/queue/orch-402.json")
+  local q; q=$(sg_present "$(rkp "$SG_PIPE/queue/orch-402.json")")
   sg_cleanup
   assert_eq "$q" "absent" "AC6: queue entry removed" || return 1
   assert_eq "$(sg_completed_issues "$out")" "402" "AC6: queued-only ticket lands in completed[]" || return 1
@@ -419,11 +419,11 @@ test_sg_ac6_open_release_queued_ticket_drops_its_queue_entry() {
 
 test_sg_ac6_closed_issue_with_release_milestone_carries_release() {
   sg_env
-  mk_held "$SG_PIPE" 403 "$SG_REPO"; printf 'Title of 403\n' > "$SG_PIPE/orch-403.title"
+  mk_held "$SG_PIPE" 403 "$SG_REPO"; printf 'Title of 403\n' > "$(rkp "$SG_PIPE/orch-403.title")"
   echo "CLOSED" > "$SG_BIN/gh-issue-state-403"
   sg_iso_ago 3600 > "$SG_BIN/gh-issue-closed-at-403"
   echo "v1.3.0" > "$SG_BIN/gh-issue-milestone-403"
-  mk_held "$SG_PIPE" 404 "$SG_REPO"; printf 'Title of 404\n' > "$SG_PIPE/orch-404.title"
+  mk_held "$SG_PIPE" 404 "$SG_REPO"; printf 'Title of 404\n' > "$(rkp "$SG_PIPE/orch-404.title")"
   echo "CLOSED" > "$SG_BIN/gh-issue-state-404"
   sg_iso_ago 3600 > "$SG_BIN/gh-issue-closed-at-404"          # closed, no milestone
   sg_reconcile --force
@@ -438,14 +438,14 @@ test_sg_ac6_non_release_milestone_titles_do_nothing() {
   local n=0 t
   for t in "v1.3" "staging" "release-1" "v1.3.0-rc1" "1.3.0" "v1.3.0.1"; do
     n=$((n + 1)); local issue=$((500 + n))
-    mk_held "$SG_PIPE" "$issue" "$SG_REPO"; printf 'Title %s\n' "$issue" > "$SG_PIPE/orch-$issue.title"
+    mk_held "$SG_PIPE" "$issue" "$SG_REPO"; printf 'Title %s\n' "$issue" > "$(rkp "$SG_PIPE/orch-$issue.title")"
     printf '%s\n' "$t" > "$SG_BIN/gh-issue-milestone-$issue"
   done
   mk_held "$SG_PIPE" 520 "$SG_REPO"; echo "v9.9.9" > "$SG_BIN/gh-issue-milestone-520"   # positive control
   sg_reconcile --force
   local out; out=$(sg_print)
   local files; files=$(ls "$SG_PIPE" | grep -c '\.release$' | tr -d ' ')
-  local ctl; ctl=$(sg_present "$SG_PIPE/orch-520.release")
+  local ctl; ctl=$(sg_present "$(rkp "$SG_PIPE/orch-520.release")")
   sg_cleanup
   assert_eq "$ctl" "present" "AC6: control — a v9.9.9 milestone in the same pass does write .release" || return 1
   assert_eq "$files" "1" "AC6: none of v1.3 / staging / release-1 / v1.3.0-rc1 / 1.3.0 / v1.3.0.1 writes .release (only the control does)" || return 1
@@ -459,8 +459,8 @@ test_sg_ac6_null_milestone_leaves_open_ticket_alone() {
   mk_held "$SG_PIPE" 511 "$SG_REPO"; echo "v1.0.0" > "$SG_BIN/gh-issue-milestone-511"   # positive control
   sg_reconcile --force
   local out; out=$(sg_print)
-  local r; r=$(sg_present "$SG_PIPE/orch-510.release")
-  local ctl; ctl=$(sg_present "$SG_PIPE/orch-511.release")
+  local r; r=$(sg_present "$(rkp "$SG_PIPE/orch-510.release")")
+  local ctl; ctl=$(sg_present "$(rkp "$SG_PIPE/orch-511.release")")
   sg_cleanup
   assert_eq "$ctl" "present" "AC6: control — the v1.0.0 ticket in the same pass gets .release" || return 1
   assert_eq "$r" "absent" "AC6: no milestone -> no .release" || return 1
@@ -518,7 +518,7 @@ test_sg_ac8_print_makes_no_gh_call() {
 # =================================================================================================
 
 test_sg_ac9_relaunch_cleanup_line_lists_release() {
-  local line; line=$(grep -n 'rm -f "\$PIPE/orch-\$ISSUE"' "$RS_SG/orchestrate.sh" | head -n1)
+  local line; line=$(grep -n 'rm -f "\$PIPE/orch-\$RK"' "$RS_SG/orchestrate.sh" | head -n1)
   assert_contains "$line" "release" "AC9: the relaunch rm -f brace list contains release" || return 1
 }
 
@@ -526,11 +526,11 @@ test_sg_ac9_relaunch_removes_release_file() {
   sg_env
   printf '#!/bin/bash\nexec sleep 30\n' > "$SG_BIN/claude"; chmod +x "$SG_BIN/claude"
   mk_held "$SG_PIPE" 801 "$SG_REPO"
-  echo "v1.3.0" > "$SG_PIPE/orch-801.release"
-  local before; before=$(sg_present "$SG_PIPE/orch-801.release")
+  echo "v1.3.0" > "$(rkp "$SG_PIPE/orch-801.release")"
+  local before; before=$(sg_present "$(rkp "$SG_PIPE/orch-801.release")")
   sg_run "$RS_SG/orchestrate.sh" "$SG_REPO" 801
   local launch=$SG_OUT
-  local after; after=$(sg_present "$SG_PIPE/orch-801.release")
+  local after; after=$(sg_present "$(rkp "$SG_PIPE/orch-801.release")")
   sg_cleanup
   assert_contains "$launch" "launched orchestrator" "AC9: relaunch took the launch path (scenario sanity)" || return 1
   assert_eq "$before:$after" "present:absent" "AC9: orch-<n>.release is gone after relaunch" || return 1

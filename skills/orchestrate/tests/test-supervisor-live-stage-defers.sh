@@ -40,8 +40,8 @@ ls_cap_row() {
 ls_fixture() {
   sq_env open
   mk_restarting "$SQ_PIPE" 42 "$SQ_REPO"
-  sq_iso_ago 600 > "$SQ_PIPE/orch-42.launched-at"
-  echo 0 > "$SQ_PIPE/orch-42.exit"
+  sq_iso_ago 600 > "$(rkp "$SQ_PIPE/orch-42.launched-at")"
+  echo 0 > "$(rkp "$SQ_PIPE/orch-42.exit")"
   [ "${1:-10}" = none ] || ls_cap_row "${1:-10}"
   sq_marker "$SQ_READY"
 }
@@ -51,11 +51,11 @@ ls_restart_lines() { sq_log | grep -cF "[queue-restart] #42"; }
 test_ls_1_live_stage_defers_three_ticks() {
   ls_fixture
   sq_seed_restarts 1 1 "$SQ_READY"
-  cp "$SQ_PIPE/orch-42.restarts" "$SQ_PIPE/restarts.before"
+  cp "$(rkp "$SQ_PIPE/orch-42.restarts")" "$SQ_PIPE/restarts.before"
   ls_tick "$LS_STAGE_42"; ls_tick "$LS_STAGE_42"; ls_tick "$LS_STAGE_42"
   local same=no held log q
-  cmp -s "$SQ_PIPE/orch-42.restarts" "$SQ_PIPE/restarts.before" && same=yes
-  held=$(sq_present "$SQ_PIPE/orch-42.held"); log=$(sq_log); q=$(sq_present "$SQ_PIPE/queue/orch-42.json")
+  cmp -s "$(rkp "$SQ_PIPE/orch-42.restarts")" "$SQ_PIPE/restarts.before" && same=yes
+  held=$(sq_present "$(rkp "$SQ_PIPE/orch-42.held")"); log=$(sq_log); q=$(sq_present "$(rkp "$SQ_PIPE/queue/orch-42.json")")
   sq_cleanup
   assert_eq "$same" "yes" "#178/1: .restarts untouched" || return 1
   assert_eq "$held" "absent" "#178/1: not held" || return 1
@@ -107,16 +107,16 @@ ls_launch_prompt() {
   sq_free_slots
   printf '#!/bin/bash\nprintf "%%s\\n" "$*" > "%s/prompt.out"\n' "$SQ_PIPE" > "$SQ_GH/claude"; chmod +x "$SQ_GH/claude"
   mk_restarting "$SQ_PIPE" 42 "$SQ_REPO"
-  sq_iso_ago 600 > "$SQ_PIPE/orch-42.launched-at"
+  sq_iso_ago 600 > "$(rkp "$SQ_PIPE/orch-42.launched-at")"
   sq_seed_restarts 1 1 "$SQ_READY"
-  echo "$1" > "$SQ_PIPE/orch-42.exit"
-  echo "$2 -" > "$SQ_PIPE/orch-42.exit-class"
-  [ "${3:-}" = cap ] && touch "$SQ_PIPE/orch-42.cap-exit"
+  echo "$1" > "$(rkp "$SQ_PIPE/orch-42.exit")"
+  echo "$2 -" > "$(rkp "$SQ_PIPE/orch-42.exit-class")"
+  [ "${3:-}" = cap ] && touch "$(rkp "$SQ_PIPE/orch-42.cap-exit")"
   python3 -c "
 import json, sys
 json.dump({'issue': '42', 'repo': sys.argv[1], 'extra': '', 'reason': 'auto-restart',
            'queued_at': '2026-01-01T00:00:00Z', 'not_before': 0}, open(sys.argv[2], 'w'))
-" "$SQ_REPO" "$SQ_PIPE/queue/orch-42.json"
+" "$SQ_REPO" "$(rkp "$SQ_PIPE/queue/orch-42.json")"
   sq_marker "$SQ_READY"
   sq_tick
   local i; for i in $(seq 1 30); do [ -s "$SQ_PIPE/prompt.out" ] && break; sleep 0.1; done
@@ -125,7 +125,7 @@ json.dump({'issue': '42', 'repo': sys.argv[1], 'extra': '', 'reason': 'auto-rest
 
 test_ls_6_preamble_not_a_fault_on_cap_exit() {
   local p gone; p=$(ls_launch_prompt 0 normal cap)
-  gone=$(sq_present "$SQ_PIPE/orch-42.cap-exit")
+  gone=$(sq_present "$(rkp "$SQ_PIPE/orch-42.cap-exit")")
   sq_cleanup
   assert_eq "$gone" "absent" "#178/6: signal cleared at launch" || return 1
   assert_contains "$p" "AUTO-RESTART #1" "#178/6: relaunched with a preamble" || return 1
@@ -152,22 +152,22 @@ ls_e2e_prompt() {   # ls_e2e_prompt <exit-code> [row-age-secs|none]
   sq_free_slots
   printf '#!/bin/bash\nprintf "%%s\\n" "$*" > "%s/prompt.out"\n' "$SQ_PIPE" > "$SQ_GH/claude"; chmod +x "$SQ_GH/claude"
   mk_restarting "$SQ_PIPE" 42 "$SQ_REPO"
-  sq_iso_ago 600 > "$SQ_PIPE/orch-42.launched-at"
-  echo "$1" > "$SQ_PIPE/orch-42.exit"
+  sq_iso_ago 600 > "$(rkp "$SQ_PIPE/orch-42.launched-at")"
+  echo "$1" > "$(rkp "$SQ_PIPE/orch-42.exit")"
   [ "${2:-10}" = none ] || ls_cap_row "${2:-10}"
   sq_marker "$SQ_READY"
   ls_tick "$LS_STAGE_42"
-  local sig n1; sig=$(sq_present "$SQ_PIPE/orch-42.cap-exit"); n1=$(ls_restart_lines)
+  local sig n1; sig=$(sq_present "$(rkp "$SQ_PIPE/orch-42.cap-exit")"); n1=$(ls_restart_lines)
   ls_tick "true"
   # only the backoff clock is stepped; the queue entry itself is the supervisor's own
   python3 -c "
 import json, sys
 d = json.load(open(sys.argv[1])); d['not_before'] = 0; json.dump(d, open(sys.argv[1], 'w'))
-" "$SQ_PIPE/queue/orch-42.json" 2>/dev/null
+" "$(rkp "$SQ_PIPE/queue/orch-42.json")" 2>/dev/null
   sq_tick
   local i; for i in $(seq 1 30); do [ -s "$SQ_PIPE/prompt.out" ] && break; sleep 0.1; done
   echo "restarts-at-first-tick=$n1"
-  echo "after-deferral-signal=$sig after-launch-signal=$(sq_present "$SQ_PIPE/orch-42.cap-exit")"
+  echo "after-deferral-signal=$sig after-launch-signal=$(sq_present "$(rkp "$SQ_PIPE/orch-42.cap-exit")")"
   cat "$SQ_PIPE/prompt.out" 2>/dev/null
 }
 
@@ -212,11 +212,11 @@ test_ls_13_cap_exits_leave_counters_after_stage_ends() {
   for i in 1 2 3; do
     ls_tick "$LS_STAGE_42"        # deferral: stage alive
     ls_tick "true"                # stage finished: released and queued
-    rm -f "$SQ_PIPE/queue/orch-42.json"   # stands in for the launch that drains it
+    rm -f "$(rkp "$SQ_PIPE/queue/orch-42.json")"   # stands in for the launch that drains it
   done
   local c t log
-  c=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['count'])" "$SQ_PIPE/orch-42.restarts")
-  t=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['total'])" "$SQ_PIPE/orch-42.restarts")
+  c=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['count'])" "$(rkp "$SQ_PIPE/orch-42.restarts")")
+  t=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['total'])" "$(rkp "$SQ_PIPE/orch-42.restarts")")
   log=$(sq_log)
   sq_cleanup
   assert_eq "$c" "2" "#178/13: count unchanged" || return 1

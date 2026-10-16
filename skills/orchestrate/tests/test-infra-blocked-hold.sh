@@ -156,7 +156,7 @@ ib_present() { if [ -e "$1" ]; then echo present; else echo absent; fi; }
 ib_fixture() {
   ib_env
   mk_restarting "$IB_PIPE" 42 "$IB_REPO"
-  ib_iso_ago 1300 > "$IB_PIPE/orch-42.start"
+  ib_iso_ago 1300 > "$(rkp "$IB_PIPE/orch-42.start")"
   printf '%s\n' "$1" > "$IB_GH/gh-issue-latest-marker"
 }
 
@@ -164,9 +164,9 @@ test_ib_ac3a_operator_blocked_parks_the_run_without_a_restart() {
   ib_fixture "$IB_BLOCKED"
   ib_tick
   local held alert restarts queued log
-  held=$(ib_present "$IB_PIPE/orch-42.held"); restarts=$(ib_present "$IB_PIPE/orch-42.restarts")
-  queued=$(ib_present "$IB_PIPE/queue/orch-42.json")
-  alert=$(cat "$IB_PIPE/orch-42.alert" 2>/dev/null); log=$(ib_log)
+  held=$(ib_present "$(rkp "$IB_PIPE/orch-42.held")"); restarts=$(ib_present "$(rkp "$IB_PIPE/orch-42.restarts")")
+  queued=$(ib_present "$(rkp "$IB_PIPE/queue/orch-42.json")")
+  alert=$(cat "$(rkp "$IB_PIPE/orch-42.alert")" 2>/dev/null); log=$(ib_log)
   ib_cleanup
   assert_eq "$held" "present" "AC3a: [infra-operator] BLOCKED parks the run (.held)" || return 1
   assert_contains "$alert" "waiting on JP" "AC3a: alert says waiting on JP" || return 1
@@ -180,7 +180,7 @@ test_ib_ac3b_plan_pass_is_not_terminal() {
   ib_fixture "$IB_PLAN_PASS"
   ib_tick
   local held log
-  held=$(ib_present "$IB_PIPE/orch-42.held"); log=$(ib_log)
+  held=$(ib_present "$(rkp "$IB_PIPE/orch-42.held")"); log=$(ib_log)
   ib_cleanup
   assert_eq "$held" "absent" "AC3b: PLAN PASS does not park the run" || return 1
   assert_not_contains "$log" "[held] #42" "AC3b: no [held] line for PLAN PASS" || return 1

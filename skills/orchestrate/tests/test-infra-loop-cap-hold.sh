@@ -40,13 +40,13 @@ LC_PLAN_FAIL='**[infra-reviewer] PLAN FAIL: 3 findings**'
 lc_exited_run() {
   sq_env open
   mk_restarting "$SQ_PIPE" 42 "$SQ_REPO"
-  sq_iso_ago 600 > "$SQ_PIPE/orch-42.launched-at"
+  sq_iso_ago 600 > "$(rkp "$SQ_PIPE/orch-42.launched-at")"
   sq_marker "$LC_PLAN_FAIL"
   ms_seed_run_line "$1" "$2"
   sq_tick
   LC_LOG=$(sq_log)
-  LC_HELD=$(sq_present "$SQ_PIPE/orch-42.held")
-  LC_QUEUED=$(sq_present "$SQ_PIPE/queue/orch-42.json")
+  LC_HELD=$(sq_present "$(rkp "$SQ_PIPE/orch-42.held")")
+  LC_QUEUED=$(sq_present "$(rkp "$SQ_PIPE/queue/orch-42.json")")
   sq_cleanup
 }
 
@@ -65,11 +65,11 @@ test_lc_plan_fail_no_loop_cap_line_restarts() {
   # fail was logged for this run -> ordinary restart, not held.
   sq_env open
   mk_restarting "$SQ_PIPE" 42 "$SQ_REPO"
-  sq_iso_ago 600 > "$SQ_PIPE/orch-42.launched-at"
+  sq_iso_ago 600 > "$(rkp "$SQ_PIPE/orch-42.launched-at")"
   sq_marker "$LC_PLAN_FAIL"
   sq_tick
   LC_LOG=$(sq_log)
-  LC_HELD=$(sq_present "$SQ_PIPE/orch-42.held")
+  LC_HELD=$(sq_present "$(rkp "$SQ_PIPE/orch-42.held")")
   sq_cleanup
   assert_contains "$LC_LOG" "[queue-restart] #42" "#100: PLAN FAIL round 1/2 (no loop-cap line) still restarts" || return 1
   assert_not_contains "$LC_LOG" "[held] #42" "#100: not held" || return 1
@@ -126,13 +126,13 @@ test_lc_hold_message_generic_for_code_track_cap() {
   # fired is a code-track one (latest marker is a test-reviewer TESTS FAIL). It must still name loop-cap.
   sq_env open
   mk_restarting "$SQ_PIPE" 42 "$SQ_REPO"
-  sq_iso_ago 600 > "$SQ_PIPE/orch-42.launched-at"
+  sq_iso_ago 600 > "$(rkp "$SQ_PIPE/orch-42.launched-at")"
   sq_marker '**[test-reviewer] TESTS FAIL: 2 findings**'
   ms_seed_run_line loop-cap 60
   sq_tick
   LC_LOG=$(sq_log)
-  LC_HELD=$(sq_present "$SQ_PIPE/orch-42.held")
-  LC_QUEUED=$(sq_present "$SQ_PIPE/queue/orch-42.json")
+  LC_HELD=$(sq_present "$(rkp "$SQ_PIPE/orch-42.held")")
+  LC_QUEUED=$(sq_present "$(rkp "$SQ_PIPE/queue/orch-42.json")")
   sq_cleanup
   assert_eq "$LC_HELD" "present" "#100: code-track loop-cap fail this run -> .held" || return 1
   assert_contains "$LC_LOG" "[held] #42" "#100: [held] line logged" || return 1
