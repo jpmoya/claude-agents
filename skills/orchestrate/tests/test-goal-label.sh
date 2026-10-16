@@ -30,7 +30,7 @@ if [ "$1" != api ]; then exec "$HERE/gh.base" "$@"; fi
 dec() { python3 -I -c 'import sys,urllib.parse as u; sys.stdout.write(u.unquote(sys.argv[1]))' "$1"; }
 orig="$*"
 shift
-method=""; path=""; expr=""; obj='{}'; stdin_json=""; newargs=(api)
+method=""; path=""; expr=""; obj='{}'; stdin_json=""; newargs=(api); pag=0
 while [ $# -gt 0 ]; do
   case "$1" in
     -X|--method) method=$2; newargs+=("$1" "$2"); shift ;;
@@ -43,6 +43,7 @@ while [ $# -gt 0 ]; do
       esac ;;
     --input) stdin_json=$(cat); newargs+=("$1" "$2"); shift ;;
     -H|--header) newargs+=("$1" "$2"); shift ;;
+    --paginate) pag=1; newargs+=("$1") ;;
     -*) newargs+=("$1") ;;
     *) if [ -z "$path" ]; then path=$(dec "$1"); newargs+=("$path"); else newargs+=("$1"); fi ;;
   esac
@@ -52,11 +53,26 @@ done
 [ -n "$method" ] || { if [ "$obj" != "{}" ]; then method=POST; else method=GET; fi; }
 path=${path#/}; p=${path%%\?*}
 emit() { if [ -n "$expr" ]; then jq -r "$expr"; else cat; fi; }
-case "$p" in
-  repos/*/*/labels|repos/*/*/labels/*)
+# Route on the path segments (a bare `*` in a case glob would also match `/`, so issue-level paths such as
+# repos/o/r/issues/7/labels must NOT be captured by the repo-label branch — they go to the base fake).
+owner=$(printf '%s' "$p" | awk -F/ '{print $2}'); repo=$(printf '%s' "$p" | awk -F/ '{print $3}')
+rest=${p#repos/$owner/$repo}
+case "$rest" in
+  /issues)
+    # Paginated issue listing: without --paginate only ONE page (per_page, default 30 as on GitHub) comes back;
+    # with --paginate (or by walking &page=N) every page does. Needs the labels/state filters from the base fake.
     printf '%s\n' "$orig" >> "$HERE/gh-calls.log"
-    owner=$(printf '%s' "$p" | cut -d/ -f2); repo=$(printf '%s' "$p" | cut -d/ -f3); rk="${owner}_${repo}"
-    name=$(printf '%s' "$p" | cut -d/ -f5-)
+    pg=$(printf '%s' "$path" | tr '&?' '\n\n' | sed -n 's/^page=//p' | head -1); pp=$(printf '%s' "$path" | tr '&?' '\n\n' | sed -n 's/^per_page=//p' | head -1)
+    [ -n "$pg" ] || pg=$(printf '%s' "$obj" | jq -r '.page // empty'); [ -n "$pp" ] || pp=$(printf '%s' "$obj" | jq -r '.per_page // empty')
+    : "${pg:=1}" "${pp:=30}"
+    noexpr=(); skip=0
+    for a in "${newargs[@]}"; do
+      if [ "$skip" = 1 ]; then skip=0; continue; fi
+      case "$a" in --jq|-q) skip=1 ;; *) noexpr+=("$a") ;; esac
+    done
+    if [ -n "$stdin_json" ]; then all=$(printf '%s' "$stdin_json" | "$HERE/gh.base" "${noexpr[@]}"); else all=$("$HERE/gh.base" "${noexpr[@]}"); fi
+    if [ "$pag" = 1 ]; then printf '%s' "$all" | emit; else printf '%s' "$all" | jq -c --argjson pg "$pg" --argjson pp "$pp" '.[(($pg - 1) * $pp):($pg * $pp)]' | emit; fi ;;
+  /labels|/labels/*)
     LF="$S/labels/$rk.json"; D="$S/issues/$rk"; mkdir -p "$S/labels" "$D"; [ -f "$LF" ] || echo '[]' > "$LF"
     [ "$method" = GET ] || printf '%s %s %s\n' "$method" "$p" "$obj" >> "$HERE/writes.log"
     exists() { jq -e --arg n "$1" 'any(.[]; .name == $n)' "$LF" >/dev/null; }
@@ -252,6 +268,23 @@ test_glb_membership_scope_rows_from_both_repos() {
   glb_teardown; return $rc
 }
 
+# Pagination: 105 labelled open issues in project-a (numbers 1000..1104) + 1 in project-b = 106 rows. The fake returns one
+# page of 30 unless the caller paginates (--paginate or walking &page=N until empty), so an unpaginated lookup sees 30.
+test_glb_membership_paginates_past_one_page() {
+  glb_setup
+  local L="goal: Paged" rc=0 n rows
+  glb_label $GLB_A "$L"; glb_label $GLB_B "$L"
+  for n in $(seq 1000 1104); do glb_ticket $GLB_A "$n" open "$L"; done
+  glb_ticket $GLB_B 1 open "$L"
+  glb_v2 900 "$L" "Paged" "$GLB_REPOS" active glb-paged
+  dg_lib "_goal_scope_rows $(printf '%q' "label:$L") glb-paged"
+  assert_eq "$DG_RC" "0" "scope rows rc (stderr: $DG_ERR)" || rc=1
+  rows=$(printf '%s\n' "$DG_OUT" | grep -c .)
+  assert_eq "$rows" "106" "all 106 members across pages (105 + 1)" || rc=1
+  printf '%s\n' "$DG_OUT" | grep -qxF "$GLB_RA#1104	open" || { fail "the last issue of the last page (a#1104) is a member"; rc=1; }
+  glb_teardown; return $rc
+}
+
 # v:1 and v:2 registry blocks side by side: both listed, and the v2 label goal's scope resolves.
 test_glb_registry_lists_v1_and_v2_blocks() {
   glb_setup
@@ -313,36 +346,98 @@ test_glb_overlap_refuses_shared_ticket_of_other_goal() {
 }
 
 # ------------------------------------------------------------------ register v2 --------------------------------
-test_glb_register_creates_labels_block_and_seed() {
+# glb_register_default — the ticket's example: label rule applied, requirements ticket a#7 seeded, b#1 unlabelled.
+GLB_T="Cross-repo goal model for the pipeline"; GLB_L="goal: Cross-repo goal model for the"
+glb_register_default() { glb_seed7; glb_ticket $GLB_B 1 open; glb_reg "$GLB_T"; }
+
+test_glb_register_creates_label_in_each_repo_and_labels_seed() {
   glb_setup
-  local T="Cross-repo goal model for the pipeline" L="goal: Cross-repo goal model for the" rc=0 f n blk ca cb da
-  glb_seed7; glb_ticket $GLB_B 1 open
-  glb_reg "$T"
+  local rc=0 ca cb
+  glb_register_default
   assert_eq "$DG_RC" "0" "register exits 0 (stderr: $DG_ERR)" || rc=1
-  glb_label_names $GLB_A | grep -qxF -- "$L" || { fail "label $L missing in project-a"; rc=1; }
-  glb_label_names $GLB_B | grep -qxF -- "$L" || { fail "label $L missing in project-b"; rc=1; }
-  ca=$(jq -r --arg l "$L" '.[] | select(.name == $l) | .color' "$DG_ST/labels/$GLB_A.json")
-  cb=$(jq -r --arg l "$L" '.[] | select(.name == $l) | .color' "$DG_ST/labels/$GLB_B.json")
+  glb_label_names $GLB_A | grep -qxF -- "$GLB_L" || { fail "label $GLB_L missing in project-a"; rc=1; }
+  glb_label_names $GLB_B | grep -qxF -- "$GLB_L" || { fail "label $GLB_L missing in project-b"; rc=1; }
+  ca=$(jq -r --arg l "$GLB_L" '.[] | select(.name == $l) | .color' "$DG_ST/labels/$GLB_A.json")
+  cb=$(jq -r --arg l "$GLB_L" '.[] | select(.name == $l) | .color' "$DG_ST/labels/$GLB_B.json")
   assert_ne "$ca" "" "label colour is set" || rc=1
   assert_eq "$ca" "$cb" "same colour in every repo" || rc=1
-  glb_has_label $GLB_A 7 "$L" || { fail "the requirements ticket carries the label"; rc=1; }
+  glb_has_label $GLB_A 7 "$GLB_L" || { fail "the requirements ticket carries the label"; rc=1; }
+  assert_eq "$(glb_calls_not_api)" "0" "register made no non-REST (GraphQL/project) gh call" || rc=1
+  glb_teardown; return $rc
+}
+
+test_glb_register_label_description_is_title_then_registry_url() {
+  glb_setup
+  local rc=0 f n da
+  glb_register_default
   f=$(dg_reg_files | head -1); n=$(basename "$f" .json)
-  da=$(jq -r --arg l "$L" '.[] | select(.name == $l) | .description' "$DG_ST/labels/$GLB_A.json")
+  da=$(jq -r --arg l "$GLB_L" '.[] | select(.name == $l) | .description' "$DG_ST/labels/$GLB_A.json")
   [ "${#da}" -le 100 ] || { fail "label description is ${#da} chars, max 100"; rc=1; }
-  case "$da" in "$T"*) ;; *) fail "description starts with the full title, got [$da]"; rc=1 ;; esac
+  case "$da" in "$GLB_T"*) ;; *) fail "short title: description starts with the full title, got [$da]"; rc=1 ;; esac
   case "$da" in *"example-owner/registry/issues/$n") ;; *) fail "description ends with the registry issue URL, got [$da]"; rc=1 ;; esac
-  blk=$(dg_block "$f")
+  glb_teardown; return $rc
+}
+
+# Long title: 12 words of "wordNN" (6) joined by spaces = 12*6+11 = 83 chars is still short; use 20 words = 20*6+19 = 139 chars.
+# Description max is 100 and the URL must survive whole, so the TITLE is what gets cut: the description still starts with
+# the first 20 chars of the title, does not hold the whole title, is <= 100 and ends with the URL.
+test_glb_register_label_description_truncates_long_title_keeps_url() {
+  glb_setup
+  local rc=0 f n da t i
+  t=""; for i in $(seq 10 29); do t="$t${t:+ }word$i"; done          # word10 word11 … word29 -> 139 chars
+  glb_seed7
+  glb_reg "$t"
+  assert_eq "$DG_RC" "0" "register exits 0 (stderr: $DG_ERR)" || rc=1
+  f=$(dg_reg_files | head -1); n=$(basename "$f" .json)
+  da=$(jq -r '.[] | select(.name | startswith("goal: word10")) | .description' "$DG_ST/labels/$GLB_A.json")
+  assert_ne "$da" "" "label for the long title exists in project-a" || rc=1
+  [ "${#da}" -le 100 ] || { fail "label description is ${#da} chars, max 100"; rc=1; }
+  case "$da" in "${t:0:20}"*) ;; *) fail "description starts with the first 20 chars of the title, got [$da]"; rc=1 ;; esac
+  case "$da" in *"$t"*) fail "description must not hold the whole 139-char title"; rc=1 ;; esac
+  case "$da" in *"example-owner/registry/issues/$n") ;; *) fail "description ends with the whole registry URL, got [$da]"; rc=1 ;; esac
+  assert_contains "$(jq -r .body "$f")" "$t" "the registry issue body keeps the full title" || rc=1
+  glb_teardown; return $rc
+}
+
+test_glb_register_writes_v2_block() {
+  glb_setup
+  local rc=0 f n blk
+  glb_register_default
+  f=$(dg_reg_files | head -1); n=$(basename "$f" .json); blk=$(dg_block "$f")
   assert_eq "$(printf '%s' "$blk" | jq -r .v)" "2" "block v" || rc=1
-  assert_eq "$(printf '%s' "$blk" | jq -r .title)" "$T" "block title" || rc=1
-  assert_eq "$(printf '%s' "$blk" | jq -r .label)" "$L" "block label" || rc=1
+  assert_eq "$(printf '%s' "$blk" | jq -r .title)" "$GLB_T" "block title" || rc=1
+  assert_eq "$(printf '%s' "$blk" | jq -r .label)" "$GLB_L" "block label" || rc=1
   assert_eq "$(printf '%s' "$blk" | jq -c .repos)" "[\"$GLB_RA\",\"$GLB_RB\"]" "block repos" || rc=1
   assert_eq "$(printf '%s' "$blk" | jq -r .order)" "$n" "order defaults to the registry issue number" || rc=1
   assert_eq "$(printf '%s' "$blk" | jq -r .mockups)" "review" "mockups defaults to review" || rc=1
   assert_eq "$(printf '%s' "$blk" | jq -r .go)" "true" "go (requirements present)" || rc=1
   assert_eq "$(printf '%s' "$blk" | jq -r 'has("host_pref")')" "true" "host_pref key" || rc=1
   assert_eq "$(printf '%s' "$blk" | jq -r .requirements)" "$GLB_RA#7" "requirements ref" || rc=1
-  assert_eq "$(glb_calls_not_api)" "0" "register made no non-REST (GraphQL/project) gh call" || rc=1
   glb_teardown; return $rc
+}
+
+# AC5 producer side: the cache the status page reads (goal-<id>.json, written by register, rebuilt by goal_sync, extended
+# by goal_mirror) carries title, repos and order of a v2 goal at every step.
+test_glb_goal_cache_carries_title_repos_order() {
+  glb_setup
+  local rc=0 f n id c
+  glb_register_default
+  f=$(dg_reg_files | head -1); n=$(basename "$f" .json); id=$(dg_block "$f" | jq -r .id)
+  c="$DG_PIPE/goal-$id.json"
+  glb_cache_fields_check "after register" "$c" "$n" || rc=1
+  rm -f "$c"; glb_sync
+  glb_cache_fields_check "rebuilt by goal_sync" "$c" "$n" || rc=1
+  dg_lib "goal_mirror $id active 3 1"
+  glb_cache_fields_check "after goal_mirror" "$c" "$n" || rc=1
+  assert_eq "$(jq -r '.scope_total' "$c" 2>/dev/null)" "3" "goal_mirror still adds scope_total" || rc=1
+  glb_teardown; return $rc
+}
+glb_cache_fields_check() {  # <what> <cache file> <registry n>
+  local rc=0
+  assert_eq "$(jq -r '.title // "missing"' "$2" 2>/dev/null)" "$GLB_T" "$1: cache title" || rc=1
+  assert_eq "$(jq -c '.repos // "missing"' "$2" 2>/dev/null)" "[\"$GLB_RA\",\"$GLB_RB\"]" "$1: cache repos" || rc=1
+  assert_eq "$(jq -r '.order // "missing"' "$2" 2>/dev/null)" "$3" "$1: cache order" || rc=1
+  return $rc
 }
 
 test_glb_register_skips_business_intelligence() {
@@ -386,7 +481,7 @@ glb_has_go() { glb_has_label "$1" "$2" agent-go; }
 
 test_glb_register_grants_go_with_guards() {
   glb_setup
-  local rc=0 f body
+  local rc=0
   glb_go_world
   glb_reg "Go test"
   assert_eq "$DG_RC" "0" "register exits 0 (stderr: $DG_ERR)" || rc=1
@@ -397,12 +492,22 @@ test_glb_register_grants_go_with_guards() {
   glb_has_go $GLB_A 10 && { fail "source:sentry ticket must not get agent-go without --include-sentry"; rc=1; }
   glb_has_label $GLB_A 12 agent-proposed && { fail "agent-proposed removed from a#12"; rc=1; }
   grep -qF "POST repos/example-owner/project-b/issues/2/labels" "$DG_BIN/writes.log" && { fail "b#2 already had agent-go: no edit"; rc=1; }
+  glb_teardown; return $rc
+}
+
+test_glb_register_records_grant_and_posts_non_routing_note() {
+  glb_setup
+  local rc=0 f body
+  glb_go_world
+  glb_reg "Go test"
+  assert_eq "$DG_RC" "0" "register exits 0 (stderr: $DG_ERR)" || rc=1
   f=$(dg_reg_files | head -1); body=$(jq -r .body "$f")
   printf '%s' "$body" | grep -Eq 'Go-granted: 20[0-9]{2}-[0-9]{2}-[0-9]{2}' || { fail "registry body has 'Go-granted: <ISO date>'"; rc=1; }
   for ref in "$GLB_RA#7" "$GLB_RA#8" "$GLB_RA#12" "$GLB_RB#1"; do
     assert_contains "$body" "$ref" "per-ticket grant list names $ref" || rc=1
   done
   assert_not_contains "$body" "$GLB_RA#10" "sentry ticket not in the grant list" || rc=1
+  assert_not_contains "$body" "$GLB_RA#9" "closed ticket not in the grant list" || rc=1
   assert_contains "$(glb_comments_all)" "**[supervisor] NOTE**" "ticket comment uses the non-routing marker" || rc=1
   assert_not_contains "$(glb_comments_all)" "[delivery-lead]" "no delivery-lead marker posted by a script" || rc=1
   glb_teardown; return $rc
@@ -472,19 +577,91 @@ test_glb_requirements_ticket_empty_registers_without_go() {
   glb_teardown; return $rc
 }
 
-# Loop guard: JP removes agent-go from a#8 after the grant; the next goal sync must not put it back.
+# ---- goal_sync inheritance (#314 amended: keyed on the goal LABEL, any repo) and the #313 loop guard.
+# Approved label goal = registered with a requirements ticket (so the registry holds a Go-granted record).
+# glb_sync_world: register, then a new labelled arrival in each repo plus the excluded kinds:
+#   a#20 open (inherits), b#21 open (inherits, other repo), a#22 open + source:sentry (excluded), a#23 closed (excluded),
+#   a#24 open without the label (not a member).
+glb_sync_world() {
+  glb_go_world
+  glb_reg "Go test"
+  glb_ticket $GLB_A 20 open "goal: Go test"; glb_ticket $GLB_B 21 open "goal: Go test"
+  glb_ticket $GLB_A 22 open "goal: Go test,source:sentry"; glb_ticket $GLB_A 23 closed "goal: Go test"
+  glb_ticket $GLB_A 24 open ""
+  glb_cache_of_registered
+}
+glb_cache_of_registered() { local f id; f=$(dg_reg_files | head -1); id=$(dg_block "$f" | jq -r .id); GLB_ID=$id; glb_cache "$(basename "$f" .json)" "$id"; }
+
+test_glb_sync_grants_go_to_new_labelled_ticket_in_any_repo() {
+  glb_setup
+  local rc=0
+  glb_sync_world
+  glb_sync
+  assert_eq "$DG_RC" "0" "goal_sync exits 0 (stderr: $DG_ERR)" || rc=1
+  glb_has_go $GLB_A 20 || { fail "new labelled a#20 inherits agent-go"; rc=1; }
+  glb_has_go $GLB_B 21 || { fail "new labelled b#21 (second repo) inherits agent-go"; rc=1; }
+  glb_has_go $GLB_A 22 && { fail "source:sentry a#22 must not inherit"; rc=1; }
+  glb_has_go $GLB_A 23 && { fail "closed a#23 must not inherit"; rc=1; }
+  glb_has_go $GLB_A 24 && { fail "unlabelled a#24 must not inherit"; rc=1; }
+  assert_contains "$(jq -r .body "$(dg_reg_files | head -1)")" "$GLB_RA#20" "the grant list gains a#20" || rc=1
+  glb_teardown; return $rc
+}
+
+test_glb_sync_inheritance_skips_business_intelligence_repo() {
+  glb_setup
+  local rc=0
+  glb_go_world
+  dg_run --repos "$GLB_REPOS,example-owner/Business-Intelligence" --title "Go test" --requirements "$GLB_RA#7"
+  assert_eq "$DG_RC" "0" "register exits 0 (stderr: $DG_ERR)" || rc=1
+  glb_ticket $GLB_B 21 open "goal: Go test"; glb_ticket $GLB_BI 5 open "goal: Go test"
+  glb_cache_of_registered
+  glb_sync
+  glb_has_go $GLB_B 21 || { fail "positive control: b#21 inherits agent-go"; rc=1; }
+  glb_has_go $GLB_BI 5 && { fail "a Business-Intelligence ticket must never get agent-go"; rc=1; }
+  glb_teardown; return $rc
+}
+
+test_glb_sync_unapproved_goal_inherits_nothing() {
+  glb_setup
+  local rc=0
+  glb_nogo_world
+  dg_run --repos "$GLB_REPOS" --title "Go test"       # no --requirements: registered, go not granted
+  assert_eq "$DG_RC" "0" "register exits 0 (stderr: $DG_ERR)" || rc=1
+  glb_ticket $GLB_A 20 open "goal: Go test"
+  glb_cache_of_registered
+  glb_sync
+  assert_eq "$(glb_count_label agent-go)" "0" "a goal that was never granted go gives no agent-go on sync" || rc=1
+  glb_teardown; return $rc
+}
+
+test_glb_sync_inheritance_is_idempotent() {
+  glb_setup
+  local rc=0 w1 w2
+  glb_sync_world
+  glb_sync
+  glb_has_go $GLB_A 20 || { fail "precondition: first sync granted a#20"; rc=1; }
+  w1=$(dg_writes)
+  glb_sync
+  w2=$(dg_writes)
+  assert_eq "$w2" "$w1" "second sync writes nothing" || rc=1
+  glb_teardown; return $rc
+}
+
+# Loop guard: JP removes agent-go from a#8 after the grant; the next goal sync must not put it back —
+# and in the same sync a NEW labelled ticket (a#20) does get agent-go, so the guard is what holds a#8 back.
 test_glb_loop_guard_removed_go_not_readded() {
   glb_setup
   local rc=0 f
-  glb_go_world
-  glb_reg "Go test"
-  assert_eq "$DG_RC" "0" "register exits 0 (stderr: $DG_ERR)" || rc=1
+  glb_sync_world
   glb_has_go $GLB_A 8 || { fail "precondition: a#8 granted at register"; rc=1; }
   f=$(dg_reg_files | head -1)
   assert_contains "$(jq -r .body "$f")" "$GLB_RA#8" "grant recorded per ticket in the registry" || rc=1
   glb_strip_label $GLB_A 8 agent-go
   glb_sync
+  glb_has_go $GLB_A 20 || { fail "positive control: sync grants the new labelled a#20"; rc=1; }
   glb_has_go $GLB_A 8 && { fail "sync re-added agent-go that JP removed"; rc=1; }
+  glb_sync
+  glb_has_go $GLB_A 8 && { fail "second sync re-added agent-go that JP removed"; rc=1; }
   glb_teardown; return $rc
 }
 
@@ -659,9 +836,15 @@ for t in test_glb_label_rule_table test_glb_parse_label_spec_and_rejects_empty \
          test_glb_membership_scope_rows_from_both_repos test_glb_registry_lists_v1_and_v2_blocks \
          test_glb_reuse_guard_refuses_same_label_of_active_goal test_glb_same_title_allowed_after_old_goal_closed \
          test_glb_overlap_refuses_shared_ticket_of_other_goal \
-         test_glb_register_creates_labels_block_and_seed test_glb_register_skips_business_intelligence \
+         test_glb_register_creates_label_in_each_repo_and_labels_seed test_glb_register_label_description_is_title_then_registry_url \
+         test_glb_register_label_description_truncates_long_title_keeps_url test_glb_register_writes_v2_block \
+         test_glb_goal_cache_carries_title_repos_order test_glb_membership_paginates_past_one_page \
+         test_glb_register_skips_business_intelligence \
          test_glb_label_spec_binds_existing_label \
-         test_glb_register_grants_go_with_guards test_glb_register_include_sentry_labels_sentry_ticket \
+         test_glb_register_grants_go_with_guards test_glb_register_records_grant_and_posts_non_routing_note \
+         test_glb_sync_grants_go_to_new_labelled_ticket_in_any_repo test_glb_sync_inheritance_skips_business_intelligence_repo \
+         test_glb_sync_unapproved_goal_inherits_nothing test_glb_sync_inheritance_is_idempotent \
+         test_glb_register_include_sentry_labels_sentry_ticket \
          test_glb_register_closed_requirements_ticket_counts \
          test_glb_missing_requirements_registers_without_go test_glb_requirements_ticket_not_found_registers_without_go \
          test_glb_requirements_ticket_empty_registers_without_go test_glb_loop_guard_removed_go_not_readded \
