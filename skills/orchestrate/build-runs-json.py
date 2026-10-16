@@ -6,12 +6,12 @@
 # Usage: build-runs-json.py <aliases-arg> <runs-jsonl-path> [<pipe-dir> [completed]]
 #   <aliases-arg>: STATUS_REPO_ALIASES entries ("owner/repo:alias"), one per line
 #   <runs-jsonl-path>: ~/.claude/pipeline/runs.jsonl, for the last dispatch marker per repo+issue
-#   <pipe-dir>: $PIPE, for the per-run orch-<issue>.title file written at launch (issue #29).
+#   <pipe-dir>: $PIPE, for the per-run orch-<run_key>.title file written at launch (issue #29).
 #               Local files only -- this script never makes a network call.
 #   completed:  emit the payload's "completed" array (issue #51) instead of "runs": the records
-#               reconcile-status.sh marked closed (state_code "closed", orch-<issue>.closed = closedAt),
+#               reconcile-status.sh marked closed (state_code "closed", orch-<run_key>.closed = closedAt),
 #               closed within the last 7 days, newest first, first 10. Items carry "release" when
-#               orch-<issue>.release exists (issue #65).
+#               orch-<run_key>.release exists (issue #65).
 #   staging | approved: emit the payload's "staging" / "approved" array (issue #65) from
 #               <pipe-dir>/status-staging.json / status-approved.json (written by reconcile-status.sh);
 #               no stdin, `[]` when the file is missing or unreadable.
@@ -73,32 +73,45 @@ def alias_for(repo_path):  # -> (published repo string, owner/repo or "" for the
     return aliases.get(owner_repo, "other"), owner_repo
 
 
-def marker_for(owner_repo, issue):  # first line of <pipe-dir>/orch-<issue>.marker (written at launch + by reconcile-status.sh), else None
+CUR_REPO = ""  # checkout path of the row being built; set by the two row loops below
+
+
+def stem(issue):  # file stem of the current run: <owner>_<repo>-<N> (#318), else the legacy bare <N> (read-both fallback)
+    slug = owner_repo_for(CUR_REPO) if CUR_REPO else ""
+    if slug:
+        k = "%s-%s" % (slug.replace("/", "_"), issue)
+        for ext in ("repo", "pid", "closed"):
+            if os.path.exists(os.path.join(pipe_dir, "orch-%s.%s" % (k, ext))):
+                return k
+    return str(issue)
+
+
+def marker_for(owner_repo, issue):  # first line of <pipe-dir>/orch-<run_key>.marker (written at launch + by reconcile-status.sh), else None
     if not pipe_dir:
         return None
     try:
-        with open(os.path.join(pipe_dir, "orch-%s.marker" % issue), encoding="utf-8", errors="replace") as f:
+        with open(os.path.join(pipe_dir, "orch-%s.marker" % stem(issue)), encoding="utf-8", errors="replace") as f:
             return f.readline(256).strip() or None
     except OSError:
         return None
 
 
-def title_for(issue):  # first line of <pipe-dir>/orch-<issue>.title, stripped + capped; else ""
+def title_for(issue):  # first line of <pipe-dir>/orch-<run_key>.title, stripped + capped; else ""
     if not pipe_dir:
         return ""
     try:
-        with open(os.path.join(pipe_dir, "orch-%s.title" % issue), encoding="utf-8", errors="replace") as f:
+        with open(os.path.join(pipe_dir, "orch-%s.title" % stem(issue)), encoding="utf-8", errors="replace") as f:
             first_line = f.readline(4096)
     except OSError:
         return ""
     return first_line.strip()[:TITLE_MAX_CHARS]
 
 
-def milestone_for(issue):  # first line of <pipe-dir>/orch-<issue>.milestone, stripped + capped at 60; else ""
+def milestone_for(issue):  # first line of <pipe-dir>/orch-<run_key>.milestone, stripped + capped at 60; else ""
     if not pipe_dir:
         return ""
     try:
-        with open(os.path.join(pipe_dir, "orch-%s.milestone" % issue), encoding="utf-8", errors="replace") as f:
+        with open(os.path.join(pipe_dir, "orch-%s.milestone" % stem(issue)), encoding="utf-8", errors="replace") as f:
             return f.readline(256).strip()[:60]
     except OSError:
         return ""
@@ -160,32 +173,32 @@ BLOCK_CLASS_RE = re.compile(r"^[a-z_]{1,30}$")  # the class list lives in hooks/
 ISO_Z_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 
 
-def state_file_for(issue, suffix):  # first line of <pipe-dir>/orch-<issue>.<suffix>, else ""
+def state_file_for(issue, suffix):  # first line of <pipe-dir>/orch-<run_key>.<suffix>, else ""
     if not pipe_dir:
         return ""
     try:
-        with open(os.path.join(pipe_dir, "orch-%s.%s" % (issue, suffix)), encoding="utf-8", errors="replace") as f:
+        with open(os.path.join(pipe_dir, "orch-%s.%s" % (stem(issue), suffix)), encoding="utf-8", errors="replace") as f:
             return f.readline(64).strip()
     except OSError:
         return ""
 
 
-def release_for(issue):  # first line of <pipe-dir>/orch-<issue>.release if it is vX.Y.Z, else ""
+def release_for(issue):  # first line of <pipe-dir>/orch-<run_key>.release if it is vX.Y.Z, else ""
     if not pipe_dir:
         return ""
     try:
-        with open(os.path.join(pipe_dir, "orch-%s.release" % issue), encoding="utf-8", errors="replace") as f:
+        with open(os.path.join(pipe_dir, "orch-%s.release" % stem(issue)), encoding="utf-8", errors="replace") as f:
             text = f.readline(64).strip()
     except OSError:
         return ""
     return text if RELEASE_RE.match(text) else ""
 
 
-def closed_at_for(issue):  # first line of <pipe-dir>/orch-<issue>.closed -> (iso string, epoch) or None
+def closed_at_for(issue):  # first line of <pipe-dir>/orch-<run_key>.closed -> (iso string, epoch) or None
     if not pipe_dir:
         return None
     try:
-        with open(os.path.join(pipe_dir, "orch-%s.closed" % issue), encoding="utf-8", errors="replace") as f:
+        with open(os.path.join(pipe_dir, "orch-%s.closed" % stem(issue)), encoding="utf-8", errors="replace") as f:
             text = f.readline(64).strip()
         epoch = datetime.datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(
             tzinfo=datetime.timezone.utc).timestamp()
@@ -195,6 +208,7 @@ def closed_at_for(issue):  # first line of <pipe-dir>/orch-<issue>.closed -> (is
 
 
 def build_completed(rows):
+    global CUR_REPO
     now = datetime.datetime.now(datetime.timezone.utc).timestamp()
     items = []
     for line in rows:
@@ -204,6 +218,7 @@ def build_completed(rows):
         issue, repo_path, state_code = parts[0], parts[1], parts[2]
         if state_code != "closed":
             continue
+        CUR_REPO = repo_path
         closed = closed_at_for(issue)
         if closed is None or now - closed[1] > COMPLETED_RETENTION_SECS:
             continue
@@ -318,6 +333,7 @@ for raw in sys.stdin:
     issue, repo_path, state_code, pid, started_at, last_activity_epoch, restarts, stage = parts[:8]
     if state_code not in STATE_MAP:
         continue
+    CUR_REPO = repo_path
     repo_alias, owner_repo = alias_for(repo_path)
     if state_code != "running" and issue.isdigit() and (owner_repo, int(issue)) in staged:
         continue

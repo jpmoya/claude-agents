@@ -2,9 +2,10 @@
 # Launch the pipeline orchestrator as a detached headless Claude Code process.
 # Usage:
 #   orchestrate.sh <repo-path> <issue> [extra instructions...]   launch (queues if at max)
-#   orchestrate.sh status [issue]                                 list running/queued orchestrators
-#   orchestrate.sh tail <issue> [lines]                           tail an orchestrator's log
-#   orchestrate.sh stop <issue>                                   kill an orchestrator (prevents auto-restart)
+#   orchestrate.sh status [<owner/repo>#<N> | <N>]                list running/queued orchestrators
+#   orchestrate.sh tail <owner/repo>#<N> | <N> [lines]            tail an orchestrator's log
+#   orchestrate.sh stop <owner/repo>#<N> | <N>                    kill an orchestrator (prevents auto-restart)
+#     (a bare <N> resolves only when exactly one run matches; otherwise it is refused and the candidates are listed)
 #   orchestrate.sh queue                                          show the queue
 #   orchestrate.sh --force <repo-path> <issue>                   launch even if agent-in-progress is set (other machine died)
 set -euo pipefail
@@ -17,13 +18,49 @@ source "$HERE/run-state.sh"
 # routing-marker vocabulary (marker_re), shared with the supervisor, the handoff hook and the orchestrator
 source "$HERE/../../hooks/pipeline-markers.sh" 2>/dev/null || source "$HOME/.claude/hooks/pipeline-markers.sh"
 mkdir -p "$PIPE" "$QUEUE"
+
+# resolve_run <spec> — spec is <owner/repo>#<N> or a bare <N>. Sets RUN_KEY (the orch-<RUN_KEY>.* file stem), RUN_ISSUE and
+# RUN_SLUG. Reads the new key first, then a legacy orch-<N>.* set only when its .repo names the same repo (#318 read-both).
+# A bare number resolves only when exactly one run matches; zero or several return 1 with the candidates on stderr.
+resolve_run() {
+  local spec=$1 n slug k f rf cands="" count=0 line
+  case "$spec" in
+    */*#*) slug=${spec%#*}; n=${spec##*#}
+      case "$n" in ''|*[!0-9]*) echo "bad run spec: $spec" >&2; return 1 ;; esac
+      k=$(run_key "$slug" "$n")
+      if [ ! -e "$PIPE/orch-$k.repo" ] && [ ! -e "$PIPE/orch-$k.pid" ] && [ ! -e "$QUEUE/orch-$k.json" ]; then
+        rf=$(cat "$PIPE/orch-$n.repo" 2>/dev/null) || rf=""
+        if [ -n "$rf" ] && [ "$(repo_slug "$rf")" = "$slug" ]; then k=$n; fi
+      fi
+      RUN_KEY=$k; RUN_ISSUE=$n; RUN_SLUG=$slug; return 0 ;;
+    ''|*[!0-9]*) echo "bad run spec: $spec (use <owner/repo>#<N> or <N>)" >&2; return 1 ;;
+  esac
+  n=$spec
+  for f in "$PIPE"/orch-*.repo "$QUEUE"/orch-*.json; do
+    [ -e "$f" ] || continue
+    k=${f##*/orch-}; k=${k%.*}
+    [ "${k##*-}" = "$n" ] || continue
+    case "$cands" in *"|$k|"*) continue ;; esac
+    case "$f" in
+      *.json) slug=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['repo'])" "$f" 2>/dev/null); slug=$(repo_slug "$slug") ;;
+      *) slug=$(repo_slug "$(cat "$f" 2>/dev/null)") ;;
+    esac
+    cands="$cands|$k|"; count=$((count + 1)); line="$k ${slug:-?}"
+    CANDS_TXT="${CANDS_TXT:-}${slug:-?}#$n"$'\n'; RUN_KEY=$k; RUN_ISSUE=$n; RUN_SLUG=${slug:-}
+  done
+  if [ "$count" -eq 1 ]; then return 0; fi
+  if [ "$count" -eq 0 ]; then echo "no run matches #$n; nothing done" >&2
+  else echo "#$n matches $count runs; refusing. Use <owner/repo>#$n with one of:" >&2; printf '%s\n' "$CANDS_TXT" | sed '/^$/d; s/^/  /' >&2; fi
+  return 1
+}
 FORCE=0; args=()
 for a in "$@"; do [ "$a" = "--force" ] && FORCE=1 || args+=("$a"); done
 set -- "${args[@]}"
 
 case "${1:-}" in
   status)
-    ISSUE="${2:-}"
+    ISSUE="${2:-}"; FILTER_KEY=""
+    if [ -n "$ISSUE" ]; then resolve_run "$ISSUE" || exit 1; FILTER_KEY=$RUN_KEY; fi
     # State derivation is shared with the reporter (run-state.sh's derive_runs) — issue #10 AC14:
     # only this derivation moved; every echo/printf format string, the found=1-after-issue-filter
     # behaviour ("no orchestrators recorded" fires only when the orch-*.pid glob itself is empty,
@@ -35,7 +72,8 @@ case "${1:-}" in
       while IFS=$'\t' read -r n repo state_code pid started last_activity restarts stage; do
         [ -n "$n" ] || continue
         [ "$state_code" = "queued" ] && continue   # queued entries are the section below, unchanged
-        [ -n "$ISSUE" ] && [ "$n" != "$ISSUE" ] && continue
+        k=$(run_key "$(repo_slug "$repo")" "$n" 2>/dev/null) || k=$n; [ -e "$PIPE/orch-$k.repo" ] || k=$n   # new key, else the legacy name
+        [ -n "$FILTER_KEY" ] && [ "$k" != "$FILTER_KEY" ] && continue
         case "$state_code" in
           running)    state="running (pid $pid)" ;;
           stopped)    state="stopped (manual)" ;;
@@ -52,7 +90,7 @@ case "${1:-}" in
         # closed, fully-done issue keeps reporting "held (needs JP)" indefinitely (#216 session,
         # 2026-09-18: #151 and #183 were reported as still needing JP days after being closed).
         [ "$gh_state" = "CLOSED" ] && state="done (issue closed)"
-        echo "#$n  $state  repo=$repo  latest marker: $last  log=$PIPE/orch-$n.log"
+        echo "#$n  $state  repo=$repo  latest marker: $last  log=$PIPE/orch-$k.log"
       done <<< "$(derive_runs)"
     fi
     # Reporter health (design #10 §4.2): >=3 consecutive push failures earn one extra line so a
@@ -86,9 +124,10 @@ except Exception: print('?')
     done
     if ls "$QUEUE"/*.json >/dev/null 2>&1; then
       echo "--- queued ---"
-      for qf in $(ls -1 "$QUEUE"/*.json 2>/dev/null | sort -t- -k2 -n); do
+      for qf in $(ls -1 "$QUEUE"/*.json 2>/dev/null | sort); do
         q_issue=$(python3 -c "import json; d=json.load(open('$qf')); print(d['issue'])")
         q_repo=$(python3 -c "import json; d=json.load(open('$qf')); print(d['repo'])")
+        if [ -n "$FILTER_KEY" ]; then qk=${qf##*/orch-}; [ "${qk%.json}" = "$FILTER_KEY" ] || continue; fi
         queued_at=$(python3 -c "import json; d=json.load(open('$qf')); print(d.get('queued_at','?'))")
         nb=$(python3 -c "import json,time; nb=json.load(open('$qf')).get('not_before',0); d=int(nb-time.time()); print(f'ready' if d<=0 else f'in {d}s')" 2>/dev/null)
         echo "#$q_issue  queued since $queued_at  $nb  repo=$q_repo"
@@ -96,29 +135,31 @@ except Exception: print('?')
     fi
     ;;
   tail)
-    tail -n "${3:-20}" "$PIPE/orch-$2.log"
+    resolve_run "${2:?run required: <owner/repo>#<N> or <N>}" || exit 1
+    tail -n "${3:-20}" "$PIPE/orch-$RUN_KEY.log"
     ;;
   stop)
-    pid=$(cat "$PIPE/orch-$2.pid" 2>/dev/null || true)
+    resolve_run "${2:?run required: <owner/repo>#<N> or <N>}" || exit 1
+    pid=$(cat "$PIPE/orch-$RUN_KEY.pid" 2>/dev/null || true)
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
       # $pid is the nohup'd bash wrapper; SIGTERM does not reach its claude child,
       # which kept driving #611 for 14 min after a stop (2026-09-13). Kill the
       # child too. Stage processes the orchestrator launched are left alone.
       pkill -TERM -P "$pid" 2>/dev/null
-      kill "$pid" && echo "stopped orchestrator for #$2 (pid $pid)"
+      kill "$pid" && echo "stopped orchestrator for ${RUN_SLUG:+$RUN_SLUG}#$RUN_ISSUE (pid $pid)"
     else
-      echo "orchestrator for #$2 not running"
+      echo "orchestrator for ${RUN_SLUG:+$RUN_SLUG}#$RUN_ISSUE not running"
     fi
-    touch "$PIPE/orch-$2.stopped"
-    rm -f "$QUEUE/orch-$2.json"
+    touch "$PIPE/orch-$RUN_KEY.stopped"
+    rm -f "$QUEUE/orch-$RUN_KEY.json"
     report_status_async "stop"   # event push: run stopped (design #10 §4.4)
-    echo "wrote tombstone — supervisor will not auto-restart #$2"
+    echo "wrote tombstone — supervisor will not auto-restart ${RUN_SLUG:+$RUN_SLUG}#$RUN_ISSUE"
     ;;
   queue)
     if ! ls "$QUEUE"/*.json >/dev/null 2>&1; then
       echo "queue is empty"
     else
-      for qf in $(ls -1 "$QUEUE"/*.json 2>/dev/null | sort -t- -k2 -n); do
+      for qf in $(ls -1 "$QUEUE"/*.json 2>/dev/null | sort); do
         q_issue=$(python3 -c "import json; d=json.load(open('$qf')); print(d['issue'])")
         q_repo=$(python3 -c "import json; d=json.load(open('$qf')); print(d['repo'])")
         queued_at=$(python3 -c "import json; d=json.load(open('$qf')); print(d.get('queued_at','?'))")
@@ -130,12 +171,14 @@ except Exception: print('?')
     REPO="${1:?repo path required}"; ISSUE="${2:?issue number required}"; shift 2; EXTRA="$*"
     REPO=$(cd "$REPO" && pwd)
     OWNER_REPO=$(cd "$REPO" && gh repo view --json nameWithOwner --jq .nameWithOwner)
-    if [ -f "$PIPE/orch-$ISSUE.pid" ] && kill -0 "$(cat "$PIPE/orch-$ISSUE.pid")" 2>/dev/null; then
-      echo "orchestrator for #$ISSUE already running (pid $(cat "$PIPE/orch-$ISSUE.pid")); use 'stop' first" >&2; exit 1
+    RK=$(run_key "$OWNER_REPO" "$ISSUE")
+    migrate_legacy_runs   # a legacy orch-<N>.* set of this repo moves to its key before the checks below read it
+    if [ -f "$PIPE/orch-$RK.pid" ] && kill -0 "$(cat "$PIPE/orch-$RK.pid")" 2>/dev/null; then
+      echo "orchestrator for #$ISSUE already running (pid $(cat "$PIPE/orch-$RK.pid")); use 'stop' first" >&2; exit 1
     fi
     # Cross-machine guard: agent-in-progress on an issue this machine does not own (never launched here, or launched
     # here but already released via .label-cleared) means another machine is driving it.
-    if [ "$FORCE" -eq 0 ] && { [ ! -f "$PIPE/orch-$ISSUE.repo" ] || [ -f "$PIPE/orch-$ISSUE.label-cleared" ]; } \
+    if [ "$FORCE" -eq 0 ] && { [ ! -f "$PIPE/orch-$RK.repo" ] || [ -f "$PIPE/orch-$RK.label-cleared" ]; } \
        && (cd "$REPO" && gh issue view "$ISSUE" --json labels --jq '[.labels[].name] | index("'"$LABEL_IN_PROGRESS"'") != null' 2>/dev/null | grep -q true); then
       echo "#$ISSUE carries $LABEL_IN_PROGRESS but nothing is running here — running elsewhere? check the other machine's status, or --force" >&2; exit 1
     fi
@@ -154,43 +197,43 @@ except Exception: print('?')
     # Only after winning arbitration (a refused launch must leave labels alone, #217): launching consumes agent-go (the shared-dispatch pool) and claims the issue for this machine. Crash restarts are
     # the local supervisor's job, not the label's; the supervisor drops agent-in-progress when the run is done or parked.
     (cd "$REPO" && gh issue edit "$ISSUE" --add-label "$LABEL_IN_PROGRESS" --remove-label "$LABEL_GO" --remove-label "$LABEL_PROPOSED" 2>/dev/null) || true
-    rm -f "$QUEUE/orch-$ISSUE.json"   # a manual launch supersedes a queued one; never both
+    rm -f "$QUEUE/orch-$RK.json"   # a manual launch supersedes a queued one; never both
     # Clear tombstones and restart state on manual launch
-    rm -f "$PIPE/orch-$ISSUE".{stopped,held,done,closed,release,marker,milestone,alert,label-cleared,start,exit,exit-logged} "$PIPE/orch-$ISSUE.restarts"
+    rm -f "$PIPE/orch-$RK".{stopped,held,done,closed,release,marker,milestone,alert,label-cleared,start,exit,exit-logged} "$PIPE/orch-$RK.restarts"
     # Persist on both the launch and queued paths: supervisor.sh rebuilds the queue JSON from this file.
-    printf '%s' "$EXTRA" > "$PIPE/orch-$ISSUE.extra"
+    printf '%s' "$EXTRA" > "$PIPE/orch-$RK.extra"
     # Ticket title for the status board (#29) — fetched once here, before the capacity check so a queued run has it
     # too; the status reporter only ever reads the file. A failed or empty fetch leaves no title file and never blocks
     # the launch.
-    write_title_marker "$REPO" "$ISSUE" 1
+    write_title_marker "$REPO" "$ISSUE" 1 "$RK"
     if ! has_capacity; then
       python3 -c "
 import json, datetime, time
-with open('$QUEUE/orch-$ISSUE.json', 'w') as f:
+with open('$QUEUE/orch-$RK.json', 'w') as f:
     json.dump({'issue': '$ISSUE', 'repo': '$REPO', 'extra': '''$EXTRA''', 'reason': 'queued',
                'queued_at': datetime.datetime.utcnow().strftime('%FT%TZ'), 'not_before': int(time.time())}, f)
 "
       echo "queued #$ISSUE ($(count_running)/$MAX_CONCURRENT slots full, $(mem_available_mb)MB avail) — supervisor will auto-launch when a slot opens"
       echo "check: ~/.claude/skills/orchestrate/orchestrate.sh queue"
-      rm -f "$PIPE/orch-$ISSUE.pid"   # queued, not running: a stale dead pid makes the supervisor read this as a run that just ended (#22)
+      rm -f "$PIPE/orch-$RK.pid"   # queued, not running: a stale dead pid makes the supervisor read this as a run that just ended (#22)
       exit 0
     fi
     # The headless session IS the orchestrator (--agent), not a wrapper that calls Agent(orchestrator):
     # a prompt arguing "you are the exception to the CLAUDE.md rule" reads as a prompt injection and
     # was intermittently refused (#217, #151, #637 — 2026-09-17).
     PROMPT="Drive $OWNER_REPO#$ISSUE through the pipeline. Repo: $REPO. Read the latest marker on the issue and continue from there. $EXTRA"
-    printf '\n===== [%s] LAUNCH issue=%s reason=manual =====\n' "$(date -u +%FT%TZ)" "$ISSUE" >> "$PIPE/orch-$ISSUE.log"
+    printf '\n===== [%s] LAUNCH issue=%s reason=manual =====\n' "$(date -u +%FT%TZ)" "$ISSUE" >> "$PIPE/orch-$RK.log"
     cd "$REPO"
     CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 nohup $SETSID bash -c '
       echo 300 > /proc/self/oom_score_adj 2>/dev/null
       claude --dangerously-skip-permissions --agent orchestrator -p "$1"
       echo $? > "$2"
-    ' _ "$PROMPT" "$PIPE/orch-$ISSUE.exit" >> "$PIPE/orch-$ISSUE.log" 2>&1 9>&- &
-    echo $! > "$PIPE/orch-$ISSUE.pid"; echo "$REPO" > "$PIPE/orch-$ISSUE.repo"
-    date -u +%FT%TZ > "$PIPE/orch-$ISSUE.start"; date -u +%FT%TZ > "$PIPE/orch-$ISSUE.launched-at"
-    log_run_launch "$OWNER_REPO" "$ISSUE" "${LAUNCH_REASON:-manual}" 0 ""
+    ' _ "$PROMPT" "$PIPE/orch-$RK.exit" >> "$PIPE/orch-$RK.log" 2>&1 9>&- &
+    echo $! > "$PIPE/orch-$RK.pid"; echo "$REPO" > "$PIPE/orch-$RK.repo"
+    date -u +%FT%TZ > "$PIPE/orch-$RK.start"; date -u +%FT%TZ > "$PIPE/orch-$RK.launched-at"
+    log_run_launch "$OWNER_REPO" "$ISSUE" "${LAUNCH_REASON:-manual}" 0 "" "$RK"
     report_status_async "launch"   # event push: run launched (design #10 §4.4)
-    echo "launched orchestrator for $OWNER_REPO#$ISSUE  pid=$!  log=$PIPE/orch-$ISSUE.log"
-    echo "check: ~/.claude/skills/orchestrate/orchestrate.sh status $ISSUE"
+    echo "launched orchestrator for $OWNER_REPO#$ISSUE  pid=$!  log=$PIPE/orch-$RK.log"
+    echo "check: ~/.claude/skills/orchestrate/orchestrate.sh status $OWNER_REPO#$ISSUE"
     ;;
 esac
