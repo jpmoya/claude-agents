@@ -273,9 +273,12 @@ test_aw_ac5_agent_marker_refusal_is_logged_with_repo_issue_reason() {
 
 # AC5, AWAITING GO / JP-only BLOCKED refusals: the "no go" report is logged (delegated-decision / jp-go)
 test_aw_ac5_awaiting_go_refusal_is_logged() {
-  local row
-  row=$(aw_row "$ORCH_AW" '`[infra-operator] AWAITING GO` + JP go comment' 'Re-dispatch')
-  case "$row" in *'jp-go'*) ;; *) fail "AWAITING GO row must say a refused/premature go is logged as a jp-go validate line"; return 1 ;; esac
+  # The AWAITING GO + go row is pinned byte-identical to origin/main by test_dd_i76_ac3 (locked, pre-existing),
+  # so the requirement lives in the one shared "JP's go" paragraph that every go row defers to.
+  local para
+  para=$(grep -F "**JP's go" "$ORCH_AW" | head -1)
+  case "$para" in *'AWAITING GO'*) ;; *) fail "JP's-go paragraph must cover AWAITING GO"; return 1 ;; esac
+  case "$para" in *'jp-go'*) ;; *) fail "JP's-go paragraph must say a refused/premature go (AWAITING GO or JP-only BLOCKED) is logged as a jp-go validate line"; return 1 ;; esac
 }
 
 # ------------------------------------------------------------------------------------------ AC4
