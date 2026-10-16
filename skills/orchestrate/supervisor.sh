@@ -54,6 +54,7 @@ to_epoch() {  # ISO-8601 UTC → epoch; portable (macOS date has no -d)
 
 power_ok() {  # Mac: dispatch new work only on AC power (a sleeping laptop strands claimed issues). Linux: always.
   [ "$(uname)" = "Darwin" ] || return 0
+  [ "${ALLOW_BATTERY:-0}" = "1" ] && return 0   # machine-local opt-out (config.local.sh); the Mac must be kept awake
   pmset -g batt 2>/dev/null | grep -q "AC Power"
 }
 
@@ -999,17 +1000,16 @@ if [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
       # Check marker staleness — only clear if no movement for STALE_LABEL_SECS
       # Same call also yields the latest "claim: <host>" comment: a claim naming another machine means it owns the run.
       view=$(cd "$local_path" && gh issue view "$num" --json comments,updatedAt \
-        --jq '((.comments[-1].createdAt // .updatedAt) // ""), ([.comments[] | select(.body | startswith("**[supervisor] NOTE** claim: "))] | last | .body // "" | split(" ") | .[3] // "")' 2>/dev/null)
+        --jq '((.comments[-1].createdAt // .updatedAt) // ""), ([.comments[] | select(.body | startswith("**[supervisor] NOTE** claim: "))] | last | .body // "" | split(" ") | .[3] // "")' 2>/dev/null) || { slog "[reconcile] $owner_repo#$num — issue read failed rc=$?, skipped"; continue; }
       last_comment_age=$(printf '%s\n' "$view" | sed -n 1p)
       claim_host=$(printf '%s\n' "$view" | sed -n 2p)
       [ -n "$claim_host" ] && [ "$claim_host" != "$HOST" ] && continue
-      if [ -n "$last_comment_age" ]; then
-        comment_epoch=$(to_epoch "$last_comment_age")
-        age=$(( $(date +%s) - comment_epoch ))
-        [ "$age" -lt "$STALE_LABEL_SECS" ] && continue
-      fi
+      [ -n "$last_comment_age" ] || continue   # #326: no timestamp to judge staleness by — never clear on a blind read
+      comment_epoch=$(to_epoch "$last_comment_age")
+      age=$(( $(date +%s) - comment_epoch ))
+      [ "$age" -lt "$STALE_LABEL_SECS" ] && continue
       (cd "$local_path" && gh issue edit "$num" --remove-label "$LABEL_IN_PROGRESS" >/dev/null 2>&1) && \
-        slog "[reconcile] $owner_repo#$num — cleared orphaned $LABEL_IN_PROGRESS (no local state, marker stale ${age:-?}s)"
+        slog "[reconcile] $owner_repo#$num — cleared orphaned $LABEL_IN_PROGRESS (no local state, marker stale ${age}s)"
     done
   done
 fi
