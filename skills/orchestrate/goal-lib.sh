@@ -8,13 +8,40 @@
 _GOAL_LIB_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 GOAL_REGISTRY_REPO="${GOAL_REGISTRY_REPO:-jpmoya/claude-agents}"
 GOAL_RECENT_DAYS=7
+GOAL_LABEL_COLOR="${GOAL_LABEL_COLOR:-5319e7}"   # same colour in every repo (#319)
 
-# goal_label_name <title> -> the goal label "goal: <short>" (#319). STUB — the developer implements the rule from the ticket.
-goal_label_name() { echo "goal_label_name: not implemented (#319)" >&2; return 99; }
+# goal_label_name <title> -> the goal label "goal: <short>" (#319). short = title with whitespace collapsed, commas and
+# control chars removed, trimmed; over 37 chars it is cut at the last word boundary at or before 37 (hard cut at 37
+# when there is no space); trailing punctuation trimmed. Max 43 chars, so " (done)" (7) still fits GitHub's 50.
+goal_label_name() {
+  local s head
+  s=$(printf '%s' "${1:-}" | tr '\t\n\r' '   ' | tr -d '[:cntrl:]' | tr -d ',' | tr -s ' ')
+  s="${s# }"; s="${s% }"
+  if [ "${#s}" -gt 37 ]; then
+    if [ "${s:37:1}" = " " ]; then s="${s:0:37}"
+    else
+      head="${s:0:37}"
+      case "$head" in *" "*) s="${head% *}" ;; *) s="$head" ;; esac
+    fi
+  fi
+  s=$(printf '%s' "$s" | sed -E 's/[[:space:].,;:!?-]+$//')
+  [ -n "$s" ] || { echo "cannot build a goal label from title '${1:-}'" >&2; return 1; }
+  printf 'goal: %s\n' "$s"
+}
 
-# goal_parse <spec> -> "repo<TAB>kind<TAB>ref" (kind: ms | msall | t); exit 1 when malformed
+_goal_uri() { jq -rn --arg s "$1" '$s | @uri'; }
+_goal_is_bi() { case "$1" in */Business-Intelligence) return 0 ;; esac; return 1; }
+
+# goal_parse <spec> -> "repo<TAB>kind<TAB>ref" (kind: ms | msall | t | label); exit 1 when malformed.
+# label:<exact label name> is the cross-repo form (#319): repo is "-" (the repos live in the registry v2 block).
 goal_parse() {
   local spec="${1:-}" re='^([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)(.*)$' repo rest ref
+  case "$spec" in
+    label:*)
+      ref="${spec#label:}"
+      [ -n "$ref" ] || { echo "malformed goal '$spec': empty label name" >&2; return 1; }
+      printf -- '-\tlabel\t%s\n' "$ref"; return 0 ;;
+  esac
   if ! [[ "$spec" =~ $re ]]; then echo "malformed goal '$spec' (want owner/repo:milestone:<n|title>, owner/repo:milestones:all or owner/repo#N)" >&2; return 1; fi
   repo="${BASH_REMATCH[1]}"; rest="${BASH_REMATCH[2]}"
   case "$rest" in
@@ -54,7 +81,26 @@ goal_id() {
   line=$(goal_parse "$1") || return 1
   IFS=$'\t' read -r repo kind ref <<< "$line"
   [ "$kind" = ms ] && { ref=$(_goal_ms_number "$repo" "$ref") || return 1; }
+  if [ "$kind" = label ]; then printf 'label-%s\n' "$ref" | sed 's/[^A-Za-z0-9._-]/_/g'; return 0; fi
   printf '%s-%s-%s\n' "$repo" "$kind" "$ref" | sed 's/[^A-Za-z0-9._-]/_/g'
+}
+
+# _goal_label_issues <repo> <label> [open|all] -> JSON array of the issues (no PRs) carrying the label, all pages (#319).
+# REST only: repos/<r>/issues?labels=<label>&state=<open|all>, paginated. No GraphQL, no project scope.
+_goal_label_issues() {
+  local all
+  all=$(_goal_get_all "repos/$1/issues?labels=$(_goal_uri "$2")&state=${3:-all}&per_page=100") || return 1
+  printf '%s' "$all" | jq -c '[.[] | select(has("pull_request") | not)]'
+}
+
+# _goal_repos <id> [explicit csv] -> the repos of a label goal, one per line: the csv, else the local cache, else the registry block
+_goal_repos() {
+  local r
+  if [ -n "${2:-}" ]; then printf '%s\n' "$2" | tr ',' '\n'; return 0; fi
+  r=$(jq -r '(.repos // [])[]' "$PIPE/goal-$1.json" 2>/dev/null)
+  if [ -z "$r" ]; then r=$(_goal_find "$1" 2>/dev/null | jq -r '(.block.repos // [])[]' 2>/dev/null); fi
+  [ -n "$r" ] || return 1
+  printf '%s\n' "$r"
 }
 
 _goal_ms_rows() {  # <repo> <milestone number> -> owner/repo#N<TAB>state, issues only
@@ -63,14 +109,20 @@ _goal_ms_rows() {  # <repo> <milestone number> -> owner/repo#N<TAB>state, issues
   printf '%s' "$all" | jq -r --arg r "$1" '.[] | select(has("pull_request") | not) | "\($r)#\(.number)\t\(.state)"'
 }
 
-# _goal_scope_rows <spec> [id] -> owner/repo#N<TAB>open|closed, one set of live REST calls.
+# _goal_scope_rows <spec> [id] [repos csv] -> owner/repo#N<TAB>open|closed, one set of live REST calls.
 # With the id of an already-registered milestone goal, scope by the number in the id (ms-<n>): the title is only
 # resolved at register time, so a milestone renamed at ship does not break resume, brief or the overlap guard.
 _goal_scope_rows() {
-  local line repo kind ref n ms one
+  local line repo kind ref n ms one repos r js
   line=$(goal_parse "$1") || return 1
   IFS=$'\t' read -r repo kind ref <<< "$line"
   case "$kind" in
+    label)
+      repos=$(_goal_repos "${2:-}" "${3:-}") || { echo "cannot find the repos of label goal ${2:-$1}" >&2; return 1; }
+      for r in $repos; do
+        js=$(_goal_label_issues "$r" "$ref" all) || return 1
+        printf '%s' "$js" | jq -r --arg r "$r" '.[] | "\($r)#\(.number)\t\(.state)"'
+      done ;;
     ms)
       case "${2:-}" in
         *-ms-[0-9]*) n="${2##*-ms-}"; case "$n" in *[!0-9]*) n="" ;; esac ;;
@@ -104,7 +156,7 @@ _GOAL_ISSUE_JQ='def goal_of: . as $i
                | {issue: $i.number, id: "registry-issue-\($i.number)", spec: "", host: "", instructions: "",
                   state: $i.state, closed_at: $i.closed_at, block: null, st: "unreadable"})
             else
-            {issue: $i.number, id: $b.id, spec: $b.spec, host: ($b.host // ""), instructions: ($b.instructions // ""),
+            {issue: $i.number, id: $b.id, spec: ($b.spec // (if ($b.label // "") != "" then "label:\($b.label)" else "" end)), host: ($b.host // ""), instructions: ($b.instructions // ""),
              state: $i.state, closed_at: $i.closed_at, block: $b,
              st: (if $i.state == "closed" then (if ($l | index("goal-stopped")) then "stopped" else "delivered" end)
                   elif ($l | index("goal-stopped")) then "stopped"
@@ -162,18 +214,30 @@ _goal_checkout() {
 
 _goal_have_marker_re() { type marker_re >/dev/null 2>&1 || . "$_GOAL_LIB_DIR/../../hooks/pipeline-markers.sh" 2>/dev/null || . "$HOME/.claude/hooks/pipeline-markers.sh"; }
 
+# _goal_primary_repo <goal json> -> the repo whose checkout hosts the lead (a label goal: the first of its repos)
+_goal_primary_repo() {
+  local spec line
+  spec=$(printf '%s' "$1" | jq -r .spec)
+  line=$(goal_parse "$spec") || return 1
+  if [ "$(printf '%s' "$line" | cut -f2)" = label ]; then printf '%s' "$1" | jq -r '(.block.repos // [])[0] // empty'
+  else printf '%s' "$line" | cut -f1; fi
+}
+
 # goal_brief <id> [goal-json] -> the delivery-lead launch prompt, generated from live registry + ticket state (never the cache)
 goal_brief() {
   local id="$1" g spec instr repo checkout rows row ref st n owner_repo cm last
   if [ $# -ge 2 ] && [ -n "$2" ]; then g=$2; else g=$(_goal_find "$id") || { echo "goal $id not found in the registry" >&2; return 1; }; fi
   spec=$(printf '%s' "$g" | jq -r .spec); instr=$(printf '%s' "$g" | jq -r .instructions)
-  repo=$(goal_parse "$spec" | cut -f1)
+  repo=$(_goal_primary_repo "$g")
   checkout=$(_goal_checkout "$repo") || checkout="(not in DISPATCH_REPOS)"
   rows=$(_goal_scope_rows "$spec" "$id") || { echo "cannot read the scope of $spec" >&2; return 1; }
   _goal_have_marker_re
   printf 'You are the delivery lead for goal %s.\n' "$id"
   printf 'Goal: %s\nGoal id: %s\n' "$spec" "$id"
   printf 'Checkout: %s\n' "$checkout"
+  if [ "$(goal_parse "$spec" | cut -f2)" = label ]; then
+    printf 'Cross-repo goal: tickets carry the label "%s" in %s\n' "$(printf '%s' "$g" | jq -r '.block.label')" "$(printf '%s' "$g" | jq -r '(.block.repos // []) | join(", ")')"
+  fi
   printf 'Instructions: %s\n' "${instr:-(none)}"
   printf 'Your memory (read first, append to it): %s/goals/%s.md\n' "$LOGDIR" "$id"
   printf '\nScope (live from GitHub):\n'
@@ -213,7 +277,7 @@ goal_kill() {
 goal_launch() {
   local id="$1" g="${2:-}" repo checkout brief
   [ -n "$g" ] || g=$(_goal_find "$id") || { echo "goal $id not found in the registry" >&2; return 1; }
-  repo=$(goal_parse "$(printf '%s' "$g" | jq -r .spec)" | cut -f1)
+  repo=$(_goal_primary_repo "$g")
   checkout=$(_goal_checkout "$repo") || { echo "$repo is not in DISPATCH_REPOS" >&2; return 1; }
   brief=$(goal_brief "$id" "$g") || return 1
   mkdir -p "$PIPE" "$LOGDIR/goals"
@@ -315,7 +379,139 @@ goal_release() {  # commit SHA of the checkout (release tag for captured errors)
 }
 goal_err() {  # slog with the [goal] route, release + host; one status push per tick. Never put tokens or brief text in $*.
   slog "[goal] error: $* (release=$(goal_release) host=$HOST)"
+  pipeline_event error --arg level error --arg route supervisor/goal --arg release "$(goal_release)" --arg message "$*"
   if [ "$GOAL_ERR_PUSHED" -eq 0 ]; then GOAL_ERR_PUSHED=1; report_status_async "goal-error"; fi
+}
+
+# ---- cross-repo label goals (#319) ----------------------------------------------------------------------------
+# Label lifecycle and go-granting. REST only. Shared by deliver.sh (register) and goal_sync / goal_deliver.
+
+_goal_issue_label_add() { gh api -X POST "repos/$1/issues/$2/labels" -f "labels[]=$3" >/dev/null 2>&1; }
+_goal_issue_label_del() { gh api -X DELETE "repos/$1/issues/$2/labels/$(_goal_uri "$3")" >/dev/null 2>&1 || true; }
+
+# goal_body_v2 <block json> <granted date> -> the registry issue body: first line, the one fenced json block (the machine
+# source, `granted` list included) and, once go was granted, the human-readable "Go-granted:" record.
+goal_body_v2() {
+  printf 'Goal: %s\n\n```json\n%s\n```\n' "$(printf '%s' "$1" | jq -r .title)" "$1"
+  if [ "$(printf '%s' "$1" | jq -r '(.go // false)')" = true ]; then
+    printf '\nGo-granted: %s\n' "$2"
+    printf '%s' "$1" | jq -r '(.granted // [])[] | "- " + .'
+  fi
+}
+
+_goal_patch_body() {  # <registry issue> <body> -> the updated issue JSON
+  jq -nc --arg b "$2" '{body:$b}' | gh api -X PATCH "repos/$GOAL_REGISTRY_REPO/issues/$1" --input -
+}
+
+# goal_requirements_ok <owner/repo#N> -> 0 when the requirements ticket exists (open or closed) and its body is non-empty
+goal_requirements_ok() {
+  local ref="${1:-}" repo n body
+  case "$ref" in */*#[0-9]*) ;; *) return 1 ;; esac
+  repo="${ref%%#*}"; n="${ref##*#}"
+  body=$(gh api "repos/$repo/issues/$n" --jq '.body // ""' 2>/dev/null) || return 1
+  [ -n "$(printf '%s' "$body" | tr -d '[:space:]')" ]
+}
+
+# _goal_grant_go <label> <include_sentry 0|1> <granted json array> <repo>… -> prints the new granted array.
+# Open labelled tickets get agent-go (agent-proposed removed) unless source:sentry (without include_sentry) or already
+# in the granted list: the grant is applied once per ticket, so an agent-go JP removed later is never re-added.
+# Exit 1 when a read failed; a ticket whose label write failed is not recorded (retried next sync).
+_goal_grant_go() {
+  local label=$1 sentry=$2 granted=$3 r js n labels ref rc=0
+  shift 3
+  for r in "$@"; do
+    _goal_is_bi "$r" && continue
+    js=$(_goal_label_issues "$r" "$label" open) || return 1
+    while IFS=$'\t' read -r n labels; do
+      [ -n "$n" ] || continue
+      ref="$r#$n"
+      if printf '%s' "$granted" | jq -e --arg x "$ref" 'index($x) != null' >/dev/null; then continue; fi
+      case ",$labels," in *",source:sentry,"*) [ "$sentry" = 1 ] || continue ;; esac
+      case ",$labels," in
+        *",agent-go,"*) ;;
+        *)
+          _goal_issue_label_add "$r" "$n" agent-go || { rc=1; continue; }
+          case ",$labels," in *",agent-proposed,"*) _goal_issue_label_del "$r" "$n" agent-proposed ;; esac ;;
+      esac
+      granted=$(printf '%s' "$granted" | jq -c --arg x "$ref" '. + [$x]')
+    done <<< "$(printf '%s' "$js" | jq -r '.[] | "\(.number)\t\([.labels[].name] | join(","))"')"
+  done
+  printf '%s\n' "$granted"
+  return $rc
+}
+
+# _goal_sync_grant <goal json> — an approved label goal (go:true) gives agent-go to labelled tickets that arrived since
+# (any repo of the goal); the registry block and body record each grant.
+_goal_sync_grant() {
+  local g=$1 block id issue label sentry granted new repos body date
+  block=$(printf '%s' "$g" | jq -c '.block // empty'); [ -n "$block" ] || return 0
+  [ "$(printf '%s' "$block" | jq -r '((.v // 1) == 2) and ((.go // false) == true) and ((.label // "") != "")')" = true ] || return 0
+  id=$(printf '%s' "$g" | jq -r .id); issue=$(printf '%s' "$g" | jq -r .issue)
+  label=$(printf '%s' "$block" | jq -r .label)
+  sentry=0; [ "$(printf '%s' "$block" | jq -r '(.include_sentry // false)')" = true ] && sentry=1
+  granted=$(printf '%s' "$block" | jq -c '.granted // []')
+  repos=$(printf '%s' "$block" | jq -r '(.repos // [])[]')
+  # shellcheck disable=SC2086
+  new=$(_goal_grant_go "$label" "$sentry" "$granted" $repos) || { goal_err "cannot grant go on every labelled ticket of $id"; }
+  [ -n "$new" ] || return 0
+  [ "$new" != "$granted" ] || return 0
+  block=$(printf '%s' "$block" | jq -c --argjson n "$new" '.granted = $n')
+  date=$(printf '%s' "$block" | jq -r '(.granted_at // empty)'); [ -n "$date" ] || date=$(date -u +%F)
+  body=$(goal_body_v2 "$block" "$date")
+  _goal_patch_body "$issue" "$body" >/dev/null 2>&1 || goal_err "cannot record the go grants of $id on the registry issue"
+}
+
+# _goal_label_cleanup <label> <repo>… — close-time lifecycle: strip the label from every remaining OPEN ticket, then rename
+# the label to "<label> (done)" (or delete it when a "(done)" label already exists). Idempotent: reads only once done.
+# Returns 1 (after goal_err) when any step failed; the caller keeps a retry marker.
+_goal_label_cleanup() {
+  local label=$1 r js n out rc=0 done_label
+  shift
+  done_label="$label (done)"
+  for r in "$@"; do
+    _goal_is_bi "$r" && continue
+    if js=$(_goal_label_issues "$r" "$label" open); then
+      for n in $(printf '%s' "$js" | jq -r '.[].number'); do
+        out=$(gh api -X DELETE "repos/$r/issues/$n/labels/$(_goal_uri "$label")" 2>&1) \
+          || case "$out" in *"404"*|*"Not Found"*) ;; *) goal_err "cannot strip the goal label from $r#$n"; rc=1 ;; esac
+      done
+    else goal_err "cannot list the open tickets of the goal label in $r"; rc=1; continue; fi
+    out=$(gh api "repos/$r/labels/$(_goal_uri "$label")" 2>&1) || {
+      case "$out" in *"404"*|*"Not Found"*) continue ;; *) goal_err "cannot read the goal label in $r"; rc=1; continue ;; esac
+    }
+    if gh api "repos/$r/labels/$(_goal_uri "$done_label")" >/dev/null 2>&1; then
+      gh api -X DELETE "repos/$r/labels/$(_goal_uri "$label")" >/dev/null 2>&1 || { goal_err "cannot delete the stripped goal label in $r"; rc=1; }
+    else
+      gh api -X PATCH "repos/$r/labels/$(_goal_uri "$label")" -f "new_name=$done_label" >/dev/null 2>&1 \
+        || { goal_err "cannot rename the goal label in $r"; rc=1; }
+    fi
+  done
+  return $rc
+}
+
+# goal_label_close <id> <label> <repos csv> — run the close-time lifecycle; a failure leaves $PIPE/goalclean-<id>.json so
+# goal_sync retries it (the goal's own files are removed at close).
+goal_label_close() {
+  local repos
+  repos=$(printf '%s' "$3" | tr ',' ' ')
+  # shellcheck disable=SC2086
+  if _goal_label_cleanup "$2" $repos; then rm -f "$PIPE/goalclean-$1.json"
+  else jq -nc --arg l "$2" --arg r "$3" '{label:$l, repos:$r}' > "$PIPE/goalclean-$1.json" 2>/dev/null || goal_err "cannot write the cleanup marker of $1"; fi
+}
+
+# _goal_cleanup_retry <registry json> — retry markers left by a failed close; dropped when an active goal reuses the label
+_goal_cleanup_retry() {
+  local f id label repos
+  for f in "$PIPE"/goalclean-*.json; do
+    [ -e "$f" ] || break
+    id=$(basename "$f" .json); id=${id#goalclean-}
+    label=$(jq -r '.label // empty' "$f" 2>/dev/null); repos=$(jq -r '.repos // empty' "$f" 2>/dev/null)
+    if [ -z "$label" ] || [ -z "$repos" ]; then rm -f "$f"; continue; fi
+    if printf '%s' "$1" | jq -e --arg l "$label" 'any(.[]; (.block.label // "") == $l and (.st == "active" or .st == "held" or .st == "waiting_jp"))' >/dev/null; then
+      rm -f "$f"; continue
+    fi
+    goal_label_close "$id" "$label" "$repos"
+  done
 }
 
 goal_mirror() {  # <id> <state> [<scope_total> <scope_delivered>] — the cache fields the status page (#197) reads
@@ -339,6 +535,7 @@ goal_sync() {  # registry -> local: rebuild missing caches, propagate stop/close
     [ -n "$g" ] || continue
     host=$(printf '%s' "$g" | jq -r '(.host // "") | ascii_downcase')
     id=$(printf '%s' "$g" | jq -r '.id // empty'); n=$(printf '%s' "$g" | jq -r '.issue // empty'); st=$(printf '%s' "$g" | jq -r '.st')
+    block=$(printf '%s' "$g" | jq -c '.block // {}')
     if [ -n "$id" ] && [ -n "$host" ] && [ "$host" != "$GOAL_THIS_HOST" ] \
        && [ "$(jq -r '(.host // "") | ascii_downcase' "$PIPE/goal-$id.json" 2>/dev/null)" = "$GOAL_THIS_HOST" ]; then
       goal_kill "$id"   # re-pinned to another host: drop the lead and the cache so only the new owner runs it
@@ -354,6 +551,10 @@ goal_sync() {  # registry -> local: rebuild missing caches, propagate stop/close
         # act only on the issue the cache tracks: an old closed issue sharing the id must not kill a re-registered goal
         [ "$(jq -r '.issue // empty' "$PIPE/goal-$id.json" 2>/dev/null)" = "$n" ] || continue
         goal_kill "$id"
+        # a label goal (#319): strip the label from the open tickets and mark it done, before its cache is dropped
+        if [ "$(printf '%s' "$block" | jq -r '((.v // 1) == 2) and ((.label // "") != "")')" = true ]; then
+          goal_label_close "$id" "$(printf '%s' "$block" | jq -r .label)" "$(printf '%s' "$block" | jq -r '(.repos // []) | join(",")')"
+        fi
         # drop the local files (as the re-pin branch does) so the next sync does not match this goal again; resume rebuilds the cache
         rm -f "$PIPE"/goal-"$id".* || goal_err "cannot remove the local files of $id"
         slog "[goal] $id closed in the registry ($st) — stopped" ;;
@@ -373,9 +574,11 @@ goal_sync() {  # registry -> local: rebuild missing caches, propagate stop/close
           # whose registry write failed stays in force
           [ "$(cat "$PIPE/goal-$id.stopped" 2>/dev/null)" = registry ] && rm -f "$PIPE/goal-$id.stopped"
         fi
-        if [ "$st" = waiting_jp ] && [ ! -f "$PIPE/goal-$id.waiting" ]; then echo "(from registry)" > "$PIPE/goal-$id.waiting"; fi ;;
+        if [ "$st" = waiting_jp ] && [ ! -f "$PIPE/goal-$id.waiting" ]; then echo "(from registry)" > "$PIPE/goal-$id.waiting"; fi
+        _goal_sync_grant "$g" ;;
     esac
   done <<< "$(printf '%s' "$reg" | jq -c '.[]')"
+  _goal_cleanup_retry "$reg"
 }
 
 # goal_eval <id> <spec> — live scope + ticket classes into GE_* (current shell); exit 1 on any failed read
@@ -430,7 +633,7 @@ goal_cards() {  # <delivered|waiting_jp> — one card block per ticket of that c
 }
 
 goal_deliver() {  # <id> <issue> <spec>
-  local id=$1 issue=$2 spec=$3 body
+  local id=$1 issue=$2 spec=$3 body lb
   if [ ! -f "$PIPE/goal-$id.carded" ]; then
     body="**[deliver] NOTE** card
 
@@ -441,6 +644,8 @@ $(goal_cards delivered)"
     touch "$PIPE/goal-$id.carded"
   fi
   _goal_close "$issue" || { goal_err "cannot close the registry issue of $id"; return 0; }
+  lb=$(jq -r '.label // empty' "$PIPE/goal-$id.json" 2>/dev/null)
+  [ -z "$lb" ] || goal_label_close "$id" "$lb" "$(jq -r '(.repos // []) | join(",")' "$PIPE/goal-$id.json")"
   rm -f "$PIPE/goal-$id".*
   slog "[goal] $id delivered — registry issue #$issue closed ($GE_DELIVERED/$GE_TOTAL)"
   report_status_async "goal"

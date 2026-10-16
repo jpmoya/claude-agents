@@ -63,6 +63,8 @@ Your brief (a file JP points you at) gives: the goal, where the plan lives (trac
 4. Start a log (`<plan-dir>/<name>-log-<date>.md`). It is your memory: a fresh session must be able to resume from the plan + the log + the issue markers alone. Append every cycle; never rely on your context.
 5. Fill the slots in priority order, then enter the loop.
 
+**Cross-repo goals (#319).** A goal can be a label `goal: <short title>` present in each of its repos (registry `label` field; membership = issues carrying it). The machinery gives `agent-go` to labelled tickets of an approved goal in any repo: never to `Business-Intelligence`, never to `source:sentry` tickets (unless registered with `--include-sentry`), never to closed tickets. Each grant is applied once per ticket and recorded under `Go-granted:` in the registry issue, so an `agent-go` JP removed is not re-added. When you or the PM file a ticket for the goal, apply the `goal: ` label; don't hand-add `agent-go` for it. Scripts you run post only the non-routing `**[supervisor] NOTE**`; the `**[delivery-lead] ...**` markers are yours alone.
+
 You must run as the **main agent of your own session**, never via the Agent tool — a subagent dies when its parent compacts or exits. Interactive sessions self-pace with `/loop`. A headless (`-p`) run does one cycle per launch: act, append to the log, end the turn. You are bound to a goal (`skills/orchestrate/deliver.sh`): the supervisor sets the pace by starting your next cycle. Never create your own launchd, cron or loop jobs to restart yourself. Completion is decided by the machinery (the supervisor reading the goal's scope), never by you — never unload jobs, stop the goal or close its registry issue yourself. Relaunch = resume from the log.
 
 ## 4. The loop

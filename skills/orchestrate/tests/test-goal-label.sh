@@ -57,6 +57,8 @@ emit() { if [ -n "$expr" ]; then jq -r "$expr"; else cat; fi; }
 # repos/o/r/issues/7/labels must NOT be captured by the repo-label branch — they go to the base fake).
 owner=$(printf '%s' "$p" | awk -F/ '{print $2}'); repo=$(printf '%s' "$p" | awk -F/ '{print $3}')
 rest=${p#repos/$owner/$repo}
+rk="${owner}_${repo}"; name=""; case "$rest" in /labels/*) name=${rest#/labels/} ;; esac
+[ "$rest" = /issues ] && [ "$method" != GET ] && rest=/issues-write   # only the listing is paginated; POST issues goes to the base fake
 case "$rest" in
   /issues)
     # Paginated issue listing: without --paginate only ONE page (per_page, default 30 as on GitHub) comes back;

@@ -191,8 +191,13 @@ function renderGoalsSection(hosts) {
   if (goals.length === 0) return '';
   const delivered = (g) =>
     Number.isInteger(g.scope_delivered) && Number.isInteger(g.scope_total) ? `${g.scope_delivered}/${g.scope_total}` : '–';
+  // a cross-repo label goal (#319) shows its title, repos and order; a v1 goal its spec
+  const goalCell = (g) =>
+    g.title
+      ? `<strong>${esc(g.title)}</strong><br><small>${esc((g.repos || []).join(', '))}${Number.isInteger(g.order) ? ` · order ${esc(String(g.order))}` : ''}</small>`
+      : esc(g.spec);
   const cells = (g) => [
-    esc(g.spec),
+    goalCell(g),
     esc(HOST_LABELS[g.host] || g.host),
     `<span class="badge goal-${esc(g.state)}">${esc(GOAL_STATE_LABELS[g.state] || g.state)}</span>`,
     esc(delivered(g)),
