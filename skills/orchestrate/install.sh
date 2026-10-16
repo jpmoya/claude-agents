@@ -26,7 +26,7 @@ for i in agents hooks skills CLAUDE.md settings.json; do
 done
 
 echo "2. per-machine config"
-mkdir -p "$PIPE_CFG" "$LOGS" /tmp/pipeline/queue
+mkdir -p "$PIPE_CFG" "$LOGS"
 if [ -f "$PIPE_CFG/config.local.sh" ]; then ok "config.local.sh exists (not touched)"
 else
   [ -n "$BASE" ] || { [ -d "$HOME/dev" ] && BASE="$HOME/dev" || BASE="$HOME"; }
@@ -36,6 +36,7 @@ else
 fi
 # drop DISPATCH_REPOS entries whose checkout is missing, warn
 source "$REPO_DIR/skills/orchestrate/config.sh"
+mkdir -p "$QUEUE"
 for e in "${DISPATCH_REPOS[@]}"; do [ -d "${e#*:}" ] || todo "checkout missing for ${e%%:*} at ${e#*:} — clone it or remove the entry from config.local.sh"; done
 if [ "$SCAN" = 1 ] && [ -z "${SLACK_WEBHOOK_URL:-}" ]; then todo "SCAN enabled but SLACK_WEBHOOK_URL unset in config.local.sh (scan still labels, just no Slack post)"; fi
 # Status board (issue #10): a silent no-op on both hosts until the companion infra issue deploys

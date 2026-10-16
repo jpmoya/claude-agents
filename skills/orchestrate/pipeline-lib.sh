@@ -10,7 +10,7 @@ count_running() {
   local n=0
   for f in "$PIPE"/orch-*.pid "$PIPE"/intake-*.pid; do   # intake runs (#114) count against MAX_CONCURRENT too
     [ -e "$f" ] || continue
-    kill -0 "$(cat "$f")" 2>/dev/null && n=$((n + 1))
+    pid_alive "$f" && n=$((n + 1))
   done
   echo "$n"
 }
@@ -121,6 +121,36 @@ claim_winner() {
   printf '%s\n' "$out" | awk '{print $4}'
 }
 
-# pid_alive <pidfile> — #332 STUB (test-writer): the developer replaces this. Must be: kill -0 on the stored pid AND the
-# sibling .launched-at later than host boot time.
-pid_alive() { echo "NotImplemented: pid_alive" >&2; return 99; }
+# pipeline_error_alert <route> <message> — #332: one Slack alert on the existing webhook; tags release (commit SHA), environment (host), route.
+pipeline_error_alert() {
+  local rel env; rel=$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --short HEAD 2>/dev/null || echo nogit); env=$(pipeline_host)
+  mkdir -p "${LOGDIR:-$HOME/logs/pipeline}" 2>/dev/null
+  printf '[%s] pipeline error route=%s: %s\n' "$(date -u +%FT%TZ)" "$1" "$2" >> "${LOGDIR:-$HOME/logs/pipeline}/errors.log" 2>/dev/null || true
+  [ -n "${SLACK_WEBHOOK_URL:-}" ] || return 0
+  curl -s --max-time 10 -X POST -H 'Content-Type: application/json' \
+    --data "{\"text\":\"pipeline error release=$rel environment=${env:-unknown} route=$1: $2\"}" \
+    "$SLACK_WEBHOOK_URL" >/dev/null 2>&1 </dev/null || true
+}
+
+# boot_epoch — host boot time in epoch seconds; PIPELINE_BOOT_EPOCH overrides (tests). Fails if unreadable.
+boot_epoch() {
+  local b=${PIPELINE_BOOT_EPOCH:-}
+  if [ -z "$b" ]; then
+    if [ -r /proc/stat ]; then b=$(awk '/^btime/ {print $2}' /proc/stat)
+    else b=$(sysctl -n kern.boottime 2>/dev/null | sed -n 's/.*sec = \([0-9]*\).*/\1/p'); fi
+  fi
+  case "$b" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s' "$b"
+}
+
+# pid_alive <pidfile> — kill -0 on the stored pid AND the sibling .launched-at later than host boot (a pid stored before a
+# reboot may belong to an unrelated new process). No .launched-at: kill -0 alone. Unreadable boot time: alert, kill -0 alone.
+pid_alive() {
+  local pf=$1 pid la boot le
+  pid=$(cat "$pf" 2>/dev/null); [ -n "$pid" ] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  la=$(cat "${pf%.pid}.launched-at" 2>/dev/null); [ -n "$la" ] || return 0
+  boot=$(boot_epoch) || { pipeline_error_alert pid_alive "boot time unreadable; falling back to kill -0"; return 0; }
+  le=$(python3 -c "import datetime,sys; print(int(datetime.datetime.strptime(sys.argv[1],'%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=datetime.timezone.utc).timestamp()))" "$la" 2>/dev/null) || return 0
+  [ "$le" -gt "$boot" ]
+}

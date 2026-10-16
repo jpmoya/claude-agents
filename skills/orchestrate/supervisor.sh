@@ -10,7 +10,7 @@
 #   3d. goal step (#195): keep-alive, pacing, parking, completion of goal-bound delivery leads pinned to this host
 #   7. status reconcile: refresh listed tickets from GitHub (backgrounded, throttled to once per 600 s; issue #51)
 #   8. PM Slack DM poll: record JP's replies to project-manager asks (backgrounded, no-op without PM_SLACK_BOT_TOKEN; issue #117)
-# One launch per tick max. All state is local (/tmp/pipeline); the only shared state is the issue's markers and labels.
+# One launch per tick max. All state is local ($PIPE, persistent); the only shared state is the issue's markers and labels.
 set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source "$HERE/config.sh"
@@ -379,7 +379,7 @@ for f in "$PIPE"/orch-*.pid; do
   [ -z "$repo" ] && continue
 
   # Skip if alive
-  kill -0 "$pid" 2>/dev/null && continue
+  pid_alive "$f" && continue
   # #178 begin
   # The orchestrator exits by design at a stage's time cap while the stage keeps running (#178). It is a cap exit
   # only when ALL hold: exit code 0, the stage process is alive, and runs.jsonl has a terminal row for this
@@ -767,7 +767,7 @@ if [ "$launched" -eq 0 ] && [ "$HAS_CAP" -eq 1 ]; then
       continue
     fi
     # Skip if already running
-    if [ -f "$PIPE/orch-$q_issue.pid" ] && kill -0 "$(cat "$PIPE/orch-$q_issue.pid")" 2>/dev/null; then
+    if [ -f "$PIPE/orch-$q_issue.pid" ] && pid_alive "$PIPE/orch-$q_issue.pid"; then
       rm -f "$qf"
       continue
     fi
@@ -822,7 +822,7 @@ for f in "$PIPE"/orch-*.pid; do
   issue=$(basename "$f" .pid); issue=${issue#orch-}
   repo=$(cat "$PIPE/orch-$issue.repo" 2>/dev/null || echo "")
   [ -z "$repo" ] && continue
-  kill -0 "$(cat "$f")" 2>/dev/null && continue
+  pid_alive "$f" && continue
   if   [ -f "$PIPE/orch-$issue.done" ];    then clear_in_progress "$repo" "$issue" done
   elif [ -f "$PIPE/orch-$issue.held" ];    then clear_in_progress "$repo" "$issue" held
   elif [ -f "$PIPE/orch-$issue.stopped" ]; then clear_in_progress "$repo" "$issue" stopped
@@ -882,7 +882,7 @@ INTAKE_RE=$(marker_re intake | jq -Rs .)
 for idf in "$PIPE"/intake-*.id; do   # runs that have exited: healthy -> clear state; no marker -> recover once, then give up
   [ -e "$idf" ] || break
   k=$(basename "$idf" .id); read -r i_repo i_num < "$idf"; i_path=$(cat "$PIPE/$k.path")
-  if kill -0 "$(cat "$PIPE/$k.pid" 2>/dev/null)" 2>/dev/null; then
+  if pid_alive "$PIPE/$k.pid"; then
     sentry_strip_go "$i_repo" "$i_num" || launched=1   # live run: strip an injected agent-go before step 5 can dispatch it (also strips a hand-added one until intake finishes); a failed strip holds dispatch this tick
     continue
   fi
@@ -942,7 +942,7 @@ spec_pm_markers() {  # <owner/repo> <issue> → PM routing markers other than RE
 for idf in "$PIPE"/spec-*.id; do   # exited PM runs: marker posted -> hand the spec to JP; none -> one retry, then park
   [ -e "$idf" ] || break
   k=$(basename "$idf" .id); read -r s_repo s_num < "$idf"
-  kill -0 "$(cat "$PIPE/$k.pid" 2>/dev/null)" 2>/dev/null && continue
+  pid_alive "$PIPE/$k.pid" && continue
   m=$(spec_pm_markers "$s_repo" "$s_num"); case "$m" in ''|*[!0-9]*) continue ;; esac   # failed gh/jq lookup: act on nothing, retry next tick
   if [ "$m" != 0 ]; then
     gh issue edit "$s_num" --repo "$s_repo" --remove-label "$LABEL_IN_PROGRESS" --remove-label user-feedback-needs-spec --add-label "$LABEL_PROPOSED" >/dev/null 2>&1
@@ -1031,7 +1031,7 @@ if [ "$launched" -eq 0 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
         --jq ".[] | select([.labels[].name] | index(\"$LABEL_IN_PROGRESS\") | not) | .number" 2>/dev/null) || continue
       for num in $candidates; do
         # local state: alive or queued here → not a candidate
-        if [ -f "$PIPE/orch-$num.pid" ] && kill -0 "$(cat "$PIPE/orch-$num.pid")" 2>/dev/null; then continue; fi
+        if [ -f "$PIPE/orch-$num.pid" ] && pid_alive "$PIPE/orch-$num.pid"; then continue; fi
         [ -f "$QUEUE/orch-$num.json" ] && continue
 
         ts=$(date -u +%FT%TZ)

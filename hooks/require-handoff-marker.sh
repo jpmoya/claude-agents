@@ -7,7 +7,7 @@
 # Bounded: after 2 refusals it lets the run stop so a truly stuck agent can't loop forever.
 [ -n "${PIPELINE_ISSUE:-}" ] && [ -n "${PIPELINE_AGENT:-}" ] && [ -n "${PIPELINE_REPO:-}" ] || exit 0
 INPUT=$(cat)
-PIPE="${PIPE:-/tmp/pipeline}"
+[ -n "${PIPE:-}" ] || PIPE=$(. "$(dirname "$0")/../skills/orchestrate/config.sh" >/dev/null 2>&1; printf %s "$PIPE")
 BEFORE_FILE="$PIPE/$PIPELINE_ISSUE-$PIPELINE_AGENT-before.txt"
 NAG_FILE="$PIPE/$PIPELINE_ISSUE-$PIPELINE_AGENT-nags.txt"
 [ -f "$BEFORE_FILE" ] || exit 0
