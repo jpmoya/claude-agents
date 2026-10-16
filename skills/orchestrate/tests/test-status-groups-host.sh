@@ -518,7 +518,7 @@ test_sg_ac8_print_makes_no_gh_call() {
 # =================================================================================================
 
 test_sg_ac9_relaunch_cleanup_line_lists_release() {
-  local line; line=$(grep -n 'rm -f "\$PIPE/orch-\$ISSUE"' "$RS_SG/orchestrate.sh" | head -n1)
+  local line; line=$(grep -n 'rm -f "\$PIPE/orch-\$RK"' "$RS_SG/orchestrate.sh" | head -n1)
   assert_contains "$line" "release" "AC9: the relaunch rm -f brace list contains release" || return 1
 }
 

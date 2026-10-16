@@ -231,7 +231,7 @@ test_sc_ac1_closed_stopped_restarting_and_queue_entry_tickets_move_to_completed(
   mk_restarting "$SC_PIPE" 204 "$SC_REPO"; sc_title 204; sc_gh_closed 204 "$closed_at"
   python3 -c "
 import json
-json.dump({'issue': '204', 'repo': '$SC_REPO', 'extra': '', 'reason': 'auto-restart', 'queued_at': '2026-01-01T00:00:00Z', 'not_before': 0}, open('$SC_PIPE/queue/orch-204.json', 'w'))"
+json.dump({'issue': '204', 'repo': '$SC_REPO', 'extra': '', 'reason': 'auto-restart', 'queued_at': '2026-01-01T00:00:00Z', 'not_before': 0}, open('$(rkp $SC_PIPE/queue/orch-204.json)', 'w'))"
   local before; before=$(sc_print)
   sc_reconcile --force
   local out; out=$(sc_print)
@@ -582,7 +582,7 @@ test_sc_ac5_orchestrate_relaunch_clears_closed_and_marker_and_ticket_returns_to_
 
 test_sc_ac5_supervisor_redispatch_rm_list_also_clears_closed_and_marker() {
   local line
-  line=$(grep -n 'rm -f "\$PIPE/orch-\$num"' "$RS_SC/supervisor.sh" | grep 'label-cleared' | head -n1)
+  line=$(grep -n 'rm -f "\$PIPE/orch-\$rk"' "$RS_SC/supervisor.sh" | grep 'label-cleared' | head -n1)
   assert_ne "$line" "" "AC5: the re-dispatch tombstone rm -f line exists in supervisor.sh (scenario sanity)" || return 1
   assert_contains "$line" "closed" "AC5: supervisor re-dispatch rm -f list includes closed" || return 1
   assert_contains "$line" "marker" "AC5: supervisor re-dispatch rm -f list includes marker" || return 1

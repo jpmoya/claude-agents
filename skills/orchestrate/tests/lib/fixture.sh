@@ -122,7 +122,7 @@ mk_queued() {
 import json, datetime
 json.dump({'issue': '$issue', 'repo': '$repo', 'extra': '', 'reason': 'queued',
            'queued_at': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'), 'not_before': 0},
-          open('$pipe/queue/orch-$issue.json', 'w'))
+          open('$pipe/queue/orch-$k.json', 'w'))
 "
 }
 

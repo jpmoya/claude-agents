@@ -45,7 +45,7 @@ BLK='**[fullstack-developer] BLOCKED**'
 test_ar_ci_red_is_auto_retry_with_empty_needs() {
   ar_env; ar_gate 501 "$BLK" 'Blocked on: ci_red — checks failing on the PR'
   ar_reconcile
-  local r n; r=$(ar_file "$AR_PIPE/orch-501.parked_reason"); n=$(ar_file "$(rkp "$AR_PIPE/orch-501.needs")")
+  local r n; r=$(ar_file "$(rkp "$AR_PIPE/orch-501.parked_reason")"); n=$(ar_file "$(rkp "$AR_PIPE/orch-501.needs")")
   ar_cleanup
   assert_eq "$r" "auto_retry" "decision 2: Blocked on: ci_red -> parked_reason auto_retry" || return 1
   assert_eq "$n" "ABSENT" "decision 2: .needs is empty for a non-JP-only BLOCKED" || return 1
@@ -65,7 +65,7 @@ test_ar_every_non_jp_only_class_is_auto_retry() {
 test_ar_needs_jp_class_stays_a_jp_gate() {
   ar_env; ar_gate 520 "$BLK" 'Blocked on: needs_jp — which vendor should we pick?'
   ar_reconcile
-  local r n; r=$(ar_file "$AR_PIPE/orch-520.parked_reason"); n=$(ar_file "$(rkp "$AR_PIPE/orch-520.needs")")
+  local r n; r=$(ar_file "$(rkp "$AR_PIPE/orch-520.parked_reason")"); n=$(ar_file "$(rkp "$AR_PIPE/orch-520.needs")")
   ar_cleanup
   assert_eq "$r" "ABSENT" "decision 1: needs_jp -> no parked_reason" || return 1
   assert_eq "$n" "Decision needed" "decision 1: needs_jp keeps its Needs label" || return 1
@@ -86,7 +86,7 @@ test_ar_unparsable_or_missing_class_stays_a_jp_gate() {
 test_ar_class_on_a_non_blocked_gate_is_ignored() {
   ar_env; ar_gate 540 '**[infra-operator] AWAITING GO**' 'Blocked on: ci_red — not a BLOCKED marker'
   ar_reconcile
-  local r n; r=$(ar_file "$AR_PIPE/orch-540.parked_reason"); n=$(ar_file "$(rkp "$AR_PIPE/orch-540.needs")")
+  local r n; r=$(ar_file "$(rkp "$AR_PIPE/orch-540.parked_reason")"); n=$(ar_file "$(rkp "$AR_PIPE/orch-540.needs")")
   ar_cleanup
   assert_eq "$r" "ABSENT" "AWAITING GO is always JP-only" || return 1
   assert_eq "$n" "Say go" "AWAITING GO keeps Say go" || return 1
@@ -95,10 +95,10 @@ test_ar_class_on_a_non_blocked_gate_is_ignored() {
 test_ar_stale_auto_retry_removed_when_class_becomes_needs_jp() {
   ar_env; ar_gate 550 "$BLK" 'Blocked on: ci_red — x'
   ar_reconcile
-  local first; first=$(ar_file "$AR_PIPE/orch-550.parked_reason")
+  local first; first=$(ar_file "$(rkp "$AR_PIPE/orch-550.parked_reason")")
   ar_gate 550 "$BLK" 'Blocked on: needs_jp — now it needs JP'
   ar_reconcile
-  local second; second=$(ar_file "$AR_PIPE/orch-550.parked_reason")
+  local second; second=$(ar_file "$(rkp "$AR_PIPE/orch-550.parked_reason")")
   ar_cleanup
   assert_eq "$first" "auto_retry" "control" || return 1
   assert_eq "$second" "ABSENT" "a later needs_jp BLOCKED clears auto_retry" || return 1

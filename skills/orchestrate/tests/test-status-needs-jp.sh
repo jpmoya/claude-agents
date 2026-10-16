@@ -53,7 +53,7 @@ test_nj_a_free_text_jp_reply_after_gate_is_answered() {
   nj_env; nj_held 301
   nj_comments 301 "[$(nj_c $'**[infra-operator] AWAITING GO**\nPlan ready.' "$GATE_T"),$(nj_c $'**[jp] looks fine, wait for Friday**' "$LATER_T")]"
   nj_reconcile
-  local r; r=$(nj_file "$NJ_PIPE/orch-301.parked_reason")
+  local r; r=$(nj_file "$(rkp "$NJ_PIPE/orch-301.parked_reason")")
   nj_cleanup
   assert_eq "$r" "answered" "rule 2: a **[jp] free-text reply after the gate -> parked_reason answered" || return 1
 }
@@ -62,7 +62,7 @@ test_nj_a_project_manager_decision_after_gate_is_answered() {
   nj_env; nj_held 302
   nj_comments 302 "[$(nj_c $'**[infra-operator] AWAITING GO**' "$GATE_T"),$(nj_c $'**[project-manager] we wait, not urgent**' "$LATER_T")]"
   nj_reconcile
-  local r; r=$(nj_file "$NJ_PIPE/orch-302.parked_reason")
+  local r; r=$(nj_file "$(rkp "$NJ_PIPE/orch-302.parked_reason")")
   nj_cleanup
   assert_eq "$r" "answered" "rule 2: a **[project-manager] reply after the gate -> answered" || return 1
 }
@@ -72,7 +72,7 @@ test_nj_b_project_manager_note_is_not_an_answer() {
   nj_env; nj_held 303
   nj_comments 303 "[$(nj_c $'**[infra-operator] AWAITING GO**' "$GATE_T"),$(nj_c $'**[project-manager] NOTE**\nfyi' "$LATER_T")]"
   nj_reconcile
-  local r nd; r=$(nj_file "$NJ_PIPE/orch-303.parked_reason"); nd=$(nj_file "$(rkp "$NJ_PIPE/orch-303.needs")")
+  local r nd; r=$(nj_file "$(rkp "$NJ_PIPE/orch-303.parked_reason")"); nd=$(nj_file "$(rkp "$NJ_PIPE/orch-303.needs")")
   nj_cleanup
   assert_eq "$nd" "Say go" "control: the pass ran and labelled the gate" || return 1
   assert_eq "$r" "ABSENT" "rule 2: **[project-manager] NOTE** never counts as an answer" || return 1
@@ -83,7 +83,7 @@ test_nj_c_other_role_comment_is_not_an_answer() {
   nj_env; nj_held 304
   nj_comments 304 "[$(nj_c $'**[infra-operator] AWAITING GO**' "$GATE_T"),$(nj_c $'**[test-writer] NOTE**\nx' "$LATER_T")]"
   nj_reconcile
-  local r nd; r=$(nj_file "$NJ_PIPE/orch-304.parked_reason"); nd=$(nj_file "$(rkp "$NJ_PIPE/orch-304.needs")")
+  local r nd; r=$(nj_file "$(rkp "$NJ_PIPE/orch-304.parked_reason")"); nd=$(nj_file "$(rkp "$NJ_PIPE/orch-304.needs")")
   nj_cleanup
   assert_eq "$nd" "Say go" "control: the pass ran and labelled the gate" || return 1
   assert_eq "$r" "ABSENT" "rule 2: **[test-writer] NOTE** is not an answer" || return 1
@@ -93,7 +93,7 @@ test_nj_c_unprefixed_comment_is_not_an_answer() {
   nj_env; nj_held 305
   nj_comments 305 "[$(nj_c $'**[infra-operator] AWAITING GO**' "$GATE_T"),$(nj_c 'go ahead please' "$LATER_T")]"
   nj_reconcile
-  local r nd; r=$(nj_file "$NJ_PIPE/orch-305.parked_reason"); nd=$(nj_file "$(rkp "$NJ_PIPE/orch-305.needs")")
+  local r nd; r=$(nj_file "$(rkp "$NJ_PIPE/orch-305.parked_reason")"); nd=$(nj_file "$(rkp "$NJ_PIPE/orch-305.needs")")
   nj_cleanup
   assert_eq "$nd" "Say go" "control: the pass ran and labelled the gate" || return 1
   assert_eq "$r" "ABSENT" "non-blocking default: only the **[jp] prefix counts" || return 1
@@ -103,7 +103,7 @@ test_nj_a_jp_comment_before_the_gate_is_not_an_answer() {
   nj_env; nj_held 306
   nj_comments 306 "[$(nj_c $'**[jp] earlier chatter**' "2026-09-19T10:00:00Z"),$(nj_c $'**[infra-operator] AWAITING GO**' "$GATE_T")]"
   nj_reconcile
-  local r nd; r=$(nj_file "$NJ_PIPE/orch-306.parked_reason"); nd=$(nj_file "$(rkp "$NJ_PIPE/orch-306.needs")")
+  local r nd; r=$(nj_file "$(rkp "$NJ_PIPE/orch-306.parked_reason")"); nd=$(nj_file "$(rkp "$NJ_PIPE/orch-306.needs")")
   nj_cleanup
   assert_eq "$nd" "Say go" "control: the pass ran and labelled the gate" || return 1
   assert_eq "$r" "ABSENT" "rule 2: only comments AFTER the gate comment count" || return 1
@@ -164,7 +164,7 @@ test_nj_gate_at_is_the_latest_routing_marker_comment_time() {
   nj_env; nj_held 314
   nj_comments 314 "[$(nj_c $'**[infra-operator] AWAITING GO**' "$GATE_T"),$(nj_c $'**[project-manager] NOTE**' "$LATER_T")]"
   nj_reconcile
-  local g; g=$(nj_file "$NJ_PIPE/orch-314.gate_at")
+  local g; g=$(nj_file "$(rkp "$NJ_PIPE/orch-314.gate_at")")
   nj_cleanup
   assert_eq "$g" "$GATE_T" "gate_at = createdAt of the latest routing-marker comment (a NOTE is not one)" || return 1
 }
@@ -175,7 +175,7 @@ test_nj_e_repo_not_in_config_is_out_of_scope() {
   nj_config 'DISPATCH_REPOS=("example-owner/other-repo:/tmp/x")'
   nj_comments 315 "[$(nj_c $'**[infra-operator] AWAITING GO**' "$GATE_T")]"
   nj_reconcile
-  local r; r=$(nj_file "$NJ_PIPE/orch-315.parked_reason")
+  local r; r=$(nj_file "$(rkp "$NJ_PIPE/orch-315.parked_reason")")
   nj_cleanup
   assert_eq "$r" "out_of_scope" "rule 3: repo not in DISPATCH_REPOS u SCAN_ONLY_REPOS -> out_of_scope" || return 1
 }
@@ -185,7 +185,7 @@ test_nj_e_scan_only_repo_is_in_scope() {
   nj_config "SCAN_ONLY_REPOS=(\"$NJ_ALIAS\")"
   nj_comments 316 "[$(nj_c $'**[infra-operator] AWAITING GO**' "$GATE_T")]"
   nj_reconcile
-  local r nd; r=$(nj_file "$NJ_PIPE/orch-316.parked_reason"); nd=$(nj_file "$(rkp "$NJ_PIPE/orch-316.needs")")
+  local r nd; r=$(nj_file "$(rkp "$NJ_PIPE/orch-316.parked_reason")"); nd=$(nj_file "$(rkp "$NJ_PIPE/orch-316.needs")")
   nj_cleanup
   assert_eq "$nd" "Say go" "control: the pass ran and labelled the gate" || return 1
   assert_eq "$r" "ABSENT" "rule 3: a SCAN_ONLY_REPOS repo is in scope" || return 1
@@ -195,10 +195,10 @@ test_nj_parked_reason_is_removed_when_no_longer_applicable() {
   nj_env; nj_held 317
   nj_comments 317 "[$(nj_c $'**[infra-operator] AWAITING GO**' "$GATE_T"),$(nj_c $'**[jp] wait**' "$LATER_T")]"
   nj_reconcile
-  local first; first=$(nj_file "$NJ_PIPE/orch-317.parked_reason")
+  local first; first=$(nj_file "$(rkp "$NJ_PIPE/orch-317.parked_reason")")
   nj_comments 317 "[$(nj_c $'**[infra-operator] AWAITING GO**' "$GATE_T")]"   # reply deleted
   nj_reconcile
-  local second; second=$(nj_file "$NJ_PIPE/orch-317.parked_reason")
+  local second; second=$(nj_file "$(rkp "$NJ_PIPE/orch-317.parked_reason")")
   nj_cleanup
   assert_eq "$first" "answered" "control: answered first" || return 1
   assert_eq "$second" "ABSENT" "stale .parked_reason is removed" || return 1
@@ -208,7 +208,7 @@ test_nj_unanswered_in_scope_gate_writes_no_parked_reason() {
   nj_env; nj_held 318
   nj_comments 318 "[$(nj_c $'**[infra-operator] AWAITING GO**' "$GATE_T")]"
   nj_reconcile
-  local r n; r=$(nj_file "$NJ_PIPE/orch-318.parked_reason"); n=$(nj_file "$(rkp "$NJ_PIPE/orch-318.needs")")
+  local r n; r=$(nj_file "$(rkp "$NJ_PIPE/orch-318.parked_reason")"); n=$(nj_file "$(rkp "$NJ_PIPE/orch-318.needs")")
   nj_cleanup
   assert_eq "$r" "ABSENT" "open, unanswered, in scope -> no parked_reason" || return 1
   assert_eq "$n" "Say go" "...and it still carries its needs label" || return 1
