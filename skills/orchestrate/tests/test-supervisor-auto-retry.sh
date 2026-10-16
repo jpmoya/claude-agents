@@ -247,7 +247,7 @@ test_ar2_check_runs_again_after_30_min() {
   ar2_tick
   local first f new; first=$(ar2_pr_calls)
   for f in $(ls "$SQ_PIPE"); do
-    case "$f" in orch-42.*) printf '%s\n' "$before" | grep -qx "$f" && continue
+    case "$f" in orch-*-42.*) printf '%s\n' "$before" | grep -qx "$f" && continue
       python3 -c 'import os,sys,time; t=time.time()-31*60; os.utime(sys.argv[1],(t,t))' "$SQ_PIPE/$f"
       if grep -Eqx '[0-9]{9,}' "$SQ_PIPE/$f" 2>/dev/null; then echo $(( $(head -n1 "$SQ_PIPE/$f") - 1900 )) > "$SQ_PIPE/$f"; fi ;;
     esac

@@ -266,6 +266,8 @@ issue view" "AC3: issue_is_closed makes exactly one gh call per invocation (2 in
 sl_status_setup() {
   SL_PIPE=$(new_pipe); SL_HOME=$(new_home)
   SL_REPO_A=$(mktemp -d "${TMPDIR:-/tmp}/orch-test-repo.XXXXXX"); SL_REPO_B=$(mktemp -d "${TMPDIR:-/tmp}/orch-test-repo.XXXXXX")
+  # #318: the run key needs owner/repo; a remote on each checkout keeps it a local lookup (no extra `gh repo view` call)
+  fixture_repo "$SL_REPO_A" "project-a/repo-a"; fixture_repo "$SL_REPO_B" "project-b/repo-b"
   SL_D="$SL_HOME/.local/bin"; mkdir -p "$SL_D"
   cat > "$SL_D/gh" <<'GH_EOF'
 #!/bin/bash

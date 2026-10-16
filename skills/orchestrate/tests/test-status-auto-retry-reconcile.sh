@@ -56,7 +56,7 @@ test_ar_every_non_jp_only_class_is_auto_retry() {
   for cls in ci_pending ci_red merge_conflict dependency unsupported_project other; do
     i=$((i + 1)); ar_env; ar_gate $((510 + i)) "$BLK" "Blocked on: $cls — some detail"
     ar_reconcile
-    r=$(ar_file "$AR_PIPE/orch-$((510 + i)).parked_reason")
+    r=$(ar_file "$(rkp "$AR_PIPE/orch-$((510 + i)).parked_reason")")
     ar_cleanup
     assert_eq "$r" "auto_retry" "decision 1: class $cls is NOT JP-only -> auto_retry" || return 1
   done
@@ -76,7 +76,7 @@ test_ar_unparsable_or_missing_class_stays_a_jp_gate() {
   for line in 'Blocked on: which DB?' 'Blocked on: bogus_class — x' 'Blocked on:' 'blocked on: ci_red — lowercase prefix' ''; do
     i=$((i + 1)); ar_env; ar_gate $((530 + i)) "$BLK" "$line"
     ar_reconcile
-    r=$(ar_file "$AR_PIPE/orch-$((530 + i)).parked_reason"); n=$(ar_file "$AR_PIPE/orch-$((530 + i)).needs")
+    r=$(ar_file "$(rkp "$AR_PIPE/orch-$((530 + i)).parked_reason")"); n=$(ar_file "$(rkp "$AR_PIPE/orch-$((530 + i)).needs")")
     ar_cleanup
     assert_eq "$r" "ABSENT" "decision 1: line 2 [$line] -> conservative default, no parked_reason" || return 1
     assert_eq "$n" "Decision needed" "decision 1: line 2 [$line] -> still labelled Decision needed" || return 1

@@ -176,7 +176,8 @@ test_st_design4_title_without_resolvable_owner_repo_has_no_url() {
   nogit="$pipe/not-a-git-repo"; mkdir -p "$nogit"    # no remote.origin.url -> owner_repo unresolved
   st_write_alias_config "$home"
   mk_running "$pipe" 601 "$nogit"
-  printf 'Fix login redirect\n' > "$(rkp "$pipe/orch-601.title")"
+  # #318: with no resolvable owner/repo the builder (build-runs-json.py stem()) reads the bare legacy name
+  printf 'Fix login redirect\n' > "$pipe/orch-601.title"
 
   out=$(st_print "$pipe" "$home"); rc=$?
   cleanup_running; rm -rf "$pipe" "$home"
@@ -377,7 +378,7 @@ test_st_ac12_supervisor_do_launch_fetches_title_when_file_absent() {
 
 test_st_ac12_supervisor_do_launch_reuses_existing_title_file() {
   st_env open; st_sleepy_claude
-  printf 'Kept title\n' > "$(rkp "$ST_PIPE/orch-42.title")"
+  printf 'Kept title\n' > "$ST_PIPE/orch-$(rk "$ST_REPO" 42).title"
   echo "Different title from gh" > "$ST_BIN/gh-issue-title"
   mk_queued "$ST_PIPE" 42 "$ST_REPO"
   st_supervisor_tick                                     # tick 1: launches #42 (title file exists)
@@ -419,8 +420,8 @@ test_st_ac12_supervisor_do_launch_has_existence_guarded_fetch() {
   local body
   body=$(awk '/^do_launch\(\) \{/{on=1} on{print} on && /^}/{exit}' "$SUP_ST")
   assert_ne "$body" "" "AC12: do_launch found in supervisor.sh" || return 1
-  printf '%s\n' "$body" | grep -qE -- '-f[[:space:]]+"\$PIPE/orch-\$issue\.title"' \
-    || { fail "AC12: do_launch must guard the fetch with a [ -f \"\$PIPE/orch-\$issue.title\" ]-style existence check"; return 1; }
+  printf '%s\n' "$body" | grep -qE -- '-f[[:space:]]+"\$PIPE/orch-\$rk\.title"' \
+    || { fail "AC12: do_launch must guard the fetch with a [ -f \"\$PIPE/orch-\$rk.title\" ]-style existence check"; return 1; }
   printf '%s\n' "$body" | grep -q -- '--json title' \
     || { fail "AC12: do_launch must fetch the title via gh issue view --json title"; return 1; }
 }
