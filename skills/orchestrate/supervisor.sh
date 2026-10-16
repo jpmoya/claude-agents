@@ -982,6 +982,68 @@ fi
 # 3d. Goal step (#195) — goal pids are coordinators: not in count_running, never set the orchestrator `launched` flag.
 goal_step
 
+# 3e. Promote deferred children (#315) — a ticket filed with the PM deferral NOTE ("approval inherited from <ref> — agent-go deferred:
+#     start-gate #N open") gets agent-go once every start-gate is CLOSED as completed. Launch permission only: no JP-only gate is answered here.
+#     Only deferral NOTEs from OWNER/MEMBER/COLLABORATOR comments count (public repos: outsiders cannot trigger a launch).
+#     Never Business-Intelligence, never source:sentry; a gate closed "not planned" is left for JP. Idempotent: the supervisor NOTE stops repeats.
+promote_gate_state() {  # <owner/repo> <gate ref owner/repo#N> → open | completed | notplanned | error
+  local g=$2 gr gn st
+  gr="${g%#*}"; gn="${g##*#}"
+  st=$(gh issue view "$gn" --repo "$gr" --json state,stateReason --jq '[.state, (.stateReason // "")] | join(" ")' 2>/dev/null) || { echo error; return; }
+  case "$st" in
+    "OPEN "*|"REOPENED "*) echo open ;;
+    "CLOSED COMPLETED") echo completed ;;
+    "CLOSED "*) echo notplanned ;;
+    *) echo error ;;
+  esac
+}
+promote_deferred() {
+  local entry owner_repo line num ref gates g st ok why seen
+  for entry in "${DISPATCH_REPOS[@]}"; do
+    owner_repo="${entry%%:*}"
+    case "$owner_repo" in */Business-Intelligence) continue ;; esac
+    while IFS=$'\t' read -r num ref gates; do
+      case "$num" in ''|*[!0-9]*) continue ;; esac
+      ok=1; why=""
+      for g in $gates; do
+        st=$(promote_gate_state "$owner_repo" "$g")
+        case "$st" in
+          completed) ;;
+          open) ok=0; break ;;
+          notplanned) ok=0; why="start-gate $g closed as not planned, left for JP"; break ;;
+          *) ok=0; why="start-gate $g state read failed, will retry"; break ;;
+        esac
+      done
+      if [ "$ok" -ne 1 ]; then
+        if [ -n "$why" ]; then
+          seen="promote-${owner_repo//\//_}-$num.${why%%,*}"; seen="$PIPE/${seen//[ #\/]/_}"
+          [ -e "$seen" ] || { slog "[promote] $owner_repo#$num — not promoted: $why"; case "$why" in *"read failed"*) autoretry_alert "$num" "promote $owner_repo: $why" ;; esac; : > "$seen"; }
+        fi
+        continue
+      fi
+      if gh issue edit "$num" --repo "$owner_repo" --add-label "$LABEL_GO" --remove-label "$LABEL_PROPOSED" >/dev/null 2>&1; then
+        gh issue comment "$num" --repo "$owner_repo" --body "**[supervisor] NOTE** approval inherited from $ref — start-gate #${gates##*#} closed" >/dev/null 2>&1 \
+          || slog "[promote] $owner_repo#$num — $LABEL_GO added but promotion NOTE post failed"
+        rm -f "$PIPE/promote-${owner_repo//\//_}-$num.labelfail"
+        slog "[promote] $owner_repo#$num — start-gate(s) closed, added $LABEL_GO (approval inherited from $ref)"
+      else
+        slog "[promote] $owner_repo#$num — failed to add $LABEL_GO, will retry next tick"
+        seen="$PIPE/promote-${owner_repo//\//_}-$num.labelfail"
+        [ -e "$seen" ] || { autoretry_alert "$num" "promote $owner_repo: failed to add $LABEL_GO"; : > "$seen"; }
+      fi
+    done < <(gh issue list --repo "$owner_repo" --state open --limit 100 --json number,body,labels,comments --jq '
+        .[] | ([.labels[].name]) as $l
+        | select(($l | index("'"$LABEL_GO"'") | not) and ($l | index("'"$LABEL_IN_PROGRESS"'") | not) and ($l | index("source:sentry") | not))
+        | select([.comments[].body | split("\n")[0] | select(test("^\\*\\*\\[supervisor\\] NOTE\\*\\* approval inherited from .* — start-gate #[0-9]+ closed$"))] | length == 0)
+        | [.comments[] | select((.authorAssociation // "OWNER") as $a | ["OWNER","MEMBER","COLLABORATOR"] | index($a)) | .body | split("\n")[0] | capture("^\\*\\*\\[product-manager\\] NOTE\\*\\* approval inherited from (?<ref>[^ ]+) — agent-go deferred: start-gate (?<g>[A-Za-z0-9._/-]*#[0-9]+) open$")] as $d
+        | select($d | length > 0)
+        | ([$d[].g, (.body | [scan("Depends on ([A-Za-z0-9._/-]*#[0-9]+) for starting work") | .[0]][])]
+            | map(if startswith("#") then "'"$owner_repo"'" + . else . end) | unique) as $gs
+        | [.number, $d[0].ref, ($gs | join(" "))] | @tsv' 2>/dev/null)
+  done
+}
+if [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then promote_deferred; fi
+
 # 4. Label reconciliation — catch orphaned agent-in-progress labels that have no local state at all
 #    (e.g. /tmp was cleared, or a run from another machine died). Only clear if no marker movement for 30+ min.
 STALE_LABEL_SECS=1800
