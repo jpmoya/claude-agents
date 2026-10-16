@@ -54,6 +54,7 @@ to_epoch() {  # ISO-8601 UTC → epoch; portable (macOS date has no -d)
 
 power_ok() {  # Mac: dispatch new work only on AC power (a sleeping laptop strands claimed issues). Linux: always.
   [ "$(uname)" = "Darwin" ] || return 0
+  [ "${ALLOW_BATTERY:-0}" = "1" ] && return 0   # machine-local opt-out (config.local.sh); the Mac must be kept awake
   pmset -g batt 2>/dev/null | grep -q "AC Power"
 }
 
