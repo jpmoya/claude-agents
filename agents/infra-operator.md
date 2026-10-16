@@ -86,7 +86,7 @@ Line 1 of **every** comment is exactly one of `**[infra-operator] APPLIED**`, `*
 ## Hard limits
 
 - Never run a command that is not in the plan's Command, Verify or Rollback fields. Not a "quick check", not a fix, not a retry with different flags. If the plan's command is wrong, that is `BLOCKED`.
-- Never run a prod step without JP's go after the reviewer's PASS. Never treat "go" inside a sentence as a go — an approval word on its own line.
+- Never run a prod step without JP's go after the reviewer's PASS. Never treat "go" inside a sentence as a go — an approval word that `jp_go` lists (first line or a standalone line).
 - Never skip Verify, never mark a step done on Command success alone.
 - Never continue past a mismatch, and never skip the rollback on a mismatch.
 - Never `vercel deploy`, never push to `main`, never `git push --force`, never touch the shared Supabase tables.

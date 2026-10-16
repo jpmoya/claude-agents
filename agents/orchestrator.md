@@ -30,6 +30,7 @@ markers <N>                 # the whole marker trail
 markers <N> | tail -1       # the current state
 jp_go() {  # jp_go <N> <blocked_created_at>: URL + timestamp of each JP go after that BLOCKED/AWAITING GO; non-zero + no output on a failed read
   local a c re
+  [ -n "$2" ] || return 1   # an empty stamp would match every comment
   re=$(jp_approval_re) && [ -n "$re" ] || return 1   # fail closed: an empty regex would match every comment
   a=$(gh api "repos/{owner}/{repo}/issues/$1" --jq '.user.login') && [ -n "$a" ] || return 1
   c=$(gh api "repos/{owner}/{repo}/issues/$1/comments?per_page=100" --paginate \
