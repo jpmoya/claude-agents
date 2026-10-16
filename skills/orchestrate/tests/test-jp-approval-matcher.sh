@@ -81,7 +81,7 @@ ja_positives() {  # NUL-free list, one fixture per call of ja_each_positive
 }
 
 ja_negatives() {
-  printf '%s\0' 'I will go over this' 'not approved' "don't proceed" 'do not proceed' 'approved?' 'disapproved' 'gone' \
+  printf '%s\0' $'Looks fine.\nnot approved' 'I will go over this' 'not approved' "don't proceed" 'do not proceed' 'approved?' 'disapproved' 'gone' \
     $'First line here.\nSecond line here.\nwe should go over the rest here\nlast line' \
     'go ahead and change X' 'no go' ''
 }
@@ -149,13 +149,33 @@ test_ja_ac4_a_matcher_function_exists_in_hooks() {
     || { fail "AC4: hooks/pipeline-markers.sh must define is_jp_approval or jp_approval_re"; return 1; }
 }
 
-# one list: the phrase set is written once in hooks/pipeline-markers.sh
+# one list: the phrase set is written once in hooks/pipeline-markers.sh (code lines only — comments may mention words)
 test_ja_ac4_word_set_defined_once_in_hooks() {
-  local n
-  n=$(grep -c 'ok to proceed' "$MARKERS_JA")
-  assert_eq "$n" "1" "AC4: 'ok to proceed' appears exactly once in hooks/pipeline-markers.sh" || return 1
-  n=$(grep -c 'lgtm' "$MARKERS_JA")
-  assert_eq "$n" "1" "AC4: 'lgtm' appears exactly once in hooks/pipeline-markers.sh" || return 1
+  local n code w
+  code=$(sed -e '/^[[:space:]]*#/d' -e 's/[[:space:]]#.*$//' "$MARKERS_JA")
+  for w in 'ok to proceed' 'lgtm'; do
+    n=$(printf '%s\n' "$code" | grep -c -- "$w")
+    assert_eq "$n" "1" "AC4: '$w' appears on exactly one code line of hooks/pipeline-markers.sh" || return 1
+  done
+}
+
+# the orchestrator mirrors the shared matcher; it must not carry a second word list
+test_ja_ac4_orchestrator_has_no_second_word_list() {
+  local blk w
+  blk=$(ja_extract)
+  [ -n "$blk" ] || { fail "AC4: could not extract the jp_go block from agents/orchestrator.md"; return 1; }
+  printf '%s\n' "$blk" | grep -q 'jp_approval_re\|is_jp_approval' \
+    || { fail "AC4: the jp_go block must call the shared matcher (jp_approval_re / is_jp_approval)"; return 1; }
+  for w in 'lgtm' 'ok to proceed' 'proceed' 'approved|approve' '|go|' 'go|'; do
+    if printf '%s\n' "$blk" | grep -qiF -- "$w"; then
+      fail "AC4: the jp_go block in orchestrator.md contains the word-list literal [$w]; use the shared matcher"; return 1
+    fi
+  done
+  for w in 'lgtm' 'ok to proceed' 'approved|approve'; do
+    if grep -qiF -- "$w" "$ORCH_JA"; then
+      fail "AC4: agents/orchestrator.md contains the word-list literal [$w]; the word set lives only in hooks"; return 1
+    fi
+  done
 }
 
 # agreement: hooks matcher and the orchestrator's jp_go accept/reject the same probes (author, after stamp)
@@ -209,6 +229,7 @@ run_test test_ja_ac2_same_word_from_non_author_is_rejected
 run_test test_ja_ac3_comment_strictly_after_the_stamp
 run_test test_ja_ac4_a_matcher_function_exists_in_hooks
 run_test test_ja_ac4_word_set_defined_once_in_hooks
+run_test test_ja_ac4_orchestrator_has_no_second_word_list
 run_test test_ja_ac4_hooks_and_orchestrator_agree
 run_test test_ja_ac6_run_log_documents_refusal_validate_line
 run_test test_ja_ac6_refusal_line_logs_no_comment_body
