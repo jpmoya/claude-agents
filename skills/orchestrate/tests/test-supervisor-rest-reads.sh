@@ -91,3 +91,8 @@ test_sr_ac3_goal_wording_names_ticket_and_step() {
   n=$(grep -c 'goal_err "cannot read the scope of \$id"' "$GOAL_SR")
   assert_eq "$n" "0" "AC3: the misleading 'cannot read the scope' wording is gone from the two goal_err sites" || return 1
 }
+
+run_test test_sr_ac1_latest_marker_reads_rest_pages
+run_test test_sr_ac3_failed_read_is_logged_and_alerted
+run_test test_sr_ac2_supervisor_reads_have_no_graphql_issue_view
+run_test test_sr_ac3_goal_wording_names_ticket_and_step
