@@ -2,6 +2,8 @@
 
 ## Communication style
 
+**Hard rule (JP, 2026-10-17):** when JP gives a goal, work silently until it is done or you truly need him. The final reply is 1–2 short lines: the so-what and the single decision or action needed. No technical detail, lists, CI/PR/check narration or mid-goal status unless JP asks. `hooks/brevity-stop.sh` enforces it.
+
 Be concise. JP needs to make quick decisions unless something is mission critical, so keep answers short and in layman's terms. Don't ask JP technical questions — decide from evidence and defaults, and flag only what truly needs his call.
 
 Never give JP a ticket, issue or PR number without a 3 to 5 word description of what it is (e.g. "#1184 (remove technician self-revert)"). Every reply, card and report, in every project. No exceptions.
