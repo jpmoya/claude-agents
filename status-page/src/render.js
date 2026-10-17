@@ -168,7 +168,7 @@ function goalName(g, text) {
     ? `<a href="${esc(g.url)}" target="_blank" rel="noopener">${name}</a>`
     : name;
 }
-const GOAL_COLUMNS = ['Goal', 'Host', 'State', 'Delivered', 'Last cycle'];
+const GOAL_COLUMNS = ['Priority', 'Goal', 'Host', 'State', 'Delivered', 'Last cycle'];
 
 /**
  * True when report `a` of a goal beats report `b`: a started goal beats a queued one (a stale queue view), then the goal's
@@ -207,6 +207,7 @@ function mergeGoals(hosts) {
     .map((w) => w.goal)
     .sort(
       (a, b) =>
+        (Number.isInteger(a.priority) ? a.priority : 1e9) - (Number.isInteger(b.priority) ? b.priority : 1e9) ||
         rank(a) - rank(b) ||
         (a.state === 'queued' && b.state === 'queued' ? (a.queue_pos || 0) - (b.queue_pos || 0) : 0) ||
         (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
@@ -248,6 +249,7 @@ function renderGoalsSection(hosts) {
       ? `<strong>${goalName(g, g.title)}</strong><br><small>${esc((g.repos || []).join(', '))}${Number.isInteger(g.order) ? ` · order ${esc(String(g.order))}` : ''}</small>`
       : goalName(g, g.spec);
   const cells = (g) => [
+    Number.isInteger(g.priority) ? esc(String(g.priority)) : '–',
     goalCell(g),
     esc(HOST_LABELS[g.host] || g.host || '–'),
     `<span class="badge goal-${esc(g.state)}${g.state === 'queued' ? ' goal-between_cycles' : ''}">${esc(goalStateText(g))}</span>${g.paused ? `<br><small>paused: ${esc(g.paused)}</small>` : ''}`,
