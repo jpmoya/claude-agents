@@ -301,6 +301,17 @@ step_image() {
   fi
   [ "$CHANGED" -ne "$before" ] || note_change "build image gha-runner:$VERSION"
   [ "$CHECK" = 1 ] || run docker build -t "gha-runner:$VERSION" "$ROOT/srv/gha/image"
+  # container: jobs bind-mount the runner's /home/runner/externals from the DAEMON's filesystem, so the same files must
+  # exist there at that path (the runner image has them at the same path inside)
+  if [ "$CHECK" = 0 ]; then
+    run docker rm -f gha-externals-copy >/dev/null 2>&1 || true
+    run docker create --name gha-externals-copy "gha-runner:$VERSION"
+    run rm -rf "$ROOT/home/runner/externals"
+    run mkdir -p "$ROOT/home/runner"
+    run docker cp gha-externals-copy:/home/runner/externals "$ROOT/home/runner/externals"
+    run docker rm gha-externals-copy
+    run chown -R gha:gha "$ROOT/home/runner"
+  fi
 }
 
 step_units() {
