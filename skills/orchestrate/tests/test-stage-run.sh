@@ -178,7 +178,7 @@ test_sr_ac7_monthly_spend_limit() {
 test_sr_ac7_limit_beats_a_new_marker() {   # outcome order: rate_limited is checked first
   sr_setup
   sr_comment 5001 2099-01-01T00:00:00Z '**[code-reviewer] PASS**
-ok' | jq -s . > "$SR_BIN/pages/page1.json"; echo 0 > "$SR_PIPE/42-code-reviewer-before.txt"
+ok' | jq -s . > "$SR_BIN/pages/page1.json"; echo 0 > "$SR_PIPE/project-a_app-42-code-reviewer-before.txt"
   STUB_OUT="You've hit your weekly limit · resets 3am (UTC)" sr_run
   assert_eq "$(sr_f "$(sr_end)" .outcome)" rate_limited "AC7: rate_limited wins over marker" || { sr_teardown; return 1; }
   sr_teardown
@@ -322,7 +322,7 @@ sr_page_with() {
 done'
     sr_comment "$3" "$2" "$1"
   } | jq -s . > "$SR_BIN/pages/page1.json"
-  echo "${SR_BEFORE:-0}" > "$SR_PIPE/${SR_ISSUE:-42}-${SR_AGENT:-code-reviewer}-before.txt"
+  echo "${SR_BEFORE:-0}" > "$SR_PIPE/project-a_app-${SR_ISSUE:-42}-${SR_AGENT:-code-reviewer}-before.txt"
 }
 
 test_sr_ac12_fail_marker_fields() {
@@ -411,7 +411,7 @@ terraform plan drifted' 2099-01-01T00:00:00Z 8004
 
 test_sr_ac12_no_new_marker_exit0_is_no_marker() {
   sr_setup
-  echo '[]' > "$SR_BIN/pages/page1.json"; echo 0 > "$SR_PIPE/42-code-reviewer-before.txt"
+  echo '[]' > "$SR_BIN/pages/page1.json"; echo 0 > "$SR_PIPE/project-a_app-42-code-reviewer-before.txt"
   STUB_MODE=ok sr_run
   local e; e=$(sr_end)
   assert_eq "$(sr_f "$e" .outcome)" no_marker "outcome" || { sr_teardown; return 1; }
@@ -422,7 +422,7 @@ test_sr_ac12_no_new_marker_exit0_is_no_marker() {
 
 test_sr_ac12_no_new_marker_exit1_is_error() {
   sr_setup
-  echo '[]' > "$SR_BIN/pages/page1.json"; echo 0 > "$SR_PIPE/42-code-reviewer-before.txt"
+  echo '[]' > "$SR_BIN/pages/page1.json"; echo 0 > "$SR_PIPE/project-a_app-42-code-reviewer-before.txt"
   STUB_MODE=fail sr_run
   assert_eq "$(sr_f "$(sr_end)" .outcome)" error "outcome" || { sr_teardown; return 1; }
   sr_teardown
@@ -441,7 +441,7 @@ test_sr_ac12_marker_count_equal_to_before_is_not_new() {   # boundary: count == 
   sr_setup
   { sr_comment 1002 2020-01-01T00:00:00Z '**[code-reviewer] PASS**
 old'; } | jq -s . > "$SR_BIN/pages/page1.json"
-  echo 1 > "$SR_PIPE/42-code-reviewer-before.txt"
+  echo 1 > "$SR_PIPE/project-a_app-42-code-reviewer-before.txt"
   STUB_MODE=ok sr_run
   local e; e=$(sr_end)
   assert_eq "$(sr_f "$e" .outcome)" no_marker "an old marker is not a new one" || { sr_teardown; return 1; }
@@ -456,7 +456,7 @@ chatter'
     sr_comment 1004 2099-01-01T00:00:01Z '**[test-reviewer] PASS**
 someone else'
   } | jq -s . > "$SR_BIN/pages/page1.json"
-  echo 0 > "$SR_PIPE/42-code-reviewer-before.txt"
+  echo 0 > "$SR_PIPE/project-a_app-42-code-reviewer-before.txt"
   STUB_MODE=ok sr_run
   assert_eq "$(sr_f "$(sr_end)" .outcome)" no_marker "NOTE / other agent's marker is not this agent's marker" || { sr_teardown; return 1; }
   sr_teardown
@@ -468,7 +468,7 @@ test_sr_ac12_marker_on_second_page_is_found() {
 x'; } | jq -s . > "$SR_BIN/pages/page1.json"
   { sr_comment 9001 2099-01-01T00:00:00Z '**[code-reviewer] FAIL: 1 findings**
 x'; } | jq -s . > "$SR_BIN/pages/page2.json"
-  echo 0 > "$SR_PIPE/42-code-reviewer-before.txt"
+  echo 0 > "$SR_PIPE/project-a_app-42-code-reviewer-before.txt"
   STUB_MODE=ok sr_run
   assert_eq "$(sr_f "$(sr_end)" .marker_comment_id)" 9001 "marker on page 2" || { sr_teardown; return 1; }
   sr_teardown
@@ -481,7 +481,7 @@ old'
     sr_comment 9002 2099-01-01T00:00:00Z '**[code-reviewer] PASS**
 new'
   } | jq -s . > "$SR_BIN/pages/page1.json"
-  echo 1 > "$SR_PIPE/42-code-reviewer-before.txt"
+  echo 1 > "$SR_PIPE/project-a_app-42-code-reviewer-before.txt"
   STUB_MODE=ok sr_run
   local e; e=$(sr_end)
   assert_eq "$(sr_f "$e" .marker_comment_id)" 9002 "newest marker id" || { sr_teardown; return 1; }

@@ -141,7 +141,7 @@ finish() {
 
   # marker read: one REST read of the issue's comments, one retry after 5s
   if [ -n "$REPO" ] && [ -n "$ISSUE" ] && [ -n "$AGENT" ]; then
-    local raw="" ok=0 try
+    local raw="" ok=0 try rk
     for try in 1 2; do
       if raw=$(gh api "repos/$REPO/issues/$ISSUE/comments?per_page=100" --paginate 2>/dev/null </dev/null) \
          && printf '%s' "$raw" | jq -s 'add // []' >/dev/null 2>&1; then ok=1; break; fi
@@ -149,7 +149,8 @@ finish() {
     done
     if [ "$ok" = 1 ]; then
       local before=""
-      [ -f "$PIPE/$ISSUE-$AGENT-before.txt" ] && before=$(tr -dc '0-9' < "$PIPE/$ISSUE-$AGENT-before.txt")
+      rk=$(run_key "$REPO" "$ISSUE" 2>/dev/null) || rk="${REPO//\//_}-$ISSUE"   # #318: <owner>_<repo>-<N>
+      [ -f "$PIPE/$rk-$AGENT-before.txt" ] && before=$(tr -dc '0-9' < "$PIPE/$rk-$AGENT-before.txt")
       marker=$(printf '%s' "$raw" | jq -s 'add // []' | jq -c --arg re_any "$(marker_re)" --arg re_me "$(marker_re "$AGENT")" \
         --arg start "$START_TS" --arg before "$before" --arg classes "$(block_classes)" '
         def first_line: (.body // "") | split("\n")[0];

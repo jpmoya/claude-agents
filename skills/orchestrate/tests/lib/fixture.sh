@@ -28,19 +28,37 @@ fixture_repo() {
   ( cd "$dir" && git init -q && git remote add origin "https://github.com/$owner_repo.git" ) >/dev/null 2>&1
 }
 
+# rk <repo_path> <N> — #318: the run key (<owner>_<repo>-<N>) of a fixture checkout's ticket, from its origin remote
+# (what pipeline-lib.sh run_key/repo_slug resolve); a checkout with no usable origin gets unknown_unknown-<N>.
+rk() {
+  local u slug
+  u=$(git -C "$1" config --get remote.origin.url 2>/dev/null) || u=""
+  slug=$(printf '%s' "$u" | sed -E -e 's#^.*github\.com[:/]+##' -e 's#\.git$##' -e 's#/+$##')
+  case "$slug" in */*) ;; *) slug="unknown/unknown" ;; esac
+  printf '%s-%s' "${slug//\//_}" "$2"
+}
+
+# _mk_key <repo_path> <N> — key the mk_* seeders use. Keyed (orch-<owner>_<repo>-<N>.*) by default; the locked
+# test-run-key.sh (#318 AC6 migration/fallback) seeds the LEGACY orch-<N>.* shape through these same helpers, so a call
+# from that file (or with RK_LEGACY_SEED=1) gets the bare number. Frames: 0=_mk_key 1=mk_* 2=caller.
+_mk_key() {
+  if [ -n "${RK_LEGACY_SEED:-}" ] || [[ "${BASH_SOURCE[2]:-}" == *test-run-key.sh ]]; then printf '%s' "$2"; else rk "$1" "$2"; fi
+}
+
 # mk_running <pipe> <issue> <repo_path> — a "running" orchestrator: live pid, .repo, .start.
 # Uses `sleep 300 &` as the live process so kill -0 succeeds for the life of the test.
 RUNNING_PIDS=""
 mk_running() {
-  local pipe=$1 issue=$2 repo=$3
+  local pipe=$1 issue=$2 repo=$3 k
+  k=$(_mk_key "$repo" "$issue")
   sleep 300 &
   local pid=$!
   RUNNING_PIDS="$RUNNING_PIDS $pid"
-  echo "$pid" > "$pipe/orch-$issue.pid"
-  echo "$repo" > "$pipe/orch-$issue.repo"
-  date -u +%FT%TZ > "$pipe/orch-$issue.start"
-  date -u +%FT%TZ > "$pipe/orch-$issue.launched-at"
-  : > "$pipe/orch-$issue.log"
+  echo "$pid" > "$pipe/orch-$k.pid"
+  echo "$repo" > "$pipe/orch-$k.repo"
+  date -u +%FT%TZ > "$pipe/orch-$k.start"
+  date -u +%FT%TZ > "$pipe/orch-$k.launched-at"
+  : > "$pipe/orch-$k.log"
 }
 
 # mk_dead_pid <pipe> <issue> — a .pid file pointing at a pid that is guaranteed not to be alive.
@@ -48,66 +66,76 @@ mk_running() {
 # on a busy host, silently turning a held/stopped/done/restarting fixture into "running" — so
 # scan downward from a high number instead until we find one with no live process.
 mk_dead_pid() {
-  local pipe=$1 issue=$2 p=99999
+  local pipe=$1 issue=$2 key=${3:-$2} p=99999
   while kill -0 "$p" 2>/dev/null; do p=$((p - 1)); done
-  echo "$p" > "$pipe/orch-$issue.pid"
+  echo "$p" > "$pipe/orch-$key.pid"
 }
 
 # mk_held <pipe> <issue> <repo_path>
 mk_held() {
-  local pipe=$1 issue=$2 repo=$3
-  mk_dead_pid "$pipe" "$issue"
-  echo "$repo" > "$pipe/orch-$issue.repo"
-  date -u +%FT%TZ > "$pipe/orch-$issue.start"
-  touch "$pipe/orch-$issue.held"
-  : > "$pipe/orch-$issue.log"
+  local pipe=$1 issue=$2 repo=$3 k
+  k=$(_mk_key "$repo" "$issue")
+  mk_dead_pid "$pipe" "$issue" "$k"
+  echo "$repo" > "$pipe/orch-$k.repo"
+  date -u +%FT%TZ > "$pipe/orch-$k.start"
+  touch "$pipe/orch-$k.held"
+  : > "$pipe/orch-$k.log"
 }
 
 # mk_stopped <pipe> <issue> <repo_path>
 mk_stopped() {
-  local pipe=$1 issue=$2 repo=$3
-  mk_dead_pid "$pipe" "$issue"
-  echo "$repo" > "$pipe/orch-$issue.repo"
-  date -u +%FT%TZ > "$pipe/orch-$issue.start"
-  touch "$pipe/orch-$issue.stopped"
-  : > "$pipe/orch-$issue.log"
+  local pipe=$1 issue=$2 repo=$3 k
+  k=$(_mk_key "$repo" "$issue")
+  mk_dead_pid "$pipe" "$issue" "$k"
+  echo "$repo" > "$pipe/orch-$k.repo"
+  date -u +%FT%TZ > "$pipe/orch-$k.start"
+  touch "$pipe/orch-$k.stopped"
+  : > "$pipe/orch-$k.log"
 }
 
 # mk_done <pipe> <issue> <repo_path>
 mk_done() {
-  local pipe=$1 issue=$2 repo=$3
-  mk_dead_pid "$pipe" "$issue"
-  echo "$repo" > "$pipe/orch-$issue.repo"
-  date -u +%FT%TZ > "$pipe/orch-$issue.start"
-  touch "$pipe/orch-$issue.done"
-  : > "$pipe/orch-$issue.log"
+  local pipe=$1 issue=$2 repo=$3 k
+  k=$(_mk_key "$repo" "$issue")
+  mk_dead_pid "$pipe" "$issue" "$k"
+  echo "$repo" > "$pipe/orch-$k.repo"
+  date -u +%FT%TZ > "$pipe/orch-$k.start"
+  touch "$pipe/orch-$k.done"
+  : > "$pipe/orch-$k.log"
 }
 
 # mk_restarting <pipe> <issue> <repo_path> — exited, no terminal marker file at all.
 mk_restarting() {
-  local pipe=$1 issue=$2 repo=$3
-  mk_dead_pid "$pipe" "$issue"
-  echo "$repo" > "$pipe/orch-$issue.repo"
-  date -u +%FT%TZ > "$pipe/orch-$issue.start"
-  : > "$pipe/orch-$issue.log"
+  local pipe=$1 issue=$2 repo=$3 k
+  k=$(_mk_key "$repo" "$issue")
+  mk_dead_pid "$pipe" "$issue" "$k"
+  echo "$repo" > "$pipe/orch-$k.repo"
+  date -u +%FT%TZ > "$pipe/orch-$k.start"
+  : > "$pipe/orch-$k.log"
 }
 
 # mk_queued <pipe> <issue> <repo_path> — a queue entry with no live pid and no orch-<issue>.pid at all.
 mk_queued() {
-  local pipe=$1 issue=$2 repo=$3
+  local pipe=$1 issue=$2 repo=$3 k
+  k=$(_mk_key "$repo" "$issue")
   python3 -c "
 import json, datetime
 json.dump({'issue': '$issue', 'repo': '$repo', 'extra': '', 'reason': 'queued',
            'queued_at': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'), 'not_before': 0},
-          open('$pipe/queue/orch-$issue.json', 'w'))
+          open('$pipe/queue/orch-$k.json', 'w'))
 "
 }
 
 # mk_stage_log <pipe> <issue> <agent> [age_secs_ago] — writes a stage log whose mtime is
 # `age_secs_ago` seconds in the past (0 = now = newest), so stage-from-mtime is deterministic.
 mk_stage_log() {
-  local pipe=$1 issue=$2 agent=$3 age=${4:-0}
-  local f="$pipe/run-$issue-$agent.log"
+  local pipe=$1 issue=$2 agent=$3 age=${4:-0} repo=${5:-} k
+  if [ -n "$repo" ]; then k=$(rk "$repo" "$issue")
+  else  # no repo given: follow the run already seeded for this issue (orch-<key>.repo|.pid), else the bare number
+    k=$(ls "$pipe"/orch-*-"$issue".repo "$pipe"/orch-*-"$issue".pid 2>/dev/null | head -1)
+    k=${k##*/orch-}; k=${k%.*}; [ -n "$k" ] || k=$issue
+  fi
+  local f="$pipe/run-$k-$agent.log"
   : > "$f"
   if [ "$age" -gt 0 ]; then
     local ts
@@ -290,4 +318,27 @@ gh_call_count() {
   else
     grep -c -- "$pattern" "$dir/gh-calls.log" 2>/dev/null | tr -d ' '
   fi
+}
+
+# rkp <legacy-style path> — #318: per-run files are keyed orch-<owner>_<repo>-<N>.*; given the old orch-<N>.<suffix>
+# (or run-<N>-<agent>.log) path, print the keyed file when one exists. When the file does not exist yet (a write
+# target), the key is taken from any keyed sibling of the same issue (orch-<key>.* in the pipe dir or its parent, for
+# queue/); with no sibling at all the path is returned unchanged.
+rkp() {
+  local dir=${1%/*} base=${1##*/} n suf g k d
+  case "$base" in
+    orch-[0-9]*.*) n=${base#orch-}; n=${n%%.*}; suf=${base#orch-$n.}
+      g=$(ls "$dir"/orch-*-"$n"."$suf" 2>/dev/null | head -1)
+      [ -n "$g" ] && { printf '%s' "$g"; return; }
+      for d in "$dir" "$dir/.."; do
+        k=$(ls "$d"/orch-*-"$n".* 2>/dev/null | head -1)
+        if [ -n "$k" ]; then k=${k##*/orch-}; k=${k%%.*}; printf '%s' "$dir/orch-$k.$suf"; return; fi
+      done ;;
+    run-[0-9]*-*.log) n=${base#run-}; n=${n%%-*}; suf=${base#run-$n-}
+      g=$(ls "$dir"/run-*-"$n"-"$suf" 2>/dev/null | head -1)
+      [ -n "$g" ] && { printf '%s' "$g"; return; }
+      k=$(ls "$dir"/orch-*-"$n".* 2>/dev/null | head -1)
+      if [ -n "$k" ]; then k=${k##*/orch-}; k=${k%%.*}; printf '%s' "$dir/run-$k-$suf"; return; fi ;;
+  esac
+  printf '%s' "$1"
 }

@@ -11,7 +11,7 @@ fi
 i306_fixture() {  # dead run (no .held), latest marker a BLOCKED gate
   sq_env open
   mk_restarting "$SQ_PIPE" 42 "$SQ_REPO"
-  sq_iso_ago 7200 > "$SQ_PIPE/orch-42.launched-at"; sq_iso_ago 7200 > "$SQ_PIPE/orch-42.start"
+  sq_iso_ago 7200 > "$(rkp "$SQ_PIPE/orch-42.launched-at")"; sq_iso_ago 7200 > "$(rkp "$SQ_PIPE/orch-42.start")"
   sq_marker "$SQ_BLOCKED"
 }
 
@@ -20,7 +20,7 @@ test_i306_queued_run_not_reheld_and_entry_kept() {
   sq_seed_auto_restart_queue
   sq_tick
   local held q log
-  held=$(sq_present "$SQ_PIPE/orch-42.held"); q=$(sq_present "$SQ_PIPE/queue/orch-42.json"); log=$(sq_log)
+  held=$(sq_present "$(rkp "$SQ_PIPE/orch-42.held")"); q=$(sq_present "$(rkp "$SQ_PIPE/queue/orch-42.json")"); log=$(sq_log)
   sq_cleanup
   assert_eq "$held" "absent" "#306: queued run is not re-held" || return 1
   assert_eq "$q" "present" "#306: queue entry survives the gate branch" || return 1
@@ -32,7 +32,7 @@ test_i306_unqueued_run_still_held_with_alert() {
   i306_fixture
   sq_tick
   local held alert
-  held=$(sq_present "$SQ_PIPE/orch-42.held"); alert=$(cat "$SQ_PIPE/orch-42.alert" 2>/dev/null)
+  held=$(sq_present "$(rkp "$SQ_PIPE/orch-42.held")"); alert=$(cat "$(rkp "$SQ_PIPE/orch-42.alert")" 2>/dev/null)
   sq_cleanup
   assert_eq "$held" "present" "#306: no queue entry -> held as before" || return 1
   assert_contains "$alert" "Pipeline #42" "#306: alert written" || return 1

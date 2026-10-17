@@ -53,8 +53,64 @@ test_gl_ac1_states_and_fields() {
   local g; g=$(printf '%s' "$out" | jq -c '.goals | map({(.id): .state}) | add')
   assert_eq "$g" '{"A":"running","B":"held","C":"waiting_jp","E":"between_cycles"}' "AC1: state mapping (live pid / .held / waiting_jp / no live pid)" || return 1
   assert_eq "$(printf '%s' "$out" | jq -c '.goals[] | select(.id=="A")')" \
-    '{"id":"A","spec":"Spec of A","host":"mac","state":"running","scope_total":7,"scope_delivered":3,"last_cycle_at":"2026-09-21T10:00:00Z"}' \
-    "AC1: entry has exactly {id,spec,host,state,scope_total,scope_delivered,last_cycle_at}" || return 1
+    '{"id":"A","spec":"Spec of A","host":"mac","state":"running","scope_total":7,"scope_delivered":3,"last_cycle_at":"2026-09-21T10:00:00Z","url":"https://github.com/jpmoya/claude-agents/issues/193"}' \
+    "AC1: entry has exactly {id,spec,host,state,scope_total,scope_delivered,last_cycle_at,url}" || return 1
+}
+
+# The goal name leads to every ticket of the goal: cross-repo search (label goal), milestone page, ticket, else the registry issue.
+test_gl_url_label_goal_is_a_cross_repo_search() {
+  gl_env
+  jq -nc '{id:"L",host:"mac",state:"active",title:"Big goal",label:"goal: Big goal",repos:["o/a","o/b"],issue:5}' > "$GL_PIPE/goal-L.json"
+  local out; out=$(gl_mode); gl_cleanup
+  assert_eq "$(printf '%s' "$out" | jq -r '.[0].url')" \
+    'https://github.com/issues?q=is%3Aissue%20label%3A%22goal%3A%20Big%20goal%22%20repo%3Ao%2Fa%20repo%3Ao%2Fb' "label goal -> search across its repos" || return 1
+}
+test_gl_url_milestone_ticket_and_registry_fallbacks() {
+  gl_env
+  jq -nc '{id:"M",host:"mac",state:"active",spec:"o/r:milestone:4",issue:6}' > "$GL_PIPE/goal-M.json"
+  jq -nc '{id:"T",host:"mac",state:"active",spec:"o/r#9",issue:7}' > "$GL_PIPE/goal-T.json"
+  jq -nc '{id:"X",host:"mac",state:"active",spec:"weird",issue:8}' > "$GL_PIPE/goal-X.json"
+  local out; out=$(gl_mode); gl_cleanup
+  assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id=="M") | .id')" '' "milestone goal -> not listed (goals only)" || return 1
+  assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id=="T") | .url')" 'https://github.com/o/r/issues/9' "ticket goal -> the ticket" || return 1
+  assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id=="X") | .url')" 'https://github.com/jpmoya/claude-agents/issues/8' "otherwise the registry issue" || return 1
+}
+
+# The cache holds the hostname (hostname -s), the status page keys mac|vm: a live goal must not be dropped for that.
+test_gl_hostname_maps_to_mac_or_vm() {
+  gl_env
+  local me other; me=$(hostname -s | tr '[:upper:]' '[:lower:]')
+  [ "$(uname)" = Darwin ] && { me_kind=mac; other_kind=vm; } || { me_kind=vm; other_kind=mac; }
+  jq -nc --arg h "$me" '{id:"H1",host:$h,state:"active",spec:"o/r#1",issue:1}' > "$GL_PIPE/goal-H1.json"
+  jq -nc '{id:"H2",host:"some-other-box",state:"active",spec:"o/r#2",issue:2}' > "$GL_PIPE/goal-H2.json"
+  local out; out=$(gl_mode); gl_cleanup
+  assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id=="H1") | .host')" "$me_kind" "this machine's hostname -> its own kind" || return 1
+  assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id=="H2") | .host')" "$other_kind" "any other hostname -> the other kind" || return 1
+}
+
+# A milestone / ticket goal has no title in its block: the sync's goalnames.json supplies a readable one (not the raw spec).
+test_gl_name_from_goalnames_file() {
+  gl_env
+  jq -nc '{id:"N1",host:"mac",state:"active",spec:"o/scheduler#9",issue:9}' > "$GL_PIPE/goal-N1.json"
+  jq -nc '{id:"N2",host:"mac",state:"active",spec:"o/r#10",issue:10,title:"Own title"}' > "$GL_PIPE/goal-N2.json"
+  jq -nc '{N1:"scheduler #9: Fix the thing", N2:"ignored"}' > "$GL_PIPE/goalnames.json"
+  local out; out=$(gl_mode); gl_cleanup
+  assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id=="N1") | .title')" "scheduler #9: Fix the thing" "name looked up by the sync is used" || return 1
+  assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id=="N2") | .title')" "Own title" "a title in the block wins" || return 1
+}
+
+test_gl_milestone_goals_not_listed() {
+  gl_env
+  gl_goal MS1 active "o/r:milestone:32"; gl_goal MS2 held "o/r:milestones:all"
+  gl_goal o_r-ms-32 active "x"; gl_goal TK active "o/r#5"
+  cat > "$GL_PIPE/goalqueue.json" <<'J'
+{"queued":[{"id":"o_r-ms-9","spec":"o/r:milestone:9"},{"id":"o_r-t-1","spec":"o/r#1"}],
+ "open":[{"id":"o_r-ms-32","st":"active","title":"m"},{"id":"o_r-ms-all","st":"active","spec":"o/r:milestones:all"},
+         {"id":"label-goal__X","st":"active","title":"X"},{"id":"o_r-t-2","st":"active","title":"t"}],
+ "recent":[{"id":"o_r-ms-99","st":"delivered","title":"m"},{"id":"label-goal__Y","st":"stopped","title":"Y"},{"id":"o_r-t-3","st":"delivered","title":"t"}]}
+J
+  local out; out=$(gl_mode); gl_cleanup
+  assert_eq "$(printf '%s' "$out" | jq -r '[.[].id] | sort | join(",")')" "TK,label-goal__X,label-goal__Y,o_r-t-1,o_r-t-2,o_r-t-3" "only label/ticket goals listed" || return 1
 }
 
 test_gl_ac1_reporter_does_not_sanitise_spec() {
@@ -161,12 +217,17 @@ test_gl_ac5_builder_is_stdlib_only() {
   # Every import in build-runs-json.py is a stdlib module (hand-listed allowlist).
   local bad
   bad=$(grep -E '^\s*(import|from) ' "$RS_GL/build-runs-json.py" | sed -E 's/^\s*(import|from) +([a-zA-Z0-9_]+).*/\2/' \
-    | grep -vxE 'sys|json|subprocess|os|re|datetime|time|glob|signal|errno|pathlib|collections' || true)
+    | grep -vxE 'sys|json|subprocess|os|re|datetime|time|glob|signal|errno|pathlib|collections|urllib|socket' || true)
   assert_eq "$bad" "" "AC5: only stdlib imports in build-runs-json.py" || return 1
 }
 
 run_test test_gl_ac1_fixture_emits_exactly_four_entries
 run_test test_gl_ac1_states_and_fields
+run_test test_gl_url_label_goal_is_a_cross_repo_search
+run_test test_gl_url_milestone_ticket_and_registry_fallbacks
+run_test test_gl_hostname_maps_to_mac_or_vm
+run_test test_gl_name_from_goalnames_file
+run_test test_gl_milestone_goals_not_listed
 run_test test_gl_ac1_reporter_does_not_sanitise_spec
 run_test test_gl_ac1_empty_pipe_has_no_goals_key
 run_test test_gl_only_skipped_goals_has_no_goals_key

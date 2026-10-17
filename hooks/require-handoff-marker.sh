@@ -8,8 +8,10 @@
 [ -n "${PIPELINE_ISSUE:-}" ] && [ -n "${PIPELINE_AGENT:-}" ] && [ -n "${PIPELINE_REPO:-}" ] || exit 0
 INPUT=$(cat)
 PIPE="${PIPE:-/tmp/pipeline}"
-BEFORE_FILE="$PIPE/$PIPELINE_ISSUE-$PIPELINE_AGENT-before.txt"
-NAG_FILE="$PIPE/$PIPELINE_ISSUE-$PIPELINE_AGENT-nags.txt"
+# #318: stage files are keyed <owner>_<repo>-<N> (run_key in skills/orchestrate/pipeline-lib.sh; inlined, the hook is installed standalone)
+RUN_KEY="${PIPELINE_REPO//\//_}-$PIPELINE_ISSUE"
+BEFORE_FILE="$PIPE/$RUN_KEY-$PIPELINE_AGENT-before.txt"
+NAG_FILE="$PIPE/$RUN_KEY-$PIPELINE_AGENT-nags.txt"
 [ -f "$BEFORE_FILE" ] || exit 0
 BEFORE=$(cat "$BEFORE_FILE")
 . "$(dirname "$0")/pipeline-markers.sh" || exit 0

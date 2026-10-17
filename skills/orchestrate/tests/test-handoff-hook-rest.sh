@@ -79,9 +79,9 @@ PR #1 merged' | jq -s . > "$HR_DIR/pages/page2.json"
 }
 
 # hr_run_hook <before> — runs the shipped hook for deployer on issue 600. Sets HR_RC / HR_ERR.
-HR_NAG_REL="pipe/600-deployer-nags.txt"
+HR_NAG_REL="pipe/Benjis-Plants_scheduler-600-deployer-nags.txt"
 hr_run_hook() {
-  printf '%s\n' "$1" > "$HR_DIR/pipe/600-deployer-before.txt"
+  printf '%s\n' "$1" > "$HR_DIR/pipe/Benjis-Plants_scheduler-600-deployer-before.txt"
   HR_ERR=$( PATH="$HR_DIR/bin:$PATH" PIPE="$HR_DIR/pipe" PIPELINE_ISSUE=600 PIPELINE_AGENT=deployer \
     PIPELINE_REPO=Benjis-Plants/scheduler bash "$HOOK_HR" </dev/null 2>&1 >/dev/null ); HR_RC=$?
 }
@@ -205,7 +205,7 @@ test_hr_inert_without_before_file_or_env() {
   PATH="$HR_DIR/bin:$PATH" PIPE="$HR_DIR/pipe" PIPELINE_ISSUE=600 PIPELINE_AGENT=deployer \
     PIPELINE_REPO=Benjis-Plants/scheduler bash "$HOOK_HR" </dev/null >/dev/null 2>&1
   assert_eq "$?" "0" "AC6: no before-file → exit 0" || rc=1
-  echo 2 > "$HR_DIR/pipe/600-deployer-before.txt"
+  echo 2 > "$HR_DIR/pipe/Benjis-Plants_scheduler-600-deployer-before.txt"
   ( unset PIPELINE_ISSUE PIPELINE_AGENT PIPELINE_REPO
     PATH="$HR_DIR/bin:$PATH" PIPE="$HR_DIR/pipe" bash "$HOOK_HR" </dev/null >/dev/null 2>&1 )
   assert_eq "$?" "0" "AC6: no stage coordinates → exit 0" || rc=1

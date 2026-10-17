@@ -1,0 +1,6 @@
+# Repos whose Actions jobs scripts/ci-metrics.sh tracks (one owner/repo per line).
+# SLOTS = total self-hosted runner slots (2 per host, 4 total); used for slot busy %.
+Benjis-Plants/scheduler
+Benjis-Plants/benjis-quoting-tool
+jpmoya/claude-agents
+SLOTS=4

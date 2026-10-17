@@ -83,7 +83,7 @@ json.dump(d, open(path, 'w'))
 if mt != '':
     t = time.time() - float(mt) * 3600
     os.utime(path, (t, t))
-" "$issue" "$QO_REPO" "$qa_val" "$mt" "$nb" "$QO_PIPE/queue/orch-$issue.json"
+" "$issue" "$QO_REPO" "$qa_val" "$mt" "$nb" "$(rkp "$QO_PIPE/queue/orch-$issue.json")"
 }
 
 qo_launched() { qo_log | grep -F "[launch] #" | sed -n 's/.*\[launch\] #\([0-9]*\) .*/\1/p' | tr '\n' ' ' | sed 's/ $//'; }
@@ -120,7 +120,7 @@ test_qo_2_identical_queued_at_lowest_issue_number_wins() {
     python3 -c "
 import json, sys
 json.dump({'issue': sys.argv[1], 'repo': sys.argv[2], 'extra': '', 'reason': 'queued', 'queued_at': sys.argv[3], 'not_before': 0}, open(sys.argv[4], 'w'))
-" "$n" "$QO_REPO" "$same" "$QO_PIPE/queue/orch-$n.json"
+" "$n" "$QO_REPO" "$same" "$(rkp "$QO_PIPE/queue/orch-$n.json")"
   done
   qo_tick
   local launched queued; launched=$(qo_launched); queued=$(qo_queued)

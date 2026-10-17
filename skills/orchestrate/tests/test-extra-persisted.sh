@@ -54,8 +54,8 @@ test_extra_queued_path_persists_extra() {
   ext_env full
   local out rc
   out=$(ext_launch 42 "resume from stage X"); rc=$?
-  local same=1; file_equals "$EXT_PIPE/orch-42.extra" "resume from stage X" && same=0
-  local queued=absent; [ -f "$EXT_PIPE/queue/orch-42.json" ] && queued=present
+  local same=1; file_equals "$(rkp $EXT_PIPE/orch-42.extra)" "resume from stage X" && same=0
+  local queued=absent; [ -f "$(rkp $EXT_PIPE/queue/orch-42.json)" ] && queued=present
   ext_cleanup
   assert_exit0 "$rc" "extra/AC1: queued launch exits 0" || return 1
   assert_contains "$out" "queued #42" "extra/AC1: launch was queued" || return 1
@@ -68,7 +68,7 @@ test_extra_queued_path_roundtrips_multiline_apostrophe() {
   local extra out rc
   extra=$'previous attempt failed because it\'s flaky\n\nresume from stage X; keep "quotes" and $HOME literal'
   out=$(ext_launch 42 "$extra"); rc=$?
-  local same=1; file_equals "$EXT_PIPE/orch-42.extra" "$extra" && same=0
+  local same=1; file_equals "$(rkp $EXT_PIPE/orch-42.extra)" "$extra" && same=0
   ext_cleanup
   assert_exit0 "$rc" "extra/AC1: multi-line queued launch exits 0" || return 1
   assert_contains "$out" "queued #42" "extra/AC1: multi-line launch was queued" || return 1
@@ -77,10 +77,10 @@ test_extra_queued_path_roundtrips_multiline_apostrophe() {
 
 test_extra_queued_path_overwrites_stale_extra() {
   ext_env full
-  printf '%s' "old" > "$EXT_PIPE/orch-42.extra"
+  printf '%s' "old" > "$(rkp "$EXT_PIPE/orch-42.extra")"
   local out rc
   out=$(ext_launch 42 "new"); rc=$?
-  local same=1; file_equals "$EXT_PIPE/orch-42.extra" "new" && same=0
+  local same=1; file_equals "$(rkp $EXT_PIPE/orch-42.extra)" "new" && same=0
   ext_cleanup
   assert_exit0 "$rc" "extra/AC2: queued launch exits 0" || return 1
   assert_eq "$same" "0" "extra/AC2: stale 'old' replaced by 'new'" || return 1
@@ -88,11 +88,11 @@ test_extra_queued_path_overwrites_stale_extra() {
 
 test_extra_queued_path_no_extra_empties_stale_extra() {
   ext_env full
-  printf '%s' "old" > "$EXT_PIPE/orch-42.extra"
+  printf '%s' "old" > "$(rkp "$EXT_PIPE/orch-42.extra")"
   local out rc
   out=$(ext_launch 42); rc=$?
   local exists=no size=-1
-  [ -f "$EXT_PIPE/orch-42.extra" ] && { exists=yes; size=$(wc -c < "$EXT_PIPE/orch-42.extra" | tr -d ' '); }
+  [ -f "$(rkp $EXT_PIPE/orch-42.extra)" ] && { exists=yes; size=$(wc -c < "$(rkp $EXT_PIPE/orch-42.extra)" | tr -d ' '); }
   ext_cleanup
   assert_exit0 "$rc" "extra/AC2: queued launch without extra exits 0" || return 1
   assert_eq "$exists" "yes" "extra/AC2: .extra exists after a no-extra queued launch" || return 1
@@ -103,8 +103,8 @@ test_extra_launch_path_still_persists_extra() {
   ext_env open
   local out rc
   out=$(ext_launch 42 "abc"); rc=$?
-  local same=1; file_equals "$EXT_PIPE/orch-42.extra" "abc" && same=0
-  local queued=absent; [ -f "$EXT_PIPE/queue/orch-42.json" ] && queued=present
+  local same=1; file_equals "$(rkp $EXT_PIPE/orch-42.extra)" "abc" && same=0
+  local queued=absent; [ -f "$(rkp $EXT_PIPE/queue/orch-42.json)" ] && queued=present
   ext_cleanup
   assert_exit0 "$rc" "extra/AC3: launch exits 0" || return 1
   assert_contains "$out" "launched orchestrator" "extra/AC3: took the launch path" || return 1
@@ -121,15 +121,18 @@ test_extra_supervisor_reenqueue_keeps_extra() {
   # A queued-launched #42 that the supervisor sees as a dead, non-terminal run to re-enqueue
   # (stale .exit + .repo + dead .pid). Drop the queue entry orchestrate.sh wrote: the supervisor
   # only rebuilds it (from .extra) when none exists.
-  mk_dead_pid "$EXT_PIPE" 42
-  echo "$EXT_REPO" > "$EXT_PIPE/orch-42.repo"
-  echo 1 > "$EXT_PIPE/orch-42.exit"
-  rm -f "$EXT_PIPE/queue/orch-42.json"
+  # (#318: the launch wrote the run under its owner_repo-keyed names; seed and drop those, not legacy orch-42.*.)
+  local qf stem
+  qf=$(rkp "$EXT_PIPE/queue/orch-42.json"); stem=${qf##*/}; stem="$EXT_PIPE/${stem%.json}"
+  mk_dead_pid "$EXT_PIPE" 42 "${stem##*/orch-}"
+  echo "$EXT_REPO" > "$stem.repo"
+  echo 1 > "$stem.exit"
+  rm -f "$qf"
   HOME="$EXT_HOME" PATH="$EXT_HOME/.local/bin:/usr/bin:/bin" PIPE="$EXT_PIPE" QUEUE="$EXT_PIPE/queue" LOGDIR="$EXT_HOME/logs/pipeline" \
     "$SUP_EXT" >/dev/null 2>&1
   local reason queued_extra
-  reason=$(python3 -c "import json; print(json.load(open('$EXT_PIPE/queue/orch-42.json')).get('reason','MISSING'))" 2>/dev/null || echo "NO-QUEUE-ENTRY")
-  queued_extra=$(python3 -c "import json; print(json.load(open('$EXT_PIPE/queue/orch-42.json')).get('extra','MISSING'), end='')" 2>/dev/null || echo "NO-QUEUE-ENTRY")
+  reason=$(python3 -c "import json; print(json.load(open('$(rkp $EXT_PIPE/queue/orch-42.json)')).get('reason','MISSING'))" 2>/dev/null || echo "NO-QUEUE-ENTRY")
+  queued_extra=$(python3 -c "import json; print(json.load(open('$(rkp $EXT_PIPE/queue/orch-42.json)')).get('extra','MISSING'), end='')" 2>/dev/null || echo "NO-QUEUE-ENTRY")
   ext_cleanup
   assert_eq "$reason" "auto-restart" "extra/AC4: supervisor tick re-enqueued #42" || return 1
   assert_eq "$queued_extra" "$extra" "extra/AC4: re-enqueued queue JSON keeps the original extra" || return 1
