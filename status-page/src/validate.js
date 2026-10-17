@@ -202,6 +202,7 @@ function sanitiseGoal(raw) {
     if (!raw.repos.every((r) => typeof r === 'string' && GOAL_REPO.test(r))) return null;
     goal.repos = [...raw.repos];
   }
+  if (isIntInRange(raw.priority, 1, 9999)) goal.priority = raw.priority;
   const order = clampInt(raw.order, 0, 999999);
   if (order !== null) goal.order = order;
   const total = clampInt(raw.scope_total, 0, 9999);

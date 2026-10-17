@@ -31,7 +31,7 @@ const goalsHtml = (html) => (/<section class="group">\s*<h2>Goals<\/h2>[\s\S]*?<
 const rowsOf = (section) =>
   [...section.matchAll(/<tr>([\s\S]*?)<\/tr>/g)]
     .filter((r) => r[1].includes('<td'))
-    .map((r) => [...r[1].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((c) => text(c[1])));
+    .map((r) => [...r[1].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((c) => text(c[1])).slice(1)); // slice(1): the Priority column is covered in goal-links.test.js
 // the compact list of closed goals lives in its own block inside the Goals section
 const closedBlock = (html) => (/<div class="goals-closed">[\s\S]*?<\/div>/.exec(goalsHtml(html)) || [''])[0];
 

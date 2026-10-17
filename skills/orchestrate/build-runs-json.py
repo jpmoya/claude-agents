@@ -297,6 +297,12 @@ def _goal_link(d):
     return _goal_url(d.get("issue"))
 
 
+def _set_priority(entry, d):
+    p = d.get("priority")
+    if isinstance(p, int) and not isinstance(p, bool) and p > 0:
+        entry["priority"] = p
+
+
 def build_goals():
     if not pipe_dir:
         return []
@@ -354,6 +360,7 @@ def build_goals():
             entry["last_cycle_at"] = d["last_cycle_at"]
         if _goal_link(d):
             entry["url"] = _goal_link(d)
+        _set_priority(entry, d)
         out.append(entry)
         if len(out) >= GOALS_MAX:
             break
@@ -400,6 +407,33 @@ def build_goals():
                 entry["paused"] = paused
             if _goal_link(d):
                 entry["url"] = _goal_link(d)
+            _set_priority(entry, d)
+            out.append(entry)
+    # every other registered, not-yet-reported goal that is still open (e.g. pinned to a host that is offline)
+    opened = q.get("open") if isinstance(q, dict) else None
+    if isinstance(opened, list):
+        known = set(e["id"] for e in out)
+        for d in opened:
+            if len(out) >= GOALS_MAX:
+                break
+            if not isinstance(d, dict) or not (isinstance(d.get("id"), str) and d.get("id")) or d["id"] in known:
+                continue
+            st = {"held": "held", "waiting_jp": "waiting_jp", "active": "between_cycles"}.get(d.get("st"))
+            if st is None or not (isinstance(d.get("title"), str) and d["title"]) and not (isinstance(d.get("spec"), str) and d["spec"]):
+                continue
+            entry = {"id": d["id"]}
+            if isinstance(d.get("spec"), str) and d.get("spec"):
+                entry["spec"] = d["spec"]
+            entry["host"] = d["host"] if d.get("host") in ("mac", "vm") else ""
+            entry["state"] = st
+            if isinstance(d.get("title"), str) and d.get("title"):
+                entry["title"] = d["title"]
+            repos = d.get("repos")
+            if isinstance(repos, list) and repos and all(isinstance(r, str) and r for r in repos):
+                entry["repos"] = repos
+            if _goal_link(d):
+                entry["url"] = _goal_link(d)
+            _set_priority(entry, d)
             out.append(entry)
     # recently closed goals (delivered / stopped, newest first, max 5): the status page lists them compactly
     recent = q.get("recent") if isinstance(q, dict) else None
@@ -431,6 +465,7 @@ def build_goals():
                 entry["closed_at"] = d["closed_at"]
             if _goal_link(d):
                 entry["url"] = _goal_link(d)
+            _set_priority(entry, d)
             out.append(entry)
             n += 1
     return out

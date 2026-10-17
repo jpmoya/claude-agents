@@ -149,7 +149,7 @@ function goalsSection(html) {
 function rowsOf(section) {
   return [...section.matchAll(/<tr>([\s\S]*?)<\/tr>/g)]
     .filter((m) => m[1].includes('<td'))
-    .map((m) => [...m[1].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((c) => c[1].trim()));
+    .map((m) => [...m[1].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((c) => c[1].trim()).slice(1)); // slice(1): the Priority column is covered in goal-links.test.js
 }
 const text = (s) => s.replace(/<[^>]+>/g, '').trim();
 
@@ -167,10 +167,10 @@ describe('AC3 — render.js Goals section', () => {
     expect(rowsOf(s)).toHaveLength(3);
   });
 
-  it('has the columns Goal, Host, State, Delivered, Last cycle', () => {
+  it('has the columns Priority, Goal, Host, State, Delivered, Last cycle', () => {
     const s = goalsSection(html);
     const ths = [...s.matchAll(/<th[^>]*>([\s\S]*?)<\/th>/g)].map((m) => m[1].trim());
-    expect(ths).toEqual(['Goal', 'Host', 'State', 'Delivered', 'Last cycle']);
+    expect(ths).toEqual(['Priority', 'Goal', 'Host', 'State', 'Delivered', 'Last cycle']);
   });
 
   it('orders waiting_jp, held, running (then id) and renders each cell', () => {

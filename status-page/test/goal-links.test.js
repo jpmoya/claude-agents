@@ -53,3 +53,22 @@ describe('goal name links', () => {
     expect(goalsOf([running({ url: 'https://evil.com/issues?q=a' })])[0].url).toBeUndefined();
   });
 });
+
+describe('goal priority', () => {
+  it('keeps a priority of 1 or more and drops others', () => {
+    expect(goalsOf([running({ priority: 2 })])[0].priority).toBe(2);
+    expect(goalsOf([running({ priority: 0 })])[0].priority).toBeUndefined();
+    expect(goalsOf([running({ priority: 'x' })])[0].priority).toBeUndefined();
+  });
+  it('shows a Priority column and lists goals by priority, unprioritised last', () => {
+    const html = goalsHtml(render(rec([running({ id: 'a', title: 'Alpha' }), running({ id: 'b', title: 'Bravo', priority: 2 }), running({ id: 'c', title: 'Charlie', priority: 1 })])));
+    expect(html).toContain('<th>Priority</th>');
+    expect(text(html).indexOf('Charlie')).toBeLessThan(text(html).indexOf('Bravo'));
+    expect(text(html).indexOf('Bravo')).toBeLessThan(text(html).indexOf('Alpha'));
+  });
+  it('shows registered goals that have not started', () => {
+    const html = goalsHtml(render(rec([{ id: 'q', title: 'Not yet', repos: ['org/repo-a'], host: '', state: 'queued', queue_pos: 1, priority: 1 }])));
+    expect(text(html)).toContain('Not yet');
+    expect(text(html)).toContain('queued #1');
+  });
+});

@@ -774,12 +774,13 @@ GOAL_QUEUE_FILE_NAME=goalqueue.json
 # block's `order` (the registry issue number when absent), then by registry issue number. The candidate is the FIRST goal
 # in that order that is not delivered / stopped / waiting on JP, provided it is queued: any earlier goal that is active,
 # held, queued or unreadable holds the line.
-_GOAL_QUEUE_JQ='def okey: [((.block.order? // .issue) | if type == "number" then . else 1e12 end), .issue];
+_GOAL_QUEUE_JQ='def okey: [((.block.priority? // .block.order? // .issue) | if type == "number" then . else 1e12 end), .issue];
   sort_by(okey) as $all
   | ($all | map(select(.st == "queued"))) as $q
   | ($all | map(select((.st == "delivered" or .st == "stopped" or .st == "waiting_jp") | not)) | first // null) as $f
   | {queued: $q, candidate: (if $f != null and $f.st == "queued" then $f else null end),
-     recent: ($all | map(select(.st == "delivered" or .st == "stopped")) | sort_by(.closed_at // "") | reverse | .[:5])}'
+     recent: ($all | map(select(.st == "delivered" or .st == "stopped")) | sort_by(.closed_at // "") | reverse | .[:5]),
+     open: ($all | map(select(.st == "active" or .st == "held" or .st == "waiting_jp")))}'
 
 # goal_queue_save <registry json> — the sync's prefilter and the status page's queue view (id, issue, title/spec, order,
 # host_pref, label per queued goal, in queue order; plus the 5 most recently closed goals as `recent`). Best effort: a write failure is only an error row.
@@ -788,13 +789,23 @@ goal_queue_save() {
   v=$(printf '%s' "$1" | jq -c "$_GOAL_QUEUE_JQ"'
     | {at: (now | floor),
        candidate: (.candidate.id // null),
-       recent: (.recent | map({id, issue, spec, title: (.block.title // ""), label: (.block.label // ""), repos: (.block.repos // []), st, closed_at})),
-       queued: (.queued | map({id, issue, spec, title: (.block.title // ""), label: (.block.label // ""),
+       recent: (.recent | map({id, issue, spec, title: (.block.title // ""), label: (.block.label // ""), repos: (.block.repos // []), st, closed_at, priority: (.block.priority? // null)})),
+       open: (.open | map({id, issue, spec, title: (.block.title // ""), label: (.block.label // ""), repos: (.block.repos // []),
+                           st, host: (.host // ""), priority: (.block.priority? // null)})),
+       queued: (.queued | map({id, issue, spec, title: (.block.title // ""), label: (.block.label // ""), priority: (.block.priority? // null),
                                repos: (.block.repos // []), order: (.block.order? // .issue), host_pref: (.block.host_pref // "")}))}' 2>/dev/null) \
     || { goal_err "cannot compute the goal queue"; return 0; }
   mkdir -p "$PIPE" 2>/dev/null
   printf '%s\n' "$v" > "$f.tmp" 2>/dev/null && mv "$f.tmp" "$f" || { rm -f "$f.tmp"; goal_err "cannot write the goal queue cache"; }
   return 0
+}
+
+# goal_next_priority — 1 + the highest priority among the live (not delivered / stopped) registry goals; 1 when none has one.
+# Priority 1 starts first; the block's `priority` (set by deliver.sh register --priority / deliver.sh priority) outranks `order`.
+goal_next_priority() {
+  local j
+  j=$(_goal_registry_json) || return 1
+  printf '%s' "$j" | jq -r '[.[] | select(.st != "delivered" and .st != "stopped") | (.block.priority? // empty) | select(type == "number")] | ((max // 0) + 1)'
 }
 
 # goal_is_mac — the laptop (battery rules, VM-first). Same test as power_ok.

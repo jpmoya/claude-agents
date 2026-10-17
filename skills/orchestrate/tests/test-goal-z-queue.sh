@@ -69,11 +69,12 @@ zq_ac() { if [ "$1" = on ]; then : > "$GS_BIN/ac"; else rm -f "$GS_BIN/ac"; fi; 
 # zq_reg <registry issue> <id> <spec> <queued|active|waiting|held|stopped|delivered> <order|""> <host> [host_pref] [label]
 # A registry goal. A queued goal has host "" (zq_reg ignores the host argument for it). With a label: a v2 block.
 zq_reg() {
-  local n=$1 id=$2 spec=$3 st=$4 ord=$5 host=$6 pin=${7:-} label=${8:-} block labels='["delivery-goal"]' state=open closed=null
+  local n=$1 id=$2 spec=$3 st=$4 ord=$5 host=$6 pin=${7:-} label=${8:-} prio=${9:-} block labels='["delivery-goal"]' state=open closed=null
   [ "$st" = queued ] && host=""
-  block=$(jq -nc --arg id "$id" --arg spec "$spec" --arg host "$host" --arg pin "$pin" --arg label "$label" --arg ord "$ord" --arg c "$GS_NOW" '
+  block=$(jq -nc --arg id "$id" --arg spec "$spec" --arg host "$host" --arg pin "$pin" --arg label "$label" --arg ord "$ord" --arg prio "$prio" --arg c "$GS_NOW" '
     {v:1,id:$id,spec:$spec,host:$host,host_pref:$pin,created:$c,instructions:""}
     + (if $ord != "" then {order:($ord|tonumber)} else {} end)
+    + (if $prio != "" then {priority:($prio|tonumber)} else {} end)
     + (if $label != "" then {v:2,title:$id,label:$label,repos:["example-owner/project-a"],go:false,granted:[]} else {} end)')
   case "$st" in
     queued)    labels='["delivery-goal","goal-queued"]' ;;
@@ -186,6 +187,18 @@ test_zq_missing_order_falls_back_to_issue_number() {
   # order 1 (issue 52) sorts first; the order-less goal counts as its issue number (51)... which is larger than 1
   assert_eq "$c" "1" "ordering: explicit order 1 first" || return 1
   assert_eq "$b" "0" "ordering: order-less goal ranks by issue number (51 > 1)" || return 1
+}
+
+# priority (JP 2026-10-17): the block's `priority` outranks `order`; 1 starts first.
+test_zq_priority_outranks_order() {
+  zq_env
+  zq_reg 51 "$ZQ_B" "$ZQ_SPEC_B" queued 1 "" "" "" 3
+  zq_reg 52 "$ZQ_C" "$ZQ_SPEC_C" queued 9 "" "" "" 1
+  gs_tick; gs_wait_claude 1; gs_settle
+  local c b; c=$(zq_claims 52); b=$(zq_claims 51)
+  gs_cleanup
+  assert_eq "$c" "1" "priority 1 starts before priority 3 even with a later order" || return 1
+  assert_eq "$b" "0" "the lower-priority goal waits" || return 1
 }
 
 # MAX_GOALS=2: two live leads on this host fill the slots even though both goals wait on JP; one live lead leaves a slot.
@@ -539,6 +552,30 @@ test_zq_register_host_flag_sets_host_pref() {
   assert_eq "$pin" "mac-studio" "item 2: --host stores host_pref (lower-cased)" || return 1
 }
 
+test_zq_register_priority_default_flag_and_command() {
+  dg_setup
+  local reg pr
+  dg_run "$DG_SPEC_T7"
+  reg=$(ls "$DG_ST/issues/$DG_REG"/*.json 2>/dev/null | head -1)
+  pr=$(jq -r '.body | capture("```json\\n(?<j>[^\\n]*)\\n```").j | fromjson | .priority' "$reg" 2>/dev/null)
+  assert_eq "$pr" "1" "priority: the first goal gets priority 1" || { dg_teardown; return 1; }
+  dg_run priority "$DG_SPEC_T7" 4
+  pr=$(jq -r '.body | capture("```json\\n(?<j>[^\\n]*)\\n```").j | fromjson | .priority' "$reg" 2>/dev/null)
+  assert_eq "$pr" "4" "priority: deliver.sh priority rewrites it in the registry block" || { dg_teardown; return 1; }
+  dg_run priority "$DG_SPEC_T7" 0
+  assert_eq "$DG_RC" "1" "priority: 0 is refused" || { dg_teardown; return 1; }
+  dg_teardown
+}
+test_zq_register_priority_flag_stored() {
+  dg_setup
+  local reg pr
+  dg_run "$DG_SPEC_T7" --priority 7
+  reg=$(ls "$DG_ST/issues/$DG_REG"/*.json 2>/dev/null | head -1)
+  pr=$(jq -r '.body | capture("```json\\n(?<j>[^\\n]*)\\n```").j | fromjson | .priority' "$reg" 2>/dev/null)
+  dg_teardown
+  assert_eq "$pr" "7" "priority: --priority 7 is stored" || return 1
+}
+
 test_zq_register_label_goal_enqueues_with_order_and_pin() {
   dg_setup
   local reg labels blk n files
@@ -584,10 +621,12 @@ test_zq_reporter_emits_queue_position_and_pause_reason() {
   j=$(PATH="$GS_BIN:$PATH" python3 "$GS_SKILL/build-runs-json.py" "" "$GS_HOME/.claude/pipeline/runs.jsonl" "$GS_PIPE" goals </dev/null 2>/dev/null)
   gs_cleanup
   # A is active on another host: it holds the line, so there is no pause; B and C are queued 1 and 2
-  assert_eq "$(printf '%s' "$j" | jq -c 'map({id, state, queue_pos, host})')" \
+  # (the open goal A, running on another host, is reported too: every registered goal shows on the status page)
+  assert_eq "$(printf '%s' "$j" | jq -c '[.[] | select(.id == "'"$ZQ_A"'") | .state]')" '["between_cycles"]' "every open registered goal is reported" || return 1
+  assert_eq "$(printf '%s' "$j" | jq -c 'map(select(.state == "queued") | {id, state, queue_pos, host})')" \
     "[{\"id\":\"$ZQ_B\",\"state\":\"queued\",\"queue_pos\":1,\"host\":\"\"},{\"id\":\"$ZQ_C\",\"state\":\"queued\",\"queue_pos\":2,\"host\":\"\"}]" \
     "item 7: queued goals reported with their position, in queue order" || return 1
-  assert_eq "$(printf '%s' "$j" | jq -c 'map(has("paused"))')" "[false,false]" "item 7: no pause while an earlier goal holds the line" || return 1
+  assert_eq "$(printf '%s' "$j" | jq -c 'map(has("paused"))')" "[false,false,false]" "item 7: no pause while an earlier goal holds the line" || return 1
 }
 
 test_zq_reporter_marks_the_head_of_the_queue_paused_on_a_battery_mac() {
@@ -631,6 +670,9 @@ run_test test_zq_step5_dispatches_a_goal_ticket_whose_lead_is_not_live
 run_test test_zq_step5_holds_tickets_of_a_goal_still_in_the_queue
 run_test test_zq_register_enqueues_without_launching
 run_test test_zq_register_now_keeps_the_immediate_launch
+run_test test_zq_register_priority_default_flag_and_command
+run_test test_zq_register_priority_flag_stored
+run_test test_zq_priority_outranks_order
 run_test test_zq_register_host_flag_sets_host_pref
 run_test test_zq_register_label_goal_enqueues_with_order_and_pin
 run_test test_zq_queued_goals_count_in_the_overlap_guard_and_status
