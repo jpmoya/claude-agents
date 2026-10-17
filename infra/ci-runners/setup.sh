@@ -120,7 +120,8 @@ tok=$(gha_envval "$mint" GHA_MINT_TOKEN)
 gha_docker_env
 # free the container name before minting, so a name conflict cannot register runners that never run
 docker rm -f "gha-slot-$slot" >/dev/null 2>&1 || true
-body="{\"name\":\"gha-${HOSTNAME:-host}-$slot-$RANDOM\",\"runner_group_id\":1,\"labels\":[\"self-hosted\",\"$GHA_LABEL\"],\"work_folder\":\"_work\"}"
+work="$GHA_ROOT/srv/gha/work/$slot"   # same absolute path inside the runner and on the daemon, so job containers (container:) bind it correctly
+body="{\"name\":\"gha-${HOSTNAME:-host}-$slot-$RANDOM\",\"runner_group_id\":1,\"labels\":[\"self-hosted\",\"$GHA_LABEL\"],\"work_folder\":\"$work\"}"
 resp=$(printf 'header = "Authorization: Bearer %s"\n' "$tok" | curl -sS -f --max-time 30 -K - -X POST \
   -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" \
   --data "$body" "https://api.github.com/$scope/actions/runners/generate-jitconfig" 2>/dev/null) \
@@ -128,10 +129,10 @@ resp=$(printf 'header = "Authorization: Bearer %s"\n' "$tok" | curl -sS -f --max
 tok=""
 jit=$(sed -n 's/.*"encoded_jit_config"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' <<<"$resp")
 [ -n "$jit" ] || gha_fail launcher/mint "no encoded_jit_config in response"
-work="$GHA_ROOT/srv/gha/work/$slot"
 rm -rf "$work"; mkdir -p "$work"; chown gha:gha "$work"
 ACTIONS_RUNNER_INPUT_JITCONFIG=$jit docker run --rm --name "gha-slot-$slot" \
-  -e ACTIONS_RUNNER_INPUT_JITCONFIG -v "$work:/home/runner/_work" "gha-runner:$GHA_RUNNER_VERSION"
+  -e ACTIONS_RUNNER_INPUT_JITCONFIG -v "${DOCKER_HOST#unix://}:/var/run/docker.sock" -v "$work:$work" \
+  "gha-runner:$GHA_RUNNER_VERSION"
 EOF
 }
 hygiene_text() { render <<'EOF'
@@ -197,6 +198,8 @@ RUN set -eux; a=$(dpkg --print-architecture); case "$a" in amd64) a=x64;; arm64)
     mkdir -p /home/runner && cd /home/runner \
     && curl -fsSL -o r.tgz "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-${a}-${RUNNER_VERSION}.tar.gz" \
     && tar xzf r.tgz && rm r.tgz && ./bin/installdependencies.sh
+# docker CLI only: container: jobs talk to gha's rootless daemon through the socket the launcher mounts
+RUN set -eux; a=$(uname -m); curl -fsSL "https://download.docker.com/linux/static/stable/${a}/docker-27.3.1.tgz" | tar xz -C /usr/local/bin --strip-components=1 docker/docker
 WORKDIR /home/runner
 ENTRYPOINT ["./run.sh"]
 EOF
