@@ -7,7 +7,7 @@
 
 import { isIssueUrl } from './validate.js';
 import { groupTickets } from './group.js';
-import { PIPELINES } from './pipelines.js';
+import { PIPELINES, STAGE_INPUTS } from './pipelines.js';
 
 // Auto-refresh interval in seconds. Must stay <= 30 (AC15). Grepped directly by tests.
 export const PAGE_REFRESH_SECS = 20;
@@ -160,6 +160,26 @@ const GOAL_STATE_LABELS = { waiting_jp: 'waiting on JP', held: 'held', running: 
 const GOAL_STATE_ORDER = ['waiting_jp', 'held', 'running', 'between_cycles', 'queued'];
 const GOAL_CLOSED_LABELS = { delivered: 'delivered', stopped: 'stopped' };
 const GOALS_CLOSED_SHOWN = 5;
+
+/** Plain-language meaning of each goal state, from goal-lib.sh / build-runs-json.py (the order shown in the Legend). */
+export const GOAL_LEGEND = [
+  ['running', 'The delivery lead is working on the goal right now (its process is alive).'],
+  ['between cycles', 'Started and not stuck, but no process is running at this moment; the next cycle picks it up.'],
+  ['waiting on JP', 'Every open ticket is waiting on a decision or promotion only JP can give; nothing runs until then.'],
+  ['held', 'Stopped by itself after several cycles without progress; it needs a look before it resumes.'],
+  ['queued', 'Registered but not started yet; the number is its place in the start order (1 = next).'],
+  ['delivered', 'Finished: every ticket in the goal has shipped.'],
+  ['stopped', 'Cancelled by hand with the stop command; it does not run again unless resumed.'],
+];
+
+function renderLegend() {
+  const items = GOAL_LEGEND.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('');
+  return `<section class="group legend">
+    <h2>Legend</h2>
+    <h3>Goal states</h3>
+    <dl>${items}</dl>
+  </section>`;
+}
 
 /** A goal's name, linked to its ticket search / milestone / issue (already validated by validate.js as a github.com URL). */
 function goalName(g, text) {
@@ -314,7 +334,7 @@ export function renderPage(hosts, thresholds, nowEpochSecs) {
 
   const body = bothEmpty
     ? '<p class="empty">no data from either host yet</p>'
-    : `${renderHostSection('mac', hosts.mac, thresholds, nowEpochSecs)}${renderHostSection('vm', hosts.vm, thresholds, nowEpochSecs)}${renderGoalsSection(hosts)}${groupTickets(hosts, nowEpochSecs).map(renderGroupSection).join('')}`;
+    : `${renderHostSection('mac', hosts.mac, thresholds, nowEpochSecs)}${renderHostSection('vm', hosts.vm, thresholds, nowEpochSecs)}${renderGoalsSection(hosts)}${renderLegend()}${groupTickets(hosts, nowEpochSecs).map(renderGroupSection).join('')}`;
 
   return `<!doctype html>
 <html lang="en">
@@ -339,6 +359,9 @@ export function renderPage(hosts, thresholds, nowEpochSecs) {
   .badge.goal-between_cycles { background: #6e7781; color: #ffffff; }
   .badge.goal-delivered { background: #1a7f37; color: #ffffff; }
   .badge.goal-stopped { background: #6e7781; color: #ffffff; }
+  .legend h3 { font-size: 0.95em; margin: 0.5em 0 0.3em; }
+  .legend dt { font-weight: 600; margin-top: 0.4em; }
+  .legend dd { margin: 0 0 0 1rem; }
   .goals-closed h3 { font-size: 0.95em; margin: 1em 0 0.3em; }
   .goals-closed ul { margin: 0; padding-left: 1.2em; }
   table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
@@ -369,6 +392,12 @@ ${NAV_CSS}
   ol.track li { margin: 0; padding: 0; max-width: 100%; }
   .chip { display: inline-block; max-width: 100%; margin: 0.25rem 0; padding: 0.1rem 0.5rem; border-radius: 1rem; font-size: 0.8rem; background: #ddf4ff; color: #0a3069; }
   .chip[data-soon] { background: #fff8c5; color: #4d2d00; border: 1px dashed #9a6700; }
+  .uml { list-style: none; margin: 0; padding: 0; max-width: 100%; }
+  .uml li { max-width: 100%; }
+  .uml .node { border: 1px solid rgba(127, 127, 127, 0.6); border-radius: 0.25rem; max-width: 100%; box-sizing: border-box; }
+  .uml .node b { display: block; padding: 0.25rem 0.6rem; background: rgba(127, 127, 127, 0.18); border-bottom: 1px solid rgba(127, 127, 127, 0.6); }
+  .uml .node ul { margin: 0; padding: 0.3rem 0.6rem 0.3rem 1.6rem; font-size: 0.8rem; }
+  .uml .link { display: block; margin: 0.1rem 0 0.1rem 1rem; }
   .arrow { display: block; margin: 0.1rem 0 0.1rem 1rem; }
   .box { display: block; max-width: 100%; box-sizing: border-box; padding: 0.4rem 0.6rem; border: 1px solid rgba(127, 127, 127, 0.6); border-radius: 0.25rem; }
   @media (prefers-color-scheme: dark) {
@@ -391,6 +420,18 @@ function renderTrack(track) {
   return `<section class="group"><h2>${esc(track.title)}</h2><ol class="track">${items}</ol></section>`;
 }
 
+/** UML-style boxes: stage name on top, the inputs it takes in below, an arrow to the next stage. */
+function renderInputs(track) {
+  const items = track.stages
+    .map((stage, i) => {
+      const link = i > 0 ? '<span class="link" aria-hidden="true">&darr;</span>' : '';
+      const inputs = stage.inputs.map((x) => `<li>${esc(x)}</li>`).join('');
+      return `<li>${link}<div class="node"><b>${esc(stage.name)}</b><ul>${inputs}</ul></div></li>`;
+    })
+    .join('');
+  return `<section class="group inputs"><h2>${esc(track.title)}</h2><ol class="uml">${items}</ol></section>`;
+}
+
 /**
  * Pipelines tab: server-rendered routing diagram, no JS.
  * @param {Array<object>} [data]
@@ -411,6 +452,8 @@ ${PIPELINES_CSS}
 ${renderNav('pipelines')}
 <h1>How tickets are routed</h1>
 ${data.map(renderTrack).join('')}
+<h1>What each stage takes in</h1>
+${STAGE_INPUTS.map(renderInputs).join('')}
 </body>
 </html>`;
 }

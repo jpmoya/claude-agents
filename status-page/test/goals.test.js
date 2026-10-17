@@ -261,3 +261,17 @@ describe('AC3 — no goals anywhere: output unchanged', () => {
     expect(renderPage({ mac: null, vm: null }, thresholds, NOW)).not.toMatch(/Goals/);
   });
 });
+
+describe('goal state legend', () => {
+  it('defines every goal state the validator accepts, on the status page', async () => {
+    const { renderPage, GOAL_LEGEND } = await import('../src/render.js');
+    const html = renderPage({ mac: null, vm: { received_at: 1, runs: [], goals: [] } }, { staleSecs: 60, offlineSecs: 600 }, 2);
+    expect(html).toContain('<h2>Legend</h2>');
+    const keys = GOAL_LEGEND.map(([k]) => k.replace(' ', '_').replace('on_JP', 'jp'));
+    expect(keys.length).toBe(7);
+    for (const [k, v] of GOAL_LEGEND) {
+      expect(html).toContain(`<dt>${k}</dt>`);
+      expect(v.length).toBeGreaterThan(20);
+    }
+  });
+});
