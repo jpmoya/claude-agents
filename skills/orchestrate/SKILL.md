@@ -48,10 +48,13 @@ Label rule: `agent-go` = "approved, not launched anywhere yet"; launching anywhe
 ```bash
 ~/.claude/skills/orchestrate/deliver.sh <goal> [--now] [--host <name>] [--priority <n>] [instructions...]   # register (queued); --now also launches one cycle
 ~/.claude/skills/orchestrate/deliver.sh priority <goal|id> <n>   # change a goal's priority (1 starts first)
+~/.claude/skills/orchestrate/deliver.sh project <goal|id|all> [--create]   # bind/sync the goal's GitHub Project (Mac only: needs the gh `project` scope)
 ~/.claude/skills/orchestrate/deliver.sh status [goal|id]           # one line per goal (open, plus closed within 7 days)
 ~/.claude/skills/orchestrate/deliver.sh stop <goal|id>             # label goal-stopped, close the registry issue, kill the local cycle (idempotent)
 ~/.claude/skills/orchestrate/deliver.sh resume <goal|id> [--here]  # reopen a stopped/held goal; --here re-pins it to this host
 ```
+
+Each goal has a GitHub Project (v2, "Goal: <title>", fields copied from project 1) that mirrors it: the registry block's `project` field records it, `deliver.sh register` creates one, the supervisor sync binds an existing "Goal: ..." project (by title or items) and keeps tickets and Status current, a delivered or stopped goal closes it, and the lead's brief and the status-page goal link point at it. All `gh project` calls live in `goal-project.sh`; hosts whose gh token lacks the `project` scope (the VM: `gh auth refresh -s project`) skip it, and a project error never blocks a goal.
 
 - **Goal kinds:** `owner/repo:milestone:<number|exact title>`, `owner/repo:milestones:all`, `owner/repo#N`.
 - **Overlap refusal:** a new goal that shares a ticket, or a repo with a `milestones:all` goal, with a live goal (open registry entry: active, held or waiting on JP) is refused, and the error names the live conflicting goal. It fails closed when the registry is unreadable.

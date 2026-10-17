@@ -44,6 +44,13 @@ describe('goal name links', () => {
   it('shows a plain name when there is no url', () => {
     expect(goalsHtml(render(rec([running()])))).not.toContain('<a ');
   });
+  it('accepts a goal GitHub Project url, rejects look-alikes', () => {
+    const proj = 'https://github.com/users/jpmoya/projects/10';
+    expect(goalsOf([running({ url: proj })])[0].url).toBe(proj);
+    expect(goalsOf([running({ url: 'https://github.com/orgs/o/projects/3' })])[0].url).toBe('https://github.com/orgs/o/projects/3');
+    expect(goalsOf([running({ url: 'https://github.com/users/jpmoya/projects/x' })])[0].url).toBeUndefined();
+    expect(goalsOf([running({ url: 'https://evil.com/users/jpmoya/projects/1' })])[0].url).toBeUndefined();
+  });
   it('accepts a cross-repo search and a milestone page, rejects other hosts and quotes', () => {
     const search = 'https://github.com/issues?q=is%3Aissue%20label%3A%22goal%3A%20X%22%20repo%3Ao%2Fr';
     expect(goalsOf([running({ url: search })])[0].url).toBe(search);

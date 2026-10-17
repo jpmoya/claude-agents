@@ -279,9 +279,14 @@ def _goal_url(issue):
 
 
 def _goal_link(d):
-    """Where a goal's name leads: a GitHub search of every ticket of the goal across its repos (label goal), the
+    """Where a goal's name leads: its GitHub Project when one is recorded, else a GitHub search of every ticket of the goal across its repos (label goal), the
     milestone page (milestone goal), the ticket (ticket goal); else the registry issue."""
     label, repos, spec = d.get("label"), d.get("repos"), d.get("spec")
+    proj = d.get("project_url")
+    if not isinstance(proj, str) and isinstance(d.get("project"), dict):
+        proj = d["project"].get("url")
+    if isinstance(proj, str) and re.match(r"^https://github\.com/(users|orgs)/[\w.-]+/projects/\d+$", proj):
+        return proj   # the goal's own GitHub Project (goal-project.sh); else the search / milestone / ticket link below
     if isinstance(label, str) and label and isinstance(repos, list) and repos and all(isinstance(r, str) and r for r in repos):
         q = 'is:issue label:"%s" ' % label.replace('"', "") + " ".join("repo:" + r for r in repos)
         return "https://github.com/issues?q=" + urllib.parse.quote(q, safe="")
