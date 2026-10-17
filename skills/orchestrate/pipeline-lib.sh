@@ -201,11 +201,14 @@ launch_alert() {
     "$SLACK_WEBHOOK_URL" >/dev/null 2>&1 </dev/null || true
 }
 
+# claim_winner <local_path> <issue> [owner/repo] — the optional repo reads a claim on an issue of a repo other than the
+# checkout's (the goal registry issue, #320); same comment shape, same window, same fail-closed behaviour.
 claim_winner() {
-  local path=$1 issue=$2 cutoff out
+  local path=$1 issue=$2 repo_arg="" cutoff out
+  [ -z "${3:-}" ] || repo_arg="--repo $3"
   cutoff=$(python3 -c "import datetime,sys; print((datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(seconds=int(sys.argv[1]))).strftime('%Y-%m-%dT%H:%M:%SZ'))" "${CLAIM_WINDOW_SECS:-600}") \
     || { pipeline_event claim_lookup_failed --argjson issue "${issue:-0}" --arg stage cutoff; claim_alert "$issue" cutoff; return 1; }
-  out=$(cd "$path" && gh issue view "$issue" --json comments \
+  out=$(cd "$path" && gh issue view "$issue" $repo_arg --json comments \
     --jq "[.comments[] | select(.body | startswith(\"**[supervisor] NOTE** claim: \")) | select(.createdAt > \"$cutoff\")] | sort_by(.createdAt) | first | .body // \"\"" 2>/dev/null) \
     || { pipeline_event claim_lookup_failed --argjson issue "${issue:-0}" --arg stage gh; claim_alert "$issue" gh; return 1; }
   printf '%s\n' "$out" | awk '{print $4}'

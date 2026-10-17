@@ -299,7 +299,7 @@ dg_live_tree() {
 # dg_check_register <spec> <id> <expected scope count> — shared body for the three kinds
 dg_check_register() {
   local spec=$1 id=$2 f blk n d line
-  dg_run "$spec" "focus on quotes"
+  dg_run "$spec" --now "focus on quotes"   # #320: a plain register only enqueues; --now keeps the immediate launch
   assert_eq "$DG_RC" "0" "AC1: register exits 0 (stderr: $DG_ERR)" || return 1
   assert_contains "$DG_OUT" "$id" "AC1: stdout prints the goal id" || return 1
   assert_contains "$DG_OUT" "goal-$id.log" "AC1: stdout prints the log path" || return 1
@@ -416,7 +416,7 @@ test_dg_refuse_repo_with_empty_milestones_all() {
 test_dg_overlap_shared_ticket_refused_naming_conflict() {
   dg_setup
   local rc=0
-  dg_run "$DG_SPEC_MS"; assert_eq "$DG_RC" "0" "AC4 setup: first goal registers" || rc=1
+  dg_run "$DG_SPEC_MS" --now; assert_eq "$DG_RC" "0" "AC4 setup: first goal registers" || rc=1
   dg_wait_claude 1
   dg_run "example-owner/project-a#101"
   assert_eq "$DG_RC" "1" "AC4: ticket 101 is in live goal ms-12 → refused" \
@@ -899,7 +899,7 @@ test_dg_goal_agent_name_comes_from_config_only() {
   dg_setup
   DG_EXTRA_CFG=""
   local rc=0
-  dg_run "$DG_SPEC_T7"
+  dg_run "$DG_SPEC_T7" --now
   assert_eq "$DG_RC" "0" "AC10: register exits 0 (stderr: $DG_ERR)" || rc=1
   dg_wait_claude 1 || { fail "launched"; rc=1; }
   assert_eq "$(awk 'p{print;exit} $0=="--agent"{p=1}' "$(dg_last_claude_dir)/argv" 2>/dev/null)" "custom-lead" \

@@ -1035,12 +1035,16 @@ if [ "$launched" -eq 0 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
   else
     now_epoch=$(date +%s)
     cutoff=$(python3 -c "import datetime; print((datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(seconds=$CLAIM_WINDOW_SECS)).strftime('%Y-%m-%dT%H:%M:%SZ'))")
+    goal_skip_json=$( goal_live_labels 2>/dev/null | jq -Rsc 'split("\n") | map(select(length > 0))' 2>/dev/null) || goal_skip_json='[]'
+    [ -n "$goal_skip_json" ] || goal_skip_json='[]'
     for entry in "${DISPATCH_REPOS[@]}"; do
       [ "$launched" -ge 1 ] && break
       owner_repo="${entry%%:*}"; local_path="${entry#*:}"; local_path="${local_path/#\~/$HOME}"
       if [ ! -d "$local_path/.git" ]; then slog "[dispatch] $owner_repo — no local checkout at $local_path, skipping"; continue; fi
+      # #320: a ticket carrying the label of a goal whose lead is live on THIS host is the lead's to dispatch; tickets in no goal,
+      # and goal tickets whose lead is not live (fallback), stay dispatched here.
       candidates=$(gh issue list --repo "$owner_repo" --state open --label "$LABEL_GO" --limit 50 --json number,labels \
-        --jq ".[] | select([.labels[].name] | index(\"$LABEL_IN_PROGRESS\") | not) | .number" 2>/dev/null) || continue
+        --jq ".[] | select([.labels[].name] | index(\"$LABEL_IN_PROGRESS\") | not) | select(([.labels[].name] | map(. as \$l | $goal_skip_json | index(\$l)) | any(. != null)) | not) | .number" 2>/dev/null) || continue
       for num in $candidates; do
         rk=$(run_key "$owner_repo" "$num")
         # local state: alive or queued here → not a candidate

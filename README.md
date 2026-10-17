@@ -18,10 +18,10 @@ JP's shared Claude Code config, synced across machines (Mac + Clog VM). Despite 
 
 ## deliver.sh (goal-bound delivery lead)
 
-`skills/orchestrate/deliver.sh` registers a goal as a registry issue on GitHub and starts one cycle of `delivery-lead`. The supervisor keeps the goal alive between cycles and stops it at completion; agents never create launchd, cron or loop relaunchers.
+`skills/orchestrate/deliver.sh` registers a goal as a registry issue on GitHub (state `queued`; no launch). The supervisor starts the `delivery-lead` of the next queued goal when a slot, memory and power allow, every earlier goal (by registry `order`, then issue number) is delivered, stopped or waiting on JP, and this host is eligible (VM first; the Mac only after the VM did not take it for two ticks; a goal registered with `--host` only on that host). `--now` launches one cycle at once, skipping the queue. The supervisor keeps the goal alive between cycles and stops it at completion; agents never create launchd, cron or loop relaunchers.
 
 ```bash
-skills/orchestrate/deliver.sh <goal> [instructions...]   # register + launch one cycle
+skills/orchestrate/deliver.sh <goal> [--now] [--host <name>] [instructions...]   # register (queued); --now also launches one cycle here
 skills/orchestrate/deliver.sh status [goal|id]           # open goals, plus closed within 7 days
 skills/orchestrate/deliver.sh stop <goal|id>             # idempotent
 skills/orchestrate/deliver.sh resume <goal|id> [--here]  # reopen a stopped/held goal; --here re-pins it to this host

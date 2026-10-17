@@ -43,10 +43,10 @@ Label rule: `agent-go` = "approved, not launched anywhere yet"; launching anywhe
 
 ## deliver.sh (goal-bound delivery lead)
 
-`skills/orchestrate/deliver.sh` registers a goal (a registry issue on GitHub) and starts one cycle of the delivery lead (`delivery-lead`). Keep-alive and completion belong to the supervisor, not to the agent.
+`skills/orchestrate/deliver.sh` registers a goal (a registry issue on GitHub) as `queued`; the supervisor starts the delivery lead (`delivery-lead`) of the next queued goal when a goal slot, memory and power allow, every earlier goal (registry `order`, then issue number) is delivered, stopped or waiting on JP, and this host is eligible (VM first, the Mac after two ticks; `--host` pins). The two hosts race with a `**[supervisor] NOTE** claim:` comment on the registry issue, settled by `claim_winner`. `--now` launches one cycle at once (hand use). Keep-alive and completion belong to the supervisor, not to the agent.
 
 ```bash
-~/.claude/skills/orchestrate/deliver.sh <goal> [instructions...]   # register + launch one cycle
+~/.claude/skills/orchestrate/deliver.sh <goal> [--now] [--host <name>] [instructions...]   # register (queued); --now also launches one cycle
 ~/.claude/skills/orchestrate/deliver.sh status [goal|id]           # one line per goal (open, plus closed within 7 days)
 ~/.claude/skills/orchestrate/deliver.sh stop <goal|id>             # label goal-stopped, close the registry issue, kill the local cycle (idempotent)
 ~/.claude/skills/orchestrate/deliver.sh resume <goal|id> [--here]  # reopen a stopped/held goal; --here re-pins it to this host

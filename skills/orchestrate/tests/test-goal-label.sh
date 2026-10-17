@@ -304,7 +304,7 @@ test_glb_registry_lists_v1_and_v2_blocks() {
 
 # ------------------------------------------------------------------ overlap / reuse guard ----------------------
 # glb_reg <title> [extra args…] — register a label goal for project-a + project-b seeded by a#7.
-glb_reg() { local t=$1; shift; dg_run --repos "$GLB_REPOS" --title "$t" --requirements "$GLB_RA#7" "$@"; }
+glb_reg() { local t=$1; shift; dg_run --repos "$GLB_REPOS" --title "$t" --requirements "$GLB_RA#7" --now "$@"; }   # --now (#320): these tests need the started goal (host, cache, launch)
 glb_seed7() { glb_ticket $GLB_A 7 open "" "Requirements: build the thing."; }
 
 test_glb_reuse_guard_refuses_same_label_of_active_goal() {
@@ -613,7 +613,7 @@ test_glb_sync_inheritance_skips_business_intelligence_repo() {
   glb_setup
   local rc=0
   glb_go_world
-  dg_run --repos "$GLB_REPOS,example-owner/Business-Intelligence" --title "Go test" --requirements "$GLB_RA#7"
+  dg_run --repos "$GLB_REPOS,example-owner/Business-Intelligence" --title "Go test" --requirements "$GLB_RA#7" --now
   assert_eq "$DG_RC" "0" "register exits 0 (stderr: $DG_ERR)" || rc=1
   glb_ticket $GLB_B 21 open "goal: Go test"; glb_ticket $GLB_BI 5 open "goal: Go test"
   glb_cache_of_registered
