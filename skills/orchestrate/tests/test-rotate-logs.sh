@@ -214,7 +214,7 @@ fi
 rl_hold_after() {
   sq_env open
   mk_restarting "$SQ_PIPE" 42 "$SQ_REPO"
-  sq_iso_ago 10800 > "$SQ_PIPE/orch-42.launched-at"
+  sq_iso_ago 10800 > "$(rkp "$SQ_PIPE/orch-42.launched-at")"
   sq_marker "$RL_IMPL"
   rl_runs_fixture "$SQ_HOME/.claude/pipeline/runs.jsonl"
   RL_ROTATED=no
@@ -225,7 +225,7 @@ rl_hold_after() {
     rm -f "$SQ_HOME/.claude/pipeline/config.local.sh"
   fi
   sq_tick
-  echo "$(sq_present "$SQ_PIPE/orch-42.held") $RL_ROTATED"   # runs in a $(...) subshell: report both through stdout
+  echo "$(sq_present "$(rkp "$SQ_PIPE/orch-42.held")") $RL_ROTATED"   # runs in a $(...) subshell: report both through stdout
   sq_cleanup
 }
 

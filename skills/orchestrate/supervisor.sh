@@ -28,6 +28,8 @@ HOST=$(hostname -s)
 mkdir -p "$PIPE" "$QUEUE" "$LOGDIR"
 
 slog() { printf '[%s] %s\n' "$(date -u +%FT%TZ)" "$*" >> "$SLOG"; }
+# #341: every .held creation logs its path and caller (log line only, no behaviour change)
+touch_held() { touch "$1"; slog "[held-touch] path=$1 caller=${FUNCNAME[1]:-main}:${BASH_LINENO[0]}"; }
 
 # Event push: every tick, deliberately outside the single-flight lock below — this is the
 # keep-alive + safety net (design #10 §4.4), so it must still fire even on a tick that skips
@@ -54,6 +56,7 @@ to_epoch() {  # ISO-8601 UTC → epoch; portable (macOS date has no -d)
 
 power_ok() {  # Mac: dispatch new work only on AC power (a sleeping laptop strands claimed issues). Linux: always.
   [ "$(uname)" = "Darwin" ] || return 0
+  [ "${ALLOW_BATTERY:-0}" = "1" ] && return 0   # machine-local opt-out (config.local.sh); the Mac must be kept awake
   pmset -g batt 2>/dev/null | grep -q "AC Power"
 }
 
@@ -133,8 +136,8 @@ terminal_kind() {
       fi
     fi
     # BLOCKED gets a grace period — false BLOCKEDs from subagent races resolve within minutes
-    if [ -n "$issue" ] && [ -f "$PIPE/orch-$issue.start" ]; then
-      local age=$(( $(date +%s) - $(to_epoch "$(cat "$PIPE/orch-$issue.start")") ))
+    if [ -n "$issue" ] && [ -f "$PIPE/orch-$rk.start" ]; then
+      local age=$(( $(date +%s) - $(to_epoch "$(cat "$PIPE/orch-$rk.start")") ))
       if [ "$age" -lt "$GRACE_PERIOD_SECS" ]; then
         slog "[grace] #$issue — BLOCKED marker seen but run is ${age}s old (<${GRACE_PERIOD_SECS}s), waiting"
         echo grace; return
@@ -209,25 +212,26 @@ notify_engineering() {  # post a pipeline event to #engineering; requires SLACK_
   fi
 }
 
-clear_in_progress() {  # idempotent; one gh call per issue, remembered in a marker file
-  local repo=$1 issue=$2 why=$3
-  [ -f "$PIPE/orch-$issue.label-cleared" ] && return 0
+clear_in_progress() {  # <repo> <issue> <why> <run_key> — idempotent; one gh call per issue, remembered in a marker file
+  local repo=$1 issue=$2 why=$3 rk=$4
+  [ -f "$PIPE/orch-$rk.label-cleared" ] && return 0
   if (cd "$repo" 2>/dev/null && gh issue edit "$issue" --remove-label "$LABEL_IN_PROGRESS" >/dev/null 2>&1); then
-    touch "$PIPE/orch-$issue.label-cleared"
+    touch "$PIPE/orch-$rk.label-cleared"
     slog "[label] #$issue — removed $LABEL_IN_PROGRESS ($why)"
   fi
 }
 
-do_launch() {
-  local repo=$1 issue=$2 extra=$3 restart_n=${4:-0} reason=${5:-manual} queue_wait_s=${6:-}
+do_launch() {  # <repo> <issue> <extra> <restart_n> <reason> <queue_wait_s> <run_key>
+  local repo=$1 issue=$2 extra=$3 restart_n=${4:-0} reason=${5:-manual} queue_wait_s=${6:-} rk=${7:-}
+  [ -n "$rk" ] || rk=$(rk_of "$repo" "$issue")
   local owner_repo prompt title preamble=""
 
   owner_repo=$(cd "$repo" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo "unknown")
 
   # Ticket title for the status board (#29): orchestrate.sh normally wrote it at launch and restarts reuse that
   # file; fetch only when it is missing. A failed or empty fetch leaves no file and never blocks the launch.
-  if [ ! -f "$PIPE/orch-$issue.title" ]; then
-    write_title_marker "$repo" "$issue" 0   # one gh issue view --json title,comments (title + marker)
+  if [ ! -f "$PIPE/orch-$rk.title" ]; then
+    write_title_marker "$repo" "$issue" 0 "$rk"   # one gh issue view --json title,comments (title + marker)
   fi
 
   if [ "$restart_n" -gt 0 ]; then
@@ -235,48 +239,48 @@ do_launch() {
     # #178 begin
     # .cap-exit is written only by the stage-wait deferral in the main tick, which requires exit 0, a live stage
     # and the orchestrator's own cap-exit terminal row. A silent exit 0 has no such row and keeps the fault wording.
-    if [ -f "$PIPE/orch-$issue.cap-exit" ]; then
+    if [ -f "$PIPE/orch-$rk.cap-exit" ]; then
       preamble="AUTO-RESTART #$restart_n: the previous orchestrator process stopped waiting at a stage's time cap (normal, not a fault; do not report it as a technical problem). Verify branch/PR/comment state with gh before dispatching anything. Never redo a completed stage. "
     fi
     # #178 end
   fi
   # #178 begin
-  rm -f "$PIPE/orch-$issue.cap-exit"   # every launch consumes the signal
+  rm -f "$PIPE/orch-$rk.cap-exit"   # every launch consumes the signal
   # #178 end
 
   # Same launch shape as orchestrate.sh: the headless session IS the orchestrator (--agent), no Agent() call.
   prompt="Drive $owner_repo#$issue through the pipeline. Repo: $repo. Read the latest marker on the issue and continue from there. ${preamble}${extra}"
 
-  printf '\n===== [%s] LAUNCH issue=%s reason=%s restart=%s =====\n' "$(date -u +%FT%TZ)" "$issue" "$reason" "$restart_n" >> "$PIPE/orch-$issue.log"
-  rm -f "$PIPE/orch-$issue.exit"   # a killed run never writes it; a stale value would be reported as this run's (#38)
+  printf '\n===== [%s] LAUNCH issue=%s reason=%s restart=%s =====\n' "$(date -u +%FT%TZ)" "$issue" "$reason" "$restart_n" >> "$PIPE/orch-$rk.log"
+  rm -f "$PIPE/orch-$rk.exit"   # a killed run never writes it; a stale value would be reported as this run's (#38)
   cd "$repo"
   CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 nohup $SETSID bash -c '
     echo 300 > /proc/self/oom_score_adj 2>/dev/null
     claude --dangerously-skip-permissions --agent orchestrator -p "$1"
     echo $? > "$2"
-  ' _ "$prompt" "$PIPE/orch-$issue.exit" >> "$PIPE/orch-$issue.log" 2>&1 9>&- &
+  ' _ "$prompt" "$PIPE/orch-$rk.exit" >> "$PIPE/orch-$rk.log" 2>&1 9>&- &
 
-  echo $! > "$PIPE/orch-$issue.pid"
-  echo "$repo" > "$PIPE/orch-$issue.repo"
-  [ -f "$PIPE/orch-$issue.start" ] || date -u +%FT%TZ > "$PIPE/orch-$issue.start"
-  date -u +%FT%TZ > "$PIPE/orch-$issue.launched-at"
-  rm -f "$PIPE/orch-$issue.label-cleared"
+  echo $! > "$PIPE/orch-$rk.pid"
+  echo "$repo" > "$PIPE/orch-$rk.repo"
+  [ -f "$PIPE/orch-$rk.start" ] || date -u +%FT%TZ > "$PIPE/orch-$rk.start"
+  date -u +%FT%TZ > "$PIPE/orch-$rk.launched-at"
+  rm -f "$PIPE/orch-$rk.label-cleared"
   local ev_reason=manual
   case "$reason" in auto-restart) ev_reason=auto-restart ;; queued) ev_reason=queue ;; esac
-  log_run_launch "$owner_repo" "$issue" "$ev_reason" "$restart_n" "$queue_wait_s"
+  log_run_launch "$owner_repo" "$issue" "$ev_reason" "$restart_n" "$queue_wait_s" "$rk"
 
   slog "[launch] #$issue pid=$! reason=$reason restart=$restart_n mem=$(mem_available_mb)MB running=$(count_running)/$MAX_CONCURRENT"
 }
 
 file_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
 
-# log_run_exit <repo dir> <issue> — the one writer of run_exit (design #138): classify the exit of a launched run
+# log_run_exit <repo dir> <issue> <run_key> — the one writer of run_exit (design #138): classify the exit of a launched run
 # (stopped > rate_limited > killed > error > normal), append the row, write .exit-class ("<class> <limit_kind|->"),
 # touch .exit-logged. Never fails the tick.
 log_run_exit() {
-  local repo=$1 issue=$2 rid ex="" cls lk="" last_line seg exf="$PIPE/orch-$2.exit" lf="$PIPE/orch-$2.log"
+  local repo=$1 issue=$2 rk=$3 rid ex="" cls lk="" last_line seg exf="$PIPE/orch-$3.exit" lf="$PIPE/orch-$3.log"
   local launched dur now owner_repo
-  rid=$(cat "$PIPE/orch-$issue.run-id" 2>/dev/null) || return 0
+  rid=$(cat "$PIPE/orch-$rk.run-id" 2>/dev/null) || return 0
   [ -f "$exf" ] && ex=$(tr -dc '0-9' < "$exf")
   last_line=""; seg=$(mktemp "${TMPDIR:-/tmp}/run-exit.XXXXXX" 2>/dev/null) || seg=""
   if [ -n "$seg" ] && [ -f "$lf" ]; then
@@ -284,7 +288,7 @@ log_run_exit() {
       | awk 'NF {l=$0} END {print l}' > "$seg" 2>/dev/null
     last_line=$(cat "$seg" 2>/dev/null)
   fi
-  if [ -f "$PIPE/orch-$issue.stopped" ]; then cls=stopped
+  if [ -f "$PIPE/orch-$rk.stopped" ]; then cls=stopped
   elif [ -n "$seg" ] && lk=$(limit_kind_of "$seg") && [ -n "$lk" ]; then cls=rate_limited
   elif [ ! -f "$exf" ]; then cls=killed
   elif [ "${ex:-0}" != 0 ]; then cls=error
@@ -292,7 +296,7 @@ log_run_exit() {
   [ "$cls" = rate_limited ] || lk=""
   [ -n "$seg" ] && rm -f "$seg"
   now=$(date +%s)
-  launched=$(to_epoch "$(cat "$PIPE/orch-$issue.launched-at" 2>/dev/null)")
+  launched=$(to_epoch "$(cat "$PIPE/orch-$rk.launched-at" 2>/dev/null)")
   if [ "$launched" -gt 0 ] 2>/dev/null; then
     if [ -f "$exf" ]; then dur=$(( $(file_mtime "$exf") - launched )); else dur=$((now - launched)); fi
     [ "$dur" -ge 0 ] 2>/dev/null || dur=0
@@ -303,13 +307,13 @@ log_run_exit() {
     --argjson exit_code "${ex:-null}" --arg class "$cls" \
     --argjson limit_kind "$([ -n "$lk" ] && jq -nc --arg v "$lk" '$v' || echo null)" \
     --argjson dur_s "$dur" --arg last_line "${last_line:0:200}"
-  printf '%s %s\n' "$cls" "${lk:--}" > "$PIPE/orch-$issue.exit-class" 2>/dev/null || true
-  touch "$PIPE/orch-$issue.exit-logged" 2>/dev/null || true
+  printf '%s %s\n' "$cls" "${lk:--}" > "$PIPE/orch-$rk.exit-class" 2>/dev/null || true
+  touch "$PIPE/orch-$rk.exit-logged" 2>/dev/null || true
   return 0
 }
 
-escalate() {
-  local repo=$1 issue=$2 restarts_file=$3
+escalate() {  # <repo> <issue> <restarts file> <run_key>
+  local repo=$1 issue=$2 restarts_file=$3 rk=$4
   local owner_repo history_text
 
   owner_repo=$(cd "$repo" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo "unknown")
@@ -335,20 +339,20 @@ Relaunch manually with \`orchestrate.sh $repo $issue\` after investigating.
 EOC
 )") 2>/dev/null
 
-  touch "$PIPE/orch-$issue.held"
-  rm -f "$QUEUE/orch-$issue.json"
-  printf '%s Pipeline #%s held — needs manual relaunch after investigation (%s)\n' "$(date -u +%FT%TZ)" "$issue" "$owner_repo" > "$PIPE/orch-$issue.alert"
+  touch_held "$PIPE/orch-$rk.held"
+  rm -f "$QUEUE/orch-$rk.json"
+  printf '%s Pipeline #%s held — needs manual relaunch after investigation (%s)\n' "$(date -u +%FT%TZ)" "$issue" "$owner_repo" > "$PIPE/orch-$rk.alert"
   slog "[escalate] #$issue — too many restarts without progress (queue entry purged)"
   report_status_async "escalate"   # event push: run held (design #10 §4.4)
   notify_engineering "$issue" ":rotating_light:" "Stalled — restarted multiple times without progress. Needs investigation." "$owner_repo"
 }
 
 # #178 begin
-# cap_exit_row <repo dir> <issue> — 0 when runs.jsonl holds a terminal row for this repo+issue, written at or after
+# cap_exit_row <repo dir> <issue> <run_key> — 0 when runs.jsonl holds a terminal row for this repo+issue, written at or after
 # this launch, whose next_action is the orchestrator's stage-cap hand-off. Any read/parse problem -> 1 (counted).
 cap_exit_row() {
-  local repo=$1 issue=$2 since owner_repo
-  since=$(cat "$PIPE/orch-$issue.launched-at" 2>/dev/null || cat "$PIPE/orch-$issue.start" 2>/dev/null)
+  local repo=$1 issue=$2 rk=$3 since owner_repo
+  since=$(cat "$PIPE/orch-$rk.launched-at" 2>/dev/null || cat "$PIPE/orch-$rk.start" 2>/dev/null)
   [ -n "$since" ] && [ -f "$HOME/.claude/pipeline/runs.jsonl" ] || return 1
   owner_repo=$(cd "$repo" 2>/dev/null && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null </dev/null) || return 1
   [ -n "$owner_repo" ] || return 1
@@ -369,12 +373,15 @@ PY
 
 launched=0
 
+# 0. One-time legacy migration (#318): orch-<N>.* sets whose .repo names a known checkout move to orch-<run_key>.*
+migrate_legacy_runs
+
 # 1. Check each recorded orchestrator
 for f in "$PIPE"/orch-*.pid; do
   [ -e "$f" ] || break
-  issue=$(basename "$f" .pid); issue=${issue#orch-}
+  rk=$(basename "$f" .pid); rk=${rk#orch-}; issue=${rk##*-}   # <owner>_<repo>-<N>; an unmigrated legacy bare <N> reads as is
   pid=$(cat "$f")
-  repo=$(cat "$PIPE/orch-$issue.repo" 2>/dev/null || echo "")
+  repo=$(cat "$PIPE/orch-$rk.repo" 2>/dev/null || echo "")
   [ -z "$repo" ] && continue
 
   # Skip if alive
@@ -386,29 +393,30 @@ for f in "$PIPE"/orch-*.pid; do
   # orchestrator writes at the cap). Then wait like for a live orchestrator: no count, no requeue, no relaunch.
   # Anything else (silent exit 0, non-zero exit, no stage, unreadable process table) is counted as before.
   live_stage=$(_rs_live_stage "$issue" 0 2>/dev/null)
-  if [ -n "$live_stage" ] && [ "$(cat "$PIPE/orch-$issue.exit" 2>/dev/null)" = 0 ] && cap_exit_row "$repo" "$issue"; then
-    [ -f "$PIPE/orch-$issue.cap-exit" ] || slog "[stage-wait] #$issue — orchestrator exited at a stage cap, stage $live_stage still running; deferring"
-    touch "$PIPE/orch-$issue.cap-exit" 2>/dev/null || true
+  [ -n "$live_stage" ] && slog "[stage-wait] #$issue — live_stage=$live_stage $(_rs_live_stage_proc "$issue" 2>/dev/null)"
+  if [ -n "$live_stage" ] && [ "$(cat "$PIPE/orch-$rk.exit" 2>/dev/null)" = 0 ] && cap_exit_row "$repo" "$issue" "$rk"; then
+    [ -f "$PIPE/orch-$rk.cap-exit" ] || slog "[stage-wait] #$issue — orchestrator exited at a stage cap, stage $live_stage still running; deferring"
+    touch "$PIPE/orch-$rk.cap-exit" 2>/dev/null || true
     continue
   fi
   # A live stage that is not a cap exit (silent exit 0, crash) clears any stale signal; a gone stage keeps the
   # signal a prior deferral wrote, for the relaunch to consume.
-  [ -n "$live_stage" ] && rm -f "$PIPE/orch-$issue.cap-exit"
+  [ -n "$live_stage" ] && rm -f "$PIPE/orch-$rk.cap-exit"
   # #178 end
 
   # First tick that sees a launched run gone: one run_exit row (runs without a run-id predate #138 and log nothing)
-  if [ -f "$PIPE/orch-$issue.run-id" ] && [ ! -f "$PIPE/orch-$issue.exit-logged" ]; then
-    log_run_exit "$repo" "$issue"
+  if [ -f "$PIPE/orch-$rk.run-id" ] && [ ! -f "$PIPE/orch-$rk.exit-logged" ]; then
+    log_run_exit "$repo" "$issue" "$rk"
   fi
 
   # Skip if tombstoned
-  [ -f "$PIPE/orch-$issue.stopped" ] && continue
-  [ -f "$PIPE/orch-$issue.held" ] && continue
-  [ -f "$PIPE/orch-$issue.done" ] && continue
+  [ -f "$PIPE/orch-$rk.stopped" ] && continue
+  [ -f "$PIPE/orch-$rk.held" ] && continue
+  [ -f "$PIPE/orch-$rk.done" ] && continue
 
   # Check if terminal
   if issue_is_closed "$repo" "$issue"; then
-    touch "$PIPE/orch-$issue.done"
+    touch "$PIPE/orch-$rk.done"
     slog "[done] #$issue — issue closed"
     continue
   fi
@@ -418,7 +426,7 @@ for f in "$PIPE"/orch-*.pid; do
   case "$marker" in *$'\n'*) decision=${marker#*$'\n'}; marker=${marker%%$'\n'*} ;; esac   # line 2 = [delivery-lead] (or legacy [project-manager]) marker after the gate marker
   case "$(terminal_kind "$marker" "$issue" "$decision" "$repo")" in
     done)
-      touch "$PIPE/orch-$issue.done"
+      touch "$PIPE/orch-$rk.done"
       slog "[done] #$issue — terminal marker: $marker"
       done_text="Deployed"; case "$marker" in *"] SPLIT"*) done_text="Split into sub-issues" ;; esac
       case "$marker" in *"] REJECTED"*) done_text="Rejected" ;; esac
@@ -430,12 +438,12 @@ for f in "$PIPE"/orch-*.pid; do
       # skipped above and stays held — held runs are not polled; the delivery lead relaunches with orchestrate.sh,
       # which clears .held (claude-agents#59).
       # #306: a run auto-retry (step 1b) re-queued keeps its queue entry for the drain; re-holding it here would swallow the retry.
-      if [ -f "$QUEUE/orch-$issue.json" ]; then
+      if [ -f "$QUEUE/orch-$rk.json" ]; then
         slog "[queue-wait] #$issue — gate marker but already queued for relaunch, leaving the queue entry"
         continue
       fi
-      touch "$PIPE/orch-$issue.held"
-      rm -f "$QUEUE/orch-$issue.json"
+      touch_held "$PIPE/orch-$rk.held"
+      rm -f "$QUEUE/orch-$rk.json"
       gate_reason=$(echo "$marker" | sed 's/\*\*\[[^]]*\]\*\* *//; s/^ *//; s/ *$//')
       [ -z "$gate_reason" ] && gate_reason="$marker"
       # #271: a BLOCKED whose class auto-retry clears is parked, not waiting on JP. Read failure -> today's text.
@@ -443,15 +451,15 @@ for f in "$PIPE"/orch-*.pid; do
       case "$marker" in *"] BLOCKED"*) gate_cls=$(blocked_class_of "$(cd "$repo" && gh issue view "$issue" --json comments 2>/dev/null </dev/null)") ;; esac
       case "|$(autoretry_classes)|" in *"|$gate_cls|"*) ;; *) gate_cls="" ;; esac
       # Park only while retries remain; once the cap is spent auto-retry stops and JP must act.
-      gate_n=$(tr -dc '0-9' 2>/dev/null < "$PIPE/orch-$issue.autoretry")
+      gate_n=$(tr -dc '0-9' 2>/dev/null < "$PIPE/orch-$rk.autoretry")
       [ "${gate_n:-0}" -lt "${AUTORETRY_MAX:-3}" ] || gate_cls=""
       if [ -n "$gate_cls" ]; then
-        printf '%s Pipeline #%s parked, auto-retry (%s) — %s\n' "$(date -u +%FT%TZ)" "$issue" "$gate_cls" "$marker" > "$PIPE/orch-$issue.alert"
+        printf '%s Pipeline #%s parked, auto-retry (%s) — %s\n' "$(date -u +%FT%TZ)" "$issue" "$gate_cls" "$marker" > "$PIPE/orch-$rk.alert"
         slog "[held] #$issue — parked for auto-retry ($gate_cls): $marker"
         report_status_async "held"
         notify_engineering "$issue" ":hourglass:" "Parked, auto-retry ($gate_cls) — $gate_reason" "$(cd "$repo" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo "unknown")"
       else
-        printf '%s Pipeline #%s waiting on JP — %s; relaunch (or re-add %s) after acting\n' "$(date -u +%FT%TZ)" "$issue" "$marker" "$LABEL_GO" > "$PIPE/orch-$issue.alert"
+        printf '%s Pipeline #%s waiting on JP — %s; relaunch (or re-add %s) after acting\n' "$(date -u +%FT%TZ)" "$issue" "$marker" "$LABEL_GO" > "$PIPE/orch-$rk.alert"
         slog "[held] #$issue — waiting on JP: $marker"
         report_status_async "held"   # event push: run held/gate (design #10 §4.4)
         notify_engineering "$issue" ":hand:" "Waiting on you — $gate_reason" "$(cd "$repo" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo "unknown")"
@@ -462,11 +470,11 @@ for f in "$PIPE"/orch-*.pid; do
 
   # How this run ended (written by log_run_exit; absent for runs launched before #138)
   exit_class=""; exit_lk=""
-  [ -f "$PIPE/orch-$issue.exit-class" ] && read -r exit_class exit_lk < "$PIPE/orch-$issue.exit-class"
+  [ -f "$PIPE/orch-$rk.exit-class" ] && read -r exit_class exit_lk < "$PIPE/orch-$rk.exit-class"
   [ "$exit_lk" = "-" ] && exit_lk=""
 
-  restarts_file="$PIPE/orch-$issue.restarts"
-  exit_code=$(cat "$PIPE/orch-$issue.exit" 2>/dev/null || echo "?")
+  restarts_file="$PIPE/orch-$rk.restarts"
+  exit_code=$(cat "$PIPE/orch-$rk.exit" 2>/dev/null || echo "?")
 
   if [ "$exit_class" = rate_limited ] && [ "$exit_lk" = monthly_spend ]; then
     # Restarting cannot fix it and clearing it means spending money: park like a human gate. Counters untouched.
@@ -479,9 +487,9 @@ except Exception: d = {'count': 0, 'total': 0, 'last_marker': '', 'history': []}
 d.setdefault('history', []).append({'ts': ts, 'exit': ex, 'marker': marker, 'transient': False, 'run_secs': 0, 'class': cls, 'limit_kind': lk or None})
 json.dump(d, open(path, 'w'))
 PY
-    touch "$PIPE/orch-$issue.held"
-    rm -f "$QUEUE/orch-$issue.json"
-    printf '%s Pipeline #%s waiting on JP — monthly spend limit reached; relaunch after credits or a model switch\n' "$(date -u +%FT%TZ)" "$issue" > "$PIPE/orch-$issue.alert"
+    touch_held "$PIPE/orch-$rk.held"
+    rm -f "$QUEUE/orch-$rk.json"
+    printf '%s Pipeline #%s waiting on JP — monthly spend limit reached; relaunch after credits or a model switch\n' "$(date -u +%FT%TZ)" "$issue" > "$PIPE/orch-$rk.alert"
     slog "[held] #$issue — monthly spend limit: needs JP"
     report_status_async "held"
     notify_engineering "$issue" ":hand:" "Waiting on you — monthly spend limit reached" "$run_owner_repo"
@@ -489,7 +497,7 @@ PY
   fi
 
   # Already queued — nothing ended this tick: don't count it, don't overwrite its not_before
-  if [ -f "$QUEUE/orch-$issue.json" ]; then
+  if [ -f "$QUEUE/orch-$rk.json" ]; then
     slog "[queue-wait] #$issue — already queued, skipping re-enqueue"
     continue
   fi
@@ -504,9 +512,9 @@ except Exception: d = {'count': 0, 'total': 0, 'last_marker': '', 'history': []}
 d.setdefault('history', []).append({'ts': ts, 'exit': ex, 'marker': marker, 'transient': False, 'run_secs': 0, 'class': cls, 'limit_kind': lk or None})
 json.dump(d, open(path, 'w'))
 PY
-    extra=$(cat "$PIPE/orch-$issue.extra" 2>/dev/null || echo "")
+    extra=$(cat "$PIPE/orch-$rk.extra" 2>/dev/null || echo "")
     not_before=$(( $(date +%s) + RATE_LIMIT_BACKOFF_SECS ))
-    python3 - "$QUEUE/orch-$issue.json" "$issue" "$repo" "$extra" "$(date -u +%FT%TZ)" "$not_before" <<'PY' 2>/dev/null
+    python3 - "$QUEUE/orch-$rk.json" "$issue" "$repo" "$extra" "$(date -u +%FT%TZ)" "$not_before" <<'PY' 2>/dev/null
 import json, sys
 path, issue, repo, extra, qa, nb = sys.argv[1:7]
 json.dump({'issue': issue, 'repo': repo, 'extra': extra, 'reason': 'auto-restart', 'queued_at': qa, 'not_before': int(nb)}, open(path, 'w'))
@@ -518,15 +526,15 @@ PY
 
   # Non-terminal exit — potential restart
   [ "$launched" -ge 1 ] && continue  # one launch per tick
-  extra=$(cat "$PIPE/orch-$issue.extra" 2>/dev/null || echo "")
+  extra=$(cat "$PIPE/orch-$rk.extra" 2>/dev/null || echo "")
 
   # Detect transient exit: use per-launch timestamp (.launched-at), not the original .start
   # .start is preserved across restarts (used by BLOCKED grace window); .launched-at tracks this launch only
   run_duration=0
-  if [ -f "$PIPE/orch-$issue.launched-at" ]; then
-    run_duration=$(( $(date +%s) - $(to_epoch "$(cat "$PIPE/orch-$issue.launched-at")") ))
-  elif [ -f "$PIPE/orch-$issue.start" ]; then
-    run_duration=$(( $(date +%s) - $(to_epoch "$(cat "$PIPE/orch-$issue.start")") ))
+  if [ -f "$PIPE/orch-$rk.launched-at" ]; then
+    run_duration=$(( $(date +%s) - $(to_epoch "$(cat "$PIPE/orch-$rk.launched-at")") ))
+  elif [ -f "$PIPE/orch-$rk.start" ]; then
+    run_duration=$(( $(date +%s) - $(to_epoch "$(cat "$PIPE/orch-$rk.start")") ))
   fi
   transient=false
   [ "$run_duration" -lt "$MIN_RUN_SECS" ] && transient=true
@@ -534,7 +542,7 @@ PY
   # Deliberate stop: the run that just ended logged a validate fail of a deliberate-stop stage (start-gate, closed PR, refused delegated decision, loop cap).
   # A restart cannot heal it — hold instead of looping to MAX_TOTAL. Other stages (concurrency-gate, ...) still restart.
   # "This run" = ts >= .launched-at. One list of stage values: structural (claude-agents#92), delegated-decision, loop-cap (#88), hand-to-jp (#129).
-  since=$(cat "$PIPE/orch-$issue.launched-at" 2>/dev/null || cat "$PIPE/orch-$issue.start" 2>/dev/null)   # this launch's start (no GNU date -d: BSD date lacks it)
+  since=$(cat "$PIPE/orch-$rk.launched-at" 2>/dev/null || cat "$PIPE/orch-$rk.start" 2>/dev/null)   # this launch's start (no GNU date -d: BSD date lacks it)
   found_stage=""
   if [ -n "$since" ] && [ -f "$HOME/.claude/pipeline/runs.jsonl" ]; then
     found_stage=$(python3 - "$HOME/.claude/pipeline/runs.jsonl" "$issue" "$since" <<'PY' 2>/dev/null
@@ -551,7 +559,7 @@ PY
 )
   fi
   if [ -n "$found_stage" ]; then
-    touch "$PIPE/orch-$issue.held"
+    touch_held "$PIPE/orch-$rk.held"
     case "$found_stage" in
       loop-cap) hold_reason="loop-cap stop" ;;
       delegated-decision) hold_reason="refused delegated decision" ;;
@@ -587,7 +595,7 @@ PY
   # A cap exit (the deferral signal is set, exit 0, and the orchestrator's own terminal row for this launch) is the
   # orchestrator waiting by design: it increments neither count nor total, now that its stage has ended too.
   cap_exit_now=false
-  if [ -f "$PIPE/orch-$issue.cap-exit" ] && [ "$exit_code" = 0 ] && cap_exit_row "$repo" "$issue"; then
+  if [ -f "$PIPE/orch-$rk.cap-exit" ] && [ "$exit_code" = 0 ] && cap_exit_row "$repo" "$issue" "$rk"; then
     cap_exit_now=true
     slog "[cap-exit] #$issue — stage ended after a cap exit; relaunching without counting"
   fi
@@ -618,7 +626,7 @@ json.dump(d, open('$restarts_file','w'))
 " 2>/dev/null
 
   if $should_escalate; then
-    escalate "$repo" "$issue" "$restarts_file"
+    escalate "$repo" "$issue" "$restarts_file" "$rk"
     continue
   fi
 
@@ -639,7 +647,7 @@ json.dump(d, open('$restarts_file','w'))
   # Enqueue with backoff
   python3 -c "
 import json
-json.dump({'issue':'$issue','repo':'$repo','extra':'''$extra''','reason':'auto-restart','queued_at':'$(date -u +%FT%TZ)','not_before':$not_before}, open('$QUEUE/orch-$issue.json','w'))
+json.dump({'issue':'$issue','repo':'$repo','extra':'''$extra''','reason':'auto-restart','queued_at':'$(date -u +%FT%TZ)','not_before':$not_before}, open('$QUEUE/orch-$rk.json','w'))
 " 2>/dev/null
 
   slog "[queue-restart] #$issue exit=$exit_code marker='$marker' transient=$transient run=${run_duration}s count=$count/$MAX_NO_PROGRESS total=$total backoff=${backoff_val}s"
@@ -692,21 +700,21 @@ autoretry_cleared() {
 
 for f in "$PIPE"/orch-*.held; do
   [ -e "$f" ] || break
-  issue=$(basename "$f" .held); issue=${issue#orch-}
-  repo=$(cat "$PIPE/orch-$issue.repo" 2>/dev/null || echo "")
+  rk=$(basename "$f" .held); rk=${rk#orch-}; issue=${rk##*-}
+  repo=$(cat "$PIPE/orch-$rk.repo" 2>/dev/null || echo "")
   [ -n "$repo" ] || continue
-  [ -f "$PIPE/orch-$issue.stopped" ] || [ -f "$PIPE/orch-$issue.done" ] && continue
-  n=$(tr -dc '0-9' 2>/dev/null < "$PIPE/orch-$issue.autoretry"); n=${n:-0}
+  [ -f "$PIPE/orch-$rk.stopped" ] || [ -f "$PIPE/orch-$rk.done" ] && continue
+  n=$(tr -dc '0-9' 2>/dev/null < "$PIPE/orch-$rk.autoretry"); n=${n:-0}
   [ "$n" -lt "$AUTORETRY_MAX" ] || continue
-  stamp="$PIPE/orch-$issue.autoretry-check"
+  stamp="$PIPE/orch-$rk.autoretry-check"
   last=$(file_mtime "$stamp")
   if [ -n "$last" ] && [ $(( $(date +%s) - last )) -lt "$AUTORETRY_THROTTLE_SECS" ]; then continue; fi
   touch "$stamp" 2>/dev/null || true   # throttle failed checks too
 
   # Local state first (#269): no API call for a run that is not parked on a BLOCKED
-  ar_ec=""; [ -f "$PIPE/orch-$issue.exit-class" ] && ar_ec=$(tr -s ' \t' ' ' < "$PIPE/orch-$issue.exit-class" | head -1)
+  ar_ec=""; [ -f "$PIPE/orch-$rk.exit-class" ] && ar_ec=$(tr -s ' \t' ' ' < "$PIPE/orch-$rk.exit-class" | head -1)
   [ "$ar_ec" = "rate_limited monthly_spend" ] && continue
-  if [ -s "$PIPE/orch-$issue.alert" ] && ! grep -q 'BLOCKED' "$PIPE/orch-$issue.alert" 2>/dev/null; then continue; fi
+  if [ -s "$PIPE/orch-$rk.alert" ] && ! grep -q 'BLOCKED' "$PIPE/orch-$rk.alert" 2>/dev/null; then continue; fi
 
   info=$(cd "$repo" && gh issue view "$issue" --json state,body,comments 2>/dev/null </dev/null) \
     || { slog "[auto-retry] #$issue — issue read failed"; autoretry_alert "$issue" "issue view"; continue; }
@@ -729,9 +737,9 @@ for f in "$PIPE"/orch-*.held; do
     autoretry_alert "$issue" "issue comment"
     continue
   fi
-  echo "$n" > "$PIPE/orch-$issue.autoretry"
-  rm -f "$PIPE/orch-$issue.held" "$PIPE/orch-$issue.alert"
-  python3 - "$issue" "$repo" "$QUEUE/orch-$issue.json" "$(date -u +%FT%TZ)" "$PIPE/orch-$issue.extra" <<'PY' 2>/dev/null
+  echo "$n" > "$PIPE/orch-$rk.autoretry"
+  rm -f "$PIPE/orch-$rk.held" "$PIPE/orch-$rk.alert"
+  python3 - "$issue" "$repo" "$QUEUE/orch-$rk.json" "$(date -u +%FT%TZ)" "$PIPE/orch-$rk.extra" <<'PY' 2>/dev/null
 import json, sys
 issue, repo, out, ts, ex = sys.argv[1:6]
 try: extra = open(ex).read()
@@ -751,6 +759,7 @@ if [ "$launched" -eq 0 ] && [ "$HAS_CAP" -eq 1 ]; then
   now_epoch=$(date +%s)
   best_qf=""
   best_issue=""
+  best_rk=""
   best_key=""
 
   for qf in "$QUEUE"/orch-*.json; do
@@ -759,14 +768,16 @@ if [ "$launched" -eq 0 ] && [ "$HAS_CAP" -eq 1 ]; then
     [ "$now_epoch" -lt "$not_before" ] && continue
 
     q_issue=$(python3 -c "import json; print(json.load(open('$qf'))['issue'])" 2>/dev/null)
+    q_rk=${qf##*/orch-}; q_rk=${q_rk%.json}
+    case "$q_rk" in *[!0-9]*) ;; *) q_rk=$(rk_of "$(python3 -c "import json; print(json.load(open('$qf'))['repo'])" 2>/dev/null)" "$q_issue") ;; esac   # legacy queue name: never write legacy names
     # Skip if tombstoned (stopped, held, or done)
-    if [ -f "$PIPE/orch-$q_issue.stopped" ] || [ -f "$PIPE/orch-$q_issue.held" ] || [ -f "$PIPE/orch-$q_issue.done" ]; then
+    if [ -f "$PIPE/orch-$q_rk.stopped" ] || [ -f "$PIPE/orch-$q_rk.held" ] || [ -f "$PIPE/orch-$q_rk.done" ]; then
       rm -f "$qf"
       slog "[drain-skip] #$q_issue — tombstoned, purging queue entry"
       continue
     fi
     # Skip if already running
-    if [ -f "$PIPE/orch-$q_issue.pid" ] && kill -0 "$(cat "$PIPE/orch-$q_issue.pid")" 2>/dev/null; then
+    if [ -f "$PIPE/orch-$q_rk.pid" ] && kill -0 "$(cat "$PIPE/orch-$q_rk.pid")" 2>/dev/null; then
       rm -f "$qf"
       continue
     fi
@@ -785,6 +796,7 @@ print('%d %d' % (int(t), int('$q_issue')))
     if [ -z "$best_qf" ] || python3 -c "import sys; a=tuple(map(int,'$q_key'.split())); b=tuple(map(int,'$best_key'.split())); sys.exit(0 if a<b else 1)"; then
       best_qf="$qf"
       best_issue="$q_issue"
+      best_rk="$q_rk"
       best_key="$q_key"
     fi
   done
@@ -794,8 +806,8 @@ print('%d %d' % (int(t), int('$q_issue')))
     q_extra=$(python3 -c "import json; print(json.load(open('$best_qf')).get('extra',''))" 2>/dev/null)
     q_reason=$(python3 -c "import json; print(json.load(open('$best_qf')).get('reason','queued'))" 2>/dev/null)
     restart_n=0
-    if [ "$q_reason" = "auto-restart" ] && [ -f "$PIPE/orch-$best_issue.restarts" ]; then
-      restart_n=$(python3 -c "import json; print(json.load(open('$PIPE/orch-$best_issue.restarts')).get('count',0))" 2>/dev/null || echo 0)
+    if [ "$q_reason" = "auto-restart" ] && [ -f "$PIPE/orch-$best_rk.restarts" ]; then
+      restart_n=$(python3 -c "import json; print(json.load(open('$PIPE/orch-$best_rk.restarts')).get('count',0))" 2>/dev/null || echo 0)
     fi
 
     q_wait=$(python3 -c "
@@ -807,8 +819,8 @@ except Exception:
     pass
 " 2>/dev/null)
     # #178: a cap exit is not counted, so count may be 0; the relaunch still needs its (cap) preamble
-    [ "$q_reason" = "auto-restart" ] && [ "$restart_n" -eq 0 ] && [ -f "$PIPE/orch-$best_issue.cap-exit" ] && restart_n=1
-    do_launch "$q_repo" "$best_issue" "$q_extra" "$restart_n" "$q_reason" "$q_wait"
+    [ "$q_reason" = "auto-restart" ] && [ "$restart_n" -eq 0 ] && [ -f "$PIPE/orch-$best_rk.cap-exit" ] && restart_n=1
+    do_launch "$q_repo" "$best_issue" "$q_extra" "$restart_n" "$q_reason" "$q_wait" "$best_rk"
     rm -f "$best_qf"
     launched=1
   fi
@@ -818,18 +830,18 @@ fi
 #    finished (done), parked (held: gate or escalation), stopped, or dead with no pending relaunch.
 for f in "$PIPE"/orch-*.pid; do
   [ -e "$f" ] || break
-  issue=$(basename "$f" .pid); issue=${issue#orch-}
-  repo=$(cat "$PIPE/orch-$issue.repo" 2>/dev/null || echo "")
+  rk=$(basename "$f" .pid); rk=${rk#orch-}; issue=${rk##*-}   # <owner>_<repo>-<N>; an unmigrated legacy bare <N> reads as is
+  repo=$(cat "$PIPE/orch-$rk.repo" 2>/dev/null || echo "")
   [ -z "$repo" ] && continue
   kill -0 "$(cat "$f")" 2>/dev/null && continue
-  if   [ -f "$PIPE/orch-$issue.done" ];    then clear_in_progress "$repo" "$issue" done
-  elif [ -f "$PIPE/orch-$issue.held" ];    then clear_in_progress "$repo" "$issue" held
-  elif [ -f "$PIPE/orch-$issue.stopped" ]; then clear_in_progress "$repo" "$issue" stopped
-  elif [ ! -f "$QUEUE/orch-$issue.json" ]; then
+  if   [ -f "$PIPE/orch-$rk.done" ];    then clear_in_progress "$repo" "$issue" done "$rk"
+  elif [ -f "$PIPE/orch-$rk.held" ];    then clear_in_progress "$repo" "$issue" held "$rk"
+  elif [ -f "$PIPE/orch-$rk.stopped" ]; then clear_in_progress "$repo" "$issue" stopped "$rk"
+  elif [ ! -f "$QUEUE/orch-$rk.json" ]; then
     # #208: step 1 owns a fresh death (it queues the restart); act only once it has logged the exit, or for
     # pre-#138 runs that never get a run-id.
-    if [ -f "$PIPE/orch-$issue.exit-logged" ] || [ ! -f "$PIPE/orch-$issue.run-id" ]; then
-      clear_in_progress "$repo" "$issue" "dead-no-queue"
+    if [ -f "$PIPE/orch-$rk.exit-logged" ] || [ ! -f "$PIPE/orch-$rk.run-id" ]; then
+      clear_in_progress "$repo" "$issue" "dead-no-queue" "$rk"
       slog "[label] #$issue — process dead, no queue entry, cleared orphaned label"
     else
       slog "[label] #$issue — process dead, exit not yet handled by step 1; label kept"
@@ -846,7 +858,7 @@ done
 intake_key() { printf 'intake-%s-%s' "${1//\//_}" "$2"; }
 intake_launch() {  # <owner/repo> <local path> <issue> <prompt>
   local k; k=$(intake_key "$1" "$3")
-  echo 0 > "$PIPE/$3-intake-before.txt"; rm -f "$PIPE/$k.exit" "$PIPE/$k.exit-seen"
+  echo 0 > "$PIPE/$(run_key "$1" "$3")-intake-before.txt"; rm -f "$PIPE/$k.exit" "$PIPE/$k.exit-seen"
   # #176: remember a source:sentry issue at launch, so the agent removing the label cannot turn the agent-go strip into a no-op
   case " $(gh issue view "$3" --repo "$1" --json labels --jq '[.labels[].name] | join(" ")' 2>/dev/null) " in
     *" source:sentry "*) touch "$PIPE/$k.sentry" ;; esac
@@ -1052,26 +1064,26 @@ if [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
     [ -d "$local_path/.git" ] || continue
     orphans=$(gh issue list --repo "$owner_repo" --state open --label "$LABEL_IN_PROGRESS" --limit 50 --json number --jq '.[].number' 2>/dev/null) || continue
     for num in $orphans; do
+      rk=$(run_key "$owner_repo" "$num")
       # Skip if we have a live process or queue entry
       # #208: any local pid file, alive or not, means steps 1/3 own this run
-      [ -f "$PIPE/orch-$num.pid" ] && continue
-      [ -f "$QUEUE/orch-$num.json" ] && continue
+      [ -f "$PIPE/orch-$rk.pid" ] && continue
+      [ -f "$QUEUE/orch-$rk.json" ] && continue
       [ -e "$PIPE/$(intake_key "$owner_repo" "$num").id" ] && continue   # an intake run (3b) owns it
       [ -e "$PIPE/spec-${owner_repo//\//_}-$num.id" ] && continue   # a spec run (3c) owns it
       # Check marker staleness — only clear if no movement for STALE_LABEL_SECS
       # Same call also yields the latest "claim: <host>" comment: a claim naming another machine means it owns the run.
       view=$(cd "$local_path" && gh issue view "$num" --json comments,updatedAt \
-        --jq '((.comments[-1].createdAt // .updatedAt) // ""), ([.comments[] | select(.body | startswith("**[supervisor] NOTE** claim: "))] | last | .body // "" | split(" ") | .[3] // "")' 2>/dev/null)
+        --jq '((.comments[-1].createdAt // .updatedAt) // ""), ([.comments[] | select(.body | startswith("**[supervisor] NOTE** claim: "))] | last | .body // "" | split(" ") | .[3] // "")' 2>/dev/null) || { slog "[reconcile] $owner_repo#$num — issue read failed rc=$?, skipped"; continue; }
       last_comment_age=$(printf '%s\n' "$view" | sed -n 1p)
       claim_host=$(printf '%s\n' "$view" | sed -n 2p)
       [ -n "$claim_host" ] && [ "$claim_host" != "$HOST" ] && continue
-      if [ -n "$last_comment_age" ]; then
-        comment_epoch=$(to_epoch "$last_comment_age")
-        age=$(( $(date +%s) - comment_epoch ))
-        [ "$age" -lt "$STALE_LABEL_SECS" ] && continue
-      fi
+      [ -n "$last_comment_age" ] || continue   # #326: no timestamp to judge staleness by — never clear on a blind read
+      comment_epoch=$(to_epoch "$last_comment_age")
+      age=$(( $(date +%s) - comment_epoch ))
+      [ "$age" -lt "$STALE_LABEL_SECS" ] && continue
       (cd "$local_path" && gh issue edit "$num" --remove-label "$LABEL_IN_PROGRESS" >/dev/null 2>&1) && \
-        slog "[reconcile] $owner_repo#$num — cleared orphaned $LABEL_IN_PROGRESS (no local state, marker stale ${age:-?}s)"
+        slog "[reconcile] $owner_repo#$num — cleared orphaned $LABEL_IN_PROGRESS (no local state, marker stale ${age}s)"
     done
   done
 fi
@@ -1085,16 +1097,23 @@ if [ "$launched" -eq 0 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
   else
     now_epoch=$(date +%s)
     cutoff=$(python3 -c "import datetime; print((datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(seconds=$CLAIM_WINDOW_SECS)).strftime('%Y-%m-%dT%H:%M:%SZ'))")
+    goal_skip_json=$( { goal_live_labels; goal_queued_labels; goal_foreign_labels; } 2>/dev/null | jq -Rsc 'split("\n") | map(select(length > 0))' 2>/dev/null) || goal_skip_json='[]'
+    [ -n "$goal_skip_json" ] || goal_skip_json='[]'
     for entry in "${DISPATCH_REPOS[@]}"; do
       [ "$launched" -ge 1 ] && break
       owner_repo="${entry%%:*}"; local_path="${entry#*:}"; local_path="${local_path/#\~/$HOME}"
       if [ ! -d "$local_path/.git" ]; then slog "[dispatch] $owner_repo — no local checkout at $local_path, skipping"; continue; fi
+      # #320: a ticket carrying the label of a goal whose lead is live on THIS host is the lead's to dispatch; tickets in no goal,
+      # and goal tickets whose lead is not live (fallback), stay dispatched here. A goal still queued has not started: its tickets wait.
+      # Spread: with the default `hosts: both`, a goal whose lead is on the other host is dispatched here too (the claim comment keeps
+      # a ticket on one host); a goal confined with `hosts: mac|vm` to the other host is skipped (goal_foreign_labels).
       candidates=$(gh issue list --repo "$owner_repo" --state open --label "$LABEL_GO" --limit 50 --json number,labels \
-        --jq ".[] | select([.labels[].name] | index(\"$LABEL_IN_PROGRESS\") | not) | .number" 2>/dev/null) || continue
+        --jq ".[] | select([.labels[].name] | index(\"$LABEL_IN_PROGRESS\") | not) | select(([.labels[].name] | map(. as \$l | $goal_skip_json | index(\$l)) | any(. != null)) | not) | .number" 2>/dev/null) || continue
       for num in $candidates; do
+        rk=$(run_key "$owner_repo" "$num")
         # local state: alive or queued here → not a candidate
-        if [ -f "$PIPE/orch-$num.pid" ] && kill -0 "$(cat "$PIPE/orch-$num.pid")" 2>/dev/null; then continue; fi
-        [ -f "$QUEUE/orch-$num.json" ] && continue
+        if [ -f "$PIPE/orch-$rk.pid" ] && kill -0 "$(cat "$PIPE/orch-$rk.pid")" 2>/dev/null; then continue; fi
+        [ -f "$QUEUE/orch-$rk.json" ] && continue
 
         ts=$(date -u +%FT%TZ)
         (cd "$local_path" && gh issue comment "$num" --body "**[supervisor] NOTE** claim: $HOST $ts" >/dev/null 2>&1) || { slog "[dispatch] $owner_repo#$num — claim comment failed"; continue; }
@@ -1105,7 +1124,7 @@ if [ "$launched" -eq 0 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
           continue
         fi
         # Won: a re-dispatch is JP's explicit "go again", so clear local tombstones like a manual launch does.
-        rm -f "$PIPE/orch-$num".{stopped,held,done,closed,marker,milestone,alert,label-cleared} "$PIPE/orch-$num.restarts"
+        rm -f "$PIPE/orch-$rk".{stopped,held,done,closed,marker,milestone,alert,label-cleared} "$PIPE/orch-$rk.restarts"
         out=$(LAUNCH_REASON=agent-go "$(dirname "${BASH_SOURCE[0]}")/orchestrate.sh" --force "$local_path" "$num" 2>&1 | tail -1)
         slog "[dispatch] $owner_repo#$num — claimed by $HOST, $out"
         launched=1

@@ -149,7 +149,7 @@ function goalsSection(html) {
 function rowsOf(section) {
   return [...section.matchAll(/<tr>([\s\S]*?)<\/tr>/g)]
     .filter((m) => m[1].includes('<td'))
-    .map((m) => [...m[1].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((c) => c[1].trim()));
+    .map((m) => [...m[1].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((c) => c[1].trim()).slice(1)); // slice(1): the Priority column is covered in goal-links.test.js
 }
 const text = (s) => s.replace(/<[^>]+>/g, '').trim();
 
@@ -167,10 +167,10 @@ describe('AC3 — render.js Goals section', () => {
     expect(rowsOf(s)).toHaveLength(3);
   });
 
-  it('has the columns Goal, Host, State, Delivered, Last cycle', () => {
+  it('has the columns Priority, Goal, Host, State, Delivered, Last cycle', () => {
     const s = goalsSection(html);
     const ths = [...s.matchAll(/<th[^>]*>([\s\S]*?)<\/th>/g)].map((m) => m[1].trim());
-    expect(ths).toEqual(['Goal', 'Host', 'State', 'Delivered', 'Last cycle']);
+    expect(ths).toEqual(['Priority', 'Goal', 'Host', 'State', 'Delivered', 'Last cycle']);
   });
 
   it('orders waiting_jp, held, running (then id) and renders each cell', () => {
@@ -259,5 +259,19 @@ describe('AC3 — no goals anywhere: output unchanged', () => {
 
   it('a first-deploy page (both hosts null) has no Goals section', () => {
     expect(renderPage({ mac: null, vm: null }, thresholds, NOW)).not.toMatch(/Goals/);
+  });
+});
+
+describe('goal state legend', () => {
+  it('defines every goal state the validator accepts, on the status page', async () => {
+    const { renderPage, GOAL_LEGEND } = await import('../src/render.js');
+    const html = renderPage({ mac: null, vm: { received_at: 1, runs: [], goals: [] } }, { staleSecs: 60, offlineSecs: 600 }, 2);
+    expect(html).toContain('<h2>Legend</h2>');
+    const keys = GOAL_LEGEND.map(([k]) => k.replace(' ', '_').replace('on_JP', 'jp'));
+    expect(keys.length).toBe(7);
+    for (const [k, v] of GOAL_LEGEND) {
+      expect(html).toContain(`<dt>${k}</dt>`);
+      expect(v.length).toBeGreaterThan(20);
+    }
   });
 });

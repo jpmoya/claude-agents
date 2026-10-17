@@ -6,12 +6,12 @@
 # Usage: build-runs-json.py <aliases-arg> <runs-jsonl-path> [<pipe-dir> [completed]]
 #   <aliases-arg>: STATUS_REPO_ALIASES entries ("owner/repo:alias"), one per line
 #   <runs-jsonl-path>: ~/.claude/pipeline/runs.jsonl, for the last dispatch marker per repo+issue
-#   <pipe-dir>: $PIPE, for the per-run orch-<issue>.title file written at launch (issue #29).
+#   <pipe-dir>: $PIPE, for the per-run orch-<run_key>.title file written at launch (issue #29).
 #               Local files only -- this script never makes a network call.
 #   completed:  emit the payload's "completed" array (issue #51) instead of "runs": the records
-#               reconcile-status.sh marked closed (state_code "closed", orch-<issue>.closed = closedAt),
+#               reconcile-status.sh marked closed (state_code "closed", orch-<run_key>.closed = closedAt),
 #               closed within the last 7 days, newest first, first 10. Items carry "release" when
-#               orch-<issue>.release exists (issue #65).
+#               orch-<run_key>.release exists (issue #65).
 #   staging | approved: emit the payload's "staging" / "approved" array (issue #65) from
 #               <pipe-dir>/status-staging.json / status-approved.json (written by reconcile-status.sh);
 #               no stdin, `[]` when the file is missing or unreadable.
@@ -24,6 +24,9 @@ import subprocess
 import os
 import re
 import datetime
+import urllib.parse
+import socket
+import time
 
 aliases_raw, runs_jsonl = sys.argv[1], sys.argv[2]
 pipe_dir = sys.argv[3] if len(sys.argv) > 3 else ""
@@ -73,32 +76,45 @@ def alias_for(repo_path):  # -> (published repo string, owner/repo or "" for the
     return aliases.get(owner_repo, "other"), owner_repo
 
 
-def marker_for(owner_repo, issue):  # first line of <pipe-dir>/orch-<issue>.marker (written at launch + by reconcile-status.sh), else None
+CUR_REPO = ""  # checkout path of the row being built; set by the two row loops below
+
+
+def stem(issue):  # file stem of the current run: <owner>_<repo>-<N> (#318), else the legacy bare <N> (read-both fallback)
+    slug = owner_repo_for(CUR_REPO) if CUR_REPO else ""
+    if slug:
+        k = "%s-%s" % (slug.replace("/", "_"), issue)
+        for ext in ("repo", "pid", "closed"):
+            if os.path.exists(os.path.join(pipe_dir, "orch-%s.%s" % (k, ext))):
+                return k
+    return str(issue)
+
+
+def marker_for(owner_repo, issue):  # first line of <pipe-dir>/orch-<run_key>.marker (written at launch + by reconcile-status.sh), else None
     if not pipe_dir:
         return None
     try:
-        with open(os.path.join(pipe_dir, "orch-%s.marker" % issue), encoding="utf-8", errors="replace") as f:
+        with open(os.path.join(pipe_dir, "orch-%s.marker" % stem(issue)), encoding="utf-8", errors="replace") as f:
             return f.readline(256).strip() or None
     except OSError:
         return None
 
 
-def title_for(issue):  # first line of <pipe-dir>/orch-<issue>.title, stripped + capped; else ""
+def title_for(issue):  # first line of <pipe-dir>/orch-<run_key>.title, stripped + capped; else ""
     if not pipe_dir:
         return ""
     try:
-        with open(os.path.join(pipe_dir, "orch-%s.title" % issue), encoding="utf-8", errors="replace") as f:
+        with open(os.path.join(pipe_dir, "orch-%s.title" % stem(issue)), encoding="utf-8", errors="replace") as f:
             first_line = f.readline(4096)
     except OSError:
         return ""
     return first_line.strip()[:TITLE_MAX_CHARS]
 
 
-def milestone_for(issue):  # first line of <pipe-dir>/orch-<issue>.milestone, stripped + capped at 60; else ""
+def milestone_for(issue):  # first line of <pipe-dir>/orch-<run_key>.milestone, stripped + capped at 60; else ""
     if not pipe_dir:
         return ""
     try:
-        with open(os.path.join(pipe_dir, "orch-%s.milestone" % issue), encoding="utf-8", errors="replace") as f:
+        with open(os.path.join(pipe_dir, "orch-%s.milestone" % stem(issue)), encoding="utf-8", errors="replace") as f:
             return f.readline(256).strip()[:60]
     except OSError:
         return ""
@@ -160,32 +176,32 @@ BLOCK_CLASS_RE = re.compile(r"^[a-z_]{1,30}$")  # the class list lives in hooks/
 ISO_Z_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 
 
-def state_file_for(issue, suffix):  # first line of <pipe-dir>/orch-<issue>.<suffix>, else ""
+def state_file_for(issue, suffix):  # first line of <pipe-dir>/orch-<run_key>.<suffix>, else ""
     if not pipe_dir:
         return ""
     try:
-        with open(os.path.join(pipe_dir, "orch-%s.%s" % (issue, suffix)), encoding="utf-8", errors="replace") as f:
+        with open(os.path.join(pipe_dir, "orch-%s.%s" % (stem(issue), suffix)), encoding="utf-8", errors="replace") as f:
             return f.readline(64).strip()
     except OSError:
         return ""
 
 
-def release_for(issue):  # first line of <pipe-dir>/orch-<issue>.release if it is vX.Y.Z, else ""
+def release_for(issue):  # first line of <pipe-dir>/orch-<run_key>.release if it is vX.Y.Z, else ""
     if not pipe_dir:
         return ""
     try:
-        with open(os.path.join(pipe_dir, "orch-%s.release" % issue), encoding="utf-8", errors="replace") as f:
+        with open(os.path.join(pipe_dir, "orch-%s.release" % stem(issue)), encoding="utf-8", errors="replace") as f:
             text = f.readline(64).strip()
     except OSError:
         return ""
     return text if RELEASE_RE.match(text) else ""
 
 
-def closed_at_for(issue):  # first line of <pipe-dir>/orch-<issue>.closed -> (iso string, epoch) or None
+def closed_at_for(issue):  # first line of <pipe-dir>/orch-<run_key>.closed -> (iso string, epoch) or None
     if not pipe_dir:
         return None
     try:
-        with open(os.path.join(pipe_dir, "orch-%s.closed" % issue), encoding="utf-8", errors="replace") as f:
+        with open(os.path.join(pipe_dir, "orch-%s.closed" % stem(issue)), encoding="utf-8", errors="replace") as f:
             text = f.readline(64).strip()
         epoch = datetime.datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(
             tzinfo=datetime.timezone.utc).timestamp()
@@ -195,6 +211,7 @@ def closed_at_for(issue):  # first line of <pipe-dir>/orch-<issue>.closed -> (is
 
 
 def build_completed(rows):
+    global CUR_REPO
     now = datetime.datetime.now(datetime.timezone.utc).timestamp()
     items = []
     for line in rows:
@@ -204,6 +221,7 @@ def build_completed(rows):
         issue, repo_path, state_code = parts[0], parts[1], parts[2]
         if state_code != "closed":
             continue
+        CUR_REPO = repo_path
         closed = closed_at_for(issue)
         if closed is None or now - closed[1] > COMPLETED_RETENTION_SECS:
             continue
@@ -236,6 +254,7 @@ if mode in LIST_CAPS:
     sys.exit(0)
 
 GOALS_MAX = 50
+GOALS_RECENT_MAX = 5
 GOAL_STATES = ("active", "waiting_jp", "held")
 
 
@@ -251,6 +270,79 @@ def _pid_alive(path):
     except (OSError, ValueError, OverflowError):
         return False
     return True
+
+
+def _goal_url(issue):
+    # the goal's registry issue on GitHub
+    if isinstance(issue, int) and not isinstance(issue, bool) and issue > 0:
+        return "https://github.com/%s/issues/%d" % (os.environ.get("GOAL_REGISTRY_REPO") or "jpmoya/claude-agents", issue)
+    return None
+
+
+def _goal_link(d):
+    """Where a goal's name leads: its GitHub Project when one is recorded, else a GitHub search of every ticket of the goal across its repos (label goal), the
+    milestone page (milestone goal), the ticket (ticket goal); else the registry issue."""
+    label, repos, spec = d.get("label"), d.get("repos"), d.get("spec")
+    proj = d.get("project_url")
+    if not isinstance(proj, str) and isinstance(d.get("project"), dict):
+        proj = d["project"].get("url")
+    if isinstance(proj, str) and re.match(r"^https://github\.com/(users|orgs)/[\w.-]+/projects/\d+$", proj):
+        return proj   # the goal's own GitHub Project (goal-project.sh); else the search / milestone / ticket link below
+    if isinstance(label, str) and label and isinstance(repos, list) and repos and all(isinstance(r, str) and r for r in repos):
+        q = 'is:issue label:"%s" ' % label.replace('"', "") + " ".join("repo:" + r for r in repos)
+        return "https://github.com/issues?q=" + urllib.parse.quote(q, safe="")
+    if isinstance(spec, str):
+        m = re.match(r"^([\w.-]+/[\w.-]+):milestone:(\d+)$", spec)
+        if m:
+            return "https://github.com/%s/milestone/%s?closed=1" % (m.group(1), m.group(2))
+        m = re.match(r"^([\w.-]+/[\w.-]+):milestones?:", spec)
+        if m:
+            return "https://github.com/%s/issues?q=%s" % (m.group(1), urllib.parse.quote("is:issue milestone:*", safe=""))
+        m = re.match(r"^([\w.-]+/[\w.-]+)#(\d+)$", spec)
+        if m:
+            return "https://github.com/%s/issues/%s" % (m.group(1), m.group(2))
+    return _goal_url(d.get("issue"))
+
+
+def _host_key(h):
+    """The status page keys hosts mac|vm; the registry and the goal cache hold the hostname (hostname -s, lower-case).
+    This machine's hostname maps to its own kind; the only other host is the opposite kind."""
+    if not isinstance(h, str) or not h:
+        return ""
+    h = h.lower()
+    if h in ("mac", "vm"):
+        return h
+    mine = "mac" if sys.platform == "darwin" else "vm"
+    if h == socket.gethostname().split(".")[0].lower():
+        return mine
+    return "vm" if mine == "mac" else "mac"
+
+
+def _fill_name(entry):
+    """A goal whose block has no title (a milestone / ticket goal) gets the name the sync looked up (goalnames.json)."""
+    if entry.get("title") or not pipe_dir:
+        return
+    try:
+        with open(os.path.join(pipe_dir, "goalnames.json"), encoding="utf-8") as f:
+            names = json.load(f)
+        name = names.get(entry["id"]) if isinstance(names, dict) else None
+    except (OSError, ValueError):
+        return
+    if isinstance(name, str) and name:
+        entry["title"] = name
+
+
+def _set_priority(entry, d):
+    p = d.get("priority")
+    if isinstance(p, int) and not isinstance(p, bool) and p > 0:
+        entry["priority"] = p
+
+
+def _is_milestone_goal(e):  # milestone-kind goals (spec owner/repo:milestone(s):..., id ...-ms-<n|all>) are not listed
+    sp, i = e.get("spec"), e.get("id", "")
+    if isinstance(sp, str) and re.match(r"^[\w.-]+/[\w.-]+:milestones?:", sp):
+        return True
+    return not i.startswith("label-goal__") and re.search(r"-ms-(\d+|all)$", i) is not None
 
 
 def build_goals():
@@ -271,7 +363,10 @@ def build_goals():
             continue
         if not isinstance(d, dict):
             continue
-        if not all(isinstance(d.get(k), str) and d.get(k) for k in ("id", "spec", "host")):
+        # v1 goals carry `spec`; a cross-repo label goal (#319) carries title/repos/order and may have no spec
+        if not all(isinstance(d.get(k), str) and d.get(k) for k in ("id", "host")):
+            continue
+        if not (isinstance(d.get("spec"), str) and d.get("spec")) and not (isinstance(d.get("title"), str) and d.get("title")):
             continue
         if os.path.exists(base + ".stopped"):
             continue
@@ -287,17 +382,207 @@ def build_goals():
             state = "waiting_jp"
         else:
             state = "running" if _pid_alive(base + ".pid") else "between_cycles"
-        entry = {"id": d["id"], "spec": d["spec"], "host": d["host"], "state": state}
+        entry = {"id": d["id"]}
+        if isinstance(d.get("spec"), str) and d.get("spec"):
+            entry["spec"] = d["spec"]
+        entry["host"] = _host_key(d["host"])
+        entry["state"] = state
+        if isinstance(d.get("title"), str) and d.get("title"):
+            entry["title"] = d["title"]
+        repos = d.get("repos")
+        if isinstance(repos, list) and repos and all(isinstance(r, str) and r for r in repos):
+            entry["repos"] = repos
+        if isinstance(d.get("order"), int) and not isinstance(d.get("order"), bool):
+            entry["order"] = d["order"]
         for k in ("scope_total", "scope_delivered"):
             v = d.get(k)
             if isinstance(v, int) and not isinstance(v, bool):
                 entry[k] = v
         if isinstance(d.get("last_cycle_at"), str) and ISO_Z_RE.match(d["last_cycle_at"]):
             entry["last_cycle_at"] = d["last_cycle_at"]
+        if _goal_link(d):
+            entry["url"] = _goal_link(d)
+        _set_priority(entry, d)
+        _fill_name(entry)
         out.append(entry)
         if len(out) >= GOALS_MAX:
             break
-    return out
+    # queued goals (#320): the supervisor's sync writes goalqueue.json (queued goals in queue order); a goal that has a
+    # local cache is already started here and is reported above. `paused` is the one reason the head of the queue waits.
+    q = None
+    try:
+        with open(os.path.join(pipe_dir, "goalqueue.json"), encoding="utf-8") as f:
+            q = json.load(f)
+        queued = q.get("queued") if isinstance(q, dict) else None
+    except (OSError, ValueError):
+        queued = None
+    paused = ""
+    try:
+        with open(os.path.join(pipe_dir, "goal-paused"), encoding="utf-8") as f:
+            paused = f.readline(64).strip()
+    except OSError:
+        pass
+    if isinstance(queued, list):
+        started = set(e["id"] for e in out)
+        pos = 0
+        for d in queued:
+            if len(out) >= GOALS_MAX:
+                break
+            if not isinstance(d, dict) or not (isinstance(d.get("id"), str) and d.get("id")):
+                continue
+            pos += 1
+            if d["id"] in started or os.path.exists(os.path.join(pipe_dir, "goal-" + d["id"] + ".json")):
+                continue
+            entry = {"id": d["id"]}
+            if isinstance(d.get("spec"), str) and d.get("spec"):
+                entry["spec"] = d["spec"]
+            entry["host"] = ""
+            entry["state"] = "queued"
+            entry["queue_pos"] = pos
+            if isinstance(d.get("title"), str) and d.get("title"):
+                entry["title"] = d["title"]
+            repos = d.get("repos")
+            if isinstance(repos, list) and repos and all(isinstance(r, str) and r for r in repos):
+                entry["repos"] = repos
+            if isinstance(d.get("order"), int) and not isinstance(d.get("order"), bool):
+                entry["order"] = d["order"]
+            if pos == 1 and paused:
+                entry["paused"] = paused
+            if _goal_link(d):
+                entry["url"] = _goal_link(d)
+            _set_priority(entry, d)
+            _fill_name(entry)
+            out.append(entry)
+    # every other registered, not-yet-reported goal that is still open (e.g. pinned to a host that is offline)
+    opened = q.get("open") if isinstance(q, dict) else None
+    if isinstance(opened, list):
+        known = set(e["id"] for e in out)
+        for d in opened:
+            if len(out) >= GOALS_MAX:
+                break
+            if not isinstance(d, dict) or not (isinstance(d.get("id"), str) and d.get("id")) or d["id"] in known:
+                continue
+            st = {"held": "held", "waiting_jp": "waiting_jp", "active": "between_cycles"}.get(d.get("st"))
+            # ticket evidence (supervisor goal_queue_derive): nothing progressable and something waits on JP
+            nj = d.get("needs_jp")
+            if st == "between_cycles" and isinstance(nj, dict) and nj.get("active") == 0 \
+                    and isinstance(nj.get("waiting"), int) and nj["waiting"] > 0:
+                st = "waiting_jp"
+            if st is None or not (isinstance(d.get("title"), str) and d["title"]) and not (isinstance(d.get("spec"), str) and d["spec"]):
+                continue
+            entry = {"id": d["id"]}
+            if isinstance(d.get("spec"), str) and d.get("spec"):
+                entry["spec"] = d["spec"]
+            entry["host"] = _host_key(d.get("host"))
+            entry["state"] = st
+            if isinstance(d.get("title"), str) and d.get("title"):
+                entry["title"] = d["title"]
+            repos = d.get("repos")
+            if isinstance(repos, list) and repos and all(isinstance(r, str) and r for r in repos):
+                entry["repos"] = repos
+            if _goal_link(d):
+                entry["url"] = _goal_link(d)
+            _set_priority(entry, d)
+            _fill_name(entry)
+            out.append(entry)
+    # recently closed goals (delivered / stopped, newest first, max 5): the status page lists them compactly
+    recent = q.get("recent") if isinstance(q, dict) else None
+    if isinstance(recent, list):
+        known = set(e["id"] for e in out)
+        n = 0
+        for d in recent:
+            if n >= GOALS_RECENT_MAX or len(out) >= GOALS_MAX:
+                break
+            if not isinstance(d, dict) or not (isinstance(d.get("id"), str) and d.get("id")):
+                continue
+            if d.get("st") not in ("delivered", "stopped") or d["id"] in known:
+                continue
+            if os.path.exists(os.path.join(pipe_dir, "goal-" + d["id"] + ".json")):
+                continue
+            if not (isinstance(d.get("title"), str) and d["title"]) and not (isinstance(d.get("spec"), str) and d["spec"]):
+                continue
+            entry = {"id": d["id"]}
+            if isinstance(d.get("spec"), str) and d.get("spec"):
+                entry["spec"] = d["spec"]
+            entry["host"] = ""
+            entry["state"] = d["st"]
+            if isinstance(d.get("title"), str) and d.get("title"):
+                entry["title"] = d["title"]
+            repos = d.get("repos")
+            if isinstance(repos, list) and repos and all(isinstance(r, str) and r for r in repos):
+                entry["repos"] = repos
+            if isinstance(d.get("closed_at"), str) and ISO_Z_RE.match(d["closed_at"]):
+                entry["closed_at"] = d["closed_at"]
+            if _goal_link(d):
+                entry["url"] = _goal_link(d)
+            _set_priority(entry, d)
+            _fill_name(entry)
+            out.append(entry)
+            n += 1
+    out = [e for e in out if not _is_milestone_goal(e)]
+    rows = _project_rows(out)
+    return out if rows is None else rows
+
+
+_PROJECT_RANK = {"running": 0, "waiting_jp": 1, "held": 2, "between_cycles": 3, "queued": 4}
+
+
+def _project_rows(out):
+    """The goal list IS the GitHub projects (goal-project.sh keeps $PIPE/goalprojects.json): one row per open project, its title as the
+    name linking to the project, state / host / priority / progress taken from the live goals bound to it (best state wins); a project
+    no goal is bound to yet is `queued` (not started); a project closed within a week is `delivered`. Goals bound to no project are not
+    rows. None when the cache does not exist (this host cannot list projects): the caller keeps the plain goal rows."""
+    try:
+        with open(os.path.join(pipe_dir, "goalprojects.json"), encoding="utf-8") as f:
+            cache = json.load(f)
+    except (OSError, ValueError):
+        return None
+    projects = cache.get("projects") if isinstance(cache, dict) else None
+    if not isinstance(projects, list):
+        return None
+    proj_re = re.compile(r"^https://github\.com/(users|orgs)/[\w.-]+/projects/\d+$")
+    now = time.time()
+    rows, closed_rows = [], []
+    for p in projects:
+        if not isinstance(p, dict) or not isinstance(p.get("number"), int) or isinstance(p.get("number"), bool):
+            continue
+        title, url = p.get("title"), p.get("url")
+        if not (isinstance(title, str) and title.strip()) or not (isinstance(url, str) and proj_re.match(url)):
+            continue
+        entry = {"id": "project-%d" % p["number"], "host": "", "title": re.sub(r"[<>\"`]", "", re.sub(r"^Goal:\s*", "", title.strip()).replace("&", "and")), "url": url}   # the page refuses < > & \" `
+        if p.get("closed"):
+            seen = p.get("closed_seen")
+            try:
+                age = now - datetime.datetime.strptime(seen, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc).timestamp()
+            except (TypeError, ValueError):
+                continue
+            if age <= 7 * 86400:
+                entry["state"] = "delivered"
+                entry["closed_at"] = seen
+                closed_rows.append((age, entry))
+            continue
+        live = [e for e in out if e.get("url") == url and e.get("state") in _PROJECT_RANK]
+        if live:
+            live.sort(key=lambda e: _PROJECT_RANK[e["state"]])
+            best = live[0]
+            entry["state"] = best["state"]
+            entry["host"] = best.get("host", "")
+            for k in ("last_cycle_at", "paused"):
+                if best.get(k):
+                    entry[k] = best[k]
+            prios = [e["priority"] for e in live if isinstance(e.get("priority"), int)]
+            if prios:
+                entry["priority"] = min(prios)
+            for k in ("scope_total", "scope_delivered"):
+                vals = [e[k] for e in live if isinstance(e.get(k), int)]
+                if vals:
+                    entry[k] = sum(vals)
+        else:
+            entry["state"] = "queued"
+        rows.append(entry)
+    closed_rows.sort(key=lambda t: t[0])
+    rows.sort(key=lambda e: (e.get("priority", 10 ** 6), e["id"]))
+    return (rows + [e for _, e in closed_rows[:GOALS_RECENT_MAX]])[:GOALS_MAX]
 
 
 if mode == "goals":
@@ -318,6 +603,7 @@ for raw in sys.stdin:
     issue, repo_path, state_code, pid, started_at, last_activity_epoch, restarts, stage = parts[:8]
     if state_code not in STATE_MAP:
         continue
+    CUR_REPO = repo_path
     repo_alias, owner_repo = alias_for(repo_path)
     if state_code != "running" and issue.isdigit() and (owner_repo, int(issue)) in staged:
         continue

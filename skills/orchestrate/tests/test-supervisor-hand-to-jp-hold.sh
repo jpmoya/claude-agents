@@ -25,8 +25,8 @@ i129_run() {
   local ago="$1" line_issue="$2" reason="${3:-both PASSes; PR base is main on the quoting tool, handed to JP}" slack="${4:-}"
   sq_env open
   mk_restarting "$SQ_PIPE" 42 "$SQ_REPO"
-  if [ -n "${I129_LAUNCH:-}" ]; then printf '%s\n' "$I129_LAUNCH" > "$SQ_PIPE/orch-42.launched-at"
-  else sq_iso_ago 600 > "$SQ_PIPE/orch-42.launched-at"; fi
+  if [ -n "${I129_LAUNCH:-}" ]; then printf '%s\n' "$I129_LAUNCH" > "$(rkp "$SQ_PIPE/orch-42.launched-at")"
+  else sq_iso_ago 600 > "$(rkp "$SQ_PIPE/orch-42.launched-at")"; fi
   sq_marker "$I129_PASS"
   mkdir -p "$SQ_HOME/.claude/pipeline"
   if [ "$ago" != none ]; then
@@ -48,8 +48,8 @@ CURL
     sq_tick
   fi
   I129_LOG=$(sq_log)
-  I129_HELD=$(sq_present "$SQ_PIPE/orch-42.held")
-  I129_QUEUED=$(sq_present "$SQ_PIPE/queue/orch-42.json")
+  I129_HELD=$(sq_present "$(rkp "$SQ_PIPE/orch-42.held")")
+  I129_QUEUED=$(sq_present "$(rkp "$SQ_PIPE/queue/orch-42.json")")
   sq_cleanup
 }
 
