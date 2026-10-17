@@ -45,6 +45,25 @@ test_gs_sync_unconfirmed_local_stop_survives_active_registry() {
   assert_eq "$cnt" "0" "failed registry write: the lead is not relaunched" || return 1
 }
 
+# same id on two tickets: open B pinned here, old closed A (stopped) pinned elsewhere must not drop B's lead/cache (#366)
+test_gs_sync_old_closed_ticket_of_other_host_does_not_repin_open_goal() {
+  gs_env
+  gs_reg 60 "$GS_SPEC_MS12" "$GS_ID_MS12" host-a active
+  gs_reg 50 "$GS_SPEC_MS12" "$GS_ID_MS12" host-b stopped
+  gs_cache 60 "$GS_ID_MS12" "$GS_SPEC_MS12" host-a
+  gs_live "$GS_ID_MS12"
+  local p=$GS_P alive=no issue log
+  gs_tick; gs_settle
+  kill -0 "$p" 2>/dev/null && alive=yes
+  issue=$(jq -r '.issue // empty' "$GS_PIPE/goal-$GS_ID_MS12.json" 2>/dev/null)
+  log=$(gs_log)
+  gs_cleanup
+  assert_eq "$alive" "yes" "same id, other issue: the lead is not killed" || return 1
+  assert_eq "$issue" "60" "same id, other issue: the cache of the open ticket survives" || return 1
+  case "$log" in *"re-pinned"*) fail "same id, other issue: no re-pinned line, got: $log"; return 1 ;; esac
+}
+
 run_test test_gs_sync_repinned_goal_drops_local_lead_and_cache
 run_test test_gs_sync_active_registry_goal_clears_stale_held_and_stopped
 run_test test_gs_sync_unconfirmed_local_stop_survives_active_registry
+run_test test_gs_sync_old_closed_ticket_of_other_host_does_not_repin_open_goal
