@@ -39,3 +39,6 @@ sudo infra/ci-runners/setup.sh [--slots N] [--runner-version X.Y.Z] [--check] [-
 `sudo systemctl disable --now 'gha-slot@*' gha-hygiene.timer`, set `CI_RUNNER_JSON` back to the hosted runners, then
 remove `/etc/systemd/system/gha-slot@.service`, `gha-hygiene.*`, the `user-<uid>.slice.d` / `user@<uid>.service.d`
 drop-ins and `systemctl daemon-reload`. User `gha` and `/srv/gha` are left in place.
+
+## CI job metrics (issue #356)
+`scripts/ci-metrics.sh` (`collect | rollup | weekly`) reads the Actions API for the repos in `scripts/ci-metrics.repos` (plus `SLOTS=`, the total runner slots used for busy %). The daily workflow `.github/workflows/ci-metrics.yml` runs on `ubuntu-latest` (so it works when the pool is down) and commits `metrics/ci-jobs.jsonl` (append-only, deduped by job id, 90-day retention) and `metrics/ci-daily.json` (median/p90 run and queue time per job, longest queue wait, jobs per runner, slot busy %) to the orphan branch `ci-metrics`. On Mondays it posts one Slack summary with a suggested change (`add slot`, `split job` or `no change`). Failures go to Sentry (route `ci-metrics/<step>`, release = commit SHA) and the existing Slack webhook. Secrets used: `RELEASE_BOT_TOKEN` (cross-repo read), `SLACK_WEBHOOK_URL`, `SENTRY_DSN`.

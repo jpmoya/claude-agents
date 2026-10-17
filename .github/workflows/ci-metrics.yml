@@ -1,0 +1,63 @@
+name: ci-metrics
+
+# Daily CI job metrics (#356). Deliberately on a GitHub-hosted runner, not the CI pool,
+# so it keeps working when the pool is down. Data lives on the orphan branch `ci-metrics`.
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: ci-metrics
+  cancel-in-progress: false
+
+jobs:
+  metrics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+      CI_METRICS_RELEASE: ${{ github.sha }}
+      CI_METRICS_ENVIRONMENT: production
+      CI_METRICS_REPOS: scripts/ci-metrics.repos
+      CI_METRICS_DATA_DIR: ci-metrics-data/metrics
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out the ci-metrics data branch (orphan, created on first run)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          url="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if git ls-remote --exit-code --heads "$url" ci-metrics >/dev/null 2>&1; then
+            git clone --quiet --depth 1 --branch ci-metrics "$url" ci-metrics-data
+          else
+            git init --quiet ci-metrics-data
+            git -C ci-metrics-data checkout --quiet --orphan ci-metrics
+            git -C ci-metrics-data remote add origin "$url"
+          fi
+          mkdir -p ci-metrics-data/metrics
+      - name: Collect
+        run: scripts/ci-metrics.sh collect
+      - name: Rollup
+        run: scripts/ci-metrics.sh rollup
+      - name: Commit and push metrics
+        run: |
+          set -euo pipefail
+          cd ci-metrics-data
+          git config user.name "ci-metrics"
+          git config user.email "ci-metrics@users.noreply.github.com"
+          git add metrics
+          if git diff --cached --quiet; then echo "no changes"; exit 0; fi
+          git commit --quiet -m "metrics: $(date -u +%F)"
+          git push --quiet origin ci-metrics
+      - name: Weekly Slack summary (Mondays)
+        if: success()
+        run: |
+          if [ "$(date -u +%u)" = 1 ]; then scripts/ci-metrics.sh weekly; fi
