@@ -37,11 +37,19 @@ describe('goal name links', () => {
   });
   it('links a live goal title and a closed goal title, with no raw URL text', () => {
     const html = goalsHtml(render(rec([running({ url: URL1 }), closed({ url: URL1.replace('320', '321') })])));
-    expect(html).toContain(`<a href="${URL1}">Live goal</a>`);
-    expect(html).toContain('<a href="https://github.com/jpmoya/claude-agents/issues/321">Closed goal</a>');
+    expect(html).toContain(`<a href="${URL1}" target="_blank" rel="noopener">Live goal</a>`);
+    expect(html).toContain('<a href="https://github.com/jpmoya/claude-agents/issues/321" target="_blank" rel="noopener">Closed goal</a>');
     expect(text(html)).not.toContain('https://');
   });
   it('shows a plain name when there is no url', () => {
     expect(goalsHtml(render(rec([running()])))).not.toContain('<a ');
+  });
+  it('accepts a cross-repo search and a milestone page, rejects other hosts and quotes', () => {
+    const search = 'https://github.com/issues?q=is%3Aissue%20label%3A%22goal%3A%20X%22%20repo%3Ao%2Fr';
+    expect(goalsOf([running({ url: search })])[0].url).toBe(search);
+    const ms = 'https://github.com/o/r/milestone/4?closed=1';
+    expect(goalsOf([running({ url: ms })])[0].url).toBe(ms);
+    expect(goalsOf([running({ url: 'https://github.com/issues?q="><script>' })])[0].url).toBeUndefined();
+    expect(goalsOf([running({ url: 'https://evil.com/issues?q=a' })])[0].url).toBeUndefined();
   });
 });
