@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Re-runnable setup of a self-hosted GitHub Actions runner VM (#288, plan in #205).
-# Usage: setup.sh [--slots N] [--runner-version X.Y.Z] [--check] [--mint-from-stdin] [--probe]
+# Usage: setup.sh [--slots N] [--slot-gb G] [--runner-version X.Y.Z] [--check] [--mint-from-stdin] [--probe]
 # Test seams: GHA_ROOT prefixes every written path; GHA_DRY_STUBS is prepended to PATH.
 set -euo pipefail
 
@@ -12,12 +12,13 @@ ROOT=${GHA_ROOT:-}
 [ -z "${GHA_DRY_STUBS:-}" ] || PATH="$GHA_DRY_STUBS:$PATH"
 export PATH
 
-SLOTS=$DEFAULT_SLOTS VERSION=$DEFAULT_VERSION CHECK=0 FROM_STDIN=0 PROBE=0
+SLOT_GB=4 SLOTS=$DEFAULT_SLOTS VERSION=$DEFAULT_VERSION CHECK=0 FROM_STDIN=0 PROBE=0
 
 usage() {
   cat >&2 <<EOF
-Usage: setup.sh [--slots N] [--runner-version X.Y.Z] [--check] [--mint-from-stdin] [--probe]
+Usage: setup.sh [--slots N] [--slot-gb G] [--runner-version X.Y.Z] [--check] [--mint-from-stdin] [--probe]
   --slots N             runner slots, 1..$MAX_SLOTS (default $DEFAULT_SLOTS)
+  --slot-gb G           memory cap per slot in GiB, 4..8 (default 4; 5 leaves room for a 4000m job container plus runner and Docker)
   --runner-version V    pinned actions/runner version, X.Y.Z (default $DEFAULT_VERSION)
   --check               change nothing; print WOULD CHANGE/OK per step; exit 3 if changes pending
   --mint-from-stdin     read the mint token from stdin and store it root-only in /etc/gha/mint.env
@@ -29,6 +30,7 @@ usage_die() { echo "setup.sh: $1" >&2; usage; exit 2; }
 while [ $# -gt 0 ]; do
   case $1 in
     --slots) [ $# -ge 2 ] || usage_die "--slots needs a value"; SLOTS=$2; shift 2 ;;
+    --slot-gb) [ $# -ge 2 ] || usage_die "--slot-gb needs a value"; SLOT_GB=$2; shift 2 ;;
     --runner-version) [ $# -ge 2 ] || usage_die "--runner-version needs a value"; VERSION=$2; shift 2 ;;
     --check) CHECK=1; shift ;;
     --mint-from-stdin) FROM_STDIN=1; shift ;;
@@ -38,6 +40,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 [[ $SLOTS =~ ^[1-9][0-9]?$ ]] && [ "$SLOTS" -le "$MAX_SLOTS" ] || usage_die "--slots must be an integer 1..$MAX_SLOTS"
+[[ $SLOT_GB =~ ^[4-8]$ ]] || usage_die "--slot-gb must be an integer 4..8"
 [[ $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || usage_die "--runner-version must look like 2.338.0"
 if [ "$PROBE" = 1 ]; then exec bash "$SCRIPT_DIR/probe.sh"; fi
 
@@ -52,9 +55,9 @@ if [ -z "$ROOT" ] && [ "$CHECK" = 0 ] && [ "$EUID" -ne 0 ]; then
 fi
 
 RELEASE=$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)
-total=$((40 * SLOTS))   # tenths of GiB: 4G per slot (CI job containers are 4G)
+total=$((10 * SLOT_GB * SLOTS))   # tenths of GiB: SLOT_GB per slot (CI job containers are 4G; 5G on a shared host)
 if [ $((total % 10)) -eq 0 ]; then MEMMAX="$((total / 10))G"; else MEMMAX="$((total / 10)).$((total % 10))G"; fi
-MEMHIGH="$((3600 * SLOTS))M"
+MEMHIGH="$((900 * SLOT_GB * SLOTS))M"
 
 render() {
   local s; s=$(cat)

@@ -191,6 +191,13 @@ test_memmax_scaled() {
   grep -Eq 'MemoryMax=(4G|4096M|4294967296)$' <<<"$(alltext)" || { echo "1 slot: want 4G"; return 1; }
 }
 t "MemoryMax scales 4G x slots (3 and 1)" test_memmax_scaled
+test_slot_gb() {
+  newenv; bash "$SETUP" --slots 1 --slot-gb 5 >/dev/null 2>&1
+  grep -Eq 'MemoryMax=(5G|5120M|5368709120)$' <<<"$(alltext)" || { echo "slot-gb 5: want 5G"; return 1; }
+  grep -q 'MemoryHigh=4500M' <<<"$(alltext)" || { echo "slot-gb 5: want MemoryHigh 4500M"; return 1; }
+  newenv; ! bash "$SETUP" --slot-gb 9 >/dev/null 2>&1 || { echo "slot-gb 9 must be rejected"; return 1; }
+}
+t "--slot-gb sets MemoryMax/High per slot and rejects out-of-range" test_slot_gb
 test_version_param() {
   newenv; bash "$SETUP" --runner-version 2.340.1 >/dev/null 2>&1; local all; all=$(alltext)
   grep -qF 2.340.1 <<<"$all" && ! grep -qF 2.338.0 <<<"$all"
