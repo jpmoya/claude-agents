@@ -248,15 +248,16 @@ function renderGoalsSection(hosts) {
     g.title
       ? `<strong>${goalName(g, g.title)}</strong><br><small>${esc((g.repos || []).join(', '))}${Number.isInteger(g.order) ? ` · order ${esc(String(g.order))}` : ''}</small>`
       : goalName(g, g.spec);
-  const cells = (g) => [
-    Number.isInteger(g.priority) ? esc(String(g.priority)) : '–',
+  // the number shown is the goal's place in the start order (1 = next); it renumbers by itself as goals finish
+  const cells = (g, i) => [
+    esc(String(i + 1)),
     goalCell(g),
     esc(HOST_LABELS[g.host] || g.host || '–'),
     `<span class="badge goal-${esc(g.state)}${g.state === 'queued' ? ' goal-between_cycles' : ''}">${esc(goalStateText(g))}</span>${g.paused ? `<br><small>paused: ${esc(g.paused)}</small>` : ''}`,
     esc(delivered(g)),
     esc(formatCet(g.last_cycle_at) || '–'),
   ];
-  const rows = goals.map((g) => `<tr>${cells(g).map((c) => `<td>${c}</td>`).join('')}</tr>`).join('');
+  const rows = goals.map((g, i) => `<tr>${cells(g, i).map((c) => `<td>${c}</td>`).join('')}</tr>`).join('');
   const table =
     goals.length === 0
       ? ''

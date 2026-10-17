@@ -88,6 +88,17 @@ test_gl_hostname_maps_to_mac_or_vm() {
   assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id=="H2") | .host')" "$other_kind" "any other hostname -> the other kind" || return 1
 }
 
+# A milestone / ticket goal has no title in its block: the sync's goalnames.json supplies a readable one (not the raw spec).
+test_gl_name_from_goalnames_file() {
+  gl_env
+  jq -nc '{id:"N1",host:"mac",state:"active",spec:"o/scheduler#9",issue:9}' > "$GL_PIPE/goal-N1.json"
+  jq -nc '{id:"N2",host:"mac",state:"active",spec:"o/r:milestone:4",issue:10,title:"Own title"}' > "$GL_PIPE/goal-N2.json"
+  jq -nc '{N1:"scheduler #9: Fix the thing", N2:"ignored"}' > "$GL_PIPE/goalnames.json"
+  local out; out=$(gl_mode); gl_cleanup
+  assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id=="N1") | .title')" "scheduler #9: Fix the thing" "name looked up by the sync is used" || return 1
+  assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id=="N2") | .title')" "Own title" "a title in the block wins" || return 1
+}
+
 test_gl_ac1_reporter_does_not_sanitise_spec() {
   gl_fixture
   local out; out=$(gl_print); gl_cleanup
@@ -201,6 +212,7 @@ run_test test_gl_ac1_states_and_fields
 run_test test_gl_url_label_goal_is_a_cross_repo_search
 run_test test_gl_url_milestone_ticket_and_registry_fallbacks
 run_test test_gl_hostname_maps_to_mac_or_vm
+run_test test_gl_name_from_goalnames_file
 run_test test_gl_ac1_reporter_does_not_sanitise_spec
 run_test test_gl_ac1_empty_pipe_has_no_goals_key
 run_test test_gl_only_skipped_goals_has_no_goals_key

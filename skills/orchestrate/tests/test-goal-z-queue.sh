@@ -509,7 +509,7 @@ test_zq_register_enqueues_without_launching() {
   dg_setup
   local out rc=0 reg state labels host
   dg_run "$DG_SPEC_T7" "do it"; out="$DG_OUT"; rc=$DG_RC
-  reg="$DG_ST/issues/$DG_REG/1.json"
+  reg="$DG_ST/issues/$DG_REG/900.json"
   [ -f "$reg" ] || reg=$(ls "$DG_ST/issues/$DG_REG"/*.json 2>/dev/null | head -1)
   labels=$(jq -r '[.labels[].name] | sort | join(",")' "$reg" 2>/dev/null)
   host=$(jq -r '.body | capture("```json\\n(?<j>[^\\n]*)\\n```").j | fromjson | .host' "$reg" 2>/dev/null)
@@ -552,28 +552,40 @@ test_zq_register_host_flag_sets_host_pref() {
   assert_eq "$pin" "mac-studio" "item 2: --host stores host_pref (lower-cased)" || return 1
 }
 
-test_zq_register_priority_default_flag_and_command() {
+zq_prio() {  # <registry issue number> -> the priority in its block
+  jq -r '.body | capture("```json\\n(?<j>[^\\n]*)\\n```").j | fromjson | .priority' "$DG_ST/issues/$DG_REG/$1.json" 2>/dev/null
+}
+# Priorities are dense (1..n over the live goals in start order); a goal is placed with --after / --before / --priority.
+test_zq_register_places_goals_and_renumbers() {
   dg_setup
-  local reg pr
   dg_run "$DG_SPEC_T7"
-  reg=$(ls "$DG_ST/issues/$DG_REG"/*.json 2>/dev/null | head -1)
-  pr=$(jq -r '.body | capture("```json\\n(?<j>[^\\n]*)\\n```").j | fromjson | .priority' "$reg" 2>/dev/null)
-  assert_eq "$pr" "1" "priority: the first goal gets priority 1" || { dg_teardown; return 1; }
-  dg_run priority "$DG_SPEC_T7" 4
-  pr=$(jq -r '.body | capture("```json\\n(?<j>[^\\n]*)\\n```").j | fromjson | .priority' "$reg" 2>/dev/null)
-  assert_eq "$pr" "4" "priority: deliver.sh priority rewrites it in the registry block" || { dg_teardown; return 1; }
-  dg_run priority "$DG_SPEC_T7" 0
-  assert_eq "$DG_RC" "1" "priority: 0 is refused" || { dg_teardown; return 1; }
+  assert_eq "$(zq_prio 900)" "1" "priority: the first goal is 1" || { dg_teardown; return 1; }
+  dg_run "$DG_SPEC_MS"
+  assert_eq "$(zq_prio 901)" "2" "priority: a new goal goes last by default" || { dg_teardown; return 1; }
   dg_teardown
 }
-test_zq_register_priority_flag_stored() {
+test_zq_register_before_inserts_and_shifts_the_rest() {
   dg_setup
-  local reg pr
-  dg_run "$DG_SPEC_T7" --priority 7
-  reg=$(ls "$DG_ST/issues/$DG_REG"/*.json 2>/dev/null | head -1)
-  pr=$(jq -r '.body | capture("```json\\n(?<j>[^\\n]*)\\n```").j | fromjson | .priority' "$reg" 2>/dev/null)
+  dg_run "$DG_SPEC_T7"; dg_run "$DG_SPEC_MS" --before "$DG_SPEC_T7"
+  assert_eq "$(zq_prio 900)/$(zq_prio 901)" "2/1" "priority: --before puts the new goal first and shifts the existing one to 2" || { dg_teardown; return 1; }
   dg_teardown
-  assert_eq "$pr" "7" "priority: --priority 7 is stored" || return 1
+}
+test_zq_priority_command_moves_before_after_and_at() {
+  dg_setup
+  dg_run "$DG_SPEC_T7"; dg_run "$DG_SPEC_MS"
+  local id_t7 id_ms; id_t7=$(jq -r '.body | capture("```json\\n(?<j>[^\\n]*)\\n```").j | fromjson | .id' "$DG_ST/issues/$DG_REG/900.json")
+  id_ms=$(jq -r '.body | capture("```json\\n(?<j>[^\\n]*)\\n```").j | fromjson | .id' "$DG_ST/issues/$DG_REG/901.json")
+  dg_run priority "$id_ms" --before "$id_t7"
+  assert_eq "$(zq_prio 900)/$(zq_prio 901)" "2/1" "priority: --before moves the goal ahead and the other one shifts down" || { dg_teardown; return 1; }
+  dg_run priority "$id_ms" --after "$id_t7"
+  assert_eq "$(zq_prio 900)/$(zq_prio 901)" "1/2" "priority: --after moves it back" || { dg_teardown; return 1; }
+  dg_run priority "$id_ms" 1
+  assert_eq "$(zq_prio 900)/$(zq_prio 901)" "2/1" "priority: an explicit number is a place in the order" || { dg_teardown; return 1; }
+  dg_run priority "$id_ms" 0
+  assert_eq "$DG_RC" "1" "priority: 0 is refused" || { dg_teardown; return 1; }
+  dg_run priority "$id_ms" --before "$id_ms"
+  assert_eq "$DG_RC" "1" "priority: a goal cannot go before itself" || { dg_teardown; return 1; }
+  dg_teardown
 }
 
 test_zq_register_label_goal_enqueues_with_order_and_pin() {
@@ -670,8 +682,9 @@ run_test test_zq_step5_dispatches_a_goal_ticket_whose_lead_is_not_live
 run_test test_zq_step5_holds_tickets_of_a_goal_still_in_the_queue
 run_test test_zq_register_enqueues_without_launching
 run_test test_zq_register_now_keeps_the_immediate_launch
-run_test test_zq_register_priority_default_flag_and_command
-run_test test_zq_register_priority_flag_stored
+run_test test_zq_register_places_goals_and_renumbers
+run_test test_zq_register_before_inserts_and_shifts_the_rest
+run_test test_zq_priority_command_moves_before_after_and_at
 run_test test_zq_priority_outranks_order
 run_test test_zq_register_host_flag_sets_host_pref
 run_test test_zq_register_label_goal_enqueues_with_order_and_pin

@@ -7,7 +7,7 @@
 #                                         register (state queued). <goal> = owner/repo:milestone:<number|exact title>
 #                                         | owner/repo:milestones:all | owner/repo#N
 #                                         --now: also launch one cycle here at once (hand use, skips the queue)
-#                                         --priority: 1 starts first (default: after every live goal)
+#                                         --priority N / --after <goal> / --before <goal>: where it goes in the start order (default: last)
 #                                         --host: pin the goal to that host (advisory for single tickets, see delivery-lead.md)
 #   deliver.sh --repos a/b,c/d --title "<title>" [--requirements owner/repo#N] [--include-sentry] [--mockups review|skip] [--now] [--host <hostname>] [--priority <n>] [instructions...]
 #                                         cross-repo goal (#319): a `goal: <short title>` label in every repo; also
@@ -15,7 +15,7 @@
 #   deliver.sh status [goal|id]           one line per registry goal (open, plus closed within 7 days)
 #   deliver.sh stop <goal|id>             label goal-stopped, close the registry issue, kill the local cycle (idempotent)
 #   deliver.sh resume <goal|id> [--here]  reopen a stopped/held goal; --here re-pins it to this host
-#   deliver.sh priority <goal|id> <n>     change a registered goal's priority (1 starts first)
+#   deliver.sh priority <goal|id> <n> | --after <goal> | --before <goal>   move a goal in the start order
 set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source "$HERE/config.sh"
@@ -108,12 +108,51 @@ goal_state_label() {  # <registry goal json> -> status word
   esac
 }
 
-PRIORITY=""   # --priority; empty = after every live goal
+PRIORITY=""; PLACE_MODE=""; PLACE_REF=""   # --priority N | --after X | --before X; none = last
 
-# reg_priority -> the priority to write: --priority, else one past the highest live goal
+# goal_place <self id, or "" for a goal not yet registered> <at|after|before|last> [<n | goal|id>]
+# Priorities are dense: 1..n over the live goals in start order. Inserts <self> at the asked place, renumbers the
+# others (a registry write only where a number changes) and prints <self>'s priority.
+goal_place() {
+  local self="$1" mode="$2" ref="${3:-}" reg plan line issue id prio g
+  reg=$(_goal_registry_json) || die "cannot read the goal registry to place the goal"
+  case "$mode" in after|before) ref=$(_goal_resolve "$ref") || die "goal not found: $3"
+    printf '%s' "$reg" | jq -e --arg r "$ref" 'any(.[]; .id == $r and .st != "delivered" and .st != "stopped" and .st != "unreadable")' >/dev/null \
+      || die "$ref is not a live goal; place the goal relative to a goal that has not finished" ;;
+  esac
+  plan=$(printf '%s' "$reg" | jq -r --arg self "$self" --arg mode "$mode" --arg ref "$ref" '
+    def okey: [((.block.priority? // .block.order? // .issue) | if type == "number" then . else 1e12 end), .issue];
+    [.[] | select(.st != "delivered" and .st != "stopped" and .st != "unreadable" and .id != $self)] | sort_by(okey) as $o
+    | (if $mode == "last" then ($o | length)
+       elif $mode == "at" then ((($ref | tonumber) - 1) | if . < 0 then 0 elif . > ($o | length) then ($o | length) else . end)
+       else ($o | map(.id) | index($ref)) as $i | if $mode == "before" then $i else $i + 1 end end) as $pos
+    | ($o[:$pos] + [null] + $o[$pos:] | to_entries[]
+       | if .value == null then "SELF\t\(.key + 1)" else "\(.value.issue)\t\(.value.id)\t\(.key + 1)\t\(.value.block.priority? // 0)" end)') || die "cannot compute the goal order"
+  while IFS=$'\t' read -r issue id prio old; do
+    [ "$issue" != SELF ] || { printf '%s' "$id"; continue; }
+    [ "$prio" != "$old" ] || continue
+    g=$(printf '%s' "$reg" | jq -c --argjson i "$issue" '[.[] | select(.issue == $i)][0]')
+    write_priority "$g" "$prio" >/dev/null || echo "warning: could not renumber $id" >&2
+  done <<< "$plan"
+}
+
+# write_priority <registry goal json> <n> — the priority in the registry block and in this host's cache
+write_priority() {
+  local g="$1" n="$2" issue id
+  issue=$(printf '%s' "$g" | jq -r .issue); id=$(printf '%s' "$g" | jq -r .id)
+  g=$(printf '%s' "$g" | jq -c --argjson n "$n" '.block |= (. + {priority: $n})')
+  api_json PATCH "repos/$GOAL_REGISTRY_REPO/issues/$issue" \
+    "$(jq -nc --arg b "$(_goal_queue_body "$g")" '{body:$b}')" >/dev/null || return 1
+  if [ -f "$PIPE/goal-$id.json" ]; then
+    jq -c --argjson n "$n" '. + {priority: $n}' "$PIPE/goal-$id.json" > "$PIPE/goal-$id.json.tmp" && mv "$PIPE/goal-$id.json.tmp" "$PIPE/goal-$id.json"
+  fi
+}
+
+# reg_priority -> the priority to write for the goal being registered (renumbers the others, see goal_place)
 reg_priority() {
-  [ -z "$PRIORITY" ] || { printf '%s' "$PRIORITY"; return 0; }
-  goal_next_priority || die "cannot read the goal registry to pick a priority"
+  if [ -n "$PLACE_MODE" ]; then goal_place "" "$PLACE_MODE" "$PLACE_REF"
+  elif [ -n "$PRIORITY" ]; then goal_place "" at "$PRIORITY"
+  else goal_place "" last; fi
 }
 
 cmd_register_args() {
@@ -128,10 +167,12 @@ cmd_register_args() {
       --include-sentry) sentry=1; shift ;;
       --now) now=1; shift ;;
       --priority) PRIORITY="${2:-}"; case "$PRIORITY" in ''|*[!0-9]*|0) die "--priority needs a whole number, 1 or more (1 starts first)" ;; esac; shift 2 ;;
+      --after|--before) PLACE_MODE="${1#--}"; PLACE_REF="${2:-}"; [ -n "$PLACE_REF" ] || die "$1 needs a goal (spec or id)"; shift 2 ;;
       --host) pin=$(printf '%s' "${2:-}" | tr '[:upper:]' '[:lower:]'); [ -n "$pin" ] || die "--host needs a hostname"; shift 2 ;;
       *) instr="${instr:+$instr }$1"; shift ;;
     esac
   done
+  PRIORITY=$(reg_priority) || exit 1; PLACE_MODE=""   # resolved once: the others are renumbered now
   case "$spec" in
     ''|label:*) cmd_register_label "$spec" "$repos" "$title" "$req" "$sentry" "$mockups" "$instr" "$now" "$pin" ;;
     *)
@@ -153,7 +194,8 @@ cmd_register() {
   check_overlap "$spec" "$id"
   [ "$now" = 1 ] && host="$THIS_HOST"   # queued goals have no host until the supervisor starts them (#320)
   block=$(jq -nc --arg id "$id" --arg spec "$spec" --arg host "$host" --arg pin "$pin" --arg created "$(now_utc)" --arg ins "$instr" \
-    --argjson prio "$(reg_priority)" '{v:1,id:$id,spec:$spec,host:$host,host_pref:$pin,priority:$prio,created:$created,instructions:$ins}')
+    --argjson prio "$PRIORITY" --arg name "$(goal_name_for "$spec" 2>/dev/null)" \
+    '{v:1,id:$id,spec:$spec,host:$host,host_pref:$pin,priority:$prio,created:$created,instructions:$ins} + (if $name != "" then {title:$name} else {} end)')
   body=$(body_for "$spec" "$block")
   ensure_label delivery-goal
   [ "$now" = 1 ] || ensure_label goal-queued
@@ -223,7 +265,7 @@ cmd_register_label() {
   [ "$now" = 1 ] && host="$THIS_HOST"   # queued goals have no host until the supervisor starts them (#320)
   block=$(jq -nc --arg id "$id" --arg spec "$spec" --arg host "$host" --arg pin "$pin" --arg created "$(now_utc)" --arg ins "$instr" \
     --arg title "$title" --arg label "$label" --argjson repos "$repos_json" --arg mockups "$mockups" --arg req "$req" \
-    --argjson sentry "$([ "$sentry" = 1 ] && echo true || echo false)" --argjson prio "$(reg_priority)" \
+    --argjson sentry "$([ "$sentry" = 1 ] && echo true || echo false)" --argjson prio "$PRIORITY" \
     '{v:2,id:$id,title:$title,label:$label,repos:$repos,order:0,priority:$prio,mockups:$mockups,go:false,host_pref:$pin,requirements:$req,
       include_sentry:$sentry,spec:$spec,host:$host,created:$created,instructions:$ins}')
   ensure_label delivery-goal
@@ -300,19 +342,21 @@ cmd_status() {
 
 # cmd_priority <goal|id> <n> — change a registered goal's priority (1 starts first); takes effect at the next supervisor sync
 cmd_priority() {
-  local id g issue block n="${2:-}"
-  case "$n" in ''|*[!0-9]*|0) die "usage: deliver.sh priority <goal|id> <n>   (n = 1 or more, 1 starts first)" ;; esac
+  local id g n mode=at ref=""
   id=$(_goal_resolve "${1:?goal or id required}") || die "goal not found: $1"
+  case "${2:-}" in
+    --after|--before) mode="${2#--}"; ref="${3:-}"; [ -n "$ref" ] || die "$2 needs a goal (spec or id)" ;;
+    ''|*[!0-9]*|0) die "usage: deliver.sh priority <goal|id> <n> | --after <goal> | --before <goal>" ;;
+    *) ref="$2" ;;
+  esac
   g=$(_goal_find "$id") || die "goal not found: $id"
   [ "$(printf '%s' "$g" | jq -r .state)" = open ] || die "$id is closed; its priority cannot change"
   [ "$(printf '%s' "$g" | jq -r .st)" != unreadable ] || die "cannot read the registry block of $id"
-  issue=$(printf '%s' "$g" | jq -r .issue)
-  g=$(printf '%s' "$g" | jq -c --argjson n "$n" '.block |= (. + {priority: $n})')
-  api_json PATCH "repos/$GOAL_REGISTRY_REPO/issues/$issue" \
-    "$(jq -nc --arg b "$(_goal_queue_body "$g")" '{body:$b}')" >/dev/null || die "could not write the registry block"
-  [ -f "$PIPE/goal-$id.json" ] && jq -c --argjson n "$n" '. + {priority: $n}' "$PIPE/goal-$id.json" > "$PIPE/goal-$id.json.tmp" && mv "$PIPE/goal-$id.json.tmp" "$PIPE/goal-$id.json"
-  post_note "$issue" "**[deliver] NOTE** priority set to $n by $THIS_HOST" || true
-  echo "$id priority $n (issue #$issue)"
+  [ "$mode" = at ] || [ "$(_goal_resolve "$ref")" != "$id" ] || die "a goal cannot go before or after itself"
+  n=$(goal_place "$id" "$mode" "$ref") || exit 1
+  write_priority "$g" "$n" || die "could not write the registry block"
+  post_note "$(printf '%s' "$g" | jq -r .issue)" "**[deliver] NOTE** priority set to $n by $THIS_HOST" || true
+  echo "$id priority $n"
 }
 
 cmd_stop() {
