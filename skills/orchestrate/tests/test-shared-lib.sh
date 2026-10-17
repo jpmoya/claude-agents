@@ -193,6 +193,8 @@ for a in "$@"; do
   prev=$a
 done
 [ -e "$D/fail" ] && exit 1
+# #387: the supervisor's marker read is REST (--paginate --slurp => array of pages); the jq runs in the supervisor.
+if [ "$1" = api ]; then jq -c '[.comments]' < "$D/reply.json"; exit 0; fi
 if [ -n "$expr" ]; then jq -r "$expr" < "$D/reply.json"; else cat "$D/reply.json"; fi
 GH_EOF
   chmod +x "$d/bin/gh"
@@ -218,8 +220,7 @@ test_sl_supervisor_latest_marker_one_gh_call_with_shared_expression() {
   calls=$(cat "$d/calls.log")
   assert_ne "$expr" "" "AC2: marker_last_jq must print an expression" || { rm -rf "$d"; return 1; }
   assert_eq "$out" "**[test-writer] TESTS WRITTEN**" "AC3: latest_marker returns the newest real marker (NOTE inert)" || { rm -rf "$d"; return 1; }
-  assert_eq "$calls" "issue view" "AC3: latest_marker makes exactly one gh call (an 'issue view')" || { rm -rf "$d"; return 1; }
-  assert_contains "$(cat "$d/jq-1.txt" 2>/dev/null)" "$expr" "AC2: latest_marker's --jq argument must be marker_last_jq's output" || { rm -rf "$d"; return 1; }
+  assert_eq "$calls" "api repos/{owner}/{repo}/issues/7/comments?per_page=100" "AC3 (#387): latest_marker makes exactly one gh call (a REST comments read)" || { rm -rf "$d"; return 1; }
   rm -rf "$d"
 }
 
@@ -233,7 +234,7 @@ test_sl_supervisor_latest_marker_gh_failure_prints_question_mark() {
   calls=$(cat "$d/calls.log")
   assert_ne "$expr" "" "AC2: marker_last_jq must print an expression" || { rm -rf "$d"; return 1; }
   assert_eq "$out" "?" "AC3: latest_marker keeps its || echo ? fallback when gh fails" || { rm -rf "$d"; return 1; }
-  assert_eq "$calls" "issue view" "AC3: a failing gh is still exactly one call (no retry, no second lookup)" || { rm -rf "$d"; return 1; }
+  assert_eq "$calls" "api repos/{owner}/{repo}/issues/7/comments?per_page=100" "AC3: a failing gh is still exactly one call (no retry, no second lookup)" || { rm -rf "$d"; return 1; }
   rm -rf "$d"
 }
 

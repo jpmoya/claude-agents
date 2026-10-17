@@ -51,6 +51,10 @@ out() { if [ -n "$jqx" ]; then printf '%s' "$1" | jq -r "$jqx"; else printf '%s\
 num=$(printf '%s' "$3" | grep -E '^[0-9]+$')
 withc() { jq -c --slurpfile c "$D/comments.json" '. as $i | $i + {state:($i.state // "OPEN"), comments: [$c[0][] | select(.number==$i.number)]}'; }
 case "$1 $2" in
+  "api repos/{owner}/{repo}") echo "${repo:-project-a/repo-a}"; exit 0;;   # #387: REST repo-name lookup
+  "api repos/{owner}/{repo}/issues/"*)   # #387: REST comments read (--paginate --slurp => array of pages)
+    n=${2#*/issues/}; n=${n%%/*}
+    jq -c --argjson n "$n" '[[.[]|select(.number==$n)]]' "$D/comments.json"; exit 0;;
   "repo view") echo "${repo:-project-a/repo-a}"; exit 0;;
   "issue list")
     r=${repo:-$(cd "$PWD" && git config --get remote.origin.url | sed -E 's#.*github.com/(.*)\.git#\1#')}

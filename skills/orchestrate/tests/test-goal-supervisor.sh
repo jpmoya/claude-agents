@@ -178,7 +178,7 @@ esac
 
 # ---- gh api (REST) ----
 shift
-method=""; path=""; expr=""; obj='{}'; stdin_json=""
+method=""; path=""; slurp=0; expr=""; obj='{}'; stdin_json=""
 while [ $# -gt 0 ]; do
   case "$1" in
     -X|--method) method=$2; shift ;;
@@ -191,7 +191,8 @@ while [ $# -gt 0 ]; do
       esac ;;
     --input) stdin_json=$(cat); shift ;;
     -H|--header) shift ;;
-    --paginate|--silent|-i|--include|--slurp) ;;
+    --slurp) slurp=1 ;;
+    --paginate|--silent|-i|--include) ;;
     -*) ;;
     *) [ -z "$path" ] && path=$1 ;;
   esac
@@ -206,6 +207,8 @@ if [ "$method" = GET ] && [ "$obj" != "{}" ]; then
   for k in $(printf '%s' "$obj" | jq -r 'keys[]'); do q="$q&$k=$(printf '%s' "$obj" | jq -r --arg k "$k" '.[$k]')"; done
 fi
 emit() { if [ -n "$expr" ]; then jq -r "$expr"; else cat; fi; }
+# #387: like real gh, expand {owner}/{repo} placeholders from the working checkout's origin.
+case "$p" in "repos/{owner}/{repo}"*) p="repos/$(cwd_repo)${p#repos/\{owner\}/\{repo\}}" ;; esac
 case "$p" in repos/*/*/*) ;; *) echo "fake gh: unexpected path $p" >&2; exit 1 ;; esac
 owner=$(printf '%s' "$p" | cut -d/ -f2); repo=$(printf '%s' "$p" | cut -d/ -f3); seg=$(printf '%s' "$p" | cut -d/ -f4-)
 rk="${owner}_${repo}"; D="$S/issues/$rk"; mkdir -p "$D"
@@ -230,7 +233,8 @@ case "$method $seg" in
       | sort_by(.number)' "$D"/*.json | emit ;;
   "GET issues/"*"/comments")
     n=$(printf '%s' "$seg" | cut -d/ -f2); f="$S/comments/$rk-$n.json"
-    if [ -f "$f" ]; then emit < "$f"; else echo '[]' | emit; fi ;;
+    [ -f "$f" ] || echo '[]' > "$f"
+    if [ "$slurp" = 1 ]; then jq -c '[.]' "$f" | emit; else emit < "$f"; fi ;;   # #387: --paginate --slurp => array of pages
   "GET issues/"*)
     n=${seg#issues/}; f=$(issue_file "$n")
     if [ -f "$f" ]; then emit < "$f"; else echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi ;;

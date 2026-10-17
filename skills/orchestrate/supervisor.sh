@@ -76,7 +76,21 @@ latest_marker() {  # the GATE marker: newest real routing marker whose agent is 
          and (\$pair == [\"solutions-architect\", \"ui-ux-designer\"] or \$pair == [\"fullstack-developer\", \"test-reviewer\"] or \$pair == [\"code-reviewer\", \"test-reviewer\"])
        then \$p else \$g0 end) as \$gate
     | if (\$last | test(\"^\\\\*\\\\*\\\\[(delivery-lead|project-manager)\\\\] \") | not) then \$gate else \$gate + \"\\n\" + \$last end  # legacy alias"
-  (cd "$repo" 2>/dev/null && gh issue view "$issue" --json comments --jq "$prog") 2>/dev/null || echo "?"
+  # REST, paginated + slurped (>100 comments; no GraphQL budget, #387). A failed read prints "?" and logs one line:
+  # rc + the first stderr line only (never the token lines or a body).
+  local errf out rc slug
+  errf=$(mktemp "${TMPDIR:-/tmp}/marker-err.XXXXXX") || { echo "?"; return 0; }
+  out=$(cd "$repo" 2>/dev/null && gh api "repos/{owner}/{repo}/issues/$issue/comments?per_page=100" --paginate --slurp 2>"$errf" </dev/null \
+    | jq -r "{comments: (add // [])} | $prog" 2>>"$errf"; exit "${PIPESTATUS[0]}")
+  rc=$?
+  if [ "$rc" -eq 0 ] && [ -n "$out" ]; then
+    rm -f "$errf"; printf '%s\n' "$out"; return 0
+  fi
+  [ "$rc" -ne 0 ] || rc=1
+  slug=$(git -C "$repo" config --get remote.origin.url 2>/dev/null | sed -E -e 's#^.*github\.com[:/]+##' -e 's#\.git$##')   # local only: no second gh call while the API is failing
+  slog "[marker] ${slug:-$repo}#$issue — marker read failed rc=$rc: $(head -n1 "$errf" | cut -c1-200)"
+  rm -f "$errf"
+  echo "?"
 }
 
 # blocked_class_of <issue json with .comments> → the `Blocked on: <class>` word of the latest routing marker when it is a
@@ -129,7 +143,7 @@ terminal_kind() {
       if ! [[ "$marker" =~ ^\*\*\[infra- ]]; then echo ""; return; fi
       if [[ "$marker" =~ ^\*\*\[infra-(planner|operator)\] ]]; then
         local orepo burl
-        orepo=$(cd "$repo" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)
+        orepo=$(cd "$repo" && gh api repos/{owner}/{repo} --jq .full_name 2>/dev/null)
         burl=$(gh issue view "$issue" --repo "$orepo" --json comments --jq \
           '[.comments[] | select(.body | split("\n")[0] | test("^\\*\\*\\[infra-(planner|operator)\\] BLOCKED"))] | last | .url' 2>/dev/null)
         if [ -n "$orepo" ] && [ -n "$burl" ] && infra_staging_only "$orepo" "$issue" "$burl"; then echo ""; return; fi
@@ -226,7 +240,7 @@ do_launch() {  # <repo> <issue> <extra> <restart_n> <reason> <queue_wait_s> <run
   [ -n "$rk" ] || rk=$(rk_of "$repo" "$issue")
   local owner_repo prompt title preamble=""
 
-  owner_repo=$(cd "$repo" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo "unknown")
+  owner_repo=$(cd "$repo" && gh api repos/{owner}/{repo} --jq .full_name 2>/dev/null || echo "unknown")
 
   # Ticket title for the status board (#29): orchestrate.sh normally wrote it at launch and restarts reuse that
   # file; fetch only when it is missing. A failed or empty fetch leaves no file and never blocks the launch.
@@ -301,7 +315,7 @@ log_run_exit() {
     if [ -f "$exf" ]; then dur=$(( $(file_mtime "$exf") - launched )); else dur=$((now - launched)); fi
     [ "$dur" -ge 0 ] 2>/dev/null || dur=0
   else dur=null; fi
-  owner_repo=$(cd "$repo" 2>/dev/null && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null </dev/null) || owner_repo=""
+  owner_repo=$(cd "$repo" 2>/dev/null && gh api repos/{owner}/{repo} --jq .full_name 2>/dev/null </dev/null) || owner_repo=""
   [ -n "$owner_repo" ] || owner_repo=unknown
   pipeline_event run_exit --arg run_id "$rid" --arg repo "$owner_repo" --argjson issue "$issue" \
     --argjson exit_code "${ex:-null}" --arg class "$cls" \
@@ -316,7 +330,7 @@ escalate() {  # <repo> <issue> <restarts file> <run_key>
   local repo=$1 issue=$2 restarts_file=$3 rk=$4
   local owner_repo history_text
 
-  owner_repo=$(cd "$repo" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo "unknown")
+  owner_repo=$(cd "$repo" && gh api repos/{owner}/{repo} --jq .full_name 2>/dev/null || echo "unknown")
   history_text=$(python3 -c "
 import json, sys
 try:
@@ -354,7 +368,7 @@ cap_exit_row() {
   local repo=$1 issue=$2 rk=$3 since owner_repo
   since=$(cat "$PIPE/orch-$rk.launched-at" 2>/dev/null || cat "$PIPE/orch-$rk.start" 2>/dev/null)
   [ -n "$since" ] && [ -f "$HOME/.claude/pipeline/runs.jsonl" ] || return 1
-  owner_repo=$(cd "$repo" 2>/dev/null && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null </dev/null) || return 1
+  owner_repo=$(cd "$repo" 2>/dev/null && gh api repos/{owner}/{repo} --jq .full_name 2>/dev/null </dev/null) || return 1
   [ -n "$owner_repo" ] || return 1
   python3 - "$HOME/.claude/pipeline/runs.jsonl" "$issue" "$since" "$owner_repo" <<'PY' 2>/dev/null
 import json, sys
@@ -430,7 +444,7 @@ for f in "$PIPE"/orch-*.pid; do
       slog "[done] #$issue — terminal marker: $marker"
       done_text="Deployed"; case "$marker" in *"] SPLIT"*) done_text="Split into sub-issues" ;; esac
       case "$marker" in *"] REJECTED"*) done_text="Rejected" ;; esac
-      notify_engineering "$issue" ":white_check_mark:" "$done_text" "$(cd "$repo" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo "unknown")"
+      notify_engineering "$issue" ":white_check_mark:" "$done_text" "$(cd "$repo" && gh api repos/{owner}/{repo} --jq .full_name 2>/dev/null || echo "unknown")"
       continue ;;
     gate)
       # Human gate (mockups, infra go, BLOCKED with no delegated decision after it): park it; JP relaunches (or re-adds
@@ -457,12 +471,12 @@ for f in "$PIPE"/orch-*.pid; do
         printf '%s Pipeline #%s parked, auto-retry (%s) — %s\n' "$(date -u +%FT%TZ)" "$issue" "$gate_cls" "$marker" > "$PIPE/orch-$rk.alert"
         slog "[held] #$issue — parked for auto-retry ($gate_cls): $marker"
         report_status_async "held"
-        notify_engineering "$issue" ":hourglass:" "Parked, auto-retry ($gate_cls) — $gate_reason" "$(cd "$repo" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo "unknown")"
+        notify_engineering "$issue" ":hourglass:" "Parked, auto-retry ($gate_cls) — $gate_reason" "$(cd "$repo" && gh api repos/{owner}/{repo} --jq .full_name 2>/dev/null || echo "unknown")"
       else
         printf '%s Pipeline #%s waiting on JP — %s; relaunch (or re-add %s) after acting\n' "$(date -u +%FT%TZ)" "$issue" "$marker" "$LABEL_GO" > "$PIPE/orch-$rk.alert"
         slog "[held] #$issue — waiting on JP: $marker"
         report_status_async "held"   # event push: run held/gate (design #10 §4.4)
-        notify_engineering "$issue" ":hand:" "Waiting on you — $gate_reason" "$(cd "$repo" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo "unknown")"
+        notify_engineering "$issue" ":hand:" "Waiting on you — $gate_reason" "$(cd "$repo" && gh api repos/{owner}/{repo} --jq .full_name 2>/dev/null || echo "unknown")"
       fi
       continue ;;
     grace) continue ;;
@@ -478,7 +492,7 @@ for f in "$PIPE"/orch-*.pid; do
 
   if [ "$exit_class" = rate_limited ] && [ "$exit_lk" = monthly_spend ]; then
     # Restarting cannot fix it and clearing it means spending money: park like a human gate. Counters untouched.
-    run_owner_repo=$(cd "$repo" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo "unknown")
+    run_owner_repo=$(cd "$repo" && gh api repos/{owner}/{repo} --jq .full_name 2>/dev/null || echo "unknown")
     python3 - "$restarts_file" "$(date -u +%FT%TZ)" "$exit_code" "$marker" "$exit_class" "$exit_lk" <<'PY' 2>/dev/null
 import json, sys
 path, ts, ex, marker, cls, lk = sys.argv[1:7]
@@ -569,7 +583,7 @@ PY
     slog "[held] #$issue — $hold_reason, needs a relaunch after it is resolved"
     if [ "$found_stage" = "hand-to-jp" ]; then   # route supervisor/hold/hand-to-jp; payload = issue number + stage only
       notify_engineering "$issue" ":hand:" "Waiting on you — hand-to-jp, PR passed review (route supervisor/hold/hand-to-jp)" \
-        "$(cd "$repo" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo "unknown")"
+        "$(cd "$repo" && gh api repos/{owner}/{repo} --jq .full_name 2>/dev/null || echo "unknown")"
     fi
     report_status_async "held"
     continue
@@ -584,8 +598,11 @@ PY
     count=0; total=0; last_marker=""
   fi
 
-  # Check if marker progressed (reset no-progress counter)
-  if [ "$marker" != "$last_marker" ] && [ -n "$last_marker" ]; then
+  # A failed marker read ("?") is not evidence of anything: not progress, not no-progress (#387).
+  marker_unknown=false; [ "$marker" = "?" ] && marker_unknown=true
+  if $marker_unknown; then
+    marker=$last_marker
+  elif [ "$marker" != "$last_marker" ] && [ -n "$last_marker" ]; then   # marker progressed (reset no-progress counter)
     count=0
     total=0
     slog "[progress] #$issue marker advanced: $last_marker -> $marker"
@@ -605,6 +622,8 @@ PY
     total=$((total + 1))
     if $transient; then
       slog "[transient] #$issue ran ${run_duration}s (<${MIN_RUN_SECS}s) — treating as transient"
+    elif $marker_unknown; then
+      slog "[marker] #$issue — marker unreadable; exit not counted as no-progress (total=$total)"
     else
       count=$((count + 1))
     fi

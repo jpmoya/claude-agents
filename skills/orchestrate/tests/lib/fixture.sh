@@ -257,6 +257,18 @@ case "$*" in
     if [ -n "$f" ] && [ -f "$f" ]; then cat "$f"; else echo '[]'; fi
     exit 0
     ;;
+  "api repos/{owner}/{repo}/issues/"*"/comments"*)
+    # #387: the supervisor reads comments over REST (--paginate --slurp => array of pages). Served from the same
+    # fixtures as `issue view <n> --json comments`, including gh-issue-view-rc (a failing read).
+    n=${2#*/issues/}; n=${n%%/*}
+    out=$("$0" issue view "$n" --json comments) || exit $?
+    printf '%s' "$out" | jq -c '[(.comments // [])]'
+    exit 0
+    ;;
+  "api repos/{owner}/{repo}"*)
+    cat "$HERE/gh-name-with-owner" 2>/dev/null || echo "unknown/unknown"
+    exit 0
+    ;;
   *"issue view"*)
     # Additive (#51): the per-issue variant <file>-<n> of every gh-issue-* file below wins over the
     # plain <file> when it exists (n = the number right after "issue view"); gh-issue-view-rc makes
