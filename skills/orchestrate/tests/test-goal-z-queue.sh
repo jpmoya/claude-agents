@@ -484,11 +484,10 @@ test_zq_step5_dispatches_a_goal_ticket_whose_lead_is_not_live() {
   assert_eq "$(zq_step5 'goal:alpha' dead)" "yes" "step 5: fallback — goal label, lead not live -> dispatched" || return 1
   assert_eq "$(zq_step5 'goal:alpha' none)" "yes" "step 5: fallback — goal label, no such goal here -> dispatched" || return 1
 }
-# The issue's rule is literal: only a LIVE lead on this host takes its tickets off step 5. A goal still waiting in the queue has no
-# live lead, so its agent-go tickets are dispatched by step 5 like any fallback ticket (see the report: this lets a queued goal's
-# approved tickets run ahead of the queue; holding them back is a one-line change in supervisor.sh).
-test_zq_step5_dispatches_tickets_of_a_goal_still_in_the_queue() {
-  assert_eq "$(zq_step5 'goal:alpha' queued)" "yes" "step 5: a queued goal has no live lead -> its ticket is dispatched (fallback)" || return 1
+# JP 2026-10-17: a goal's tickets start only after the goal has officially started. A goal still waiting in the queue keeps its
+# approved tickets off step 5 (they stay agent-go and are picked up once the lead is live).
+test_zq_step5_holds_tickets_of_a_goal_still_in_the_queue() {
+  assert_eq "$(zq_step5 'goal:alpha' queued)" "no" "step 5: a queued goal has not started -> its ticket waits" || return 1
 }
 
 # ---------------------------------------------------------------- item 1: register enqueues ----------------------
