@@ -28,7 +28,7 @@ GH_EOF
 # Hand arithmetic: no registry issue exists beforehand, so the new one is #900 and open; exactly 1 lead launch.
 test_dl_first_registration_with_lagging_list_launches() {
   dl_setup
-  dg_run "$DG_SPEC_T7" "focus on quotes"
+  dg_run "$DG_SPEC_T7" --now "focus on quotes"   # #320: --now keeps the immediate launch these cases are about
   local f rc=0
   assert_eq "$DG_RC" "0" "AC-D: register exits 0 despite the lagging list (stderr: $DG_ERR)" || rc=1
   assert_not_contains "$DG_ERR" "not found in the registry" "AC-D: no 'not found in the registry' message" || rc=1
@@ -54,7 +54,7 @@ test_dl_reregistration_with_lagging_list_uses_new_issue() {
   DG_GOAL_ID=$DG_ID_MS
   dg_goal 10 "$DG_SPEC_MS" host-a stopped "OLD-INSTRUCTIONS-FROM-PREDECESSOR"
   local newspec="example-owner/project-a:milestone:$DG_TITLE" d prompt rc=0
-  dg_run "$newspec" "NEW-INSTRUCTIONS-FROM-REGISTER"
+  dg_run "$newspec" --now "NEW-INSTRUCTIONS-FROM-REGISTER"
   assert_eq "$DG_RC" "0" "AC-E: register exits 0 (stderr: $DG_ERR)" || rc=1
   dg_wait_claude 1 || { fail "AC-E: the lead was never launched"; dg_teardown; return 1; }
   d=$(dg_last_claude_dir); prompt=$(cat "$d/argv")
@@ -121,7 +121,7 @@ EOF
   chmod +x "$DG_BIN/curl"
   mkdir -p "$DG_PIPE/goal-$DG_ID_T7.pid"
   local rc=0 n all
-  dg_run "$DG_SPEC_T7" "SECRET-INSTRUCTION-TEXT"
+  dg_run "$DG_SPEC_T7" --now "SECRET-INSTRUCTION-TEXT"
   assert_ne "$DG_RC" "0" "AC-G: register fails when the launch fails" || rc=1
   assert_contains "$DG_ERR" "launch failed" "AC-G: failure message" || rc=1
   n=$(ls -d "$DG_BIN"/curl-calls.* 2>/dev/null | wc -l | tr -d ' ')

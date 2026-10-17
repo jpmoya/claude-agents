@@ -12,12 +12,12 @@ fi
 i271c_run() {
   local body="$AR2_BLK"$'\n''Blocked on: ci_red — checks failing'
   sq_env open; sq_free_slots; ar2_install_gh
-  mk_restarting "$SQ_PIPE" 42 "$SQ_REPO"; sq_iso_ago 7200 > "$SQ_PIPE/orch-42.start"
-  echo "$1" > "$SQ_PIPE/orch-42.autoretry"
+  mk_restarting "$SQ_PIPE" 42 "$SQ_REPO"; sq_iso_ago 7200 > "$(rkp "$SQ_PIPE/orch-42.start")"
+  echo "$1" > "$(rkp "$SQ_PIPE/orch-42.autoretry")"
   jq -nc --arg b "$body" '[{body:$b, createdAt:"2026-09-20T10:00:00Z", author:{login:"x"}}]' > "$SQ_GH/gh-issue-comments-json-42"
   echo fail > "$SQ_GH/gh-pr-checks"
   sq_tick
-  I271C_ALERT=$(cat "$SQ_PIPE/orch-42.alert" 2>/dev/null)
+  I271C_ALERT=$(cat "$(rkp "$SQ_PIPE/orch-42.alert")" 2>/dev/null)
   sq_cleanup
 }
 

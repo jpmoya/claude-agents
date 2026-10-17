@@ -72,7 +72,7 @@ test_st_ac9_title_known_emits_title_and_url_without_network() {
   st_write_alias_config "$home"
   bin=$(st_install_fakes "$home")
   mk_running "$pipe" 601 "$repoA"
-  printf 'Fix login redirect\n' > "$pipe/orch-601.title"
+  printf 'Fix login redirect\n' > "$(rkp "$pipe/orch-601.title")"
 
   out=$(st_print "$pipe" "$home"); rc=$?
   local gh_n curl_log
@@ -95,10 +95,10 @@ test_st_ac10_no_empty_or_blank_title_file_emits_neither_field() {
   pipe=$(new_pipe); home=$(new_home)
   repoA="$pipe/repo-project-a"; fixture_repo "$repoA" "example-owner/project-a"
   st_write_alias_config "$home"
-  mk_running "$pipe" 601 "$repoA"; printf 'Fix login redirect\n' > "$pipe/orch-601.title"   # positive control
+  mk_running "$pipe" 601 "$repoA"; printf 'Fix login redirect\n' > "$(rkp "$pipe/orch-601.title")"   # positive control
   mk_running "$pipe" 602 "$repoA"                                                            # no title file
-  mk_running "$pipe" 603 "$repoA"; : > "$pipe/orch-603.title"                                # empty file
-  mk_running "$pipe" 604 "$repoA"; printf '   \n' > "$pipe/orch-604.title"                    # blank after strip
+  mk_running "$pipe" 603 "$repoA"; : > "$(rkp "$pipe/orch-603.title")"                                # empty file
+  mk_running "$pipe" 604 "$repoA"; printf '   \n' > "$(rkp "$pipe/orch-604.title")"                    # blank after strip
 
   out=$(st_print "$pipe" "$home"); rc=$?
   cleanup_running; rm -rf "$pipe" "$home"
@@ -119,11 +119,11 @@ test_st_ac10_unreadable_title_file_emits_neither_field() {
   pipe=$(new_pipe); home=$(new_home)
   repoA="$pipe/repo-project-a"; fixture_repo "$repoA" "example-owner/project-a"
   st_write_alias_config "$home"
-  mk_running "$pipe" 601 "$repoA"; printf 'Fix login redirect\n' > "$pipe/orch-601.title"   # positive control
-  mk_running "$pipe" 605 "$repoA"; printf 'Secret unreadable\n' > "$pipe/orch-605.title"; chmod 000 "$pipe/orch-605.title"
+  mk_running "$pipe" 601 "$repoA"; printf 'Fix login redirect\n' > "$(rkp "$pipe/orch-601.title")"   # positive control
+  mk_running "$pipe" 605 "$repoA"; printf 'Secret unreadable\n' > "$(rkp "$pipe/orch-605.title")"; chmod 000 "$(rkp "$pipe/orch-605.title")"
 
   out=$(st_print "$pipe" "$home"); rc=$?
-  chmod 644 "$pipe/orch-605.title"
+  chmod 644 "$(rkp "$pipe/orch-605.title")"
   cleanup_running; rm -rf "$pipe" "$home"
 
   assert_exit0 "$rc" "AC10: exit 0 with an unreadable title file" || return 1
@@ -139,10 +139,10 @@ test_st_ac10_title_capped_at_140_characters() {
   pipe=$(new_pipe); home=$(new_home)
   repoA="$pipe/repo-project-a"; fixture_repo "$repoA" "example-owner/project-a"
   st_write_alias_config "$home"
-  mk_running "$pipe" 701 "$repoA"; python3 -c "print('a'*139)"  > "$pipe/orch-701.title"
-  mk_running "$pipe" 702 "$repoA"; python3 -c "print('a'*140)"  > "$pipe/orch-702.title"
-  mk_running "$pipe" 703 "$repoA"; python3 -c "print('a'*141)"  > "$pipe/orch-703.title"
-  mk_running "$pipe" 704 "$repoA"; python3 -c "print('a'*300)"  > "$pipe/orch-704.title"
+  mk_running "$pipe" 701 "$repoA"; python3 -c "print('a'*139)"  > "$(rkp "$pipe/orch-701.title")"
+  mk_running "$pipe" 702 "$repoA"; python3 -c "print('a'*140)"  > "$(rkp "$pipe/orch-702.title")"
+  mk_running "$pipe" 703 "$repoA"; python3 -c "print('a'*141)"  > "$(rkp "$pipe/orch-703.title")"
+  mk_running "$pipe" 704 "$repoA"; python3 -c "print('a'*300)"  > "$(rkp "$pipe/orch-704.title")"
 
   out=$(st_print "$pipe" "$home"); rc=$?
   cleanup_running; rm -rf "$pipe" "$home"
@@ -162,7 +162,7 @@ test_st_ac10_title_is_first_line_stripped() {
   repoA="$pipe/repo-project-a"; fixture_repo "$repoA" "example-owner/project-a"
   st_write_alias_config "$home"
   mk_running "$pipe" 601 "$repoA"
-  printf '  Fix login redirect  \nsecond line must not appear\n' > "$pipe/orch-601.title"
+  printf '  Fix login redirect  \nsecond line must not appear\n' > "$(rkp "$pipe/orch-601.title")"
 
   out=$(st_print "$pipe" "$home")
   cleanup_running; rm -rf "$pipe" "$home"
@@ -176,6 +176,7 @@ test_st_design4_title_without_resolvable_owner_repo_has_no_url() {
   nogit="$pipe/not-a-git-repo"; mkdir -p "$nogit"    # no remote.origin.url -> owner_repo unresolved
   st_write_alias_config "$home"
   mk_running "$pipe" 601 "$nogit"
+  # #318: with no resolvable owner/repo the builder (build-runs-json.py stem()) reads the bare legacy name
   printf 'Fix login redirect\n' > "$pipe/orch-601.title"
 
   out=$(st_print "$pipe" "$home"); rc=$?
@@ -194,7 +195,7 @@ test_st_ac11_owner_repo_appears_only_inside_run_urls() {
   repoA="$pipe/repo-project-a"; fixture_repo "$repoA" "example-owner/project-a"
   st_write_alias_config "$home"
   mk_running "$pipe" 601 "$repoA"
-  printf 'Fix login redirect\n' > "$pipe/orch-601.title"
+  printf 'Fix login redirect\n' > "$(rkp "$pipe/orch-601.title")"
 
   out=$(st_print "$pipe" "$home")
   cleanup_running; rm -rf "$pipe" "$home"
@@ -270,7 +271,7 @@ st_launch() {  # st_launch <issue> — orchestrate.sh in the isolated env; combi
 }
 
 st_title_file_content() {  # content of $ST_PIPE/orch-<issue>.title, or ABSENT
-  if [ -f "$ST_PIPE/orch-$1.title" ]; then printf '%s' "$(cat "$ST_PIPE/orch-$1.title")"; else printf 'ABSENT'; fi
+  if [ -f "$(rkp "$ST_PIPE/orch-$1.title")" ]; then printf '%s' "$(cat "$(rkp "$ST_PIPE/orch-$1.title")")"; else printf 'ABSENT'; fi
 }
 
 test_st_ac12_launched_path_writes_title_file() {
@@ -291,7 +292,7 @@ test_st_ac12_queued_path_writes_title_file() {
   local out rc title queued=absent
   out=$(st_launch 42); rc=$?
   title=$(st_title_file_content 42)
-  [ -f "$ST_PIPE/queue/orch-42.json" ] && queued=present
+  [ -f "$(rkp "$ST_PIPE/queue/orch-42.json")" ] && queued=present
   st_cleanup
   assert_exit0 "$rc" "AC12: queued launch exits 0" || return 1
   assert_contains "$out" "queued #42" "AC12: launch was queued" || return 1
@@ -301,7 +302,7 @@ test_st_ac12_queued_path_writes_title_file() {
 
 test_st_ac12_relaunch_overwrites_stale_title_file() {
   st_env open
-  printf 'old title\n' > "$ST_PIPE/orch-42.title"
+  printf 'old title\n' > "$(rkp "$ST_PIPE/orch-42.title")"
   local rc title
   st_launch 42 >/dev/null; rc=$?
   title=$(st_title_file_content 42)
@@ -313,11 +314,11 @@ test_st_ac12_relaunch_overwrites_stale_title_file() {
 test_st_ac12_failed_fetch_launched_path_still_launches_without_title_file() {
   st_env open
   echo 1 > "$ST_BIN/gh-issue-title-rc"
-  printf 'old title\n' > "$ST_PIPE/orch-42.title"     # stale file from a previous run must be removed
+  printf 'old title\n' > "$(rkp "$ST_PIPE/orch-42.title")"     # stale file from a previous run must be removed
   local out rc title pid=absent
   out=$(st_launch 42); rc=$?
   title=$(st_title_file_content 42)
-  [ -f "$ST_PIPE/orch-42.pid" ] && pid=present
+  [ -f "$(rkp "$ST_PIPE/orch-42.pid")" ] && pid=present
   st_cleanup
   assert_exit0 "$rc" "AC12: launch still exits 0 when the title fetch fails (set -euo pipefail must not abort it)" || return 1
   assert_contains "$out" "launched orchestrator" "AC12: launch proceeded normally" || return 1
@@ -333,7 +334,7 @@ test_st_ac12_failed_fetch_queued_path_still_queues_without_title_file() {
   echo 1 > "$ST_BIN/gh-issue-title-rc"
   out=$(st_launch 42); rc=$?
   title=$(st_title_file_content 42)
-  [ -f "$ST_PIPE/queue/orch-42.json" ] && queued=present
+  [ -f "$(rkp "$ST_PIPE/queue/orch-42.json")" ] && queued=present
   st_cleanup
   assert_eq "$ctl" "Fixture title" "AC12: control — #41 (successful fetch) has its title file" || return 1
   assert_exit0 "$rc" "AC12: queued launch still exits 0 when the title fetch fails" || return 1
@@ -369,7 +370,7 @@ test_st_ac12_supervisor_do_launch_fetches_title_when_file_absent() {
   st_supervisor_tick
   local title pid=absent
   title=$(st_title_file_content 42)
-  [ -f "$ST_PIPE/orch-42.pid" ] && pid=present
+  [ -f "$(rkp "$ST_PIPE/orch-42.pid")" ] && pid=present
   st_cleanup
   assert_eq "$pid" "present" "AC12: supervisor drained the queue entry and launched #42 (scenario sanity)" || return 1
   assert_eq "$title" "Fixture title" "AC12: do_launch fetches the title when no .title file exists" || return 1
@@ -377,7 +378,7 @@ test_st_ac12_supervisor_do_launch_fetches_title_when_file_absent() {
 
 test_st_ac12_supervisor_do_launch_reuses_existing_title_file() {
   st_env open; st_sleepy_claude
-  printf 'Kept title\n' > "$ST_PIPE/orch-42.title"
+  printf 'Kept title\n' > "$ST_PIPE/orch-$(rk "$ST_REPO" 42).title"
   echo "Different title from gh" > "$ST_BIN/gh-issue-title"
   mk_queued "$ST_PIPE" 42 "$ST_REPO"
   st_supervisor_tick                                     # tick 1: launches #42 (title file exists)
@@ -386,8 +387,8 @@ test_st_ac12_supervisor_do_launch_reuses_existing_title_file() {
   local kept ctl pid42=absent pid43=absent calls42
   kept=$(st_title_file_content 42)
   ctl=$(st_title_file_content 43)
-  [ -f "$ST_PIPE/orch-42.pid" ] && pid42=present
-  [ -f "$ST_PIPE/orch-43.pid" ] && pid43=present
+  [ -f "$(rkp "$ST_PIPE/orch-42.pid")" ] && pid42=present
+  [ -f "$(rkp "$ST_PIPE/orch-43.pid")" ] && pid43=present
   calls42=$(gh_call_count "$ST_BIN" "issue view 42 --json title")
   st_cleanup
   assert_eq "$pid42" "present" "AC12: supervisor launched #42 (scenario sanity)" || return 1
@@ -408,7 +409,7 @@ test_st_ac12_supervisor_do_launch_tolerates_failed_fetch() {
   st_supervisor_tick
   local title pid=absent
   title=$(st_title_file_content 42)
-  [ -f "$ST_PIPE/orch-42.pid" ] && pid=present
+  [ -f "$(rkp "$ST_PIPE/orch-42.pid")" ] && pid=present
   st_cleanup
   assert_eq "$ctl" "Fixture title" "AC12: control — #41 (successful fetch) has its title file" || return 1
   assert_eq "$pid" "present" "AC12: a failed title fetch does not stop do_launch from launching" || return 1
@@ -419,8 +420,8 @@ test_st_ac12_supervisor_do_launch_has_existence_guarded_fetch() {
   local body
   body=$(awk '/^do_launch\(\) \{/{on=1} on{print} on && /^}/{exit}' "$SUP_ST")
   assert_ne "$body" "" "AC12: do_launch found in supervisor.sh" || return 1
-  printf '%s\n' "$body" | grep -qE -- '-f[[:space:]]+"\$PIPE/orch-\$issue\.title"' \
-    || { fail "AC12: do_launch must guard the fetch with a [ -f \"\$PIPE/orch-\$issue.title\" ]-style existence check"; return 1; }
+  printf '%s\n' "$body" | grep -qE -- '-f[[:space:]]+"\$PIPE/orch-\$rk\.title"' \
+    || { fail "AC12: do_launch must guard the fetch with a [ -f \"\$PIPE/orch-\$rk.title\" ]-style existence check"; return 1; }
   printf '%s\n' "$body" | grep -q -- '--json title' \
     || { fail "AC12: do_launch must fetch the title via gh issue view --json title"; return 1; }
 }

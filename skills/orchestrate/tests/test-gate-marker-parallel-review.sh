@@ -106,13 +106,13 @@ test_gm_ac1_latest_marker_prints_the_developer_blocked() {
 test_gm_ac1_tick_holds_for_jp_and_does_not_restart() {
   gm_env
   mk_restarting "$GM_PIPE" 42 "$GM_REPO"
-  gm_iso_ago 1300 > "$GM_PIPE/orch-42.start"   # past GRACE_PERIOD_SECS
+  gm_iso_ago 1300 > "$(rkp "$GM_PIPE/orch-42.start")"   # past GRACE_PERIOD_SECS
   gm_thread "$GM_WRITTEN" "$GM_BLOCKED" "$GM_APPROVED"
   HOME="$GM_HOME" PATH="$GM_GH:/usr/bin:/bin" PIPE="$GM_PIPE" QUEUE="$GM_PIPE/queue" LOGDIR="$GM_HOME/logs/pipeline" \
     SLACK_BOT_TOKEN="" SLACK_ENGINEERING_CHANNEL="" "$SUP_GM" >/dev/null 2>&1
   local held log queued
-  held=$([ -e "$GM_PIPE/orch-42.held" ] && echo present || echo absent)
-  queued=$([ -e "$GM_PIPE/queue/orch-42.json" ] && echo present || echo absent)
+  held=$([ -e "$(rkp "$GM_PIPE/orch-42.held")" ] && echo present || echo absent)
+  queued=$([ -e "$(rkp "$GM_PIPE/queue/orch-42.json")" ] && echo present || echo absent)
   log=$(cat "$GM_HOME/logs/pipeline/supervisor.log" 2>/dev/null)
   gm_cleanup
   assert_eq "$held" "present" "AC1: .held" || return 1
@@ -132,12 +132,12 @@ test_gm_ac2_blocked_then_approved_then_decision_prints_blocked_and_decision() {
 test_gm_ac2_tick_with_decision_takes_the_restart_path() {
   gm_env
   mk_restarting "$GM_PIPE" 42 "$GM_REPO"
-  gm_iso_ago 1300 > "$GM_PIPE/orch-42.start"
+  gm_iso_ago 1300 > "$(rkp "$GM_PIPE/orch-42.start")"
   gm_thread "$GM_WRITTEN" "$GM_BLOCKED" "$GM_APPROVED" "$GM_DECISION"
   HOME="$GM_HOME" PATH="$GM_GH:/usr/bin:/bin" PIPE="$GM_PIPE" QUEUE="$GM_PIPE/queue" LOGDIR="$GM_HOME/logs/pipeline" \
     SLACK_BOT_TOKEN="" SLACK_ENGINEERING_CHANNEL="" "$SUP_GM" >/dev/null 2>&1
   local held log
-  held=$([ -e "$GM_PIPE/orch-42.held" ] && echo present || echo absent)
+  held=$([ -e "$(rkp "$GM_PIPE/orch-42.held")" ] && echo present || echo absent)
   log=$(cat "$GM_HOME/logs/pipeline/supervisor.log" 2>/dev/null)
   gm_cleanup
   assert_eq "$held" "absent" "AC2: not held" || return 1
@@ -263,12 +263,12 @@ test_gm_169_decision_on_the_blocked_keeps_it_as_gate() {
 test_gm_169_tick_holds_and_does_not_restart() {
   gm_env
   mk_restarting "$GM_PIPE" 42 "$GM_REPO"
-  gm_iso_ago 1300 > "$GM_PIPE/orch-42.start"
+  gm_iso_ago 1300 > "$(rkp "$GM_PIPE/orch-42.start")"
   gm_thread "$GM_IMPL" '**[code-reviewer] BLOCKED**' '**[test-reviewer] PASS**'
   HOME="$GM_HOME" PATH="$GM_GH:/usr/bin:/bin" PIPE="$GM_PIPE" QUEUE="$GM_PIPE/queue" LOGDIR="$GM_HOME/logs/pipeline" \
     SLACK_BOT_TOKEN="" SLACK_ENGINEERING_CHANNEL="" "$SUP_GM" >/dev/null 2>&1
   local held log
-  held=$([ -e "$GM_PIPE/orch-42.held" ] && echo present || echo absent)
+  held=$([ -e "$(rkp "$GM_PIPE/orch-42.held")" ] && echo present || echo absent)
   log=$(cat "$GM_HOME/logs/pipeline/supervisor.log" 2>/dev/null)
   gm_cleanup
   assert_eq "$held" "present" "169: .held" || return 1

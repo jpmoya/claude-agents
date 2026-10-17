@@ -30,8 +30,8 @@ test_tb_invalid_utf8_title_file_does_not_drop_the_runs() {
   repoA="$pipe/repo-project-a"; fixture_repo "$repoA" "example-owner/project-a"
   mk_running "$pipe" 601 "$repoA"
   mk_running "$pipe" 602 "$repoA"
-  printf 'Fix login redirect\n' > "$pipe/orch-601.title"   # control: a well-formed title
-  printf 'caf\xe9 \xff\xfe menu\n' > "$pipe/orch-602.title"   # latin-1 / stray bytes, not UTF-8
+  printf 'Fix login redirect\n' > "$(rkp "$pipe/orch-601.title")"   # control: a well-formed title
+  printf 'caf\xe9 \xff\xfe menu\n' > "$(rkp "$pipe/orch-602.title")"   # latin-1 / stray bytes, not UTF-8
   out=$(PIPE="$pipe" QUEUE="$pipe/queue" HOME="$home" "$RS_TB/report-status.sh" --print 2>/dev/null); rc=$?
   local issue601 title601 issue602
   issue601=$(tb_run_field "$out" 601 issue)

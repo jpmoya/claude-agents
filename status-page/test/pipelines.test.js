@@ -13,7 +13,7 @@ vi.mock('../src/render.js', async (importOriginal) => {
 import worker, { __resetRateLimiter } from '../src/index.js';
 import * as render from '../src/render.js';
 import { captureError as realCaptureError } from '../src/capture.js';
-import { PIPELINES, findDrift } from '../src/pipelines.js';
+import { PIPELINES, STAGE_INPUTS as STAGE_INPUTS_IMPORT, findDrift } from '../src/pipelines.js';
 import { createMockKV } from './mock-kv.js';
 import { makeEnv, getRequest } from './fixtures.js';
 
@@ -288,6 +288,13 @@ describe('existing status view unchanged (AC3)', () => {
   .badge.goal-waiting_jp { background: #9a6700; color: #ffffff; }
   .badge.goal-held { background: #a40e26; color: #ffffff; }
   .badge.goal-between_cycles { background: #6e7781; color: #ffffff; }
+  .badge.goal-delivered { background: #1a7f37; color: #ffffff; }
+  .badge.goal-stopped { background: #6e7781; color: #ffffff; }
+  .legend h3 { font-size: 0.95em; margin: 0.5em 0 0.3em; }
+  .legend dt { font-weight: 600; margin-top: 0.4em; }
+  .legend dd { margin: 0 0 0 1rem; }
+  .goals-closed h3 { font-size: 0.95em; margin: 1em 0 0.3em; }
+  .goals-closed ul { margin: 0; padding-left: 1.2em; }
   table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
   th, td { text-align: left; padding: 0.25rem; border-bottom: 1px solid rgba(127, 127, 127, 0.3); }
   section.host, section.group { margin-bottom: 1.5rem; }
@@ -390,5 +397,27 @@ describe('captureError (AC9, real module)', () => {
       fetchSpy.mockRejectedValue(new Error('network down'));
       await expect(captureError(new Error('x'), tags, { SLACK_WEBHOOK_URL: HOOK })).resolves.toBeUndefined();
     });
+  });
+});
+
+describe('stage inputs diagram', () => {
+  it('lists every stage with its inputs, no script, only real agents', async () => {
+    const { STAGE_INPUTS } = await import('../src/pipelines.js');
+    const { html } = await getPipelines();
+    expect(html).toContain('What each stage takes in');
+    for (const t of STAGE_INPUTS) {
+      for (const s of t.stages) {
+        expect(s.inputs.length, s.name).toBeGreaterThan(0);
+        expect(existsSync(join(repoRoot, 'agents', `${s.name}.md`)), s.name).toBe(true);
+        expect(html).toContain(`<b>${s.name}</b>`);
+      }
+    }
+    expect(html).toContain('TESTS WRITTEN: Branch, Commit');
+  });
+
+  it('uses only vocabulary the orchestrator source documents', () => {
+    const STAGE_INPUTS = STAGE_INPUTS_IMPORT;
+    const names = STAGE_INPUTS.flatMap((t) => t.stages.map((s) => s.name));
+    expect(findDrift(names.map((n) => ({ id: n, title: n, stages: [{ name: n }] })), SOURCES)).toEqual([]);
   });
 });

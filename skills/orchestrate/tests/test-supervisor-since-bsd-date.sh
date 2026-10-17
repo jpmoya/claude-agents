@@ -29,12 +29,12 @@ bd_run() {
   sq_env open
   bd_install_date_stub
   mk_restarting "$SQ_PIPE" 42 "$SQ_REPO"
-  sq_iso_ago 600 > "$SQ_PIPE/orch-42.launched-at"
+  sq_iso_ago 600 > "$(rkp "$SQ_PIPE/orch-42.launched-at")"
   sq_marker "$MS_IMPL"
   ms_seed_run_line "$1" "$2"
   sq_tick
   BD_LOG=$(sq_log)
-  BD_HELD=$(sq_present "$SQ_PIPE/orch-42.held")
+  BD_HELD=$(sq_present "$(rkp "$SQ_PIPE/orch-42.held")")
   sq_cleanup
 }
 
