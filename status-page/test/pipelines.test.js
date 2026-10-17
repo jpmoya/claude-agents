@@ -288,6 +288,10 @@ describe('existing status view unchanged (AC3)', () => {
   .badge.goal-waiting_jp { background: #9a6700; color: #ffffff; }
   .badge.goal-held { background: #a40e26; color: #ffffff; }
   .badge.goal-between_cycles { background: #6e7781; color: #ffffff; }
+  .badge.goal-delivered { background: #1a7f37; color: #ffffff; }
+  .badge.goal-stopped { background: #6e7781; color: #ffffff; }
+  .goals-closed h3 { font-size: 0.95em; margin: 1em 0 0.3em; }
+  .goals-closed ul { margin: 0; padding-left: 1.2em; }
   table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
   th, td { text-align: left; padding: 0.25rem; border-bottom: 1px solid rgba(127, 127, 127, 0.3); }
   section.host, section.group { margin-bottom: 1.5rem; }

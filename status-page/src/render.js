@@ -158,6 +158,8 @@ function renderGroupSection(group) {
 
 const GOAL_STATE_LABELS = { waiting_jp: 'waiting on JP', held: 'held', running: 'running', between_cycles: 'between cycles', queued: 'queued' };
 const GOAL_STATE_ORDER = ['waiting_jp', 'held', 'running', 'between_cycles', 'queued'];
+const GOAL_CLOSED_LABELS = { delivered: 'delivered', stopped: 'stopped' };
+const GOALS_CLOSED_SHOWN = 5;
 const GOAL_COLUMNS = ['Goal', 'Host', 'State', 'Delivered', 'Last cycle'];
 
 /**
@@ -209,9 +211,27 @@ function goalStateText(g) {
   return g.state === 'queued' && Number.isInteger(g.queue_pos) ? `${label} #${g.queue_pos}` : label;
 }
 
+/** Compact list of the most recent closed goals: "Title (repos) — delivered, 20 Sep". */
+function renderClosedGoals(closed) {
+  if (closed.length === 0) return '';
+  const recent = [...closed]
+    .sort((a, b) => (b.closed_at || '').localeCompare(a.closed_at || '') || (a.id < b.id ? -1 : 1))
+    .slice(0, GOALS_CLOSED_SHOWN);
+  const items = recent
+    .map((g) => {
+      const name = esc(g.title || g.spec);
+      const when = g.closed_at ? `, ${esc(formatCet(g.closed_at))}` : '';
+      return `<li>${name} — <span class="badge goal-${esc(g.state)}">${esc(GOAL_CLOSED_LABELS[g.state])}</span>${when}</li>`;
+    })
+    .join('');
+  return `<div class="goals-closed"><h3>Recently closed</h3><ul>${items}</ul></div>`;
+}
+
 function renderGoalsSection(hosts) {
-  const goals = mergeGoals(hosts);
-  if (goals.length === 0) return '';
+  const all = mergeGoals(hosts);
+  const closed = all.filter((g) => g.state in GOAL_CLOSED_LABELS);
+  const goals = all.filter((g) => !(g.state in GOAL_CLOSED_LABELS));
+  if (all.length === 0) return '';
   const delivered = (g) =>
     Number.isInteger(g.scope_delivered) && Number.isInteger(g.scope_total) ? `${g.scope_delivered}/${g.scope_total}` : '–';
   // a cross-repo label goal (#319) shows its title, repos and order; a v1 goal its spec
@@ -227,12 +247,16 @@ function renderGoalsSection(hosts) {
     esc(formatCet(g.last_cycle_at) || '–'),
   ];
   const rows = goals.map((g) => `<tr>${cells(g).map((c) => `<td>${c}</td>`).join('')}</tr>`).join('');
-  return `<section class="group">
-    <h2>Goals</h2>
-    <table>
+  const table =
+    goals.length === 0
+      ? ''
+      : `<table>
       <tr>${GOAL_COLUMNS.map((c) => `<th>${esc(c)}</th>`).join('')}</tr>
       <tbody>${rows}</tbody>
-    </table>
+    </table>`;
+  return `<section class="group">
+    <h2>Goals</h2>
+    ${table}${renderClosedGoals(closed)}
   </section>`;
 }
 
@@ -302,6 +326,10 @@ export function renderPage(hosts, thresholds, nowEpochSecs) {
   .badge.goal-waiting_jp { background: #9a6700; color: #ffffff; }
   .badge.goal-held { background: #a40e26; color: #ffffff; }
   .badge.goal-between_cycles { background: #6e7781; color: #ffffff; }
+  .badge.goal-delivered { background: #1a7f37; color: #ffffff; }
+  .badge.goal-stopped { background: #6e7781; color: #ffffff; }
+  .goals-closed h3 { font-size: 0.95em; margin: 1em 0 0.3em; }
+  .goals-closed ul { margin: 0; padding-left: 1.2em; }
   table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
   th, td { text-align: left; padding: 0.25rem; border-bottom: 1px solid rgba(127, 127, 127, 0.3); }
   section.host, section.group { margin-bottom: 1.5rem; }
