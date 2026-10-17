@@ -161,11 +161,11 @@ const GOAL_STATE_ORDER = ['waiting_jp', 'held', 'running', 'between_cycles', 'qu
 const GOAL_CLOSED_LABELS = { delivered: 'delivered', stopped: 'stopped' };
 const GOALS_CLOSED_SHOWN = 5;
 
-/** A goal's name, linked to its registry issue when the report carries a valid GitHub issue URL. */
+/** A goal's name, linked to its ticket search / milestone / issue (already validated by validate.js as a github.com URL). */
 function goalName(g, text) {
   const name = esc(text);
-  return typeof g.url === 'string' && /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/\d+$/.test(g.url)
-    ? `<a href="${esc(g.url)}">${name}</a>`
+  return typeof g.url === 'string' && g.url.startsWith('https://github.com/')
+    ? `<a href="${esc(g.url)}" target="_blank" rel="noopener">${name}</a>`
     : name;
 }
 const GOAL_COLUMNS = ['Goal', 'Host', 'State', 'Delivered', 'Last cycle'];

@@ -24,6 +24,7 @@ import subprocess
 import os
 import re
 import datetime
+import urllib.parse
 
 aliases_raw, runs_jsonl = sys.argv[1], sys.argv[2]
 pipe_dir = sys.argv[3] if len(sys.argv) > 3 else ""
@@ -270,10 +271,30 @@ def _pid_alive(path):
 
 
 def _goal_url(issue):
-    # the goal's registry issue on GitHub; the status page links the goal name to it
+    # the goal's registry issue on GitHub
     if isinstance(issue, int) and not isinstance(issue, bool) and issue > 0:
         return "https://github.com/%s/issues/%d" % (os.environ.get("GOAL_REGISTRY_REPO") or "jpmoya/claude-agents", issue)
     return None
+
+
+def _goal_link(d):
+    """Where a goal's name leads: a GitHub search of every ticket of the goal across its repos (label goal), the
+    milestone page (milestone goal), the ticket (ticket goal); else the registry issue."""
+    label, repos, spec = d.get("label"), d.get("repos"), d.get("spec")
+    if isinstance(label, str) and label and isinstance(repos, list) and repos and all(isinstance(r, str) and r for r in repos):
+        q = 'is:issue label:"%s" ' % label.replace('"', "") + " ".join("repo:" + r for r in repos)
+        return "https://github.com/issues?q=" + urllib.parse.quote(q, safe="")
+    if isinstance(spec, str):
+        m = re.match(r"^([\w.-]+/[\w.-]+):milestone:(\d+)$", spec)
+        if m:
+            return "https://github.com/%s/milestone/%s?closed=1" % (m.group(1), m.group(2))
+        m = re.match(r"^([\w.-]+/[\w.-]+):milestones?:", spec)
+        if m:
+            return "https://github.com/%s/issues?q=%s" % (m.group(1), urllib.parse.quote("is:issue milestone:*", safe=""))
+        m = re.match(r"^([\w.-]+/[\w.-]+)#(\d+)$", spec)
+        if m:
+            return "https://github.com/%s/issues/%s" % (m.group(1), m.group(2))
+    return _goal_url(d.get("issue"))
 
 
 def build_goals():
@@ -331,8 +352,8 @@ def build_goals():
                 entry[k] = v
         if isinstance(d.get("last_cycle_at"), str) and ISO_Z_RE.match(d["last_cycle_at"]):
             entry["last_cycle_at"] = d["last_cycle_at"]
-        if _goal_url(d.get("issue")):
-            entry["url"] = _goal_url(d.get("issue"))
+        if _goal_link(d):
+            entry["url"] = _goal_link(d)
         out.append(entry)
         if len(out) >= GOALS_MAX:
             break
@@ -377,6 +398,8 @@ def build_goals():
                 entry["order"] = d["order"]
             if pos == 1 and paused:
                 entry["paused"] = paused
+            if _goal_link(d):
+                entry["url"] = _goal_link(d)
             out.append(entry)
     # recently closed goals (delivered / stopped, newest first, max 5): the status page lists them compactly
     recent = q.get("recent") if isinstance(q, dict) else None
@@ -406,8 +429,8 @@ def build_goals():
                 entry["repos"] = repos
             if isinstance(d.get("closed_at"), str) and ISO_Z_RE.match(d["closed_at"]):
                 entry["closed_at"] = d["closed_at"]
-            if _goal_url(d.get("issue")):
-                entry["url"] = _goal_url(d.get("issue"))
+            if _goal_link(d):
+                entry["url"] = _goal_link(d)
             out.append(entry)
             n += 1
     return out

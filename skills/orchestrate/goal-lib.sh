@@ -788,7 +788,7 @@ goal_queue_save() {
   v=$(printf '%s' "$1" | jq -c "$_GOAL_QUEUE_JQ"'
     | {at: (now | floor),
        candidate: (.candidate.id // null),
-       recent: (.recent | map({id, issue, spec, title: (.block.title // ""), repos: (.block.repos // []), st, closed_at})),
+       recent: (.recent | map({id, issue, spec, title: (.block.title // ""), label: (.block.label // ""), repos: (.block.repos // []), st, closed_at})),
        queued: (.queued | map({id, issue, spec, title: (.block.title // ""), label: (.block.label // ""),
                                repos: (.block.repos // []), order: (.block.order? // .issue), host_pref: (.block.host_pref // "")}))}' 2>/dev/null) \
     || { goal_err "cannot compute the goal queue"; return 0; }
