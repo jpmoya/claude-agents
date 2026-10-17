@@ -69,12 +69,13 @@ zq_ac() { if [ "$1" = on ]; then : > "$GS_BIN/ac"; else rm -f "$GS_BIN/ac"; fi; 
 # zq_reg <registry issue> <id> <spec> <queued|active|waiting|held|stopped|delivered> <order|""> <host> [host_pref] [label]
 # A registry goal. A queued goal has host "" (zq_reg ignores the host argument for it). With a label: a v2 block.
 zq_reg() {
-  local n=$1 id=$2 spec=$3 st=$4 ord=$5 host=$6 pin=${7:-} label=${8:-} prio=${9:-} block labels='["delivery-goal"]' state=open closed=null
+  local n=$1 id=$2 spec=$3 st=$4 ord=$5 host=$6 pin=${7:-} label=${8:-} prio=${9:-} hosts=${10:-} block labels='["delivery-goal"]' state=open closed=null
   [ "$st" = queued ] && host=""
-  block=$(jq -nc --arg id "$id" --arg spec "$spec" --arg host "$host" --arg pin "$pin" --arg label "$label" --arg ord "$ord" --arg prio "$prio" --arg c "$GS_NOW" '
+  block=$(jq -nc --arg id "$id" --arg spec "$spec" --arg host "$host" --arg pin "$pin" --arg label "$label" --arg ord "$ord" --arg prio "$prio" --arg hosts "$hosts" --arg c "$GS_NOW" '
     {v:1,id:$id,spec:$spec,host:$host,host_pref:$pin,created:$c,instructions:""}
     + (if $ord != "" then {order:($ord|tonumber)} else {} end)
     + (if $prio != "" then {priority:($prio|tonumber)} else {} end)
+    + (if $hosts != "" then {hosts:$hosts} else {} end)
     + (if $label != "" then {v:2,title:$id,label:$label,repos:["example-owner/project-a"],go:false,granted:[]} else {} end)')
   case "$st" in
     queued)    labels='["delivery-goal","goal-queued"]' ;;
@@ -503,6 +504,63 @@ test_zq_step5_holds_tickets_of_a_goal_still_in_the_queue() {
   assert_eq "$(zq_step5 'goal:alpha' queued)" "no" "step 5: a queued goal has not started -> its ticket waits" || return 1
 }
 
+# ---------------------------------------------------------------- spread: one goal on both hosts -------------------
+
+# zq_spread <hosts field|""> <mac|vm> <active|queued> [claimed] — ticket 42 (agent-go, label goal:alpha) of a goal whose lead is on
+# host-b (never this host), or still queued. "claimed": host-b already holds the earliest claim on 42. Prints dispatch, lost or none.
+zq_spread() {
+  local hosts=$1 kind=$2 st=$3 claimed=${4:-} out=none log
+  zq_env; zq_kind "$kind"; zq_ac on
+  gs_issue 42 open "" "" "agent-go,goal:alpha"
+  jq -c '[{number: 42, title: "ticket 42", labels: (.labels)}]' "$GS_ST/issues/$GS_A/42.json" > "$GS_BIN/issue-list-$GS_A.json"
+  if [ "$st" = queued ]; then zq_reg 50 "$ZQ_A" "$ZQ_SPEC_A" queued 1 "" "" "goal:alpha" "" "$hosts"
+  else zq_reg 50 "$ZQ_A" "$ZQ_SPEC_A" active 1 host-b "" "goal:alpha" "" "$hosts"; fi
+  if [ -n "$claimed" ]; then
+    local ts; ts=$(gs_iso_ago 30)
+    echo "[{\"created_at\":\"$ts\",\"user\":{\"login\":\"fake\"},\"body\":\"**[supervisor] NOTE** claim: host-b $ts\"}]" > "$GS_ST/comments/$GS_A-42.json"
+  fi
+  gs_tick; gs_settle
+  log=$(gs_log)
+  case "$log" in *"#42 — claimed by"*) out=dispatch ;; *"#42 — lost claim"*) out=lost ;; esac
+  gs_cleanup
+  printf '%s' "$out"
+}
+test_zq_spread_non_lead_host_dispatches_a_goal_ticket() {
+  assert_eq "$(zq_spread '' vm active)" "dispatch" "spread: default hosts (field absent) -> the host without the lead dispatches the goal ticket" || return 1
+  assert_eq "$(zq_spread both mac active)" "dispatch" "spread: hosts both -> the Mac dispatches it too" || return 1
+}
+test_zq_spread_never_duplicates_a_claimed_ticket() {
+  assert_eq "$(zq_spread both vm active claimed)" "lost" "spread: the other host claimed 42 first -> this host loses and does not run it" || return 1
+}
+test_zq_spread_respects_a_goal_not_started_yet() {
+  assert_eq "$(zq_spread both vm queued)" "none" "spread: a queued goal has not started -> no dispatch on any host" || return 1
+}
+test_zq_pinned_hosts_goal_stays_on_its_host() {
+  assert_eq "$(zq_spread mac vm active)" "none" "hosts mac: the VM does not dispatch its tickets" || return 1
+  assert_eq "$(zq_spread vm mac active)" "none" "hosts vm: the Mac does not dispatch its tickets" || return 1
+  assert_eq "$(zq_spread vm vm active)" "dispatch" "hosts vm: the VM still dispatches them" || return 1
+}
+test_zq_hosts_goal_lead_starts_only_on_its_machine() {
+  zq_env; zq_kind vm
+  zq_reg 51 "$ZQ_B" "$ZQ_SPEC_B" queued 1 "" "" "goal:alpha" "" mac
+  gs_tick; gs_tick; gs_tick; gs_settle
+  local n c; n=$(gs_claude_count); c=$(zq_claims 51)
+  gs_cleanup
+  assert_eq "$n$c" "00" "hosts mac: the VM never starts the lead or posts a claim" || return 1
+  zq_env; zq_kind mac; zq_ac on
+  zq_reg 51 "$ZQ_B" "$ZQ_SPEC_B" queued 1 "" "" "goal:alpha" "" mac
+  gs_tick; gs_wait_claude 1; gs_settle
+  local n2; n2=$(gs_claude_count)
+  gs_cleanup
+  assert_eq "$n2" "1" "hosts mac: the Mac starts it on the first tick (no VM-first wait)" || return 1
+}
+test_zq_register_hosts_flag_writes_the_block() {
+  zq_env
+  ( cd "$GS_HOME" && env HOME="$GS_HOME" PATH="$GS_BIN:/usr/bin:/bin" PIPE="$GS_PIPE" bash "$GS_TREE/skills/orchestrate/deliver.sh" --hosts bogus >/dev/null 2>&1 ); local rc=$?
+  gs_cleanup
+  [ "$rc" -ne 0 ] || { fail "register --hosts bogus must be refused"; return 1; }
+}
+
 # ---------------------------------------------------------------- item 1: register enqueues ----------------------
 
 test_zq_register_enqueues_without_launching() {
@@ -591,7 +649,7 @@ test_zq_priority_command_moves_before_after_and_at() {
 test_zq_register_label_goal_enqueues_with_order_and_pin() {
   dg_setup
   local reg labels blk n files
-  dg_run --repos "example-owner/project-a" --title "Queue label" --requirements "example-owner/project-a#7" --host Host-B
+  dg_run --repos "example-owner/project-a" --title "Queue label" --requirements "example-owner/project-a#7" --host Host-B --hosts vm
   reg=$(ls "$DG_ST/issues/$DG_REG"/*.json 2>/dev/null | head -1)
   labels=$(jq -r '[.labels[].name] | sort | join(",")' "$reg" 2>/dev/null)
   blk=$(dg_block "$reg"); n=$(basename "$reg" .json)
@@ -603,6 +661,7 @@ test_zq_register_label_goal_enqueues_with_order_and_pin() {
   assert_eq "$labels" "delivery-goal,goal-queued" "item 1: label goal is queued" || return 1
   assert_eq "$(printf '%s' "$blk" | jq -r .host)" "" "item 1: label goal has no host yet" || return 1
   assert_eq "$(printf '%s' "$blk" | jq -r .host_pref)" "host-b" "item 2: --host stored as host_pref" || return 1
+  assert_eq "$(printf '%s' "$blk" | jq -r .hosts)" "vm" "spread: --hosts stored in the v2 block" || return 1
   assert_eq "$(printf '%s' "$blk" | jq -r .order)" "$n" "item 2: order = registry issue number at registration" || return 1
   assert_eq "$cl" "0" "item 1: nothing launched" || return 1
   assert_eq "$files" "0" "item 1: no local goal files" || return 1
@@ -680,6 +739,12 @@ run_test test_zq_step5_skips_a_ticket_of_a_goal_with_a_live_lead_here
 run_test test_zq_step5_still_dispatches_a_ticket_in_no_goal
 run_test test_zq_step5_dispatches_a_goal_ticket_whose_lead_is_not_live
 run_test test_zq_step5_holds_tickets_of_a_goal_still_in_the_queue
+run_test test_zq_spread_non_lead_host_dispatches_a_goal_ticket
+run_test test_zq_spread_never_duplicates_a_claimed_ticket
+run_test test_zq_spread_respects_a_goal_not_started_yet
+run_test test_zq_pinned_hosts_goal_stays_on_its_host
+run_test test_zq_hosts_goal_lead_starts_only_on_its_machine
+run_test test_zq_register_hosts_flag_writes_the_block
 run_test test_zq_register_enqueues_without_launching
 run_test test_zq_register_now_keeps_the_immediate_launch
 run_test test_zq_register_places_goals_and_renumbers

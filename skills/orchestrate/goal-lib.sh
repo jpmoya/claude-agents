@@ -830,9 +830,10 @@ goal_queue_save() {
        candidate: (.candidate.id // null),
        recent: (.recent | map({id, issue, spec, title: (.block.title // ""), label: (.block.label // ""), repos: (.block.repos // []), st, closed_at, priority: (.block.priority? // null)})),
        open: (.open | map({id, issue, spec, title: (.block.title // ""), label: (.block.label // ""), repos: (.block.repos // []),
-                           st, host: (.host // ""), priority: (.block.priority? // null)})),
+                           st, host: (.host // ""), priority: (.block.priority? // null), hosts: (.block.hosts? // "both")})),
        queued: (.queued | map({id, issue, spec, title: (.block.title // ""), label: (.block.label // ""), priority: (.block.priority? // null),
-                               repos: (.block.repos // []), order: (.block.order? // .issue), host_pref: (.block.host_pref // "")}))}' 2>/dev/null) \
+                               repos: (.block.repos // []), order: (.block.order? // .issue), host_pref: (.block.host_pref // ""),
+                               hosts: (.block.hosts? // "both")}))}' 2>/dev/null) \
     || { goal_err "cannot compute the goal queue"; return 0; }
   mkdir -p "$PIPE" 2>/dev/null
   printf '%s\n' "$v" > "$f.tmp" 2>/dev/null && mv "$f.tmp" "$f" || { rm -f "$f.tmp"; goal_err "cannot write the goal queue cache"; }
@@ -849,6 +850,17 @@ goal_next_priority() {
 
 # goal_is_mac — the laptop (battery rules, VM-first). Same test as power_ok.
 goal_is_mac() { [ "$(uname)" = "Darwin" ]; }
+
+# goal_role — this host's role for a goal's `hosts` field: mac or vm.
+goal_role() { if goal_is_mac; then echo mac; else echo vm; fi; }
+
+# goal_foreign_labels — labels of open goals whose `hosts` restricts their tickets to the OTHER host (hosts: mac|vm). A goal with
+# `hosts: both` (the default, also when the field is absent) has its tickets dispatched by whichever host is free: the lead's host
+# through the lead, the other host through step 5, and the claim comment keeps any ticket from running on both.
+goal_foreign_labels() {
+  jq -r --arg r "$(goal_role)" '.open[]? | select((.hosts // "both") as $h | ($h == "mac" or $h == "vm") and $h != $r) | (.label // empty)' \
+    "$PIPE/$GOAL_QUEUE_FILE_NAME" 2>/dev/null
+}
 
 # goal_live_labels — the goal labels (cross-repo goals, #319) whose delivery lead is alive on THIS host, one per line.
 goal_live_labels() {
@@ -911,7 +923,7 @@ goal_queue_fail() {
 
 # goal_queue_step — called from goal_step once per tick, after the live goals were ticked.
 goal_queue_step() {
-  local qf="$PIPE/$GOAL_QUEUE_FILE_NAME" cand pin n fresh g id issue winner rc ts lost now g2 body
+  local qf="$PIPE/$GOAL_QUEUE_FILE_NAME" cand pin hosts n fresh g id issue winner rc ts lost now g2 body
   rm -f "$PIPE/goal-paused"
   [ -f "$qf" ] || return 0
   cand=$(jq -r '.candidate // empty' "$qf" 2>/dev/null)
@@ -919,8 +931,14 @@ goal_queue_step() {
   pin=$(jq -r --arg c "$cand" '[.queued[] | select(.id == $c)][0].host_pref // "" | ascii_downcase' "$qf" 2>/dev/null)
   if [ -f "$PIPE/goal-$cand.stopped" ]; then _goal_queue_wait_reset; return 0; fi
   # pinned goals run only on their host; unpinned ones are VM-first: the Mac waits two ticks for the VM to take it
+  hosts=$(jq -r --arg c "$cand" '[.queued[] | select(.id == $c)][0].hosts // "both"' "$qf" 2>/dev/null)
+  if [ "$hosts" = mac ] || [ "$hosts" = vm ]; then   # hosts: mac|vm confines the whole goal (lead and tickets) to that machine
+    [ "$hosts" = "$(goal_role)" ] || { _goal_queue_wait_reset; return 0; }
+  fi
   if [ -n "$pin" ]; then
     [ "$pin" = "$GOAL_THIS_HOST" ] || { _goal_queue_wait_reset; return 0; }
+  elif [ "$hosts" = mac ] || [ "$hosts" = vm ]; then
+    :
   elif goal_is_mac; then
     n=$(_goal_queue_wait "$cand")
     [ "$n" -ge 2 ] || return 0
