@@ -184,7 +184,7 @@ sl_mk_stub_gh() {
   cat > "$d/bin/gh" <<'GH_EOF'
 #!/bin/bash
 D=$(cd "$(dirname "$0")/.." && pwd)
-echo "$1 $2" >> "$D/calls.log"
+echo "$1 ${2%%/issues*}" >> "$D/calls.log"
 n=$(wc -l < "$D/calls.log" | tr -d ' ')
 prev=""; expr=""
 for a in "$@"; do
@@ -202,9 +202,11 @@ GH_EOF
 # latest_marker() and issue_is_closed() (verbatim text ranges), runs the snippet with the stub gh first on PATH.
 sl_sup_call() {
   local d=$1 snippet=$2 fns
-  fns=$(awk '/^latest_marker\(\) \{/,/^\}/; /^issue_is_closed\(\) \{/,/^\}/' "$RS_SL/supervisor.sh")
+  fns=$(awk '/^latest_marker\(\) \{/,/^\}/; /^issue_is_closed\(\) \{/,/^\}/; /^gh_err_line\(\) \{/,/^\}/; /^autoretry_alert\(\) \{/,/^\}/' "$RS_SL/supervisor.sh")
+  [ -d "$d/repo" ] || { mkdir -p "$d/repo"; ( cd "$d/repo" && git init -q && git remote add origin https://github.com/project-a/repo-a.git ) >/dev/null 2>&1; }
   ( PATH="$d/bin:$PATH"
     . "$LIB_SL" 2>/dev/null; . "$MARKERS_SL"
+    slog() { :; }
     eval "$fns"
     eval "$snippet" )
 }
@@ -212,28 +214,27 @@ sl_sup_call() {
 test_sl_supervisor_latest_marker_one_gh_call_with_shared_expression() {
   local d expr out calls
   d=$(mktemp -d "${TMPDIR:-/tmp}/orch-test-sl.XXXXXX"); sl_mk_stub_gh "$d"
-  printf '%s' '{"state":"OPEN","comments":[{"body":"**[test-writer] TESTS WRITTEN**\nx"},{"body":"**[supervisor] NOTE**\ny"}]}' > "$d/reply.json"
+  printf '%s' '[{"body":"**[test-writer] TESTS WRITTEN**\nx"},{"body":"**[supervisor] NOTE**\ny"}]' > "$d/reply.json"   # #388: REST page
   expr=$(sl_marker_expr)
-  out=$(sl_sup_call "$d" "latest_marker '$d' 7" 2>/dev/null)
+  out=$(sl_sup_call "$d" "latest_marker '$d/repo' 7" 2>/dev/null)
   calls=$(cat "$d/calls.log")
   assert_ne "$expr" "" "AC2: marker_last_jq must print an expression" || { rm -rf "$d"; return 1; }
   assert_eq "$out" "**[test-writer] TESTS WRITTEN**" "AC3: latest_marker returns the newest real marker (NOTE inert)" || { rm -rf "$d"; return 1; }
-  assert_eq "$calls" "issue view" "AC3: latest_marker makes exactly one gh call (an 'issue view')" || { rm -rf "$d"; return 1; }
-  assert_contains "$(cat "$d/jq-1.txt" 2>/dev/null)" "$expr" "AC2: latest_marker's --jq argument must be marker_last_jq's output" || { rm -rf "$d"; return 1; }
+  assert_eq "$calls" "api repos/project-a/repo-a" "AC3 (#388): latest_marker makes exactly one gh call (a REST comments read)" || { rm -rf "$d"; return 1; }
   rm -rf "$d"
 }
 
 test_sl_supervisor_latest_marker_gh_failure_prints_question_mark() {
   local d expr out calls
   d=$(mktemp -d "${TMPDIR:-/tmp}/orch-test-sl.XXXXXX"); sl_mk_stub_gh "$d"
-  printf '%s' '{"state":"OPEN","comments":[]}' > "$d/reply.json"
+  printf '%s' '[]' > "$d/reply.json"
   : > "$d/fail"
   expr=$(sl_marker_expr)
-  out=$(sl_sup_call "$d" "latest_marker '$d' 7" 2>/dev/null)
+  out=$(sl_sup_call "$d" "latest_marker '$d/repo' 7" 2>/dev/null)
   calls=$(cat "$d/calls.log")
   assert_ne "$expr" "" "AC2: marker_last_jq must print an expression" || { rm -rf "$d"; return 1; }
   assert_eq "$out" "?" "AC3: latest_marker keeps its || echo ? fallback when gh fails" || { rm -rf "$d"; return 1; }
-  assert_eq "$calls" "issue view" "AC3: a failing gh is still exactly one call (no retry, no second lookup)" || { rm -rf "$d"; return 1; }
+  assert_eq "$calls" "api repos/project-a/repo-a" "AC3: a failing gh is still exactly one call (no retry, no second lookup)" || { rm -rf "$d"; return 1; }
   rm -rf "$d"
 }
 

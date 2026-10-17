@@ -38,6 +38,12 @@ case "$*" in
     [ -f "$HERE/view-fail" ] && exit 7
     upd=$(cat "$HERE/updated-at"); com=$(cat "$HERE/comments-json")
     emit "{\"state\":\"OPEN\",\"labels\":[{\"name\":\"agent-in-progress\"}],\"updatedAt\":\"$upd\",\"comments\":$com}" ;;
+  "api repos/"*"/comments"*)   # #388: the reconcile read is REST
+    [ -f "$HERE/view-fail" ] && { echo "HTTP 403: API rate limit exceeded" >&2; exit 7; }
+    jq -c 'map({body: .body, created_at: .createdAt})' "$HERE/comments-json" ;;
+  "api repos/"*)
+    [ -f "$HERE/view-fail" ] && { echo "HTTP 403: API rate limit exceeded" >&2; exit 7; }
+    jq -nc --arg u "$(cat "$HERE/updated-at")" '{state:"open", body:"", updated_at:$u}' ;;
   *) exit 0 ;;
 esac
 GH_EOF
@@ -135,7 +141,7 @@ test_rh_g_failed_issue_read_keeps_label_and_logs_skip() {
   rh_tick "[]"
   rh_cleanup
   assert_not_contains "$RH_CALLS" "issue edit 88 --remove-label" "#326/g: label not removed" || return 1
-  assert_contains "$RH_LOG" "[reconcile] project-a/repo-a#88 — issue read failed rc=7, skipped" "#326/g: skip logged with rc" || return 1
+  assert_contains "$RH_LOG" "[reconcile] project-a/repo-a#88 — issue read failed: HTTP 403: API rate limit exceeded, skipped" "#326/g: skip logged with gh error text (#388)" || return 1
 }
 
 test_rh_h_empty_line1_keeps_label() {

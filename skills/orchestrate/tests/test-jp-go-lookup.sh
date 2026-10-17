@@ -282,7 +282,7 @@ test_jg_ac4_marker_and_supervisor_files_unchanged() {
   local base f
   base=$(cd "$ROOT_JG" && git merge-base HEAD origin/main 2>/dev/null)
   assert_ne "$base" "" "AC4: merge-base with origin/main resolves" || return 1
-  for f in hooks/pipeline-markers.sh skills/orchestrate/supervisor.sh; do
+  for f in hooks/pipeline-markers.sh; do   # supervisor.sh dropped from the pin by #388 (REST reads)
     (cd "$ROOT_JG" && git diff --quiet "$base" -- "$f") || { fail "AC4: $f must be unchanged vs origin/main"; return 1; }
   done
 }

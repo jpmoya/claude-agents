@@ -26,7 +26,7 @@ ar2_install_gh() {
 #!/bin/bash
 HERE=$(cd "$(dirname "$0")" && pwd)
 case "$1 $2" in
-  "pr "*|"issue view")
+  "pr "*|"issue view"|"api repos/"*)
     printf '%s\n' "$*" >> "$HERE/gh-calls.log" ;;
   *) exec "$HERE/gh-base" "$@" ;;
 esac
@@ -50,8 +50,16 @@ if [ "$1" = pr ]; then
   esac
   exit 0
 fi
-# issue view
-n=$(printf '%s' "$*" | sed -n 's/.*issue view \([0-9][0-9]*\).*/\1/p')
+# issue view (and its REST twin, #388: gh api repos/<o>/<r>/issues/<n>[/comments])
+n=$(printf '%s' "$*" | sed -n -e 's/.*issue view \([0-9][0-9]*\).*/\1/p' -e 's|^api repos/[^/]*/[^/]*/issues/\([0-9][0-9]*\).*|\1|p')
+if [ "$1" = api ]; then
+  [ -f "$HERE/gh-api-fail" ] && { echo "token=ghp_FAKESECRET123" >&2; exit 1; }
+  case "$*" in
+    *"/comments"*) jq -c 'map({body: .body, created_at: .createdAt})' "$HERE/gh-issue-comments-json-$n" 2>/dev/null || echo '[]' ;;
+    *) jq -nc --arg s "$(cat "$HERE/gh-issue-state-$n" 2>/dev/null || echo OPEN)" --arg b "$(cat "$HERE/gh-issue-body-$n" 2>/dev/null)" '{state:($s|ascii_downcase), body:$b, updated_at:"2026-01-01T00:00:00Z"}' ;;
+  esac
+  exit 0
+fi
 state=$(cat "$HERE/gh-issue-state-$n" 2>/dev/null || echo OPEN)
 body=$(cat "$HERE/gh-issue-body-$n" 2>/dev/null || echo "")
 comments=$(cat "$HERE/gh-issue-comments-json-$n" 2>/dev/null || echo '[]')
@@ -368,7 +376,7 @@ test_ar2_269_comment_failure_alerts_slack_with_tags() {
 test_ar2_269_issue_read_failure_alerts_slack_with_tags() {
   ar2_fixture 'Blocked on: ci_red — x'
   cp "$SQ_GH/gh" "$SQ_GH/gh-ar2"
-  printf '#!/bin/bash\nif [ "$1 $2" = "issue view" ]; then echo "token=ghp_FAKESECRET123" >&2; exit 1; fi\nexec "$(dirname "$0")/gh-ar2" "$@"\n' > "$SQ_GH/gh"; chmod +x "$SQ_GH/gh"
+  printf '#!/bin/bash\nif [ "$1" = "api" ]; then echo "token=ghp_FAKESECRET123" >&2; exit 1; fi\nexec "$(dirname "$0")/gh-ar2" "$@"\n' > "$SQ_GH/gh"; chmod +x "$SQ_GH/gh"
   echo 'SLACK_WEBHOOK_URL="https://hooks.slack.test/T/B/X"' >> "$SQ_HOME/.claude/pipeline/config.local.sh"
   printf '#!/bin/bash\necho "CALL $*" >> "%s/curl.calls"\nexit 0\n' "$SQ_GH" > "$SQ_GH/curl"; chmod +x "$SQ_GH/curl"
   ar2_tick

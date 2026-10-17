@@ -2,7 +2,7 @@
 # Goal-bound delivery lead library (#193), sourced by deliver.sh (and supervisor.sh from #195).
 # A goal is a registry issue on GitHub (label delivery-goal); $PIPE/goal-<id>.* is only a host-local cache.
 # GitHub calls here are REST (`gh api`, writes included) — the GraphQL budget is the one that ran out in #57 —
-# except the per-ticket marker read (latest_marker via supervisor.sh, a GraphQL call), once per ticket per sync.
+# except the per-ticket marker read (latest_marker via supervisor.sh, REST since #388), once per ticket per sync.
 # Needs config.sh + pipeline-lib.sh (pipeline_host, SETSID) sourced first; bash 3.2 compatible.
 
 _GOAL_LIB_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -353,7 +353,7 @@ _goal_ticket_eval() {
   labels=$(printf '%s' "$info" | jq -r '[.labels[].name] | join(" ")')
   checkout=$(_goal_checkout "$repo") || return 1
   m=$(latest_marker "$checkout" "$n")
-  [ "$m" != "?" ] || return 1
+  [ "$m" != "?" ] || { goal_err "cannot evaluate $repo#$n: latest_marker read failed"; return 1; }
   first=${m%%$'\n'*}; first=${first%$'\r'}
   first=$(printf '%s' "$first" | tr '\t' ' ')
   mk=${first%%\*\*}
@@ -746,7 +746,7 @@ goal_tick_one() {  # <id>
         if [ "$GE_TOTAL" -gt 0 ] && [ "$GE_ACTIVE" -eq 0 ] && [ "$GE_WAITING" -gt 0 ]; then
           goal_mirror "$id" waiting_jp "$GE_TOTAL" "$GE_DELIVERED"
         else goal_mirror "$id" active "$GE_TOTAL" "$GE_DELIVERED"; fi
-      else goal_err "cannot read the scope of $id"; fi
+      else goal_err "goal $id evaluation failed (see the preceding error for the ticket and step)"; fi
     fi
     return 0
   fi
@@ -780,7 +780,7 @@ goal_tick_one() {  # <id>
   if [ "$GOAL_SYNC_DUE" -ne 1 ]; then
     [ "$GOAL_CAN_LAUNCH" -eq 1 ] && [ ! -f "$PIPE/goal-$id.waiting" ] || return 0
   fi
-  if ! goal_eval "$id" "$spec"; then goal_err "cannot read the scope of $id"; return 0; fi
+  if ! goal_eval "$id" "$spec"; then goal_err "goal $id evaluation failed (see the preceding error for the ticket and step)"; return 0; fi
 
   if [ "$GE_TOTAL" -gt 0 ] && [ "$GE_DELIVERED" -eq "$GE_TOTAL" ]; then   # an empty scope never lands here
     goal_deliver "$id" "$issue" "$spec"; return 0
