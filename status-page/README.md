@@ -120,3 +120,11 @@ Completed-ticket source (issue #51):
 3. `wrangler deploy` to the free `*.workers.dev` subdomain (no custom domain, no paid plan).
 4. Put the deployed URL in each host's `config.local.sh` as `STATUS_PUSH_URL`, and the matching
    token as `STATUS_PUSH_TOKEN` (host-side reporter, issue #10).
+
+## Pipelines tab (issue #273)
+
+`GET /pipelines` is a static, server-rendered routing diagram (no JS, no KV access) with a
+"Status" | "Pipelines" nav on both pages. Data lives in `src/pipelines.js`; a condition with
+`coming: true` renders a "coming" chip — flip the flag when the rule lands. The pipelines vitest
+file fails if a stage name or condition drifts from `agents/*.md`. Render errors return 500 and call
+`captureError` (release/environment/route tags; Slack via `SLACK_WEBHOOK_URL`, a no-op when unset).

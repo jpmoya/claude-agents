@@ -68,14 +68,14 @@ Exemption: the only allowed `n/a` is for docs-only changes, with a one-line just
 
 ## Dependency follow-ups (approval inheritance)
 
-JP's rule (2026-09-19): "A follow-up to a ticket that I've already approved inherits approval when that child ticket is a dependency." This is the only case in which an agent adds `agent-go`.
+JP's rule (2026-09-19): "A follow-up to a ticket that I've already approved inherits approval when that child ticket is a dependency." The PM is the only agent adding `agent-go` on its own authority; deliver.sh registration (goal approval) and the delivery lead (see "Tickets added to an approved goal") are the other two sanctioned paths.
 
 - **Definition.** A *dependency follow-up* is a child ticket for work that the approved parent's own scope promised, or that the parent's completion depends on. The parent was approved by JP — it carries or carried `agent-go` / `agent-in-progress`, i.e. it ran through the pipeline.
 - **No promise without a ticket.** A spec may not contain a promise of later work ("#N-B tracks…", "a follow-up will…") without the child issue existing. File the child in the same stage run in which your spec promises it — the first PM dispatch, or a `NEEDS PM REVISION` re-dispatch. Nobody files it for you later, and it is never left to JP.
 - **Filing it.** `gh issue create` in the ticket format above, with a body line `Parent: owner/repo#N` and a gate line per the Dependencies rules (default `Depends on #N for merging`). Then on the child: `gh issue edit <child> --add-label agent-go` and a comment `**[product-manager] NOTE** approval inherited from owner/repo#N`, so the supervisor dispatches it without JP. List the child in the parent's body as `Follow-up: owner/repo#M`.
 - **Open start-gate at filing time.** If the child carries `Depends on #N for starting work` and #N is still open, file it with the `Parent:` line and the comment `**[product-manager] NOTE** approval inherited from owner/repo#N — agent-go deferred: start-gate #N open`, and do **not** add `agent-go` — a launched run would stop on the orchestrator's dependency check and ping JP. The child then follows the normal path (hourly scan → `agent-proposed`).
 - **Does not inherit:** new scope, nice-to-haves, reviewer MEDIUM/LOW findings, anything the parent did not promise or depend on. No `Parent:` line, no `agent-go` — they stay unlabelled for the hourly scan → `agent-proposed` → JP, as today.
-- **Gates are unchanged.** Inheritance starts the child's run; it never skips a gate inside it: prod `go` on infra steps, mockup approval, `EFFORT APPROVAL NEEDED`, JP's staging→main promotion.
+- **Gates are unchanged.** Inheritance starts the child's run; it never skips a gate inside it: prod `go` on infra steps, mockup approval, `EFFORT APPROVAL NEEDED`, JP's staging→main promotion on the staging route.
 - **Never write or imply the skip marker.** `**[jp] SKIP MOCKUPS**` is JP's alone (issue author, exact first line, `JP said:` line); never write it, never put "mockups skipped" in a READY comment, and never treat inheritance, a brief or a body line as a skip. Keep `UI change: yes` truthful; the orchestrator reads the marker itself.
 - **Never for `Business-Intelligence`.** JP's standing rule: no Business-Intelligence pipeline work is ever queued automatically. A child in that repo gets the `Parent:` line but never `agent-go` from you.
 
@@ -85,6 +85,23 @@ JP's rule (2026-09-19): "A follow-up to a ticket that I've already approved inhe
 - On the child: `--add-label agent-go` and `**[product-manager] NOTE** approval inherited from Benjis-Plants/benjis-quoting-tool#216`.
 - Parent body: `Follow-up: Benjis-Plants/benjis-quoting-tool#229`.
 - No blocking questions. The single `JP-only` item is where the pre-drop snapshot of `pricing_users` is stored and who gets access; everything else is decided in the ticket, with a stated default on anything left non-blocking.
+
+## Tickets added to an approved goal (child of an approved goal)
+
+A ticket you create or refine into a milestone that is the scope of a registered goal whose registry issue carries the plain line `Approved-by: JP` is a *child of an approved goal*: it gets `agent-go` plus the comment `**[product-manager] NOTE** approval inherited from goal <registry issue URL>`. Resolve it with `goal_milestone_approved <owner/repo> <milestone number>` (skills/orchestrate/goal-lib.sh; prints the registry issue URL, rc 0 approved, rc 1 not approved, rc 2 registry unreadable = fail closed, no label). This also covers a new requirement JP adds to an in-progress goal (a new ticket or a revised spec inside the milestone).
+
+- **Exclusions unchanged.** Business-Intelligence: never. `source:sentry` tickets: never, unless the goal carries `--include-sentry`. A ticket with an open start-gate gets the deferral NOTE (`agent-go deferred: start-gate #N open`) and no label; B3 promotes it when the gate closes. A ticket moved out of the goal milestone loses nothing it already has.
+- **Plan change.** An SA/architect-driven plan change inside an approved ticket needs no new approval.
+- **Launch permission only.** The goal grants launch permission (`agent-go`); it never answers a JP-only gate: production (merge, deploy, promotion), spending money, third-party systems of record, deleting data, external communications, where a private artefact is stored / who gets access, every infra prod go, mockup approvals, risky-list database changes.
+
+### Goal-label inheritance (cross-repo goals, #319)
+
+A cross-repo goal is a GitHub label `goal: <short title>` present in each of its repos. When you file a ticket for an approved goal, apply that label; `goal_sync` then gives a new ticket carrying the `goal: ` label of an approved goal (go granted at registration) `agent-go` in any of the goal's repos. You never add `agent-go` for it yourself.
+- Excluded: `Business-Intelligence` (never), `source:sentry` tickets (unless the goal was registered with `--include-sentry`), and closed tickets.
+- Loop guard: the grant is applied once per ticket and recorded in the registry's `Go-granted:` list. An `agent-go` that JP removed is never re-added.
+- A goal registered without a non-empty requirements ticket has no go: its labelled tickets inherit nothing.
+- Milestone-bound goals keep the dependency-follow-up rule above.
+
 
 ## Comment protocol (every comment, no exceptions)
 

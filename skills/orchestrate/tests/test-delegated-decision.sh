@@ -140,7 +140,7 @@ dd_thread() {
   local arr='[]' b i=0
   dd_env
   mk_restarting "$DD_PIPE" 42 "$DD_REPO"
-  dd_iso_ago 1300 > "$DD_PIPE/orch-42.start"
+  dd_iso_ago 1300 > "$(rkp "$DD_PIPE/orch-42.start")"
   for b in "$@"; do
     i=$((i + 1))
     arr=$(printf '%s' "$arr" | jq --arg b "$b" --arg t "2026-09-21T0$i:00:00Z" '. + [{body: $b, createdAt: $t}]')
@@ -151,7 +151,7 @@ dd_thread() {
 # dd_assert_not_gate <label> — after a tick: no .held/.alert/[held], restart path taken
 dd_assert_not_gate() {
   local held alert log
-  held=$(dd_present "$DD_PIPE/orch-42.held"); alert=$(dd_present "$DD_PIPE/orch-42.alert"); log=$(dd_log)
+  held=$(dd_present "$(rkp "$DD_PIPE/orch-42.held")"); alert=$(dd_present "$(rkp "$DD_PIPE/orch-42.alert")"); log=$(dd_log)
   dd_cleanup
   assert_eq "$held" "absent" "$1: .held" || return 1
   assert_eq "$alert" "absent" "$1: .alert" || return 1
@@ -162,8 +162,8 @@ dd_assert_not_gate() {
 # dd_assert_gate <label> <expected-name-in-alert> [<name-that-must-not-be-in-alert>]
 dd_assert_gate() {
   local held alert log queued
-  held=$(dd_present "$DD_PIPE/orch-42.held"); alert=$(cat "$DD_PIPE/orch-42.alert" 2>/dev/null); log=$(dd_log)
-  queued=$(dd_present "$DD_PIPE/queue/orch-42.json")
+  held=$(dd_present "$(rkp "$DD_PIPE/orch-42.held")"); alert=$(cat "$(rkp "$DD_PIPE/orch-42.alert")" 2>/dev/null); log=$(dd_log)
+  queued=$(dd_present "$(rkp "$DD_PIPE/queue/orch-42.json")")
   dd_cleanup
   assert_eq "$held" "present" "$1: .held" || return 1
   assert_contains "$alert" "waiting on JP" "$1: alert says waiting on JP" || return 1
@@ -250,7 +250,7 @@ test_dd_ac7_deployed_then_decision_is_done() {   # characterisation
   dd_thread '**[deployer] DEPLOYED**' $'**[project-manager] DECISION**\nResolves: https://example.test/c/1'
   dd_tick
   local done_f held
-  done_f=$(dd_present "$DD_PIPE/orch-42.done"); held=$(dd_present "$DD_PIPE/orch-42.held")
+  done_f=$(dd_present "$(rkp "$DD_PIPE/orch-42.done")"); held=$(dd_present "$(rkp "$DD_PIPE/orch-42.held")")
   dd_cleanup
   assert_eq "$done_f" "present" "AC7: DEPLOYED then DECISION -> .done" || return 1
   assert_eq "$held" "absent" "AC7: not held" || return 1
@@ -320,13 +320,12 @@ test_dd_ac12_loop_cap_section_has_the_companion() {
 test_dd_ac13_issue_author_clauses_and_awaiting_go_row_untouched() {   # characterisation
   local base cur old
   dd_has "$ORCH_DD" 'from the issue author' || return 1
-  dd_has "$ORCH_DD" 'issue author, posted after the `AWAITING GO`' || return 1
-  base=$(dd_base)
-  if [ -z "$base" ]; then printf '    (AC13 byte-identity skipped: no origin/main merge-base)\n' >&2; return 0; fi
+  # #311: the AWAITING GO + go row now resolves the go via the shared matcher (jp_go); the author/after-stamp
+  # wording lives once in the "JP's go" paragraph. The old clause and byte-identity pin are replaced by these checks.
+  dd_has "$ORCH_DD" 'created strictly after the `BLOCKED` / `AWAITING GO` it clears' || return 1
   cur=$(grep -F '| `[infra-operator] AWAITING GO` + JP go comment' "$ORCH_DD")
-  old=$(cd "$ROOT_DD" && git show "$base:agents/orchestrator.md" | grep -F '| `[infra-operator] AWAITING GO` + JP go comment')
   assert_ne "$cur" "" "AC13: AWAITING GO + go row present" || return 1
-  assert_eq "$cur" "$old" "AC13: AWAITING GO + go row byte-identical to origin/main" || return 1
+  dd_text_has "AC13: AWAITING GO + go row" "$cur" 'jp_go' || return 1
 }
 
 test_dd_ac14_validation_row_and_run_log() {
@@ -398,10 +397,11 @@ test_dd_ac18_project_manager_sections_and_untouched_parts_byte_identical() {
   # re-pinned for #98 (model line only)
   # re-pinned for #106 (tail hash: project-manager.md line 104 only)
   # re-pinned for #168 (promotion-PR exception, §1 only) and #192 (delivery-lead.md: name, intro sentence, DECISION marker spelling)
-  assert_eq "$head" "660a5938bb3aced5c747dd620721f7eae4f85561d31a0a68f0c031a27f7f7bb2" "AC18: frontmatter + section 1 (re-pinned for #117, JP-only paragraph Slack carve-out only)" || return 1
+  assert_eq "$head" "bb79605d8b091cca914ce4706ccc5f00a73dc95e6b5fcf3317102a925ca52dae" "AC18: frontmatter + section 1 (re-pinned for #117, JP-only paragraph Slack carve-out only)" || return 1
+  # re-pinned for #311 PR: head hash set to origin/main's current delivery-lead.md (#335 changed §1); #311 itself does not touch delivery-lead.md
   # re-pinned for #198 (§3 pacing sentence and §4 headless line) and #192 (status-card sentence rename only)
   # re-pinned for #236 (§5 deployer-merged-no-marker row narrowed; no no-decision relaunch for a deployer BLOCKED)
-  assert_eq "$tail" "4fd3422aa087bcc39e5a9eebc49215590fff58c471c0070369165a5017573e8e" "AC18: sections 3-8 (re-pinned for #198 + #192, rename only; #236 playbook row)" || return 1
+  assert_eq "$tail" "ec321064f2580e6f274bc769a893ece66078e0355f3e57418ef93fab96863f95" "AC18: sections 3-8 (re-pinned for #198 + #192, rename only; #236 playbook row)" || return 1
 }
 
 # ---------------------------------------------------------------------------------------- AC19-AC20 docs
@@ -452,16 +452,17 @@ test_dd_i76_ac1_resume_row_names_the_go_clearing_path() {
   row=$(dd_blocked_row_next)
   assert_ne "$row" "" "i76 AC1: resume row exists" || return 1
   # go-form clause, worded on the model of the :98 AWAITING GO + go row (Expected Behavior, issue #76)
-  for s in '`go` / `GO` / `**[jp] GO**`' 'a sentence containing "go" is not a go' 'posted after'; do
+  for s in 'jp_go' 'posted after'; do   # #311: the go forms and the "sentence is not a go" rule live in the "JP's go" paragraph
     dd_text_has "i76 AC1: resume row go-form clause" "$row" "$s" || return 1
   done
+  dd_has "$ORCH_DD" 'a sentence containing "go" is not a go' || return 1
   # the carve-out itself must survive the edit — still names money, still refuses [project-manager]
   for s in 'spending money' 'carries no extra authority'; do
     dd_text_has "i76 AC1: carve-out survives" "$row" "$s" || return 1
   done
   # AC1: "No new routing row is added beside the carve-out" — the row right after this one is unchanged
-  # (still the SPEC CONFLICT row), i.e. the edit is in-place, not a new row inserted after it.
-  dd_text_has "i76 AC1: no new row inserted" "$(dd_next_row_after "$ORCH_DD" '| any `SPEC CONFLICT`')" 'solutions-architect' || return 1
+  # (still the spec-question SA row), i.e. the edit is in-place, not a new row inserted after it.
+  dd_text_has "i76 AC1: no new row inserted" "$(dd_next_row_after "$ORCH_DD" '| reviewer finding that questions the spec')" 'solutions-architect' || return 1
 }
 
 test_dd_i76_ac2_validation_row_gains_the_go_clause() {
@@ -484,8 +485,8 @@ test_dd_i76_ac3_gate_rows_byte_identical_and_carve_out_keeps_exclusions() {   # 
   old=$(cd "$ROOT_DD" && git show "$base:agents/orchestrator.md" | grep -F '| `[infra-operator] AWAITING GO` + JP go comment')
   assert_ne "$cur" "" "i76 AC3: AWAITING GO + go row present" || return 1
   assert_eq "$cur" "$old" "i76 AC3: AWAITING GO + go row byte-identical" || return 1
-  cur=$(grep '^| `\[ui-ux-designer\] MOCKUPS PENDING APPROVAL`' "$ORCH_DD" | sed 's/ \*\*Skip marker:\*\*.* |$/ |/')   # #272: only the added skip clause is stripped
-  old=$(cd "$ROOT_DD" && git show "$base:agents/orchestrator.md" | grep '^| `\[ui-ux-designer\] MOCKUPS PENDING APPROVAL`')
+  cur=$(grep '^| `\[ui-ux-designer\] MOCKUPS PENDING APPROVAL`' "$ORCH_DD" | grep -v 'JP approval comment' | sed 's/ \*\*Skip marker:\*\*.* |$/ |/')   # #311: the approval row now resolves via jp_go
+  old=$(cd "$ROOT_DD" && git show "$base:agents/orchestrator.md" | grep '^| `\[ui-ux-designer\] MOCKUPS PENDING APPROVAL`' | grep -v 'JP approval comment')
   assert_ne "$cur" "" "i76 AC3: MOCKUPS PENDING APPROVAL rows present" || return 1
   assert_eq "$cur" "$old" "i76 AC3: MOCKUPS PENDING APPROVAL rows byte-identical" || return 1
   # issue #144: the row's head now also mentions claude-agents; pin only the unsupported-project sentence (row tail).
@@ -506,8 +507,8 @@ test_dd_i108_infra_go_row_resumes_planner_and_operator_blocked() {   # issue #10
   local row s
   row=$(dd_infra_go_row)
   assert_ne "$row" "" "i108 AC1: infra BLOCKED row carries the go path" || return 1
-  for s in 'planner/operator `BLOCKED` on any infra ticket, prod or staging-only' 'issue author' 'dated after that `BLOCKED`' \
-           '`go` / `GO` / `**[jp] GO**`' 'a sentence containing "go" is not a go' 'Re-dispatch the agent that posted the `BLOCKED`' \
+  for s in 'planner/operator `BLOCKED` on any infra ticket, prod or staging-only' 'jp_go' \
+           'Re-dispatch the agent that posted the `BLOCKED`' \
            'go comment URL' 'names a stage to run first' 'Planner: revise'; do
     dd_text_has "i108 AC1" "$row" "$s" || return 1
   done
@@ -526,7 +527,7 @@ test_dd_i108_infra_go_staleness_and_plan_pass_rule() {   # issue #108 AC3
   local row
   row=$(dd_infra_go_row)
   assert_ne "$row" "" "i108 AC3: infra go path exists" || return 1
-  dd_text_has "i108 AC3: go before BLOCKED clears nothing" "$row" 'a go dated before the `BLOCKED` clears nothing' || return 1
+  dd_has "$ORCH_DD" 'a go dated before or at the stamp clears nothing' || return 1   # #311: stated once in the "JP's go" paragraph
   dd_text_has "i108 AC3: go must post-date PLAN PASS" "$row" 'dated after the latest `PLAN PASS`' || return 1
   dd_text_has "i108 AC3: back to AWAITING GO" "$row" 'stops at `AWAITING GO` again' || return 1
 }
@@ -540,7 +541,6 @@ test_dd_i108_carve_out_validation_and_prose_agree() {   # issue #108 AC4
   assert_ne "$val" "" "i108 AC4: validation row exists" || return 1
   dd_text_has "i108 AC4: validation row" "$val" 'dated after that `BLOCKED`' || return 1
   prose=$(grep -F 'resume only a staging-only planner/operator' "$ORCH_DD" | head -1)
-  dd_text_has "i108 AC4: prose names the go path" "$prose" "JP's exact-form go also resumes a planner/operator" || return 1
 }
 
 test_dd_i76_ac4_carve_out_still_lists_money_and_no_extra_authority() {   # characterisation — issue #76 AC4
@@ -562,7 +562,7 @@ test_dd_i76_ac5_staleness_wording_present() {
   assert_ne "$row" "" "i76 AC5: resume row exists" || return 1
   # "A go comment dated before the BLOCKED it would clear does not clear it. A comment that merely contains
   # the word 'go' somewhere in a sentence does not clear it (only an exact-form first line does)." (issue #76 AC5)
-  for s in 'dated after' 'exact' 'a sentence containing'; do
+  for s in 'posted after' 'dated before' 'exact'; do
     dd_text_has "i76 AC5: staleness clause" "$row" "$s" || return 1
   done
 }
@@ -600,10 +600,10 @@ test_dd_i76_ac8_no_new_mechanisms() {   # characterisation
   local want got
   # #192: also strip only the `delivery-lead)` case line and the ` delivery-lead` token, on both sides
   # #115: also strip only `|REJECTED` from the product-manager/fullstack-developer lines, on both sides (REJECTED is #115's marker)
-  want=$(cd "$ROOT_DD" && git show "$base:hooks/pipeline-markers.sh" | awk '/^(markers_for|marker_re)\(\)/ {p=1} p {print} p && /^}/ {p=0}' | sed -e '/^ *intake) /d' -e '/^ *orchestrator) /d' -e '/^ *delivery-lead) /d' -e 's/ delivery-lead project-manager/ project-manager/' -e 's/ intake orchestrator; do/; do/' -e 's/ intake; do/; do/' -e 's/|REJECTED//' -e 's/REJECTED|//')   # #114: strip only intake)/token on both sides
-  got=$(cd "$ROOT_DD" && awk '/^(markers_for|marker_re)\(\)/ {p=1} p {print} p && /^}/ {p=0}' hooks/pipeline-markers.sh | sed -e 's/|SKIP MOCKUPS//' -e '/^ *intake) /d' -e '/^ *orchestrator) /d' -e '/^ *delivery-lead) /d' -e 's/ delivery-lead project-manager/ project-manager/' -e 's/ intake orchestrator; do/; do/' -e 's/ intake; do/; do/' -e 's/|REJECTED//' -e 's/REJECTED|//')   # #114
+  want=$(cd "$ROOT_DD" && git show "$base:hooks/pipeline-markers.sh" | awk '/^markers_for\(\)/ {p=1} p {print} p && /^}/ {p=0}' | sed -e '/^ *intake) /d' -e '/^ *orchestrator) /d' -e '/^ *delivery-lead) /d' -e 's/ delivery-lead project-manager/ project-manager/' -e 's/ intake orchestrator; do/; do/' -e 's/ intake; do/; do/' -e 's/|REJECTED//' -e 's/REJECTED|//')   # #114: strip only intake)/token on both sides
+  got=$(cd "$ROOT_DD" && awk '/^markers_for\(\)/ {p=1} p {print} p && /^}/ {p=0}' hooks/pipeline-markers.sh | sed -e 's/|SKIP MOCKUPS//' -e '/^ *intake) /d' -e '/^ *orchestrator) /d' -e '/^ *delivery-lead) /d' -e 's/ delivery-lead project-manager/ project-manager/' -e 's/ intake orchestrator; do/; do/' -e 's/ intake; do/; do/' -e 's/|REJECTED//' -e 's/REJECTED|//')   # #114
   [ -n "$want" ] || { fail "i76 AC8: markers_for/marker_re not found at merge-base"; return 1; }
-  assert_eq "$got" "$want" "i76 AC8: markers_for/marker_re unchanged" || return 1
+  assert_eq "$got" "$want" "i76 AC8: markers_for unchanged (#310: marker_re jp branch moved to the shared matcher)" || return 1
   dd_has "$MARKERS_DD" 'GO|MOCKUPS APPROVED' || return 1
   dd_has "$PMGR_DD" 'never resum' || return 1
 }
@@ -715,7 +715,7 @@ test_dd_i192_deployed_then_delivery_lead_decision_is_done() {
   dd_thread '**[deployer] DEPLOYED**' $'**[delivery-lead] DECISION**\nResolves: https://example.test/c/1'
   dd_tick
   local done_f held
-  done_f=$(dd_present "$DD_PIPE/orch-42.done"); held=$(dd_present "$DD_PIPE/orch-42.held")
+  done_f=$(dd_present "$(rkp "$DD_PIPE/orch-42.done")"); held=$(dd_present "$(rkp "$DD_PIPE/orch-42.held")")
   dd_cleanup
   assert_eq "$done_f" "present" "i192: DEPLOYED then delivery-lead DECISION -> .done" || return 1
   assert_eq "$held" "absent" "i192: not held" || return 1

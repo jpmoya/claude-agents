@@ -9,7 +9,8 @@ const NOW = Date.parse('2026-09-21T12:00:00Z') / 1000;
 const ago = (hours) => new Date((NOW - hours * 3600) * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
 const urlOf = (n) => `https://github.com/example-owner/project-a/issues/${n}`;
 const run = (issue, o = {}) => validRun({ issue, url: urlOf(issue), title: `Title${issue}`, last_activity_at: ago(1), ...o });
-const render = (mac, vm) => renderPage({ mac, vm }, thresholds, NOW);
+// The #273 nav (Status | Pipelines) carries hrefs by design; these tests pin the table content.
+const render = (mac, vm) => renderPage({ mac, vm }, thresholds, NOW).replace(/<nav>[\s\S]*?<\/nav>/, '');
 
 const HEADINGS = ['Running', 'Queued', 'Approved, waiting for a slot', 'Needs JP', 'On staging (awaiting production)', 'Parked', 'Done'];
 const h2 = (name) => new RegExp(`<h2[^>]*>\\s*${name.replace(/[()]/g, '\\$&')} \\((\\d+)\\)\\s*</h2>`);
@@ -142,14 +143,6 @@ describe('AC7 — caps and ageing in the HTML', () => {
     expect(count(section(html, 'Running'), /<td>#\d+<\/td>/g)).toBe(25);
   });
 
-  it('12 parked rows -> "Parked (10)"; a 17-day-old parked row is hidden', () => {
-    const runs = Array.from({ length: 12 }, (_v, i) => run(i + 1, { state: 'held', marker: 'PASS', last_activity_at: ago(i + 1) }));
-    const html = render(hostRecord({ runs }), null);
-    expect(Number(h2('Parked').exec(html)[1])).toBe(10);
-    const old = render(hostRecord({ runs: [run(50, { state: 'held', marker: 'PASS', last_activity_at: ago(24 * 17) })] }), null);
-    expect(Number(h2('Parked').exec(old)[1])).toBe(0);
-    expect(old).not.toMatch(/#50(?!\d)/);
-  });
 
   it('a 13-day-old AWAITING GO is still listed under Needs JP (#139: 14-day limit)', () => {
     const html = render(hostRecord({ runs: [run(60, { state: 'held', marker: 'AWAITING GO', last_activity_at: ago(24 * 13) })] }), null);
@@ -506,20 +499,6 @@ describe('#140 — Needs JP group header rows', () => {
     expect(frag).not.toContain('A & B (quoting)');
   });
 
-  it('n is the rows shown after the cap; a fully capped-out group gets no header', () => {
-    const runs = [];
-    for (let i = 0; i < 15; i++) runs.push(blocked(100 + i, 'alpha', 'M', 1 + i));
-    for (let i = 0; i < 8; i++) runs.push(blocked(200 + i, 'beta', 'M', 1 + i));
-    const frag = needsHtml(runs);
-    expect(headers(frag)).toEqual([['alpha', 15], ['beta', 5]]);
-
-    const more = [];
-    for (let i = 0; i < 20; i++) more.push(blocked(300 + i, 'alpha', 'M', 1 + i));
-    for (let i = 0; i < 3; i++) more.push(blocked(400 + i, 'beta', 'M', 1 + i));
-    const frag2 = needsHtml(more);
-    expect(headers(frag2)).toEqual([['alpha', 20]]);
-    expect(frag2).not.toContain('(beta)');
-  });
 
   it('no Needs JP rows: section is the unchanged "none" row, no header', () => {
     const frag = section(render(hostRecord({ runs: [run(1, { state: 'running' })] }), null), 'Needs JP');

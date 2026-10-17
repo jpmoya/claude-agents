@@ -18,14 +18,18 @@ JP's shared Claude Code config, synced across machines (Mac + Clog VM). Despite 
 
 ## deliver.sh (goal-bound delivery lead)
 
-`skills/orchestrate/deliver.sh` registers a goal as a registry issue on GitHub and starts one cycle of `delivery-lead`. The supervisor keeps the goal alive between cycles and stops it at completion; agents never create launchd, cron or loop relaunchers.
+`skills/orchestrate/deliver.sh` registers a goal as a registry issue on GitHub (state `queued`; no launch). The supervisor starts the `delivery-lead` of the next queued goal when a slot, memory and power allow, every earlier goal (by registry `priority`, 1 first, then `order`, then issue number) is delivered, stopped or waiting on JP, and this host is eligible (VM first; the Mac only after the VM did not take it for two ticks; a goal registered with `--host` only on that host). One lead per goal, but its tickets run on both machines by default (`--hosts both|mac|vm`, label goals; `mac`/`vm` confines the lead and tickets to that machine): the other host's supervisor dispatches the goal's `agent-go` tickets, the existing claim comment keeps a ticket on one host, and a goal still queued dispatches nothing. `--now` launches one cycle at once, skipping the queue. The supervisor keeps the goal alive between cycles and stops it at completion; agents never create launchd, cron or loop relaunchers.
 
 ```bash
-skills/orchestrate/deliver.sh <goal> [instructions...]   # register + launch one cycle
+skills/orchestrate/deliver.sh <goal> [--now] [--host <name>] [--hosts both|mac|vm] [--priority <n>] [instructions...]   # register (queued); --now also launches one cycle
+~/.claude/skills/orchestrate/deliver.sh priority <goal|id> <n>   # change a goal's priority (1 starts first) here
+~/.claude/skills/orchestrate/deliver.sh project <goal|id|all> [--create]   # bind/sync the goal's GitHub Project (Mac only: needs the gh `project` scope)
 skills/orchestrate/deliver.sh status [goal|id]           # open goals, plus closed within 7 days
 skills/orchestrate/deliver.sh stop <goal|id>             # idempotent
 skills/orchestrate/deliver.sh resume <goal|id> [--here]  # reopen a stopped/held goal; --here re-pins it to this host
 ```
+
+Each goal has a GitHub Project (v2, "Goal: <title>", fields copied from project 1) that mirrors it: the registry block's `project` field records it, `deliver.sh register` creates one, the supervisor sync binds an existing "Goal: ..." project (by title or items) and keeps tickets and Status current, a delivered or stopped goal closes it, and the lead's brief and the status-page goal link point at it. All `gh project` calls live in `goal-project.sh`; hosts whose gh token lacks the `project` scope (the VM: `gh auth refresh -s project`) skip it, and a project error never blocks a goal.
 
 - **Goal specs:** `owner/repo:milestone:<number|exact title>`, `owner/repo:milestones:all`, `owner/repo#N`.
 - **Overlap refusal:** a goal that shares a ticket (or a repo with a `milestones:all` goal) with a live goal is refused; the error names the live conflicting goal.

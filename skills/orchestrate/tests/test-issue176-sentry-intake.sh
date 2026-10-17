@@ -186,7 +186,7 @@ test_s176_ac4_handoff_hook_lets_intake_stop_after_noise() {
 expr=""; while [ \$# -gt 0 ]; do case "\$1" in --jq) expr=\$2; shift;; esac; shift; done
 jq -r "\$expr" "$d/page.json"
 EOF2
-  chmod +x "$d/bin/gh"; echo 0 > "$d/pipe/9-intake-before.txt"
+  chmod +x "$d/bin/gh"; echo 0 > "$d/pipe/o_a-9-intake-before.txt"
   echo '{}' | PIPE="$d/pipe" PATH="$d/bin:/usr/bin:/bin" PIPELINE_ISSUE=9 PIPELINE_AGENT=intake PIPELINE_REPO=o/a \
     /bin/bash "$ROOT_S176/hooks/require-handoff-marker.sh" >/dev/null 2>&1; rc=$?
   rm -rf "$d"

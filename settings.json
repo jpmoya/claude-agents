@@ -115,6 +115,10 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/bug-fix-skill-reminder.sh"
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/brevity-reminder.sh"
           }
         ]
       }
@@ -156,6 +160,10 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/report-status-hook.sh"
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/brevity-stop.sh"
           }
         ]
       }

@@ -23,7 +23,7 @@ const HEADINGS = {
   done: 'Done',
 };
 
-const CAPS = { approved: 20, needsJp: 20, staging: 60, parked: 10, done: 20 };
+const CAPS = { done: 20, staging: 60 }; // Needs JP, Approved and Parked are never truncated: a silent cap hid #892
 
 const keyOf = (item) => (isIssueUrl(item.url) ? item.url : `${item.repo}#${item.issue}`);
 

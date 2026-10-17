@@ -29,13 +29,26 @@ markers_for() {  # markers_for <agent> → that agent's routing markers, |-separ
   esac
 }
 
+jp_approval_re() {  # jq (oniguruma) regex over a FULL comment body: JP's approval — the ONE word set (#310). Callers must also check the author (identity is the anti-forgery) and the date.
+  # Case-insensitive. Matches when the first non-empty line is a word phrase optionally followed by a separator (, ; : -) and free text,
+  # or when any line is only a phrase plus optional trailing .! / whitespace / CR. A phrase inside a sentence never matches.
+  local words legacy
+  words='approved|approve|go|proceed|lgtm|ok to proceed'
+  legacy="\\*\\*\\[jp\\] ($(markers_for jp))\\*\\*"   # the legacy marker forms, from markers_for jp
+  printf '%s' "(?i)(?:\\A\\s*(?:$words)[ \\t]*[,;:-][ \\t]*\\S|(?:\\A|\\n)[ \\t]*(?:$words|$legacy)[.!]*[ \\t\\r]*(?=\\n|\\z))"
+}
+
+is_jp_approval() {  # is_jp_approval <body> → exit 0 when the body is an approval phrase (word set only; author/date are the caller's checks)
+  jq -ne --arg b "$1" --arg re "$(jp_approval_re)" '$b | test($re)' >/dev/null
+}
+
 marker_re() {  # marker_re [agent] → jq (oniguruma) regex for a valid first line; no agent = any agent, each with its own markers
   # jp's markers are gates: the first line must be the marker and nothing else (trailing whitespace/CR ok),
   # the same "exactly" rule the orchestrator applies (#202). Other agents keep the `**`/`:`/space/EOL suffix.
   local a alt="" jpalt
   jpalt="jp\\] ($(markers_for jp))\\*\\*[[:space:]]*\$"
   if [ "${1:-}" = jp ]; then
-    printf '^\\*\\*\\[%s' "$jpalt"; return
+    jp_approval_re; return   # #310: jp's gates take the shared approval-word set, not only the legacy exact line
   fi
   if [ -n "${1:-}" ]; then
     alt=$(markers_for "$1"); [ -n "$alt" ] || alt='BLOCKED'

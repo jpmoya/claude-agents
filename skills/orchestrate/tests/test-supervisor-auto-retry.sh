@@ -68,7 +68,7 @@ ar2_fixture() {
   local line2=$1 marker=${2:-$AR2_BLK} body
   sq_env open; sq_free_slots; ar2_install_gh
   mk_held "$SQ_PIPE" 42 "$SQ_REPO"
-  printf 'BLOCKED\n' > "$SQ_PIPE/orch-42.marker"
+  printf 'BLOCKED\n' > "$(rkp "$SQ_PIPE/orch-42.marker")"
   body="$marker"$'\n'"$line2"
   jq -nc --arg b "$body" '[{body:$b, createdAt:"2026-09-20T10:00:00Z", author:{login:"x"}}]' > "$SQ_GH/gh-issue-comments-json-42"
   : > "$SQ_PIPE/claude.calls"
@@ -83,8 +83,8 @@ ar2_no_launch() {  # negatives: sq_run is synchronous; wait for the cause-check 
   sleep 0.7; wc -l < "$SQ_PIPE/claude.calls" | tr -d ' '
 }
 ar2_pr_calls() { grep -c '^pr ' "$SQ_GH/gh-calls.log" 2>/dev/null || true; }
-ar2_counter() { if [ -f "$SQ_PIPE/orch-42.autoretry" ]; then head -n1 "$SQ_PIPE/orch-42.autoretry" | tr -d ' \n'; else echo ABSENT; fi; }
-ar2_held() { sq_present "$SQ_PIPE/orch-42.held"; }
+ar2_counter() { if [ -f "$(rkp "$SQ_PIPE/orch-42.autoretry")" ]; then head -n1 "$(rkp "$SQ_PIPE/orch-42.autoretry")" | tr -d ' \n'; else echo ABSENT; fi; }
+ar2_held() { sq_present "$(rkp "$SQ_PIPE/orch-42.held")"; }
 
 # ---- cleared -> relaunched once --------------------------------------------------------------------------------
 test_ar2_ci_red_checks_green_relaunches_once() {
@@ -176,7 +176,7 @@ test_ar2_dependency_one_still_open_not_relaunched() {
 # ---- bound of 3 --------------------------------------------------------------------------------------------------
 test_ar2_third_retry_is_allowed_and_numbered_3_of_3() {
   ar2_fixture 'Blocked on: ci_red — x'
-  echo 2 > "$SQ_PIPE/orch-42.autoretry"
+  echo 2 > "$(rkp "$SQ_PIPE/orch-42.autoretry")"
   ar2_tick
   local n c calls; n=$(ar2_launches); c=$(ar2_counter); calls=$(gh_calls "$SQ_GH")
   sq_cleanup
@@ -187,7 +187,7 @@ test_ar2_third_retry_is_allowed_and_numbered_3_of_3() {
 
 test_ar2_fourth_retry_never_fires() {
   ar2_fixture 'Blocked on: ci_red — x'
-  echo 3 > "$SQ_PIPE/orch-42.autoretry"
+  echo 3 > "$(rkp "$SQ_PIPE/orch-42.autoretry")"
   echo pass > "$SQ_GH/gh-pr-checks"
   ar2_tick
   local n c h; n=$(ar2_no_launch); c=$(ar2_counter); h=$(ar2_held)
@@ -247,7 +247,7 @@ test_ar2_check_runs_again_after_30_min() {
   ar2_tick
   local first f new; first=$(ar2_pr_calls)
   for f in $(ls "$SQ_PIPE"); do
-    case "$f" in orch-42.*) printf '%s\n' "$before" | grep -qx "$f" && continue
+    case "$f" in orch-*-42.*) printf '%s\n' "$before" | grep -qx "$f" && continue
       python3 -c 'import os,sys,time; t=time.time()-31*60; os.utime(sys.argv[1],(t,t))' "$SQ_PIPE/$f"
       if grep -Eqx '[0-9]{9,}' "$SQ_PIPE/$f" 2>/dev/null; then echo $(( $(head -n1 "$SQ_PIPE/$f") - 1900 )) > "$SQ_PIPE/$f"; fi ;;
     esac
@@ -309,14 +309,14 @@ ar2_wrap_comment() {
 #!/bin/bash
 HERE=\$(cd "\$(dirname "\$0")" && pwd)
 if [ "\$1 \$2" = "issue comment" ]; then
-  printf 'queue=%s held=%s\n' "\$([ -e "$SQ_PIPE/queue/orch-42.json" ] && echo yes || echo no)" "\$([ -e "$SQ_PIPE/orch-42.held" ] && echo yes || echo no)" >> "\$HERE/comment-state.log"
+  printf 'queue=%s held=%s\n' "\$([ -e "$(rkp "$SQ_PIPE/queue/orch-42.json")" ] && echo yes || echo no)" "\$([ -e "$(rkp "$SQ_PIPE/orch-42.held")" ] && echo yes || echo no)" >> "\$HERE/comment-state.log"
   if [ -f "\$HERE/gh-comment-fail" ]; then echo "HTTP 502 token=ghp_FAKESECRET123" >&2; exit 1; fi
 fi
 exec "\$HERE/gh-ar2" "\$@"
 GH_EOF
   chmod +x "$SQ_GH/gh"
 }
-ar2_queue_exists() { sq_present "$SQ_PIPE/queue/orch-42.json"; }
+ar2_queue_exists() { sq_present "$(rkp "$SQ_PIPE/queue/orch-42.json")"; }
 
 # AC3a: the NOTE is posted before the queue file is written (and before .held is removed)
 test_ar2_269_note_posted_before_queue_file_written() {
@@ -383,8 +383,8 @@ test_ar2_269_issue_read_failure_alerts_slack_with_tags() {
 test_ar2_269_monthly_spend_held_run_is_not_retried() {
   ar2_fixture 'Blocked on: ci_red — x'
   echo pass > "$SQ_GH/gh-pr-checks"
-  printf 'rate_limited monthly_spend\n' > "$SQ_PIPE/orch-42.exit-class"
-  printf '2026-10-15T00:00:00Z Pipeline #42 waiting on JP — monthly spend limit reached; relaunch after credits or a model switch\n' > "$SQ_PIPE/orch-42.alert"
+  printf 'rate_limited monthly_spend\n' > "$(rkp "$SQ_PIPE/orch-42.exit-class")"
+  printf '2026-10-15T00:00:00Z Pipeline #42 waiting on JP — monthly spend limit reached; relaunch after credits or a model switch\n' > "$(rkp "$SQ_PIPE/orch-42.alert")"
   ar2_tick
   local n c h calls; n=$(ar2_no_launch); c=$(ar2_counter); h=$(ar2_held); calls=$(gh_calls "$SQ_GH")
   sq_cleanup
@@ -430,7 +430,7 @@ test_ar2_269_multi_dependency_all_closed_cleared() {
 test_ar2_269_extra_carried_over_to_relaunch() {
   ar2_fixture 'Blocked on: ci_red — x'
   echo pass > "$SQ_GH/gh-pr-checks"
-  printf '%s' 'EXTRA-SENTINEL-269' > "$SQ_PIPE/orch-42.extra"
+  printf '%s' 'EXTRA-SENTINEL-269' > "$(rkp "$SQ_PIPE/orch-42.extra")"
   ar2_tick
   local n calls; n=$(ar2_launches); calls=$(cat "$SQ_PIPE/claude.calls")
   sq_cleanup
@@ -442,7 +442,7 @@ test_ar2_269_extra_carried_over_to_relaunch() {
 test_ar2_269_non_blocked_alert_skips_issue_view() {
   ar2_fixture 'Blocked on: ci_red — decoy: older class-matching BLOCKED in thread'
   echo pass > "$SQ_GH/gh-pr-checks"
-  printf '2026-10-15T00:00:00Z Pipeline #42 waiting on JP — **[infra-operator] AWAITING GO**; relaunch (or re-add agent-go) after acting\n' > "$SQ_PIPE/orch-42.alert"
+  printf '2026-10-15T00:00:00Z Pipeline #42 waiting on JP — **[infra-operator] AWAITING GO**; relaunch (or re-add agent-go) after acting\n' > "$(rkp "$SQ_PIPE/orch-42.alert")"
   ar2_tick
   local views n; views=$(grep -c '^issue view' "$SQ_GH/gh-calls.log" 2>/dev/null || true); n=$(ar2_no_launch)
   sq_cleanup
@@ -453,12 +453,25 @@ test_ar2_269_non_blocked_alert_skips_issue_view() {
 test_ar2_269_blocked_alert_still_reads_issue_and_retries() {
   ar2_fixture 'Blocked on: ci_red — x'
   echo pass > "$SQ_GH/gh-pr-checks"
-  printf '2026-10-15T00:00:00Z Pipeline #42 waiting on JP — **[fullstack-developer] BLOCKED**; relaunch (or re-add agent-go) after acting\n' > "$SQ_PIPE/orch-42.alert"
+  printf '2026-10-15T00:00:00Z Pipeline #42 waiting on JP — **[fullstack-developer] BLOCKED**; relaunch (or re-add agent-go) after acting\n' > "$(rkp "$SQ_PIPE/orch-42.alert")"
   ar2_tick
   local n views; n=$(ar2_launches); views=$(grep -c '^issue view' "$SQ_GH/gh-calls.log" 2>/dev/null || true)
   sq_cleanup
   assert_eq "$n" "1" "269 item4 control: a BLOCKED hold is still retried" || return 1
   [ "${views:-0}" -ge 1 ] || { fail "269 item4 control: BLOCKED hold must read the issue"; return 1; }
+}
+
+# ---- #293: a held run with no .autoretry file reads the counter silently ------------------------------------------
+test_ar2_293_missing_autoretry_file_no_stderr() {
+  ar2_fixture 'Blocked on: ci_pending — checks running'
+  echo pending > "$SQ_GH/gh-pr-checks"
+  rm -f "$(rkp "$SQ_PIPE/orch-42.autoretry")"
+  sq_run "$SUP_SQ" >/dev/null 2>"$SQ_PIPE/tick.stderr"
+  local err stamp=no; err=$(grep -c 'autoretry: No such file' "$SQ_PIPE/tick.stderr" 2>/dev/null || true)
+  [ -e "$(rkp "$SQ_PIPE/orch-42.autoretry-check")" ] && stamp=yes
+  sq_cleanup
+  assert_eq "${err:-0}" "0" "293: no 'No such file' stderr for a missing .autoretry" || return 1
+  assert_eq "$stamp" "yes" "293: loop reaches the throttle stamp" || return 1
 }
 
 run_test test_ar2_269_note_posted_before_queue_file_written
@@ -472,3 +485,4 @@ run_test test_ar2_269_multi_dependency_all_closed_cleared
 run_test test_ar2_269_extra_carried_over_to_relaunch
 run_test test_ar2_269_non_blocked_alert_skips_issue_view
 run_test test_ar2_269_blocked_alert_still_reads_issue_and_retries
+run_test test_ar2_293_missing_autoretry_file_no_stderr

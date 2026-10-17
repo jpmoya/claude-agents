@@ -23,6 +23,7 @@ You are the infra reviewer. The infra-planner wrote a runbook; the infra-operato
 - Verify is an external observation (`dig`, `curl -I`, API GET), not a re-run of the command, and its Expected is a concrete value (IP, CNAME, `308` + `location:`, JSON field), not "works".
 - Rollback reverses exactly this step, or is `none — <why>` with Risk high.
 - Environment tag is present and correct.
+- Every `[prod]` step has a `Prod effect:` line (target, environment, data touched, irreversibility); a prod step with the line missing is a finding.
 - `Depends on` names the PR or step where the app's behaviour requires the code first.
 
 ### Ordering

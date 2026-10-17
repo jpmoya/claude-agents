@@ -1,16 +1,16 @@
 #!/bin/bash
 # Refresh the status board's local truth from GitHub (issue #51). Usage: reconcile-status.sh [--force]
 #
-# For every local record (orch-<n>.pid + orch-<n>.repo, or a queue-only entry) that is open-ish (running / restarting / held / queued)
-# or finished within the last 48 h (done / stopped), and has no orch-<n>.closed yet, one
+# For every local record (orch-<run_key>.pid + orch-<run_key>.repo, or a queue-only entry) that is open-ish (running / restarting / held / queued)
+# or finished within the last 48 h (done / stopped), and has no orch-<run_key>.closed yet, one
 # `gh issue view <n> --json state,closedAt,comments,milestone`:
-#   CLOSED -> orch-<n>.closed (line 1 = closedAt), touch .done, drop .held/.stopped/.alert and the queue
+#   CLOSED -> orch-<run_key>.closed (line 1 = closedAt), touch .done, drop .held/.stopped/.alert and the queue
 #             entry, log a line to supervisor.log
-#   OPEN   -> orch-<n>.marker = the latest real routing marker name (removed when there is none)
+#   OPEN   -> orch-<run_key>.marker = the latest real routing marker name (removed when there is none)
 # Each pass also refreshes two per-repo GitHub lists (issue #65) for DISPATCH_REPOS ∪ SCAN_ONLY_REPOS:
 # open issues with milestone `staging` -> status-staging.json, open `agent-go` issues ->
 # status-approved.json (a failed call keeps that repo's previous entries). And an OPEN issue whose
-# milestone is a release (vX.Y.Z) is treated like CLOSED, with the version in orch-<n>.release.
+# milestone is a release (vX.Y.Z) is treated like CLOSED, with the version in orch-<run_key>.release.
 # then ONE report_status_async if anything changed. The reporter and builder only read these files, so
 # they stay network-free.
 #
@@ -149,12 +149,13 @@ rc_gate_facts() {
 records=$(derive_runs)
 while IFS=$'\t' read -r issue repo state pid started last_activity restarts stage; do
   [ -n "$issue" ] || continue
+  rk=$(rk_pick "$repo" "$issue")   # run key (legacy bare <N> only while an unmigrated set of this repo exists)
   # queued-only entries have no pid/.repo record: their repo comes from the queue JSON (derive_runs)
-  { [ "$state" = "queued" ] && [ -n "$repo" ]; } || [ -f "$PIPE/orch-$issue.repo" ] || continue
+  { [ "$state" = "queued" ] && [ -n "$repo" ]; } || [ -f "$PIPE/orch-$rk.repo" ] || continue
   case "$state" in
     running|restarting|held|queued) ;;
     done|stopped)
-      [ -n "$last_activity" ] || last_activity=$(_rs_mtime "$PIPE/orch-$issue.pid")
+      [ -n "$last_activity" ] || last_activity=$(_rs_mtime "$PIPE/orch-$rk.pid")
       [ -n "$last_activity" ] && [ $((now - last_activity)) -le "$RECENT_SECS" ] || continue ;;
     *) continue ;;                                             # closed (already reconciled) or unknown
   esac
@@ -166,24 +167,24 @@ while IFS=$'\t' read -r issue repo state pid started last_activity restarts stag
   marker=$(printf '%s' "$info" | jq -r "$MARKER_JQ" 2>/dev/null) || marker=""
   marker=$(marker_name_from_line "$marker")
 
-  old_marker=$(head -n1 "$PIPE/orch-$issue.marker" 2>/dev/null)
+  old_marker=$(head -n1 "$PIPE/orch-$rk.marker" 2>/dev/null)
   if [ -n "$marker" ]; then
-    [ "$marker" = "$old_marker" ] || { printf '%s\n' "$marker" > "$PIPE/orch-$issue.marker"; changed=1; }
-  elif [ -f "$PIPE/orch-$issue.marker" ]; then
-    rm -f "$PIPE/orch-$issue.marker"; changed=1
+    [ "$marker" = "$old_marker" ] || { printf '%s\n' "$marker" > "$PIPE/orch-$rk.marker"; changed=1; }
+  elif [ -f "$PIPE/orch-$rk.marker" ]; then
+    rm -f "$PIPE/orch-$rk.marker"; changed=1
   fi
 
   release=$(printf '%s' "$info" | jq -r '.milestone.title // empty' 2>/dev/null)
   printf '%s' "$release" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || release=""
-  [ -z "$release" ] || printf '%s\n' "$release" > "$PIPE/orch-$issue.release"
+  [ -z "$release" ] || printf '%s\n' "$release" > "$PIPE/orch-$rk.release"
 
   ms=$(printf '%s' "$info" | jq -r '.milestone.title // empty' 2>/dev/null | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//' | cut -c1-60)
   printf '%s' "$ms" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' && ms=""
-  old_ms=$(head -n1 "$PIPE/orch-$issue.milestone" 2>/dev/null)
+  old_ms=$(head -n1 "$PIPE/orch-$rk.milestone" 2>/dev/null)
   if [ -n "$ms" ]; then
-    [ "$ms" = "$old_ms" ] || { printf '%s\n' "$ms" > "$PIPE/orch-$issue.milestone"; changed=1; }
-  elif [ -f "$PIPE/orch-$issue.milestone" ]; then
-    rm -f "$PIPE/orch-$issue.milestone"; changed=1
+    [ "$ms" = "$old_ms" ] || { printf '%s\n' "$ms" > "$PIPE/orch-$rk.milestone"; changed=1; }
+  elif [ -f "$PIPE/orch-$rk.milestone" ]; then
+    rm -f "$PIPE/orch-$rk.milestone"; changed=1
   fi
 
   if [ "$gh_state" = "CLOSED" ] || { [ "$gh_state" = "OPEN" ] && [ -n "$release" ]; }; then
@@ -193,10 +194,10 @@ while IFS=$'\t' read -r issue repo state pid started last_activity restarts stag
       [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) ;;
       *) closed_at=$(date -u +%FT%TZ) ;;
     esac
-    printf '%s\n' "$closed_at" > "$PIPE/orch-$issue.closed"
-    [ -f "$PIPE/orch-$issue.repo" ] || printf '%s\n' "$repo" > "$PIPE/orch-$issue.repo"   # queued-only: keep the repo for completed[]
-    touch "$PIPE/orch-$issue.done"
-    rm -f "$PIPE/orch-$issue.held" "$PIPE/orch-$issue.stopped" "$PIPE/orch-$issue.alert" "$QUEUE/orch-$issue.json"
+    printf '%s\n' "$closed_at" > "$PIPE/orch-$rk.closed"
+    [ -f "$PIPE/orch-$rk.repo" ] || printf '%s\n' "$repo" > "$PIPE/orch-$rk.repo"   # queued-only: keep the repo for completed[]
+    touch "$PIPE/orch-$rk.done"
+    rm -f "$PIPE/orch-$rk.held" "$PIPE/orch-$rk.stopped" "$PIPE/orch-$rk.alert" "$QUEUE/orch-$rk.json"
     if [ "$gh_state" = "OPEN" ]; then
       rc_log "[reconcile] #$issue — released $release, moved to completed"
     else
@@ -239,10 +240,10 @@ RCFACTS
         fi
       fi
     fi
-    rc_set "$PIPE/orch-$issue.gate_at" "$gate_at"
-    rc_set "$PIPE/orch-$issue.needs" "$needs"
-    rc_set "$PIPE/orch-$issue.parked_reason" "$reason"
-    rc_set "$PIPE/orch-$issue.block_class" "$bclass"
+    rc_set "$PIPE/orch-$rk.gate_at" "$gate_at"
+    rc_set "$PIPE/orch-$rk.needs" "$needs"
+    rc_set "$PIPE/orch-$rk.parked_reason" "$reason"
+    rc_set "$PIPE/orch-$rk.block_class" "$bclass"
   fi
 done <<EOF
 $records

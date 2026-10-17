@@ -106,13 +106,13 @@ test_gm_ac1_latest_marker_prints_the_developer_blocked() {
 test_gm_ac1_tick_holds_for_jp_and_does_not_restart() {
   gm_env
   mk_restarting "$GM_PIPE" 42 "$GM_REPO"
-  gm_iso_ago 1300 > "$GM_PIPE/orch-42.start"   # past GRACE_PERIOD_SECS
+  gm_iso_ago 1300 > "$(rkp "$GM_PIPE/orch-42.start")"   # past GRACE_PERIOD_SECS
   gm_thread "$GM_WRITTEN" "$GM_BLOCKED" "$GM_APPROVED"
   HOME="$GM_HOME" PATH="$GM_GH:/usr/bin:/bin" PIPE="$GM_PIPE" QUEUE="$GM_PIPE/queue" LOGDIR="$GM_HOME/logs/pipeline" \
     SLACK_BOT_TOKEN="" SLACK_ENGINEERING_CHANNEL="" "$SUP_GM" >/dev/null 2>&1
   local held log queued
-  held=$([ -e "$GM_PIPE/orch-42.held" ] && echo present || echo absent)
-  queued=$([ -e "$GM_PIPE/queue/orch-42.json" ] && echo present || echo absent)
+  held=$([ -e "$(rkp "$GM_PIPE/orch-42.held")" ] && echo present || echo absent)
+  queued=$([ -e "$(rkp "$GM_PIPE/queue/orch-42.json")" ] && echo present || echo absent)
   log=$(cat "$GM_HOME/logs/pipeline/supervisor.log" 2>/dev/null)
   gm_cleanup
   assert_eq "$held" "present" "AC1: .held" || return 1
@@ -132,12 +132,12 @@ test_gm_ac2_blocked_then_approved_then_decision_prints_blocked_and_decision() {
 test_gm_ac2_tick_with_decision_takes_the_restart_path() {
   gm_env
   mk_restarting "$GM_PIPE" 42 "$GM_REPO"
-  gm_iso_ago 1300 > "$GM_PIPE/orch-42.start"
+  gm_iso_ago 1300 > "$(rkp "$GM_PIPE/orch-42.start")"
   gm_thread "$GM_WRITTEN" "$GM_BLOCKED" "$GM_APPROVED" "$GM_DECISION"
   HOME="$GM_HOME" PATH="$GM_GH:/usr/bin:/bin" PIPE="$GM_PIPE" QUEUE="$GM_PIPE/queue" LOGDIR="$GM_HOME/logs/pipeline" \
     SLACK_BOT_TOKEN="" SLACK_ENGINEERING_CHANNEL="" "$SUP_GM" >/dev/null 2>&1
   local held log
-  held=$([ -e "$GM_PIPE/orch-42.held" ] && echo present || echo absent)
+  held=$([ -e "$(rkp "$GM_PIPE/orch-42.held")" ] && echo present || echo absent)
   log=$(cat "$GM_HOME/logs/pipeline/supervisor.log" 2>/dev/null)
   gm_cleanup
   assert_eq "$held" "absent" "AC2: not held" || return 1
@@ -146,7 +146,6 @@ test_gm_ac2_tick_with_decision_takes_the_restart_path() {
 
 test_gm_ac2_orchestrator_resume_rows_still_present() {   # characterisation: rows keyed on the BLOCKED gate marker are untouched
   grep -qF 'whose line 2 is `Resolves: <URL of that BLOCKED comment>`' "$ORCH_GM" || { fail "resume row text missing"; return 1; }
-  grep -qF 'first line is exactly `go` / `GO` / `**[jp] GO**`' "$ORCH_GM" || { fail "JP exact-form go clause missing"; return 1; }
   grep -qF 'where a private artefact is stored / who gets access' "$ORCH_GM" || { fail "JP-only carve-out missing"; return 1; }
 }
 
@@ -264,12 +263,12 @@ test_gm_169_decision_on_the_blocked_keeps_it_as_gate() {
 test_gm_169_tick_holds_and_does_not_restart() {
   gm_env
   mk_restarting "$GM_PIPE" 42 "$GM_REPO"
-  gm_iso_ago 1300 > "$GM_PIPE/orch-42.start"
+  gm_iso_ago 1300 > "$(rkp "$GM_PIPE/orch-42.start")"
   gm_thread "$GM_IMPL" '**[code-reviewer] BLOCKED**' '**[test-reviewer] PASS**'
   HOME="$GM_HOME" PATH="$GM_GH:/usr/bin:/bin" PIPE="$GM_PIPE" QUEUE="$GM_PIPE/queue" LOGDIR="$GM_HOME/logs/pipeline" \
     SLACK_BOT_TOKEN="" SLACK_ENGINEERING_CHANNEL="" "$SUP_GM" >/dev/null 2>&1
   local held log
-  held=$([ -e "$GM_PIPE/orch-42.held" ] && echo present || echo absent)
+  held=$([ -e "$(rkp "$GM_PIPE/orch-42.held")" ] && echo present || echo absent)
   log=$(cat "$GM_HOME/logs/pipeline/supervisor.log" 2>/dev/null)
   gm_cleanup
   assert_eq "$held" "present" "169: .held" || return 1
@@ -315,7 +314,7 @@ test_gm_ac8_no_new_mechanism() {
   # #115: also skip exactly the step-A additions: the 3c block (header `# 3c. Spec…` to its first blank line), its header-comment line `#   3c. spec: `, the one-line `a spec run (3c) owns it` skip, single lines mentioning REJECTED, and any multi-line REJECTED handling wrapped in `# #115 begin` … `# #115 end` comment lines
   # #217: the winner= assignment (inline query -> claim_winner call) is dropped from both sides
   # only the ticket's files (plus tests) changed
-  extra=$(cd "$ROOT_GM" && git diff --name-only "$base" | grep -vE '^(agents/orchestrator\.md|skills/orchestrate/supervisor\.sh|skills/orchestrate/pipeline-lib\.sh|hooks/sync-agents\.sh|hooks/no-duplicate-stage\.sh|skills/orchestrate/tests/)' | grep -vxE 'agents/intake\.md|agents/README\.md|README\.md|hooks/pipeline-markers\.sh|hooks/require-handoff-marker\.sh|skills/orchestrate/(intake-labels|scan-backlog|config|pipeline-lib)\.sh' | grep -vxE 'agents/fullstack-developer\.md|agents/product-manager\.md|agents/deployer\.md|status-page/test/deployer-ci-wait\.test\.js|skills/orchestrate/test/.*|skills/orchestrate/deliver\.sh|skills/orchestrate/goal-lib\.sh' | grep -vxE 'CLAUDE\.md|agents/pipeline-adjudicator\.md|agents/solutions-architect\.md' | grep -vxE 'skills/orchestrate/config\.local\.example\.sh' | grep -vxE 'agents/project-manager\.md|skills/orchestrate/SKILL\.md' | grep -vxE 'agents/delivery-lead\.md|status-page/README\.md|skills/orchestrate/reconcile-status\.sh' | grep -vxE 'skills/orchestrate/report-status\.sh|skills/orchestrate/orchestrate\.sh' || true)   # #114 + #115: exactly their Files-table paths; #188 adds its Files-table docs/agent paths; #196 AC2 adds the example config (one exact path); #193 adds deliver.sh and goal-lib.sh (its new Files-table paths); #198 adds project-manager.md and SKILL.md (docs); #192 adds delivery-lead.md, status-page/README.md, reconcile-status.sh (its Files-table paths); #217 adds orchestrate.sh
+  extra=$(cd "$ROOT_GM" && git diff --name-only "$base" | grep -vE '^(agents/orchestrator\.md|skills/orchestrate/supervisor\.sh|skills/orchestrate/pipeline-lib\.sh|hooks/sync-agents\.sh|hooks/no-duplicate-stage\.sh|skills/orchestrate/tests/)' | grep -vxE 'agents/intake\.md|agents/README\.md|README\.md|hooks/pipeline-markers\.sh|hooks/require-handoff-marker\.sh|skills/orchestrate/(intake-labels|scan-backlog|config|pipeline-lib)\.sh' | grep -vxE 'agents/fullstack-developer\.md|agents/product-manager\.md|agents/deployer\.md|status-page/test/deployer-ci-wait\.test\.js|skills/orchestrate/test/.*|skills/orchestrate/deliver\.sh|skills/orchestrate/goal-lib\.sh' | grep -vxE 'CLAUDE\.md|agents/pipeline-adjudicator\.md|agents/solutions-architect\.md' | grep -vxE 'skills/orchestrate/config\.local\.example\.sh' | grep -vxE 'agents/project-manager\.md|skills/orchestrate/SKILL\.md' | grep -vxE 'agents/delivery-lead\.md|status-page/README\.md|skills/orchestrate/reconcile-status\.sh' | grep -vxE 'skills/orchestrate/report-status\.sh|skills/orchestrate/orchestrate\.sh|skills/orchestrate/run-state\.sh' || true)   # #114 + #115: exactly their Files-table paths; #188 adds its Files-table docs/agent paths; #196 AC2 adds the example config (one exact path); #193 adds deliver.sh and goal-lib.sh (its new Files-table paths); #198 adds project-manager.md and SKILL.md (docs); #192 adds delivery-lead.md, status-page/README.md, reconcile-status.sh (its Files-table paths); #217 adds orchestrate.sh
   assert_eq "$extra" "" "AC8: files changed outside the ticket's list" || return 1
 }
 

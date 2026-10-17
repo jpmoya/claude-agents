@@ -112,9 +112,4 @@ describe('#139 rule 5 — Parked 7-day hide: demoted rows exempt, ordinary rows 
     expect(issuesOf(g, PARKED)).toEqual([5]);
   });
 
-  it('Parked cap of 10 still applies to demoted rows, newest first', () => {
-    // issue i has last activity i days ago (i = 1..12) -> newest 10 are issues 1..10
-    const runs = Array.from({ length: 12 }, (_v, i) => held(i + 1, { parked_reason: 'answered', last_activity_at: ago(days(i + 1)) }));
-    expect(issuesOf(group(runs), PARKED)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
-  });
 });

@@ -148,7 +148,7 @@ test_ac4_dash_with_repo_fixture_matches_explicit_repo_outcome() {
   pipe=$(new_pipe)
   repo_checkout="$pipe/repo-project-b"
   fixture_repo "$repo_checkout" "$owner_repo_checkout"
-  echo "$repo_checkout" > "$pipe/orch-401.repo"
+  echo "$repo_checkout" > "$(rkp "$pipe/orch-401.repo")"
 
   # Path 1: explicit owner/repo arg. Same $pipe (so orch-401.repo is present here too) — proves an
   # explicit arg wins over the local .repo file rather than the .repo file being consulted first.
@@ -515,7 +515,7 @@ test_t15_ac1_dash_resolved_repo_gets_the_note_on_the_resolved_repo() {
   pipe=$(new_pipe); read -r home ghdir <<< "$(pbdt_gh_home)"
   repo_checkout="$pipe/repo-project-b"
   fixture_repo "$repo_checkout" "example-owner/project-b"
-  echo "$repo_checkout" > "$pipe/orch-1507.repo"
+  echo "$repo_checkout" > "$(rkp "$pipe/orch-1507.repo")"
   echo "OPEN" > "$ghdir/gh-issue-state"; echo "[]" > "$ghdir/gh-issue-labels-json"
   pbdt_run "$ghdir" "$home" "$pipe" 1507 "-" "$PBDT_CHANNEL" "$PBDT_TS"
   pbdt_capture "$ghdir"

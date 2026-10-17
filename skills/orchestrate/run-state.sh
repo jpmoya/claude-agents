@@ -15,9 +15,9 @@ RS_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # state_code precedence (design table, checked in order): pid alive -> running; else .closed ->
 # closed (issue #51: reconcile-status.sh saw the GitHub issue CLOSED; never emitted in runs[], only
 # in the payload's completed[]); else .stopped -> stopped; else .held -> held; else .done -> done; else -> restarting. A queue entry with no
-# orch-<issue>.pid at all is a separate record: state_code=queued, pid empty. A .closed marker with no
+# orch-<run_key>.pid at all is a separate record: state_code=queued, pid empty. A .closed marker with no
 # .pid and no queue entry is a closed record too (a ticket reconciled while queued-only).
-# last_activity_at is an epoch integer (newest mtime among orch-<n>.log / run-<n>-*.log) — the
+# last_activity_at is an epoch integer (newest mtime among orch-<run_key>.log / run-<run_key>-*.log) — the
 # caller (report-status.sh) converts it to ISO-8601Z for the payload. File contents are never read.
 # mtimes are read via python3's os.path.getmtime — no GNU stat/date flags (AC11), portable to
 # macOS bash 3.2.
@@ -28,7 +28,7 @@ try: print(int(os.path.getmtime(sys.argv[1])))
 except OSError: pass" "$1" 2>/dev/null
 }
 
-_rs_ps_lines() {  # live claude processes: <start_epoch> TAB <PIPELINE_ISSUE> TAB <command line>; RS_PS_CMD overrides (tests)
+_rs_ps_lines() {  # live claude processes: <start_epoch> TAB <PIPELINE_ISSUE> TAB <command line> [TAB <pid>]; RS_PS_CMD overrides (tests)
   if [ -n "${RS_PS_CMD:-}" ]; then bash -c "$RS_PS_CMD" 2>/dev/null; return 0; fi
   if [ "$(uname)" = "Linux" ]; then
     python3 - <<'PY' 2>/dev/null
@@ -49,16 +49,16 @@ for pid in os.listdir("/proc"):
         issue = env.get(b"PIPELINE_ISSUE", b"").decode()
         start = btime + int(open("/proc/%s/stat" % pid).read().rsplit(")", 1)[1].split()[19]) // hz
         cmd = " ".join(a.decode("utf-8", "replace") for a in argv if a).replace("\t", " ").replace("\n", " ")
-        print("%d\t%s\t%s" % (start, issue, cmd))
+        print("%d\t%s\t%s\t%s" % (start, issue, cmd, pid))
     except Exception:
         continue
 PY
   else
-    # macOS: `ps eww` prints the environment after the command line; start time is not needed to rank
+    # macOS: `ps -E` (not `-e`, which only means "all processes") prints the environment after the command line; start time is not needed to rank
     # parallel stages, so use pid order (newer pid = newer start) as the epoch stand-in.
-    ps -axeww -o pid=,command= 2>/dev/null | awk '/--agent / && /PIPELINE_ISSUE=/ {
+    ps -axEww -o pid=,command= 2>/dev/null | awk '/--agent / && /PIPELINE_ISSUE=/ && $2 ~ /(^|\/)claude$/ {
       pid=$1; iss=$0; sub(/.*PIPELINE_ISSUE=/, "", iss); sub(/[ \t].*/, "", iss);
-      cmd=$0; sub(/^[ \t]*[0-9]+ +/, "", cmd); printf "%d\t%s\t%s\n", pid, iss, cmd }'
+      cmd=$0; sub(/^[ \t]*[0-9]+ +/, "", cmd); printf "%d\t%s\t%s\t%s\n", pid, iss, cmd, pid }'
   fi
 }
 
@@ -72,9 +72,15 @@ _rs_live_stage() {  # _rs_live_stage <issue> <alive 0|1> -> --agent of the newes
   elif [ "$alive" = 1 ]; then printf 'orchestrator'; fi
 }
 
-_rs_last_activity_for() {  # _rs_last_activity_for <issue> -> newest epoch among orch-<issue>.log and run-<issue>-*.log
-  local issue=$1 f ts best=""
-  for f in "$PIPE/orch-$issue.log" "$PIPE"/run-"$issue"-*.log; do
+_rs_live_stage_proc() {  # _rs_live_stage_proc <issue> -> "pid=<pid> argv=<claude --agent X>" of the newest non-orchestrator stage (#341 log line; argv cut to the command name + agent, never the full line)
+  _rs_ps_lines | awk -F'\t' -v want="$1" '$2 == want && match($3, /--agent [^ ]+/) && $3 !~ /--agent orchestrator([ \t]|$)/ {
+    if (!found || $1 + 0 >= best) { best = $1 + 0; found = 1; out = "pid=" ($4 == "" ? "?" : $4) " argv=claude " substr($3, RSTART, RLENGTH) } }
+    END { if (found) print out }'
+}
+
+_rs_last_activity_for() {  # _rs_last_activity_for <run_key> -> newest epoch among orch-<run_key>.log and run-<run_key>-*.log
+  local rk=$1 f ts best=""
+  for f in "$PIPE/orch-$rk.log" "$PIPE"/run-"$rk"-*.log; do
     [ -e "$f" ] || continue
     ts=$(_rs_mtime "$f"); [ -n "$ts" ] || continue
     if [ -z "$best" ] || [ "$ts" -gt "$best" ]; then best=$ts; fi
@@ -83,29 +89,30 @@ _rs_last_activity_for() {  # _rs_last_activity_for <issue> -> newest epoch among
 }
 
 derive_runs() {
-  local f issue pid repo state_code started restarts stage last_activity
+  local f key issue pid repo state_code started restarts stage last_activity
   for f in "$PIPE"/orch-*.pid; do
     [ -e "$f" ] || break
-    issue=$(basename "$f" .pid); issue=${issue#orch-}
+    key=$(basename "$f" .pid); key=${key#orch-}
+    issue=${key##*-}   # <owner>_<repo>-<N> -> N; a legacy orch-<N> name has no dash and is read as is (#318 read-both)
     pid=$(cat "$f" 2>/dev/null)
-    repo=$(cat "$PIPE/orch-$issue.repo" 2>/dev/null || echo "?")
+    repo=$(cat "$PIPE/orch-$key.repo" 2>/dev/null || echo "?")
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
       state_code=running
-    elif [ -f "$PIPE/orch-$issue.closed" ]; then
+    elif [ -f "$PIPE/orch-$key.closed" ]; then
       state_code=closed
-    elif [ -f "$PIPE/orch-$issue.stopped" ]; then
+    elif [ -f "$PIPE/orch-$key.stopped" ]; then
       state_code=stopped
-    elif [ -f "$PIPE/orch-$issue.held" ]; then
+    elif [ -f "$PIPE/orch-$key.held" ]; then
       state_code=held
-    elif [ -f "$PIPE/orch-$issue.done" ]; then
+    elif [ -f "$PIPE/orch-$key.done" ]; then
       state_code=done
     else
       state_code=restarting
     fi
-    started=$(cat "$PIPE/orch-$issue.start" 2>/dev/null || echo "")
-    restarts=$(python3 -c "import json; print(json.load(open('$PIPE/orch-$issue.restarts')).get('total',0))" 2>/dev/null || echo 0)
+    started=$(cat "$PIPE/orch-$key.start" 2>/dev/null || echo "")
+    restarts=$(python3 -c "import json; print(json.load(open('$PIPE/orch-$key.restarts')).get('total',0))" 2>/dev/null || echo 0)
     stage=$(_rs_live_stage "$issue" "$([ "$state_code" = running ] && echo 1 || echo 0)")
-    last_activity=$(_rs_last_activity_for "$issue")
+    last_activity=$(_rs_last_activity_for "$key")
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$issue" "$repo" "$state_code" "$pid" "$started" "$last_activity" "$restarts" "$stage"
   done
@@ -114,21 +121,23 @@ derive_runs() {
     [ -e "$f" ] || break
     issue=$(python3 -c "import json; print(json.load(open('$f'))['issue'])" 2>/dev/null)
     [ -n "$issue" ] || continue
-    # a queue entry for an issue that also has a live/known orch-*.pid record is already covered above
-    [ -e "$PIPE/orch-$issue.pid" ] && continue
     repo=$(python3 -c "import json; print(json.load(open('$f'))['repo'])" 2>/dev/null)
+    # a queue entry for a run that also has a live/known orch-*.pid record is already covered above
+    key=$(basename "$f" .json); key=${key#orch-}
+    [ -e "$PIPE/orch-$key.pid" ] && continue
     started=$(python3 -c "import json; print(json.load(open('$f')).get('queued_at',''))" 2>/dev/null)
     printf '%s\t%s\tqueued\t\t%s\t\t0\t\n' "$issue" "$repo" "$started"
   done
 
   # A closed ticket that never had a pid record (it was reconciled while queued-only): reconcile-status.sh
-  # leaves orch-<issue>.closed + orch-<issue>.repo, so it still reaches completed[] (issue #51).
+  # leaves orch-<run_key>.closed + orch-<run_key>.repo, so it still reaches completed[] (issue #51).
   for f in "$PIPE"/orch-*.closed; do
     [ -e "$f" ] || break
-    issue=$(basename "$f" .closed); issue=${issue#orch-}
-    [ -e "$PIPE/orch-$issue.pid" ] && continue
-    [ -e "$QUEUE/orch-$issue.json" ] && continue
-    repo=$(cat "$PIPE/orch-$issue.repo" 2>/dev/null || echo "?")
+    key=$(basename "$f" .closed); key=${key#orch-}
+    issue=${key##*-}
+    [ -e "$PIPE/orch-$key.pid" ] && continue
+    [ -e "$QUEUE/orch-$key.json" ] && continue
+    repo=$(cat "$PIPE/orch-$key.repo" 2>/dev/null || echo "?")
     printf '%s\t%s\tclosed\t\t\t\t0\t\n' "$issue" "$repo"
   done
 }
