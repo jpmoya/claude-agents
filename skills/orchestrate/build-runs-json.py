@@ -251,6 +251,7 @@ if mode in LIST_CAPS:
     sys.exit(0)
 
 GOALS_MAX = 50
+GOALS_RECENT_MAX = 5
 GOAL_STATES = ("active", "waiting_jp", "held")
 
 
@@ -328,6 +329,7 @@ def build_goals():
             break
     # queued goals (#320): the supervisor's sync writes goalqueue.json (queued goals in queue order); a goal that has a
     # local cache is already started here and is reported above. `paused` is the one reason the head of the queue waits.
+    q = None
     try:
         with open(os.path.join(pipe_dir, "goalqueue.json"), encoding="utf-8") as f:
             q = json.load(f)
@@ -367,6 +369,36 @@ def build_goals():
             if pos == 1 and paused:
                 entry["paused"] = paused
             out.append(entry)
+    # recently closed goals (delivered / stopped, newest first, max 5): the status page lists them compactly
+    recent = q.get("recent") if isinstance(q, dict) else None
+    if isinstance(recent, list):
+        known = set(e["id"] for e in out)
+        n = 0
+        for d in recent:
+            if n >= GOALS_RECENT_MAX or len(out) >= GOALS_MAX:
+                break
+            if not isinstance(d, dict) or not (isinstance(d.get("id"), str) and d.get("id")):
+                continue
+            if d.get("st") not in ("delivered", "stopped") or d["id"] in known:
+                continue
+            if os.path.exists(os.path.join(pipe_dir, "goal-" + d["id"] + ".json")):
+                continue
+            if not (isinstance(d.get("title"), str) and d["title"]) and not (isinstance(d.get("spec"), str) and d["spec"]):
+                continue
+            entry = {"id": d["id"]}
+            if isinstance(d.get("spec"), str) and d.get("spec"):
+                entry["spec"] = d["spec"]
+            entry["host"] = ""
+            entry["state"] = d["st"]
+            if isinstance(d.get("title"), str) and d.get("title"):
+                entry["title"] = d["title"]
+            repos = d.get("repos")
+            if isinstance(repos, list) and repos and all(isinstance(r, str) and r for r in repos):
+                entry["repos"] = repos
+            if isinstance(d.get("closed_at"), str) and ISO_Z_RE.match(d["closed_at"]):
+                entry["closed_at"] = d["closed_at"]
+            out.append(entry)
+            n += 1
     return out
 
 
