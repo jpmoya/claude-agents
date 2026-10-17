@@ -25,6 +25,7 @@ import os
 import re
 import datetime
 import urllib.parse
+import socket
 
 aliases_raw, runs_jsonl = sys.argv[1], sys.argv[2]
 pipe_dir = sys.argv[3] if len(sys.argv) > 3 else ""
@@ -297,6 +298,20 @@ def _goal_link(d):
     return _goal_url(d.get("issue"))
 
 
+def _host_key(h):
+    """The status page keys hosts mac|vm; the registry and the goal cache hold the hostname (hostname -s, lower-case).
+    This machine's hostname maps to its own kind; the only other host is the opposite kind."""
+    if not isinstance(h, str) or not h:
+        return ""
+    h = h.lower()
+    if h in ("mac", "vm"):
+        return h
+    mine = "mac" if sys.platform == "darwin" else "vm"
+    if h == socket.gethostname().split(".")[0].lower():
+        return mine
+    return "vm" if mine == "mac" else "mac"
+
+
 def _set_priority(entry, d):
     p = d.get("priority")
     if isinstance(p, int) and not isinstance(p, bool) and p > 0:
@@ -343,7 +358,7 @@ def build_goals():
         entry = {"id": d["id"]}
         if isinstance(d.get("spec"), str) and d.get("spec"):
             entry["spec"] = d["spec"]
-        entry["host"] = d["host"]
+        entry["host"] = _host_key(d["host"])
         entry["state"] = state
         if isinstance(d.get("title"), str) and d.get("title"):
             entry["title"] = d["title"]
@@ -424,7 +439,7 @@ def build_goals():
             entry = {"id": d["id"]}
             if isinstance(d.get("spec"), str) and d.get("spec"):
                 entry["spec"] = d["spec"]
-            entry["host"] = d["host"] if d.get("host") in ("mac", "vm") else ""
+            entry["host"] = _host_key(d.get("host"))
             entry["state"] = st
             if isinstance(d.get("title"), str) and d.get("title"):
                 entry["title"] = d["title"]
