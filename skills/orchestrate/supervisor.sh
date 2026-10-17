@@ -95,10 +95,15 @@ keep_awake() {
   slog "[keep-awake] caffeinate -i -t 300 (pid $!)"
 }
 
+# gh_err_line <stderr file> — gh's error as ONE line for logs: first line, tokens/Bearer redacted, trimmed to 200 chars (#388).
+gh_err_line() {
+  head -1 "$1" 2>/dev/null | sed -E -e 's/(gh[pousr]_|github_pat_)[A-Za-z0-9_]+/[redacted]/g' -e 's/([Bb]earer|[Tt]oken)[ =:]+[^ ]+/\1 [redacted]/g' -e 's/token=\[redacted\]|token=[^ ]+/token=[redacted]/g' | cut -c1-200
+}
+
 latest_marker() {  # the GATE marker: newest real routing marker whose agent is not delivery-lead (or its legacy alias project-manager) (NOTEs and off-vocabulary lines are inert).
   # Parallel pairs (claude-agents#169, replaces the #133 exception): except for stages dispatched in parallel from the same marker (ui-ux-designer ∥ solutions-architect, fullstack-developer ∥ test-reviewer, code-reviewer ∥ test-reviewer): when that latest marker is not itself a `BLOCKED` / `TEST DEFECT` / `FAIL` and the nearest earlier marker from a different stage is a `BLOCKED`, `TEST DEFECT` or `FAIL` from its parallel partner, that earlier marker is the gate marker and stays so until its own stage posts again. A sibling's later marker answers the sibling's work, not the blocked stage. For fullstack-developer ∥ test-reviewer the partner block is `BLOCKED` / `TEST DEFECT` / `TESTS FAIL` only (a bare `FAIL` is the narrow review after the developer's fix, not a partner), and a developer `IMPLEMENTED` also stays the gate marker over a later `TESTS APPROVED`.
   # When the newest routing marker overall is a `[delivery-lead]` (or legacy `[project-manager]`) one (it follows the gate marker), it is printed on a 2nd line.
-  # Both come out of the same single `gh issue view` call (claude-agents#59).
+  # Both come out of the same single paginated REST comments read (claude-agents#59, #388).
   local repo=$1 issue=$2 last list prog
   last=$(marker_last_jq); list=${last% | last // \"none\"}   # list = the same expression minus its final `last`
   prog="($last) as \$last | {author: .author, comments: [.comments[] | select(.body | test(\"^\\\\*\\\\*\\\\[(delivery-lead|project-manager)\\\\] \") | not)]} as \$np  # legacy alias
@@ -111,14 +116,22 @@ latest_marker() {  # the GATE marker: newest real routing marker whose agent is 
          and (\$pair == [\"solutions-architect\", \"ui-ux-designer\"] or \$pair == [\"fullstack-developer\", \"test-reviewer\"] or \$pair == [\"code-reviewer\", \"test-reviewer\"])
        then \$p else \$g0 end) as \$gate
     | if (\$last | test(\"^\\\\*\\\\*\\\\[(delivery-lead|project-manager)\\\\] \") | not) then \$gate else \$gate + \"\\n\" + \$last end  # legacy alias"
-  (cd "$repo" 2>/dev/null && gh issue view "$issue" --json comments,author --jq "$prog") 2>/dev/null || echo "?"
+  # REST, not GraphQL (#388): the shared GraphQL budget runs out hourly; the REST core limit is separate (same shape as #57's hook).
+  # A failed read is "?" — callers must treat it as unknown, never as "no progress" (#387) — and is logged with gh's error.
+  local info out
+  if info=$(issue_info_rest "$repo" "$issue") && out=$(printf '%s' "$info" | jq -r "$prog" 2>/dev/null) && [ -n "$out" ]; then
+    printf '%s\n' "$out"; return 0
+  fi
+  slog "[marker] $(repo_slug "$repo")#$issue — marker read failed: $(printf '%s' "${info:-no error text}" | head -1 | cut -c1-200)"
+  autoretry_alert "$issue" "latest_marker" latest_marker
+  echo "?"
 }
 
 # #272: a comment whose first line is the exact skip marker but whose author/body cannot be read is ignored (the gate
 # stays) and logged once per tick. The `JP said:` quote is never logged.
 skip_marker_malformed_log() {
   local repo=$1 issue=$2 n
-  n=$(cd "$repo" 2>/dev/null && gh issue view "$issue" --json comments --jq '[.comments[] | select((.body | type) == "string" and (.body | split("\n")[0] | rtrimstr("\r") | test("^\\*\\*\\[jp\\] SKIP MOCKUPS\\*\\*[[:space:]]*$")))
+  n=$(issue_info_rest "$repo" "$issue" | jq -r '[.comments[] | select((.body | type) == "string" and (.body | split("\n")[0] | rtrimstr("\r") | test("^\\*\\*\\[jp\\] SKIP MOCKUPS\\*\\*[[:space:]]*$")))
       | select(((.author | type) != "object") or ((.author.login | type) != "string"))] | length' 2>/dev/null) || n=""
   case "$n" in ''|0|*[!0-9]*) return 0 ;; esac
   slog "[skip-mockups] #$issue — malformed SKIP MOCKUPS comment ignored ($n), gate stays"
@@ -717,13 +730,30 @@ done
 AUTORETRY_MAX=3
 AUTORETRY_THROTTLE_SECS=1800
 
-autoretry_alert() {  # <issue> <what> — Slack webhook, tags only (release = commit SHA); never command output
+autoretry_alert() {  # <issue> <what> [step, default auto-retry] — Slack webhook, tags only (release = commit SHA); never command output
   [ -n "${SLACK_WEBHOOK_URL:-}" ] || return 0
-  local rel msg
+  local rel msg step=${3:-auto-retry}
   rel=$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --short HEAD 2>/dev/null || echo unknown)
-  msg="auto-retry check failed for #$1 ($2): release=$rel environment=$(hostname -s 2>/dev/null || echo unknown) route=supervisor/auto-retry"
+  msg="supervisor read failed for #$1 ($2): release=$rel environment=$(hostname -s 2>/dev/null || echo unknown) route=supervisor/$step"
   curl -s --max-time 10 -X POST -H 'Content-type: application/json' \
     --data "$(jq -nc --arg t "$msg" '{text:$t}')" "$SLACK_WEBHOOK_URL" >/dev/null 2>&1 || true
+}
+
+# issue_info_rest <checkout> <issue> → JSON {state, body, comments:[{body,createdAt}]} over REST (the old `gh issue view --json
+# state,body,comments` shape, #388). On failure returns 1 and prints a one-line, token-free reason instead.
+issue_info_rest() {
+  local repo=$1 issue=$2 slug errf iss com
+  slug=$(repo_slug "$repo"); errf=$(mktemp "${TMPDIR:-/tmp}/iir-err.XXXXXX")
+  if [ -n "$slug" ] \
+     && iss=$(cd "$repo" 2>/dev/null && gh api "repos/$slug/issues/$issue" 2>"$errf" </dev/null) \
+     && com=$(cd "$repo" 2>/dev/null && gh api "repos/$slug/issues/$issue/comments?per_page=100" --paginate 2>>"$errf" </dev/null) \
+     && printf '%s' "$com" | jq -s '{c: (map(.[]))}' 2>/dev/null | jq -c --argjson i "$iss" \
+          '{state: (($i.state // "") | ascii_upcase), body: ($i.body // ""), updatedAt: $i.updated_at,
+            author: (if ($i.user.login | type) == "string" then {login: $i.user.login} else null end),
+            comments: [.c[] | {body: .body, createdAt: .created_at, author: (if (.user.login | type) == "string" then {login: .user.login} else null end)}]}' 2>/dev/null; then
+    rm -f "$errf"; return 0
+  fi
+  gh_err_line "$errf"; rm -f "$errf"; return 1   # stdout = the reason on failure
 }
 
 # autoretry_cleared <repo> <issue> <class> <issue json> — 0 cleared, 1 not cleared, 2 error (reason in AR_ERR)
@@ -795,8 +825,8 @@ for f in "$PIPE"/orch-*.held; do
   [ "$ar_ec" = "rate_limited monthly_spend" ] && continue
   if [ -s "$PIPE/orch-$rk.alert" ] && ! grep -q 'BLOCKED' "$PIPE/orch-$rk.alert" 2>/dev/null; then continue; fi
 
-  info=$(cd "$repo" && gh issue view "$issue" --json state,body,author,comments 2>/dev/null </dev/null) \
-    || { slog "[auto-retry] #$issue — issue read failed"; autoretry_alert "$issue" "issue view"; continue; }
+  info=$(issue_info_rest "$repo" "$issue") \
+    || { slog "[auto-retry] #$issue — issue read failed: ${info:-no error text}"; autoretry_alert "$issue" "issue read"; continue; }
   [ "$(printf '%s' "$info" | jq -r '.state // empty')" = "OPEN" ] || continue
   if [ "$is_lc" -eq 1 ]; then
     # Resume only on a delegated decision posted AFTER the hold: [delivery-lead] DECISION / JP CONFIRMED (legacy [project-manager] spelling).
@@ -1178,8 +1208,8 @@ if [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
       [ -e "$PIPE/spec-${owner_repo//\//_}-$num.id" ] && continue   # a spec run (3c) owns it
       # Check marker staleness — only clear if no movement for STALE_LABEL_SECS
       # Same call also yields the latest "claim: <host>" comment: a claim naming another machine means it owns the run.
-      view=$(cd "$local_path" && gh issue view "$num" --json comments,updatedAt \
-        --jq '((.comments[-1].createdAt // .updatedAt) // ""), ([.comments[] | select(.body | startswith("**[supervisor] NOTE** claim: "))] | last | .body // "" | split(" ") | .[3] // "")' 2>/dev/null) || { slog "[reconcile] $owner_repo#$num — issue read failed rc=$?, skipped"; continue; }
+      info=$(issue_info_rest "$local_path" "$num") || { slog "[reconcile] $owner_repo#$num — issue read failed: ${info:-no error text}, skipped"; autoretry_alert "$num" "issue read" reconcile; continue; }
+      view=$(printf '%s' "$info" | jq -r '((.comments[-1].createdAt // .updatedAt) // ""), ([.comments[] | select(.body | startswith("**[supervisor] NOTE** claim: "))] | last | .body // "" | split(" ") | .[3] // "")' 2>/dev/null) || { slog "[reconcile] $owner_repo#$num — issue read failed (unparseable), skipped"; continue; }
       last_comment_age=$(printf '%s\n' "$view" | sed -n 1p)
       claim_host=$(printf '%s\n' "$view" | sed -n 2p)
       [ -n "$claim_host" ] && [ "$claim_host" != "$HOST" ] && continue
