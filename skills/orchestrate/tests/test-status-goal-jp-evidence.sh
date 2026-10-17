@@ -50,8 +50,9 @@ gj_derive() {  # <waiting> <active> <total> [live] -> prints the goalqueue open[
     PIPE="$GL_PIPE"
     latest_marker() { :; }
     goal_err() { :; }
-    goal_eval() { GE_TOTAL=$t; GE_WAITING=$w; GE_ACTIVE=$a; GE_DELIVERED=$((t - w - a)); return 0; }
-    goal_queue_derive '[{"id":"label-goal__X","spec":"label:goal: X","st":"active"}]'
+    goal_eval() { GE_TOTAL=$t; GE_WAITING=$w; GE_ACTIVE=$a; GE_DELIVERED=$((t - w - a)); [ -z "${3:-}" ] || GJ_ROWS=$3; [ -n "${3:-}" ] || [ -z "${GJ_EMPTY:-}" ] || GE_TOTAL=0; return 0; }
+    reg=${GJ_REG:-}; [ -n "$reg" ] || reg='[{"id":"label-goal__X","spec":"label:goal: X","st":"active"}]'
+    goal_queue_derive "$reg"
     jq -c '.open[0].needs_jp // null' "$GL_PIPE/goalqueue.json"
   )
   gl_cleanup
@@ -78,3 +79,18 @@ run_test test_gj_open_goal_nothing_waiting_stays_between_cycles
 run_test test_gj_derive_records_evidence
 run_test test_gj_derive_skips_live_lead
 run_test test_gj_derive_nothing_waiting_writes_nothing
+
+# the label is gone from the tickets (scope empty): the go-granted list in the registry block is the scope
+test_gj_derive_falls_back_to_granted_list() {
+  local r
+  GJ_EMPTY=1; GJ_REG='[{"id":"label-goal__X","spec":"label:goal: X","st":"active","block":{"granted":["o/r#1","o/r#2"]}}]'
+  r=$(gj_derive 2 0 2); unset GJ_EMPTY GJ_REG
+  assert_eq "$r" '{"waiting":2,"active":0,"total":2}' "empty label scope -> evaluate block.granted" || return 1
+}
+test_gj_derive_empty_scope_without_granted_writes_nothing() {
+  local r
+  GJ_EMPTY=1; r=$(gj_derive 2 0 2); unset GJ_EMPTY
+  assert_eq "$r" "null" "empty scope and no granted list -> no evidence" || return 1
+}
+run_test test_gj_derive_falls_back_to_granted_list
+run_test test_gj_derive_empty_scope_without_granted_writes_nothing

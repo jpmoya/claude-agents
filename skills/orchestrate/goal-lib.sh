@@ -627,7 +627,7 @@ goal_sync() {  # registry -> local: rebuild missing caches, propagate stop/close
 goal_eval() {
   local rows ref st repo n r cls istate marker why
   GE_TOTAL=0; GE_DELIVERED=0; GE_ACTIVE=0; GE_WAITING=0; GE_SNAP=""; GE_REFS=""
-  rows=$(_goal_scope_rows "$2" "$1") || return 1
+  if [ -n "${3:-}" ]; then rows=$3; else rows=$(_goal_scope_rows "$2" "$1") || return 1; fi   # $3: explicit "ref<TAB>state" rows
   while IFS=$'\t' read -r ref st; do
     [ -n "$ref" ] || continue
     if [ "$st" = closed ]; then
@@ -847,10 +847,10 @@ goal_queue_save() {
 # and, when none is progressable and at least one waits on JP, add needs_jp {waiting, active, total} to its row in
 # goalqueue.json; build-runs-json.py shows such a goal as waiting on JP. Needs the supervisor's latest_marker; best effort.
 goal_queue_derive() {
-  local f="$PIPE/$GOAL_QUEUE_FILE_NAME" ids g id spec pid out="{}" tmp
+  local f="$PIPE/$GOAL_QUEUE_FILE_NAME" ids g id spec pid out="{}" tmp rows
   declare -F latest_marker >/dev/null 2>&1 || return 0
   [ -f "$f" ] || return 0
-  ids=$(printf '%s' "$1" | jq -c '.[] | select(.st == "active") | {id, spec}' 2>/dev/null) || return 0
+  ids=$(printf '%s' "$1" | jq -c '.[] | select(.st == "active") | {id, spec, granted: (.block.granted // [])}' 2>/dev/null) || return 0
   while IFS= read -r g; do
     [ -n "$g" ] || continue
     id=$(printf '%s' "$g" | jq -r '.id // empty'); spec=$(printf '%s' "$g" | jq -r '.spec // empty')
@@ -858,6 +858,11 @@ goal_queue_derive() {
     pid=$(cat "$PIPE/goal-$id.pid" 2>/dev/null)
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then continue; fi   # a live lead mirrors its own state
     goal_eval "$id" "$spec" || continue
+    if [ "$GE_TOTAL" -eq 0 ]; then   # the label can be gone from the tickets (stripped by an earlier goal's close): fall back to the go-granted list
+      rows=$(printf '%s' "$g" | jq -r '(.granted // [])[] | "\(.)\topen"')
+      [ -n "$rows" ] || continue
+      goal_eval "$id" "$spec" "$rows" || continue
+    fi
     [ "$GE_TOTAL" -gt 0 ] && [ "$GE_WAITING" -gt 0 ] || continue
     out=$(printf '%s' "$out" | jq -c --arg id "$id" --argjson w "$GE_WAITING" --argjson a "$GE_ACTIVE" --argjson t "$GE_TOTAL" \
       '. + {($id): {waiting: $w, active: $a, total: $t}}') || continue
