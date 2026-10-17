@@ -579,7 +579,8 @@ goal_sync() {  # registry -> local: rebuild missing caches, propagate stop/close
     id=$(printf '%s' "$g" | jq -r '.id // empty'); n=$(printf '%s' "$g" | jq -r '.issue // empty'); st=$(printf '%s' "$g" | jq -r '.st')
     block=$(printf '%s' "$g" | jq -c '.block // {}')
     if [ -n "$id" ] && [ -n "$host" ] && [ "$host" != "$GOAL_THIS_HOST" ] \
-       && [ "$(jq -r '(.host // "") | ascii_downcase' "$PIPE/goal-$id.json" 2>/dev/null)" = "$GOAL_THIS_HOST" ]; then
+       && [ "$(jq -r '(.host // "") | ascii_downcase' "$PIPE/goal-$id.json" 2>/dev/null)" = "$GOAL_THIS_HOST" ] \
+       && [ "$(jq -r '.issue // empty' "$PIPE/goal-$id.json" 2>/dev/null)" = "$n" ]; then
       goal_kill "$id"   # re-pinned to another host: drop the lead and the cache so only the new owner runs it
       rm -f "$PIPE"/goal-"$id".*
       slog "[goal] $id re-pinned to $host — local lead and cache dropped"
