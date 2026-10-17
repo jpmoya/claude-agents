@@ -26,13 +26,13 @@ SQ_FAIL='**[code-reviewer] FAIL: 1 HIGH**'
 test_tr_3_progressing_run_never_escalates_on_lifetime_ceiling() {
   sq_env open
   mk_restarting "$SQ_PIPE" 42 "$SQ_REPO"
-  sq_iso_ago 600 > "$SQ_PIPE/orch-42.launched-at"
+  sq_iso_ago 600 > "$(rkp "$SQ_PIPE/orch-42.launched-at")"
   sq_seed_restarts 1 5 "$SQ_READY"
   sq_marker "$SQ_FAIL"
   sq_tick
   local log calls held total count
   log=$(sq_log); calls=$(gh_calls "$SQ_GH")
-  held=$(sq_present "$SQ_PIPE/orch-42.held")
+  held=$(sq_present "$(rkp "$SQ_PIPE/orch-42.held")")
   total=$(sq_restarts_field total); count=$(sq_restarts_field count)
   sq_cleanup
   assert_contains "$log" "[progress] #42" "#84/AC3: progress logged" || return 1
@@ -51,13 +51,13 @@ test_tr_3_progressing_run_never_escalates_on_lifetime_ceiling() {
 test_tr_4_stuck_run_with_unchanged_marker_still_escalates() {
   sq_env open
   mk_restarting "$SQ_PIPE" 42 "$SQ_REPO"
-  sq_iso_ago 0 > "$SQ_PIPE/orch-42.launched-at"
+  sq_iso_ago 0 > "$(rkp "$SQ_PIPE/orch-42.launched-at")"
   sq_seed_restarts 0 5 "$SQ_READY"
   sq_marker "$SQ_READY"
   sq_tick
   local log calls held
   log=$(sq_log); calls=$(gh_calls "$SQ_GH")
-  held=$(sq_present "$SQ_PIPE/orch-42.held")
+  held=$(sq_present "$(rkp "$SQ_PIPE/orch-42.held")")
   sq_cleanup
   assert_contains "$log" "[escalate] #42" "#84/AC4: escalation logged" || return 1
   assert_eq "$held" "present" "#84/AC4: held" || return 1
@@ -69,18 +69,18 @@ test_tr_4_stuck_run_with_unchanged_marker_still_escalates() {
 test_tr_5_no_progress_ceiling_untouched() {
   sq_env open
   mk_restarting "$SQ_PIPE" 42 "$SQ_REPO"
-  sq_iso_ago 600 > "$SQ_PIPE/orch-42.launched-at"
+  sq_iso_ago 600 > "$(rkp "$SQ_PIPE/orch-42.launched-at")"
   sq_marker "$SQ_READY"
   sq_tick
-  sq_iso_ago 600 > "$SQ_PIPE/orch-42.launched-at"
-  rm -f "$SQ_PIPE/queue/orch-42.json"
+  sq_iso_ago 600 > "$(rkp "$SQ_PIPE/orch-42.launched-at")"
+  rm -f "$(rkp "$SQ_PIPE/queue/orch-42.json")"
   sq_tick
-  sq_iso_ago 600 > "$SQ_PIPE/orch-42.launched-at"
-  rm -f "$SQ_PIPE/queue/orch-42.json"
+  sq_iso_ago 600 > "$(rkp "$SQ_PIPE/orch-42.launched-at")"
+  rm -f "$(rkp "$SQ_PIPE/queue/orch-42.json")"
   sq_tick
   local log calls held count
   log=$(sq_log); calls=$(gh_calls "$SQ_GH")
-  held=$(sq_present "$SQ_PIPE/orch-42.held")
+  held=$(sq_present "$(rkp "$SQ_PIPE/orch-42.held")")
   count=$(sq_restarts_field count)
   sq_cleanup
   assert_eq "$count" "3" "#84/AC5: count reached MAX_NO_PROGRESS=3" || return 1

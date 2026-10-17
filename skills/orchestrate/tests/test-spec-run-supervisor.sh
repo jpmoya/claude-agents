@@ -234,7 +234,7 @@ test_sp_ac1_needs_spec_rejected_plus_other_pm_marker_still_blocks() {
 sp_rejected() {
   sp_env
   mk_restarting "$SP_PIPE" 42 "$SP_PIPE/repo-a"
-  python3 -c "import datetime; print((datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(seconds=1300)).strftime('%Y-%m-%dT%H:%M:%SZ'))" > "$SP_PIPE/orch-42.start"
+  python3 -c "import datetime; print((datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(seconds=1300)).strftime('%Y-%m-%dT%H:%M:%SZ'))" > "$(rkp "$SP_PIPE/orch-42.start")"
   echo "project-a/repo-a" > "$SP_D/gh-name-with-owner"
   SP_LBL="$1"; shift
   local labels; labels=$(printf '%s\n' $SP_LBL | jq -R . | jq -sc 'map({name:.})')
@@ -245,7 +245,7 @@ sp_present() { if [ -e "$1" ]; then echo present; else echo absent; fi; }
 sp_slog() { cat "$SP_HOME/logs/pipeline/supervisor.log" 2>/dev/null; }
 
 sp_assert_done() {  # after a tick: .done, no .alert/.held, no restart
-  local done_ alert held log; done_=$(sp_present "$SP_PIPE/orch-42.done"); alert=$(sp_present "$SP_PIPE/orch-42.alert"); held=$(sp_present "$SP_PIPE/orch-42.held"); log=$(sp_slog)
+  local done_ alert held log; done_=$(sp_present "$(rkp "$SP_PIPE/orch-42.done")"); alert=$(sp_present "$(rkp "$SP_PIPE/orch-42.alert")"); held=$(sp_present "$(rkp "$SP_PIPE/orch-42.held")"); log=$(sp_slog)
   sp_cleanup
   assert_eq "$done_" "present" "$1: run marked done" || return 1
   assert_eq "$alert" "absent" "$1: no .alert file (no alert to JP)" || return 1
@@ -256,7 +256,7 @@ sp_assert_done() {  # after a tick: .done, no .alert/.held, no restart
 }
 
 sp_assert_inert() {  # after a tick: REJECTED changed nothing — not done, not held, no alert; normal restart path
-  local done_ alert held log; done_=$(sp_present "$SP_PIPE/orch-42.done"); alert=$(sp_present "$SP_PIPE/orch-42.alert"); held=$(sp_present "$SP_PIPE/orch-42.held"); log=$(sp_slog)
+  local done_ alert held log; done_=$(sp_present "$(rkp "$SP_PIPE/orch-42.done")"); alert=$(sp_present "$(rkp "$SP_PIPE/orch-42.alert")"); held=$(sp_present "$(rkp "$SP_PIPE/orch-42.held")"); log=$(sp_slog)
   sp_cleanup
   assert_eq "$done_" "absent" "$1: not marked done" || return 1
   assert_eq "$alert" "absent" "$1: no alert" || return 1

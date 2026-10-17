@@ -92,8 +92,8 @@ test_ac2_held_then_stopped_omitted_from_next_payload() {
   assert_eq "$(run_field "$out1" 207 state)" "held" "AC2: first payload carries #207 as held" || { rm -rf "$pipe" "$home"; return 1; }
 
   # advance the SAME fixture directory: held -> stopped (a manual `orchestrate.sh stop`)
-  rm -f "$pipe/orch-207.held"
-  touch "$pipe/orch-207.stopped"
+  rm -f "$(rkp "$pipe/orch-207.held")"
+  touch "$(rkp "$pipe/orch-207.stopped")"
 
   out2=$(print_payload "$pipe" "$home")
   rm -rf "$pipe" "$home"

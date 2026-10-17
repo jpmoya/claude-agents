@@ -60,7 +60,7 @@ test_lfd_launch_without_fd9_is_unchanged() {
   out=$(HOME="$LFD_HOME" PATH="$LFD_HOME/.local/bin:/usr/bin:/bin" PIPE="$LFD_PIPE" QUEUE="$LFD_PIPE/queue" \
     "$ORCH_LFD" "$LFD_REPO" 42 2>&1 9>&-); rc=$?
   lfd_wait_for "$LFD_OUT" && state=$(cat "$LFD_OUT")
-  [ -s "$LFD_PIPE/orch-42.pid" ] && pidfile=present
+  [ -s "$(rkp "$LFD_PIPE/orch-42.pid")" ] && pidfile=present
   lfd_cleanup
   assert_exit0 "$rc" "#56/AC3: hand launch with no fd 9 open exits 0" || return 1
   assert_contains "$out" "launched orchestrator" "#56/AC3: took the launch path" || return 1

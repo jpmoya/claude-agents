@@ -30,16 +30,16 @@ test_i75_supervisor_parks_config_error_refusal() {
   local log held queued
   sq_env open
   mk_restarting "$SQ_PIPE" 42 "$SQ_REPO"
-  sq_iso_ago 600 > "$SQ_PIPE/orch-42.launched-at"
-  echo 0 > "$SQ_PIPE/orch-42.exit"
-  sq_iso_ago 1300 > "$SQ_PIPE/orch-42.start"   # past the 1200 s BLOCKED grace window
+  sq_iso_ago 600 > "$(rkp "$SQ_PIPE/orch-42.launched-at")"
+  echo 0 > "$(rkp "$SQ_PIPE/orch-42.exit")"
+  sq_iso_ago 1300 > "$(rkp "$SQ_PIPE/orch-42.start")"   # past the 1200 s BLOCKED grace window
   sq_marker '**[orchestrator] BLOCKED**'
   mkdir -p "$SQ_HOME/.claude/pipeline"
   printf '{"ts":"%s","host":"h","event":"terminal","repo":"project-a/repo-a","issue":42,"state":"config error"}\n' \
     "$(sq_iso_ago 60)" >> "$SQ_HOME/.claude/pipeline/runs.jsonl"
   sq_tick
-  log=$(sq_log); held=$(sq_present "$SQ_PIPE/orch-42.held"); queued=$(sq_present "$SQ_PIPE/queue/orch-42.json")
-  local alert; alert=$(cat "$SQ_PIPE/orch-42.alert" 2>/dev/null)
+  log=$(sq_log); held=$(sq_present "$(rkp "$SQ_PIPE/orch-42.held")"); queued=$(sq_present "$(rkp "$SQ_PIPE/queue/orch-42.json")")
+  local alert; alert=$(cat "$(rkp "$SQ_PIPE/orch-42.alert")" 2>/dev/null)
   sq_cleanup
   assert_contains "$log" "[held] #42" "#75: [held] logged" || return 1
   assert_not_contains "$log" "[queue-restart] #42" "#75: no restart" || return 1

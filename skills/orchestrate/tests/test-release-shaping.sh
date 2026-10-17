@@ -40,7 +40,14 @@ test_rs_ac3_helper_fails_when_literal_absent() {
   fi
 }
 
+# #215: CLAUDE.md tells sessions to run the bump script, never to choose a version.
+test_rs_215_claude_md_bump_script() {
+  grep -qF 'bump-version.sh' "$ROOT_RS/CLAUDE.md" && grep -qF 'never choose a version' "$ROOT_RS/CLAUDE.md" \
+    || { fail "CLAUDE.md: missing bump-version.sh / never choose a version"; return 1; }
+}
+
 echo "-- release shaping (issue #189)"
+run_test test_rs_215_claude_md_bump_script
 run_test test_rs_ac1_one_independently_shippable_pr
 run_test test_rs_ac1_expand_contract_sequence
 run_test test_rs_ac1_destructive_migration

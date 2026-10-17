@@ -50,14 +50,14 @@ rl_exit_fixture() {
   local ex=$1 tail_text=$2 noid=${3:-}
   rl_open
   mk_restarting "$SQ_PIPE" 42 "$SQ_REPO"
-  sq_iso_ago 600 > "$SQ_PIPE/orch-42.launched-at"
-  [ "$noid" = noid ] || echo "$RL_HOST-orch-42-1700000000" > "$SQ_PIPE/orch-42.run-id"
-  [ "$ex" = none ] || echo "$ex" > "$SQ_PIPE/orch-42.exit"
-  printf '%s\n===== [2026-01-01T00:00:00Z] LAUNCH issue=42 reason=manual =====\n%s\n\n' "$RL_NORMAL" "$tail_text" > "$SQ_PIPE/orch-42.log"
+  sq_iso_ago 600 > "$(rkp "$SQ_PIPE/orch-42.launched-at")"
+  [ "$noid" = noid ] || echo "$RL_HOST-orch-42-1700000000" > "$(rkp "$SQ_PIPE/orch-42.run-id")"
+  [ "$ex" = none ] || echo "$ex" > "$(rkp "$SQ_PIPE/orch-42.exit")"
+  printf '%s\n===== [2026-01-01T00:00:00Z] LAUNCH issue=42 reason=manual =====\n%s\n\n' "$RL_NORMAL" "$tail_text" > "$(rkp "$SQ_PIPE/orch-42.log")"
   sq_seed_restarts 1 1 "$SQ_READY"
   sq_marker "$SQ_READY"
 }
-rl_hist() { python3 -c "import json,sys; print(json.dumps(json.load(open(sys.argv[1]))['history'][-1]))" "$SQ_PIPE/orch-42.restarts" 2>/dev/null; }
+rl_hist() { python3 -c "import json,sys; print(json.dumps(json.load(open(sys.argv[1]))['history'][-1]))" "$(rkp "$SQ_PIPE/orch-42.restarts")" 2>/dev/null; }
 
 # ------------------------------------------------------------------------------------------ pipeline_event
 
@@ -113,7 +113,7 @@ test_rl_ac12_weekly_limit_waits_without_counting() {
   # move not_before into the past: the next tick launches it
   python3 -c "
 import json,sys
-d=json.load(open(sys.argv[1])); d['not_before']=1; json.dump(d, open(sys.argv[1],'w'))" "$SQ_PIPE/queue/orch-42.json"
+d=json.load(open(sys.argv[1])); d['not_before']=1; json.dump(d, open(sys.argv[1],'w'))" "$(rkp "$SQ_PIPE/queue/orch-42.json")"
   sq_tick; rl_wait_launches 1
   assert_eq "$(rl_launches)" "1" "#138/12: due entry launches on the next tick" || { sq_cleanup; return 1; }
   sq_cleanup
@@ -137,7 +137,7 @@ test_rl_ac12_terminal_marker_beats_limit() {
   sq_marker '**[deployer] DEPLOYED**'
   sq_tick
   local done_f q rows
-  done_f=$(sq_present "$SQ_PIPE/orch-42.done"); q=$(sq_present "$SQ_PIPE/queue/orch-42.json"); rows=$(rl_count run_exit)
+  done_f=$(sq_present "$(rkp "$SQ_PIPE/orch-42.done")"); q=$(sq_present "$(rkp "$SQ_PIPE/queue/orch-42.json")"); rows=$(rl_count run_exit)
   sq_cleanup
   assert_eq "$done_f" "present" "#138/4: terminal done handling keeps priority" || return 1
   assert_eq "$q" "absent" "#138/4: nothing requeued" || return 1
@@ -180,8 +180,8 @@ test_rl_ac14_monthly_spend_limit_holds() {
   sq_seed_auto_restart_queue   # a pending queue entry must be removed by the hold
   sq_tick; sleep 1
   local row held q alert log
-  row=$(rl_last run_exit); held=$(sq_present "$SQ_PIPE/orch-42.held"); q=$(sq_present "$SQ_PIPE/queue/orch-42.json")
-  alert=$(sq_present "$SQ_PIPE/orch-42.alert"); log=$(sq_log)
+  row=$(rl_last run_exit); held=$(sq_present "$(rkp "$SQ_PIPE/orch-42.held")"); q=$(sq_present "$(rkp "$SQ_PIPE/queue/orch-42.json")")
+  alert=$(sq_present "$(rkp "$SQ_PIPE/orch-42.alert")"); log=$(sq_log)
   local count total launches; count=$(sq_restarts_field count); total=$(sq_restarts_field total); launches=$(rl_launches)
   sq_cleanup
   assert_eq "$(rl_f "$row" .class)" "rate_limited" "#138/14: class" || return 1
@@ -200,7 +200,7 @@ test_rl_ac14_monthly_spend_limit_holds() {
 test_rl_ac15_nonzero_exit_is_error() {
   rl_exit_fixture 1 "$RL_NORMAL"
   sq_tick
-  local row; row=$(rl_last run_exit); local cls; cls=$(cat "$SQ_PIPE/orch-42.exit-class" 2>/dev/null); local lg; lg=$(sq_present "$SQ_PIPE/orch-42.exit-logged")
+  local row; row=$(rl_last run_exit); local cls; cls=$(cat "$(rkp "$SQ_PIPE/orch-42.exit-class")" 2>/dev/null); local lg; lg=$(sq_present "$(rkp "$SQ_PIPE/orch-42.exit-logged")")
   sq_cleanup
   assert_eq "$(rl_f "$row" .class)" "error" "#138/15: class error" || return 1
   assert_eq "$(rl_f "$row" .exit_code)" "1" "#138/15: exit_code 1" || return 1
@@ -227,10 +227,10 @@ test_rl_ac15_killed_has_null_exit_code() {
 test_rl_ac15_stopped_beats_everything() {
   rl_open
   mk_stopped "$SQ_PIPE" 42 "$SQ_REPO"
-  sq_iso_ago 600 > "$SQ_PIPE/orch-42.launched-at"
-  echo "$RL_HOST-orch-42-1700000000" > "$SQ_PIPE/orch-42.run-id"
-  echo 0 > "$SQ_PIPE/orch-42.exit"
-  printf '===== [2026-01-01T00:00:00Z] LAUNCH issue=42 reason=manual =====\n%s\n' "$RL_WEEKLY" > "$SQ_PIPE/orch-42.log"
+  sq_iso_ago 600 > "$(rkp "$SQ_PIPE/orch-42.launched-at")"
+  echo "$RL_HOST-orch-42-1700000000" > "$(rkp "$SQ_PIPE/orch-42.run-id")"
+  echo 0 > "$(rkp "$SQ_PIPE/orch-42.exit")"
+  printf '===== [2026-01-01T00:00:00Z] LAUNCH issue=42 reason=manual =====\n%s\n' "$RL_WEEKLY" > "$(rkp "$SQ_PIPE/orch-42.log")"
   sq_tick
   local row; row=$(rl_last run_exit); local rows; rows=$(rl_count run_exit)
   sq_cleanup
@@ -241,10 +241,10 @@ test_rl_ac15_stopped_beats_everything() {
 test_rl_ac15_limit_text_in_older_segment_is_normal() {
   rl_open
   mk_restarting "$SQ_PIPE" 42 "$SQ_REPO"
-  sq_iso_ago 600 > "$SQ_PIPE/orch-42.launched-at"
-  echo "$RL_HOST-orch-42-1700000000" > "$SQ_PIPE/orch-42.run-id"
-  echo 0 > "$SQ_PIPE/orch-42.exit"
-  printf '%s\n\n===== [2026-01-01T00:00:00Z] LAUNCH issue=42 reason=manual =====\n%s\n\n' "$RL_WEEKLY" "$RL_NORMAL" > "$SQ_PIPE/orch-42.log"
+  sq_iso_ago 600 > "$(rkp "$SQ_PIPE/orch-42.launched-at")"
+  echo "$RL_HOST-orch-42-1700000000" > "$(rkp "$SQ_PIPE/orch-42.run-id")"
+  echo 0 > "$(rkp "$SQ_PIPE/orch-42.exit")"
+  printf '%s\n\n===== [2026-01-01T00:00:00Z] LAUNCH issue=42 reason=manual =====\n%s\n\n' "$RL_WEEKLY" "$RL_NORMAL" > "$(rkp "$SQ_PIPE/orch-42.log")"
   sq_seed_restarts 1 1 "$SQ_READY"; sq_marker "$SQ_READY"
   sq_tick
   local row; row=$(rl_last run_exit)
@@ -291,7 +291,7 @@ test_rl_ac16_three_ticks_one_row() {
 test_rl_ac16_pre_merge_run_gets_no_row() {
   rl_exit_fixture 1 "$RL_NORMAL" noid
   sq_tick
-  local rows q; rows=$(rl_count run_exit); q=$(sq_present "$SQ_PIPE/queue/orch-42.json")
+  local rows q; rows=$(rl_count run_exit); q=$(sq_present "$(rkp "$SQ_PIPE/queue/orch-42.json")")
   sq_cleanup
   assert_eq "$rows" "0" "#138/16: no run-id file -> no run_exit" || return 1
   assert_eq "$q" "present" "#138/16: the restart path still runs for it" || return 1
@@ -301,11 +301,11 @@ test_rl_ac16_pre_merge_run_gets_no_row() {
 
 test_rl_ac17_orchestrate_launch_manual_by_default() {
   rl_open
-  touch "$SQ_PIPE/orch-42.exit-logged"
+  touch "$(rkp "$SQ_PIPE/orch-42.exit-logged")"
   local out rc
   out=$(sq_run "$ORCH_RL" "$SQ_REPO" 42 2>&1); rc=$?
   rl_wait_launches 1
-  local row id idf logged; row=$(rl_last run_launch); idf=$(cat "$SQ_PIPE/orch-42.run-id" 2>/dev/null); logged=$(sq_present "$SQ_PIPE/orch-42.exit-logged")
+  local row id idf logged; row=$(rl_last run_launch); idf=$(cat "$(rkp "$SQ_PIPE/orch-42.run-id")" 2>/dev/null); logged=$(sq_present "$(rkp "$SQ_PIPE/orch-42.exit-logged")")
   sq_cleanup
   assert_exit0 "$rc" "#138/17: launch exits 0 ($out)" || return 1
   assert_eq "$(rl_f "$row" .reason)" "manual" "#138/17: default reason" || return 1
@@ -332,11 +332,11 @@ test_rl_ac17_queue_drain_reason_and_wait() {
   python3 -c "
 import json, sys, time
 json.dump({'issue': '42', 'repo': sys.argv[1], 'extra': '', 'reason': 'queued',
-           'queued_at': sys.argv[2], 'not_before': 0}, open(sys.argv[3], 'w'))" "$SQ_REPO" "$(sq_iso_ago 600)" "$SQ_PIPE/queue/orch-42.json"
-  touch "$SQ_PIPE/orch-42.exit-logged"
+           'queued_at': sys.argv[2], 'not_before': 0}, open(sys.argv[3], 'w'))" "$SQ_REPO" "$(sq_iso_ago 600)" "$(rkp "$SQ_PIPE/queue/orch-42.json")"
+  touch "$(rkp "$SQ_PIPE/orch-42.exit-logged")"
   sq_tick; rl_wait_launches 1
-  local row w idf logged; row=$(rl_last run_launch); w=$(rl_f "$row" .queue_wait_s); idf=$(cat "$SQ_PIPE/orch-42.run-id" 2>/dev/null)
-  logged=$(sq_present "$SQ_PIPE/orch-42.exit-logged")
+  local row w idf logged; row=$(rl_last run_launch); w=$(rl_f "$row" .queue_wait_s); idf=$(cat "$(rkp "$SQ_PIPE/orch-42.run-id")" 2>/dev/null)
+  logged=$(sq_present "$(rkp "$SQ_PIPE/orch-42.exit-logged")")
   sq_cleanup
   assert_eq "$(rl_f "$row" .reason)" "queue" "#138/17: queued entry -> reason queue" || return 1
   case "$w" in ''|null|*[!0-9]*) fail "#138/17: queue_wait_s numeric, got [$w]"; return 1 ;; esac
@@ -353,7 +353,7 @@ test_rl_ac17_auto_restart_reason_and_restart_n() {
   python3 -c "
 import json, sys
 json.dump({'issue': '42', 'repo': sys.argv[1], 'extra': '', 'reason': 'auto-restart',
-           'queued_at': sys.argv[2], 'not_before': 0}, open(sys.argv[3], 'w'))" "$SQ_REPO" "$(sq_iso_ago 60)" "$SQ_PIPE/queue/orch-42.json"
+           'queued_at': sys.argv[2], 'not_before': 0}, open(sys.argv[3], 'w'))" "$SQ_REPO" "$(sq_iso_ago 60)" "$(rkp "$SQ_PIPE/queue/orch-42.json")"
   sq_marker "$SQ_READY"
   sq_tick; rl_wait_launches 1
   local row; row=$(rl_last run_launch)
@@ -417,14 +417,14 @@ test_rl_ac18_unwritable_logdir_never_blocks() {
   local rc idf
   sq_run "$ORCH_RL" "$SQ_REPO" 42 >/dev/null 2>&1; rc=$?
   rl_wait_launches 1
-  idf=$(cat "$SQ_PIPE/orch-42.run-id" 2>/dev/null)
-  local l=$(rl_launches) pidf; pidf=$(sq_present "$SQ_PIPE/orch-42.pid")
+  idf=$(cat "$(rkp "$SQ_PIPE/orch-42.run-id")" 2>/dev/null)
+  local l=$(rl_launches) pidf; pidf=$(sq_present "$(rkp "$SQ_PIPE/orch-42.pid")")
   # a dead run with a run-id: the tick must still complete and requeue it normally
-  rm -f "$SQ_PIPE/orch-42.exit-logged"; echo 1 > "$SQ_PIPE/orch-42.exit"
-  sq_iso_ago 600 > "$SQ_PIPE/orch-42.launched-at"; mk_dead_pid "$SQ_PIPE" 42
+  rm -f "$(rkp "$SQ_PIPE/orch-42.exit-logged")"; echo 1 > "$(rkp "$SQ_PIPE/orch-42.exit")"
+  sq_iso_ago 600 > "$(rkp "$SQ_PIPE/orch-42.launched-at")"; mk_dead_pid "$SQ_PIPE" 42
   sq_marker "$SQ_READY"
   sq_run "$SUP_SQ" >/dev/null 2>&1; local trc=$?
-  local q; q=$(sq_present "$SQ_PIPE/queue/orch-42.json")
+  local q; q=$(sq_present "$(rkp "$SQ_PIPE/queue/orch-42.json")")
   chmod 755 "$SQ_HOME/logs/pipeline"
   sq_cleanup
   assert_exit0 "$rc" "#138/18: launch completes with its normal exit code" || return 1
