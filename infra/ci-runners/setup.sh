@@ -52,9 +52,9 @@ if [ -z "$ROOT" ] && [ "$CHECK" = 0 ] && [ "$EUID" -ne 0 ]; then
 fi
 
 RELEASE=$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)
-total=$((25 * SLOTS))   # tenths of GiB: 2.5G per slot
+total=$((40 * SLOTS))   # tenths of GiB: 4G per slot (CI job containers are 4G)
 if [ $((total % 10)) -eq 0 ]; then MEMMAX="$((total / 10))G"; else MEMMAX="$((total / 10)).$((total % 10))G"; fi
-MEMHIGH="$((2250 * SLOTS))M"
+MEMHIGH="$((3600 * SLOTS))M"
 
 render() {
   local s; s=$(cat)
