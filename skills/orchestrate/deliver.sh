@@ -3,7 +3,8 @@
 # Registration only ENQUEUES the goal (#320): the supervisor starts its delivery lead when it is the goal's turn and a
 # host has capacity. Keep-alive and completion are the supervisor's job (#195).
 # Usage:
-#   deliver.sh <goal> [--now] [--host <hostname>] [--priority <n>] [instructions...]
+#   deliver.sh <goal> [--now] [--host <hostname>] [--hosts both|mac|vm] [--priority <n>] [instructions...]
+#                                         --hosts (default both): both = the goal's tickets run on either machine (one lead only); mac|vm = whole goal on that machine
 #                                         register (state queued). <goal> = owner/repo:milestone:<number|exact title>
 #                                         | owner/repo:milestones:all | owner/repo#N
 #                                         --now: also launch one cycle here at once (hand use, skips the queue)
@@ -156,7 +157,7 @@ reg_priority() {
 }
 
 cmd_register_args() {
-  local spec="" repos="" title="" req="" sentry=0 mockups=review instr="" now=0 pin="" a
+  local spec="" repos="" title="" req="" sentry=0 mockups=review instr="" now=0 pin="" a hosts=both
   case "${1:-}" in --*|'') ;; *) spec="$1"; shift ;; esac
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -168,13 +169,15 @@ cmd_register_args() {
       --now) now=1; shift ;;
       --priority) PRIORITY="${2:-}"; case "$PRIORITY" in ''|*[!0-9]*|0) die "--priority needs a whole number, 1 or more (1 starts first)" ;; esac; shift 2 ;;
       --after|--before) PLACE_MODE="${1#--}"; PLACE_REF="${2:-}"; [ -n "$PLACE_REF" ] || die "$1 needs a goal (spec or id)"; shift 2 ;;
+      --hosts) hosts="${2:-}"; case "$hosts" in both|mac|vm) ;; *) die "--hosts takes both, mac or vm" ;; esac; shift 2 ;;
       --host) pin=$(printf '%s' "${2:-}" | tr '[:upper:]' '[:lower:]'); [ -n "$pin" ] || die "--host needs a hostname"; shift 2 ;;
       *) instr="${instr:+$instr }$1"; shift ;;
     esac
   done
   PRIORITY=$(reg_priority) || exit 1; PLACE_MODE=""   # resolved once: the others are renumbered now
+  [ "$hosts" = both ] || case "$spec" in ''|label:*) ;; *) die "--hosts only applies to label goals" ;; esac
   case "$spec" in
-    ''|label:*) cmd_register_label "$spec" "$repos" "$title" "$req" "$sentry" "$mockups" "$instr" "$now" "$pin" ;;
+    ''|label:*) cmd_register_label "$spec" "$repos" "$title" "$req" "$sentry" "$mockups" "$instr" "$now" "$pin" "$hosts" ;;
     *)
       if [ -n "$repos$title$req" ] || [ "$sentry" = 1 ]; then die "--repos/--title/--requirements/--include-sentry only apply to label goals"; fi
       cmd_register "$spec" "$instr" "$now" "$pin" ;;
@@ -227,7 +230,7 @@ register_rollback() {
 
 # cmd_register_label — a cross-repo goal (#319): the label "goal: <short title>" in every repo + the registry issue.
 cmd_register_label() {
-  local spec=$1 repos_in=$2 title=$3 req=$4 sentry=$5 mockups=$6 instr=$7 now=${8:-0} pin=${9:-} host=""
+  local spec=$1 repos_in=$2 title=$3 req=$4 sentry=$5 mockups=$6 instr=$7 now=${8:-0} pin=${9:-} hosts=${10:-both} host=""
   local label id r kept="" checkout seed_ok=0 req_ok=0 seed_repo="" seed_n="" rows block body resp n url room desc
   local granted='[]' granted_at="" go=false repos_json out
   [ -n "$repos_in" ] || die "a label goal needs --repos owner/repo,owner/repo"
@@ -264,9 +267,9 @@ cmd_register_label() {
   { [ -n "$rows" ] || [ "$seed_ok" = 1 ]; } || die "empty scope: no ticket carries '$label' and there is no requirements ticket to label; a goal must start with at least one"
   [ "$now" = 1 ] && host="$THIS_HOST"   # queued goals have no host until the supervisor starts them (#320)
   block=$(jq -nc --arg id "$id" --arg spec "$spec" --arg host "$host" --arg pin "$pin" --arg created "$(now_utc)" --arg ins "$instr" \
-    --arg title "$title" --arg label "$label" --argjson repos "$repos_json" --arg mockups "$mockups" --arg req "$req" \
+    --arg title "$title" --arg label "$label" --argjson repos "$repos_json" --arg mockups "$mockups" --arg req "$req" --arg hosts "$hosts" \
     --argjson sentry "$([ "$sentry" = 1 ] && echo true || echo false)" --argjson prio "$PRIORITY" \
-    '{v:2,id:$id,title:$title,label:$label,repos:$repos,order:0,priority:$prio,mockups:$mockups,go:false,host_pref:$pin,requirements:$req,
+    '{v:2,id:$id,title:$title,label:$label,repos:$repos,order:0,priority:$prio,mockups:$mockups,go:false,host_pref:$pin,hosts:$hosts,requirements:$req,
       include_sentry:$sentry,spec:$spec,host:$host,created:$created,instructions:$ins}')
   ensure_label delivery-goal
   [ "$now" = 1 ] || ensure_label goal-queued

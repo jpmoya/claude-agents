@@ -55,6 +55,7 @@ Label rule: `agent-go` = "approved, not launched anywhere yet"; launching anywhe
 
 - **Goal kinds:** `owner/repo:milestone:<number|exact title>`, `owner/repo:milestones:all`, `owner/repo#N`.
 - **Overlap refusal:** a new goal that shares a ticket, or a repo with a `milestones:all` goal, with a live goal (open registry entry: active, held or waiting on JP) is refused, and the error names the live conflicting goal. It fails closed when the registry is unreadable.
+- **Both machines (`--hosts`):** one lead per goal, but its tickets spread. `--hosts both` (default; field absent = both): the lead's host dispatches the goal's tickets through the lead, the other host's supervisor (step 5) dispatches them too, and the claim comment guarantees a ticket never runs on both. A goal not started yet (still queued) dispatches nothing anywhere. `--hosts mac|vm` confines the whole goal (lead start and tickets) to that machine. Label goals only.
 - **Host pin:** a goal is pinned to the host that registered it; another host's supervisor does not run it. `resume <goal> --here` re-pins it to this host.
 - **State words in `status`:** running, between cycles, held, waiting on JP, stopped, delivered.
 

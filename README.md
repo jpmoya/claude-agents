@@ -18,10 +18,10 @@ JP's shared Claude Code config, synced across machines (Mac + Clog VM). Despite 
 
 ## deliver.sh (goal-bound delivery lead)
 
-`skills/orchestrate/deliver.sh` registers a goal as a registry issue on GitHub (state `queued`; no launch). The supervisor starts the `delivery-lead` of the next queued goal when a slot, memory and power allow, every earlier goal (by registry `priority`, 1 first, then `order`, then issue number) is delivered, stopped or waiting on JP, and this host is eligible (VM first; the Mac only after the VM did not take it for two ticks; a goal registered with `--host` only on that host). `--now` launches one cycle at once, skipping the queue. The supervisor keeps the goal alive between cycles and stops it at completion; agents never create launchd, cron or loop relaunchers.
+`skills/orchestrate/deliver.sh` registers a goal as a registry issue on GitHub (state `queued`; no launch). The supervisor starts the `delivery-lead` of the next queued goal when a slot, memory and power allow, every earlier goal (by registry `priority`, 1 first, then `order`, then issue number) is delivered, stopped or waiting on JP, and this host is eligible (VM first; the Mac only after the VM did not take it for two ticks; a goal registered with `--host` only on that host). One lead per goal, but its tickets run on both machines by default (`--hosts both|mac|vm`, label goals; `mac`/`vm` confines the lead and tickets to that machine): the other host's supervisor dispatches the goal's `agent-go` tickets, the existing claim comment keeps a ticket on one host, and a goal still queued dispatches nothing. `--now` launches one cycle at once, skipping the queue. The supervisor keeps the goal alive between cycles and stops it at completion; agents never create launchd, cron or loop relaunchers.
 
 ```bash
-skills/orchestrate/deliver.sh <goal> [--now] [--host <name>] [--priority <n>] [instructions...]   # register (queued); --now also launches one cycle
+skills/orchestrate/deliver.sh <goal> [--now] [--host <name>] [--hosts both|mac|vm] [--priority <n>] [instructions...]   # register (queued); --now also launches one cycle
 ~/.claude/skills/orchestrate/deliver.sh priority <goal|id> <n>   # change a goal's priority (1 starts first) here
 skills/orchestrate/deliver.sh status [goal|id]           # open goals, plus closed within 7 days
 skills/orchestrate/deliver.sh stop <goal|id>             # idempotent
