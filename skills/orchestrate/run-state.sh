@@ -28,7 +28,7 @@ try: print(int(os.path.getmtime(sys.argv[1])))
 except OSError: pass" "$1" 2>/dev/null
 }
 
-_rs_ps_lines() {  # live claude processes: <start_epoch> TAB <PIPELINE_ISSUE> TAB <command line>; RS_PS_CMD overrides (tests)
+_rs_ps_lines() {  # live claude processes: <start_epoch> TAB <PIPELINE_ISSUE> TAB <command line> [TAB <pid>]; RS_PS_CMD overrides (tests)
   if [ -n "${RS_PS_CMD:-}" ]; then bash -c "$RS_PS_CMD" 2>/dev/null; return 0; fi
   if [ "$(uname)" = "Linux" ]; then
     python3 - <<'PY' 2>/dev/null
@@ -49,7 +49,7 @@ for pid in os.listdir("/proc"):
         issue = env.get(b"PIPELINE_ISSUE", b"").decode()
         start = btime + int(open("/proc/%s/stat" % pid).read().rsplit(")", 1)[1].split()[19]) // hz
         cmd = " ".join(a.decode("utf-8", "replace") for a in argv if a).replace("\t", " ").replace("\n", " ")
-        print("%d\t%s\t%s" % (start, issue, cmd))
+        print("%d\t%s\t%s\t%s" % (start, issue, cmd, pid))
     except Exception:
         continue
 PY
@@ -58,7 +58,7 @@ PY
     # parallel stages, so use pid order (newer pid = newer start) as the epoch stand-in.
     ps -axEww -o pid=,command= 2>/dev/null | awk '/--agent / && /PIPELINE_ISSUE=/ && $2 ~ /(^|\/)claude$/ {
       pid=$1; iss=$0; sub(/.*PIPELINE_ISSUE=/, "", iss); sub(/[ \t].*/, "", iss);
-      cmd=$0; sub(/^[ \t]*[0-9]+ +/, "", cmd); printf "%d\t%s\t%s\n", pid, iss, cmd }'
+      cmd=$0; sub(/^[ \t]*[0-9]+ +/, "", cmd); printf "%d\t%s\t%s\t%s\n", pid, iss, cmd, pid }'
   fi
 }
 
@@ -70,6 +70,12 @@ _rs_live_stage() {  # _rs_live_stage <issue> <alive 0|1> -> --agent of the newes
     END { if (found) print agent }')
   if [ -n "$best" ]; then printf '%s' "$best"
   elif [ "$alive" = 1 ]; then printf 'orchestrator'; fi
+}
+
+_rs_live_stage_proc() {  # _rs_live_stage_proc <issue> -> "pid=<pid> argv=<claude --agent X>" of the newest non-orchestrator stage (#341 log line; argv cut to the command name + agent, never the full line)
+  _rs_ps_lines | awk -F'\t' -v want="$1" '$2 == want && match($3, /--agent [^ ]+/) && $3 !~ /--agent orchestrator([ \t]|$)/ {
+    if (!found || $1 + 0 >= best) { best = $1 + 0; found = 1; out = "pid=" ($4 == "" ? "?" : $4) " argv=claude " substr($3, RSTART, RLENGTH) } }
+    END { if (found) print out }'
 }
 
 _rs_last_activity_for() {  # _rs_last_activity_for <run_key> -> newest epoch among orch-<run_key>.log and run-<run_key>-*.log
