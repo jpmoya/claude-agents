@@ -11,7 +11,7 @@ Docker (with `dockerd-rootless-setuptool.sh`), `uidmap`, `curl`, systemd.
 sudo infra/ci-runners/setup.sh [--slots N] [--runner-version X.Y.Z] [--check] [--mint-from-stdin] [--probe]
 ```
 - `--slots N` (1..16, default 2; 3 only after a measured gate). Shrinking disables and stops the higher slots.
-  Per-user `MemoryMax` is 2.5G x slots.
+  Per-user `MemoryMax` is 4G x slots (CI job containers are capped at 4G).
 - `--runner-version` pins actions/runner (default 2.338.0); image is built locally as `gha-runner:<version>`.
 - `--check` changes nothing, prints `WOULD CHANGE:` / `OK:` per step, exits 0 (nothing to do) or 3 (changes pending). No root needed.
 - `--mint-from-stdin` stores the registration token root-only in `/etc/gha/mint.env` (0600); never echoed or put in argv.
