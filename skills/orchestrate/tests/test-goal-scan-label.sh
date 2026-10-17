@@ -23,10 +23,12 @@ sl_goal() {
       closed_at:(if $state == "closed" then $now else null end)}'
 }
 
-# sl_run <registry mode ok|fail> — runs scan-backlog.sh over repos o/a (dispatch) and o/Business-Intelligence (scan only); prints the gh log
-sl_run() {
-  local home log
-  home=$(new_home); log="$home/gh.log"; : > "$log"; mkdir -p "$home/bin"
+# sl_home — a fresh sandbox (fixtures, gh stub, config); sets SL_HOME. sl_scan <ok|fail> — one scan-backlog.sh run in it; prints
+# that run's `issue edit` lines. sl_run <ok|fail> — both, then removes the sandbox.
+sl_run() { sl_home; sl_scan "$1"; rm -rf "$SL_HOME"; }
+sl_home() {
+  local home
+  home=$(new_home); SL_HOME=$home; mkdir -p "$home/bin"
   local open closed
   open=$(jq -sc '.' <(sl_goal g-alpha "goal: Alpha" true active '["o/a","o/Business-Intelligence"]' '[]') \
                     <(sl_goal g-beta "goal: Beta" false active '["o/a"]' '[]') \
@@ -53,6 +55,11 @@ echo "$*" >> "$GH_LOG"
 if [ "$1" = "api" ]; then
   [ "$REG_MODE" = fail ] && { echo "gh: HTTP 502" >&2; exit 1; }
   case "$*" in
+    *"-X PATCH"*)   # the registry issue body is rewritten (the grant ledger): keep it for the next scan
+      n=$(printf '%s' "$*" | sed -E 's#.*issues/([0-9]+).*#\1#'); body=$(cat | jq -r .body)
+      echo "PATCH $n" >> "$GH_LOG"
+      jq -c --argjson n "$n" --arg b "$body" 'map(if .number == $n then .body = $b else . end)' "$HOME/reg-open.json" > "$HOME/reg-open.json.t" && mv "$HOME/reg-open.json.t" "$HOME/reg-open.json"
+      echo '{}'; exit 0 ;;
     *state=open*) cat "$HOME/reg-open.json" ;;
     *state=closed*) cat "$HOME/reg-closed.json" ;;
     *) echo '[]' ;;
@@ -68,8 +75,11 @@ exit 0
 STUB
   chmod +x "$home/bin/gh"
   printf 'SCAN_BACKLOG=1\nDISPATCH_REPOS=("o/a:/tmp/a")\nSCAN_ONLY_REPOS=("o/Business-Intelligence")\nGOAL_REGISTRY_REPO=o/registry\n' > "$home/.claude/pipeline/config.local.sh"
-  HOME="$home" GH_LOG="$log" REG_MODE="$1" PATH="$home/bin:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin" /bin/bash "$HERE_SL/../scan-backlog.sh" >/dev/null 2>&1
-  grep '^issue edit ' "$log"; rm -rf "$home"
+}
+sl_scan() {
+  local log="$SL_HOME/gh.log"; : > "$log"
+  HOME="$SL_HOME" GH_LOG="$log" REG_MODE="$1" PATH="$SL_HOME/bin:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin" /bin/bash "$HERE_SL/../scan-backlog.sh" >/dev/null 2>&1
+  grep -E '^(issue edit |PATCH )' "$log"
 }
 
 sl_label_of() {  # <edit log> <repo> <issue> -> the label added ("none" when the ticket was not edited)
@@ -95,6 +105,22 @@ test_sl_exclusions_and_loop_guard() {
   assert_eq "$(sl_label_of "$e" o/Business-Intelligence 20)" "agent-proposed" "Business-Intelligence never gets agent-go from a goal" || return 1
   assert_eq "$(sl_label_of "$e" o/a 17)" "none" "an already proposed ticket is not touched" || return 1
 }
+# The go is recorded in the registry block when the scan gives it: JP removes it, the next scan does not give it again.
+test_sl_scan_records_the_grant_and_never_readds_a_removed_go() {
+  sl_home
+  local first second ledger
+  first=$(sl_scan ok)
+  # JP removes the go: the fixture ticket is still unlabelled for the next scan (the stub has no label state)
+  second=$(sl_scan ok)
+  ledger=$(jq -r '.[] | select(.body | contains("goal: Alpha")) | .body' "$SL_HOME/reg-open.json")
+  rm -rf "$SL_HOME"
+  assert_eq "$(sl_label_of "$first" o/a 10)" "agent-go" "first scan gives the go" || return 1
+  assert_contains "$first" "PATCH " "the grant is written to the registry issue" || return 1
+  assert_contains "$ledger" '"o/a#10"' "the ledger (block.granted) names o/a#10" || return 1
+  assert_contains "$ledger" "- o/a#10" "the Go-granted list names o/a#10" || return 1
+  assert_eq "$(sl_label_of "$second" o/a 10)" "agent-proposed" "second scan: a go that was given once is never re-added" || return 1
+  assert_eq "$(sl_label_of "$second" o/a 16)" "agent-proposed" "second scan: the queued goal's ticket too" || return 1
+}
 test_sl_unreadable_registry_fails_closed() {
   local e; e=$(sl_run fail)
   assert_eq "$(sl_label_of "$e" o/a 10)" "agent-proposed" "registry unreadable -> no goal is approved -> agent-proposed" || return 1
@@ -104,4 +130,5 @@ echo "-- scan-backlog approved goal go (#320)"
 run_test test_sl_approved_goal_ticket_gets_agent_go
 run_test test_sl_unapproved_or_stopped_goal_label_gets_agent_proposed
 run_test test_sl_exclusions_and_loop_guard
+run_test test_sl_scan_records_the_grant_and_never_readds_a_removed_go
 run_test test_sl_unreadable_registry_fails_closed

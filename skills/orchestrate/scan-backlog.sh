@@ -12,16 +12,18 @@ source "$(cd "$(dirname "$0")" && pwd)/goal-lib.sh"
 new_issues=()
 seen=" "
 
-# #320: labels of APPROVED goals (registry block go:true, goal still live: queued, active, held or waiting on JP), one JSON
-# object per line {label, repos, granted}. A ticket that carries one of them and no pipeline label arrives with agent-go
+# #320: APPROVED goals (registry block go:true, goal still live: queued, active, held or waiting on JP), one JSON
+# object per line {issue, label, repos, granted, block}. A ticket that carries one of them and no pipeline label arrives with agent-go
 # instead of agent-proposed. Fails closed: an unreadable registry means no goal is approved (agent-proposed, as before).
 approved_goals=$(_goal_registry_json 2>/dev/null | jq -c '.[] | select(.block != null)
     | select(.st == "queued" or .st == "active" or .st == "held" or .st == "waiting_jp")
     | select((.block.v // 1) == 2 and (.block.go // false) == true and (.block.label // "") != "")
-    | {label: .block.label, repos: (.block.repos // []), granted: (.block.granted // [])}' 2>/dev/null) || approved_goals=""
+    | {issue, label: .block.label, repos: (.block.repos // []), granted: (.block.granted // []), block}' 2>/dev/null) || approved_goals=""
 # goal_scan_approved <owner/repo> <issue> <labels csv> — 0 when the ticket carries the label of an approved goal of that repo
+# (the matching goal's json is left in SCAN_GOAL for goal_scan_record)
 goal_scan_approved() {
   local r=$1 n=$2 lbls=$3 g label
+  SCAN_GOAL=""
   [ -n "$approved_goals" ] || return 1
   case "$r" in */Business-Intelligence) return 1 ;; esac
   case ",$lbls," in *",source:sentry,"*) return 1 ;; esac
@@ -31,9 +33,23 @@ goal_scan_approved() {
     case ",$lbls," in *",$label,"*) ;; *) continue ;; esac
     printf '%s' "$g" | jq -e --arg r "$r" '.repos | index($r) != null' >/dev/null || continue
     printf '%s' "$g" | jq -e --arg x "$r#$n" '.granted | index($x) == null' >/dev/null || continue
+    SCAN_GOAL=$g
     return 0
   done <<< "$approved_goals"
   return 1
+}
+
+# goal_scan_record <owner/repo> <issue> — the loop guard's ledger: a go given here is recorded in the goal's registry block
+# (`granted`, and the Go-granted list of the body) at once, the same record goal_sync keeps, so a go JP removes later is not
+# given again by the next scan. A failed write is reported on stderr (the next scan would retry the ticket's grant, not repeat it).
+goal_scan_record() {
+  local ref="$1#$2" block date n
+  n=$(printf '%s' "$SCAN_GOAL" | jq -r .issue)
+  block=$(printf '%s' "$SCAN_GOAL" | jq -c --arg x "$ref" '.block | .granted = (((.granted // []) + [$x]) | unique)')
+  date=$(printf '%s' "$block" | jq -r '(.granted_at // empty)'); [ -n "$date" ] || date=$(date -u +%F)
+  _goal_patch_body "$n" "$(goal_body_v2 "$block" "$date")" >/dev/null 2>&1 || echo "scan-backlog: cannot record the go of $ref on registry issue #$n" >&2
+  approved_goals=$(printf '%s\n' "$approved_goals" | jq -c --arg l "$(printf '%s' "$block" | jq -r .label)" --argjson b "$block" \
+    'if .label == $l then (.block = $b | .granted = $b.granted) else . end')
 }
 
 # ${arr[@]+...}: an empty or unset array is an unbound variable under `set -u` on bash 3.2 (macOS).
@@ -69,7 +85,7 @@ for entry in ${DISPATCH_REPOS[@]+"${DISPATCH_REPOS[@]}"} ${SCAN_ONLY_REPOS[@]+"$
     # an approved goal's ticket gets the go itself (never Business-Intelligence, never source:sentry; a ticket whose go was
     # already granted once and later removed is not given it again — the registry's `granted` list is the ledger)
     if goal_scan_approved "$repo" "$num" "$lbls"; then
-      gh issue edit "$num" --repo "$repo" --add-label "$LABEL_GO" >/dev/null 2>&1 || true
+      if gh issue edit "$num" --repo "$repo" --add-label "$LABEL_GO" >/dev/null 2>&1; then goal_scan_record "$repo" "$num"; fi
     else
       gh issue edit "$num" --repo "$repo" --add-label "$LABEL_PROPOSED" >/dev/null 2>&1 || true
     fi
