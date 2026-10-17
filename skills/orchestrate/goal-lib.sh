@@ -778,15 +778,17 @@ _GOAL_QUEUE_JQ='def okey: [((.block.order? // .issue) | if type == "number" then
   sort_by(okey) as $all
   | ($all | map(select(.st == "queued"))) as $q
   | ($all | map(select((.st == "delivered" or .st == "stopped" or .st == "waiting_jp") | not)) | first // null) as $f
-  | {queued: $q, candidate: (if $f != null and $f.st == "queued" then $f else null end)}'
+  | {queued: $q, candidate: (if $f != null and $f.st == "queued" then $f else null end),
+     recent: ($all | map(select(.st == "delivered" or .st == "stopped")) | sort_by(.closed_at // "") | reverse | .[:5])}'
 
 # goal_queue_save <registry json> — the sync's prefilter and the status page's queue view (id, issue, title/spec, order,
-# host_pref, label per queued goal, in queue order). Best effort: a write failure is only an error row.
+# host_pref, label per queued goal, in queue order; plus the 5 most recently closed goals as `recent`). Best effort: a write failure is only an error row.
 goal_queue_save() {
   local f="$PIPE/$GOAL_QUEUE_FILE_NAME" v
   v=$(printf '%s' "$1" | jq -c "$_GOAL_QUEUE_JQ"'
     | {at: (now | floor),
        candidate: (.candidate.id // null),
+       recent: (.recent | map({id, issue, spec, title: (.block.title // ""), repos: (.block.repos // []), st, closed_at})),
        queued: (.queued | map({id, issue, spec, title: (.block.title // ""), label: (.block.label // ""),
                                repos: (.block.repos // []), order: (.block.order? // .issue), host_pref: (.block.host_pref // "")}))}' 2>/dev/null) \
     || { goal_err "cannot compute the goal queue"; return 0; }
