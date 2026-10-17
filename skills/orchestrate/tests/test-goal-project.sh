@@ -161,14 +161,37 @@ test_gp_project_failure_never_fails_the_goal() {
 test_gp_status_page_link_prefers_the_project() {
   local rc=0 d out
   d=$(mktemp -d "${TMPDIR:-/tmp}/gp-pipe.XXXXXX")
-  jq -nc '{id:"g1", host:"mac", spec:"o/r:milestone:4", state:"active", project:{owner:"x",number:3,url:"https://github.com/users/x/projects/3"}}' > "$d/goal-g1.json"
-  jq -nc '{id:"g2", host:"mac", spec:"o/r:milestone:4", state:"active", project:{owner:"x",number:3,url:"https://evil.com/users/x/projects/3"}}' > "$d/goal-g2.json"
-  jq -nc '{id:"g3", host:"mac", spec:"o/r:milestone:4", state:"active"}' > "$d/goal-g3.json"
+  jq -nc '{id:"g1", host:"mac", spec:"o/r#4", state:"active", project:{owner:"x",number:3,url:"https://github.com/users/x/projects/3"}}' > "$d/goal-g1.json"
+  jq -nc '{id:"g2", host:"mac", spec:"o/r#4", state:"active", project:{owner:"x",number:3,url:"https://evil.com/users/x/projects/3"}}' > "$d/goal-g2.json"
+  jq -nc '{id:"g3", host:"mac", spec:"o/r#4", state:"active"}' > "$d/goal-g3.json"
   out=$(python3 "$DG_SKILL/build-runs-json.py" "" "$d/runs.jsonl" "$d" goals </dev/null 2>/dev/null)
   assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id == "g1") | .url')" "https://github.com/users/x/projects/3" "project url wins" || rc=1
-  assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id == "g2") | .url')" "https://github.com/o/r/milestone/4?closed=1" "a non-GitHub project url is ignored, fallback link" || rc=1
-  assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id == "g3") | .url')" "https://github.com/o/r/milestone/4?closed=1" "no project: milestone link as before" || rc=1
+  assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id == "g2") | .url')" "https://github.com/o/r/issues/4" "a non-GitHub project url is ignored, fallback link" || rc=1
+  assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id == "g3") | .url')" "https://github.com/o/r/issues/4" "no project: ticket link as before" || rc=1
   rm -rf "$d"; return $rc
+}
+
+test_gp_new_project_appears_on_the_status_page_without_manual_steps() {
+  gp_setup
+  local rc=0 out
+  jq -nc '[{number:3, title:"Goal: Brand new", closed:false, id:"PVT_3", url:"https://github.com/users/example-owner/projects/3"},
+           {number:4, title:"Goal: Done one", closed:true, id:"PVT_4", url:"https://github.com/users/example-owner/projects/4"},
+           {number:5, title:"Old", closed:true, id:"PVT_5", url:"https://github.com/users/example-owner/projects/5"}]' > "$DG_BIN/proj/projects.json"
+  jq -nc '{owner:"example-owner", projects:[{number:5,title:"Old",url:"https://github.com/users/example-owner/projects/5",closed:true,closed_seen:"2020-01-01T00:00:00Z"}]}' > "$DG_PIPE/goalprojects.json"
+  dg_lib 'goal_project_refresh_list'; assert_eq "$DG_RC" "0" "refresh exits 0 (stderr: $DG_ERR)" || rc=1
+  out=$(PATH="$PATH" python3 "$DG_SKILL/build-runs-json.py" "" "$DG_HOME/r.jsonl" "$DG_PIPE" goals </dev/null 2>/dev/null)
+  assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id == "project-3") | "\(.state) \(.title) \(.url)"')" "queued Brand new https://github.com/users/example-owner/projects/3" "an open project with no goal is a not-started row linking to the project" || rc=1
+  assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id == "project-4") | .state')" "delivered" "a freshly closed project is recently closed" || rc=1
+  assert_eq "$(printf '%s' "$out" | jq -r '[.[] | select(.id == "project-5")] | length')" "0" "a project closed long ago is not listed" || rc=1
+  # goals are the projects: a bound goal gives its project row state/host/priority; an unbound goal is not a row
+  jq -nc '{id:"g1", host:"mac", spec:"o/r#5", state:"waiting_jp", priority:2, project:{owner:"x",number:3,url:"https://github.com/users/example-owner/projects/3"}}' > "$DG_PIPE/goal-g1.json"
+  jq -nc '{id:"g2", host:"mac", spec:"o/r#6", state:"active", priority:1}' > "$DG_PIPE/goal-g2.json"
+  out=$(PATH="$PATH" python3 "$DG_SKILL/build-runs-json.py" "" "$DG_HOME/r.jsonl" "$DG_PIPE" goals </dev/null 2>/dev/null)
+  assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id == "project-3") | "\(.state) \(.host) \(.priority)"')" "waiting_jp mac 2" "the project row carries its goal's state, host and priority" || rc=1
+  assert_eq "$(printf '%s' "$out" | jq -r '[.[] | select(.id == "g1" or .id == "g2")] | length')" "0" "ticket goals are not rows of their own" || rc=1
+  # nothing manual: the registry has no goal for it
+  assert_eq "$(dg_reg_count)" "0" "no registry goal needed" || rc=1
+  dg_teardown; return $rc
 }
 
 test_gp_gh_project_and_graphql_only_in_goal_project_sh() {
@@ -186,6 +209,6 @@ test_gp_gh_project_and_graphql_only_in_goal_project_sh() {
 for t in test_gp_register_creates_project_adds_tickets_and_records_it test_gp_project_command_is_idempotent_and_mirrors_status \
          test_gp_stopped_goal_closes_its_project_not_the_registry_row test_gp_project_command_binds_but_never_creates_for_existing_goals test_gp_brief_names_the_bound_project test_gp_binds_existing_project_with_the_same_title \
          test_gp_without_project_scope_nothing_runs_and_register_succeeds test_gp_project_failure_never_fails_the_goal \
-         test_gp_status_page_link_prefers_the_project test_gp_gh_project_and_graphql_only_in_goal_project_sh; do
+         test_gp_status_page_link_prefers_the_project test_gp_new_project_appears_on_the_status_page_without_manual_steps test_gp_gh_project_and_graphql_only_in_goal_project_sh; do
   run_test "$t"
 done

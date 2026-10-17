@@ -59,23 +59,24 @@ _gp_cache_set() {
   rm -f "$f.tmp"
 }
 
-# _gp_find <title> <bound numbers, space separated> <scope refs> <full 0|1> -> number of an existing unbound project that is this
-# goal's: the same title, or (full) a "Goal: " project at least half of whose items are tickets of this goal.
+# _gp_find <title> <scope refs> <full 0|1> -> number of an existing project that is this goal's: the same title, or (full) the
+# smallest "Goal: " project that holds every ticket of the goal (several goals may share one project).
 _gp_find() {
-  local title="$1" bound="$2" refs="$3" full="$4" list n c items ov best=0 bestn=""
+  local title="$1" refs="$2" full="$3" list n c items best="" bestc=0 cnt
   list=$(_gp_list) || return 0
-  n=$(printf '%s' "$list" | jq -r --arg t "$title" --arg b " $bound " \
-    '[.[] | select((.title | ascii_downcase) == ($t | ascii_downcase)) | select(. as $p | $b | contains(" \($p.number) ") | not) | .number] | first // empty')
+  n=$(printf '%s' "$list" | jq -r --arg t "$title" '[.[] | select((.title | ascii_downcase) == ($t | ascii_downcase)) | .number] | first // empty')
   if [ -n "$n" ]; then printf '%s\n' "$n"; return 0; fi
-  [ "$full" = 1 ] || return 0
-  for c in $(printf '%s' "$list" | jq -r --arg b " $bound " '.[] | select(.title | startswith("Goal: ")) | select(. as $p | $b | contains(" \($p.number) ") | not) | .number'); do
+  [ "$full" = 1 ] && [ -n "$refs" ] || return 0
+  for c in $(printf '%s' "$list" | jq -r '.[] | select(.title | startswith("Goal: ")) | .number'); do
     items=$(gh project item-list "$c" --owner "$(_gp_owner)" --format json -L 500 2>/dev/null \
       | jq -r '.items[] | select(.content.repository != null) | "\(.content.repository)#\(.content.number)"') || continue
     [ -n "$items" ] || continue
-    ov=$(printf '%s\n' "$items" | grep -cxFf <(printf '%s\n' "$refs") || true)
-    if [ "$ov" -ge 1 ] && [ $((ov * 2)) -ge "$(printf '%s\n' "$items" | grep -c .)" ] && [ "$ov" -gt "$best" ]; then best=$ov; bestn=$c; fi
+    if [ -z "$(printf '%s\n' "$refs" | grep -vxFf <(printf '%s\n' "$items") || true)" ]; then
+      cnt=$(printf '%s\n' "$items" | grep -c .)
+      if [ -z "$best" ] || [ "$cnt" -lt "$bestc" ]; then best=$c; bestc=$cnt; fi
+    fi
   done
-  [ -z "$bestn" ] || printf '%s\n' "$bestn"
+  [ -z "$best" ] || printf '%s\n' "$best"
 }
 
 # goal_project_ensure <goal json> [bind|create] -> prints the project json {owner,number,url} when the block has none: binds an
@@ -83,7 +84,7 @@ _gp_find() {
 # block and the local cache. `create` (register, or `deliver.sh project --create`) creates one from the template when none binds;
 # `bind` (default; sync, backfill) never creates one: the projects JP already has are the goals' projects. Exit 1 when none.
 goal_project_ensure() {
-  local g="$1" mode="${2:-bind}" full=1 cur o title issue id spec refs bound reg n out url p repo reg_url
+  local g="$1" mode="${2:-bind}" full=1 cur o title issue id spec refs n out url p repo reg_url
   goal_project_enabled || return 1
   cur=$(printf '%s' "$g" | jq -c '.block.project? // empty | select(type == "object" and (.number | type) == "number")')
   if [ -n "$cur" ]; then printf '%s\n' "$cur"; return 0; fi
@@ -91,9 +92,7 @@ goal_project_ensure() {
   title=$(goal_project_title "$g")
   [ "$mode" != create ] || full=0
   refs=""; [ "$full" != 1 ] || refs=$(goal_scope "$spec" "$id" "$(printf '%s' "$g" | jq -r '(.block.repos // []) | join(",")')" 2>/dev/null || true)
-  reg=$(_goal_registry_json 2>/dev/null) || reg='[]'
-  bound=$(printf '%s' "$reg" | jq -r '[.[] | .block.project?.number? | numbers] | join(" ")' 2>/dev/null || true)
-  n=$(_gp_find "$title" "$bound" "$refs" "$full") || n=""
+  n=$(_gp_find "$title" "$refs" "$full") || n=""
   if [ -n "$n" ]; then
     p=$(gh project view "$n" --owner "$o" --format json 2>/dev/null) || { _gp_log "cannot read project $n"; return 1; }
     url=$(printf '%s' "$p" | jq -r .url)
@@ -188,17 +187,39 @@ goal_project_sync_all() {
   return 0
 }
 
-# goal_project_tick <registry json> — called from goal_sync; at most every GOAL_PROJECT_SECS, in the background (one at a time),
-# so a slow or failing GitHub Projects call can never hold up the supervisor.
+# goal_project_refresh_list — $PIPE/goalprojects.json {at, owner, projects:[{number,title,url,closed,closed_seen}]}: every project of the
+# owner, open and closed, so the status page lists each one as a goal row with no registry edit (build-runs-json.py reads it).
+# closed_seen = when this cache first saw the project closed (gh gives no close time); it keeps the "recently closed" window honest.
+# Calls report_status_async when the list changed, so the page picks a new project up at once.
+goal_project_refresh_list() {
+  local f="$PIPE/goalprojects.json" o list prev new now
+  goal_project_enabled || return 0
+  o=$(_gp_owner); now=$(date -u +%FT%TZ)
+  list=$(gh project list --owner "$o" --closed --format json -L 200 2>/dev/null | jq -c '.projects // empty') || list=""
+  [ -n "$list" ] || { _gp_log "cannot list the projects of $o"; return 1; }
+  prev=$(jq -c '.projects // []' "$f" 2>/dev/null) || prev='[]'
+  [ -n "$prev" ] || prev='[]'
+  new=$(jq -nc --argjson l "$list" --argjson p "$prev" --arg o "$o" --arg now "$now" \
+    '{owner:$o, projects: [$l[] | . as $x | {number, title, url, closed: (.closed // false),
+        closed_seen: (if (.closed // false) then (([$p[] | select(.number == $x.number) | .closed_seen] | first) // $now) else null end)}]}') || return 1
+  if [ "$(printf '%s' "$new" | jq -c .projects)" != "$(printf '%s' "$prev")" ]; then
+    printf '%s' "$new" | jq -c --arg now "$now" '. + {at:$now}' > "$f.tmp" 2>/dev/null && mv "$f.tmp" "$f" || { rm -f "$f.tmp"; return 1; }
+    type report_status_async >/dev/null 2>&1 && report_status_async "goal-projects"
+  fi
+  return 0
+}
+
+# goal_project_tick <registry json> — called from goal_sync, every call: the project list refresh; at most every GOAL_PROJECT_SECS: the
+# per-goal sync. Runs in the background (one at a time), so a slow or failing GitHub Projects call can never hold up the supervisor.
 goal_project_tick() {
-  local last now pf="$PIPE/goal-project.pid"
+  local last now pf="$PIPE/goal-project.pid" dosync=0
   [ "${GOAL_PROJECTS:-1}" != 0 ] || return 0
   now=$(date +%s)
   last=$(cat "$PIPE/goal-project.last" 2>/dev/null); case "$last" in ''|*[!0-9]*) last=0 ;; esac
-  [ $((now - last)) -ge "$GOAL_PROJECT_SECS" ] || return 0
+  if [ $((now - last)) -ge "$GOAL_PROJECT_SECS" ]; then dosync=1; fi
   if kill -0 "$(cat "$pf" 2>/dev/null)" 2>/dev/null; then return 0; fi
-  echo "$now" > "$PIPE/goal-project.last" 2>/dev/null || return 0
-  ( goal_project_sync_all "$1" >>"$PIPE/goal-project.log" 2>&1 ) </dev/null >/dev/null 2>&1 &
+  [ "$dosync" = 0 ] || echo "$now" > "$PIPE/goal-project.last" 2>/dev/null
+  ( goal_project_refresh_list; [ "$dosync" = 0 ] || goal_project_sync_all "$1" ) >>"$PIPE/goal-project.log" 2>&1 </dev/null &
   echo $! > "$pf" 2>/dev/null
   disown 2>/dev/null || true
   return 0

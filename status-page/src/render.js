@@ -167,7 +167,7 @@ export const GOAL_LEGEND = [
   ['between cycles', 'Started and not stuck, but no process is running at this moment; the next cycle picks it up.'],
   ['waiting on JP', 'No ticket can move on its own: the open ones wait on a decision or promotion only JP can give (mockup approval, go, or a promotion). Shown from the tickets themselves, even when no delivery lead is running.'],
   ['held', 'Stopped by itself after several cycles without progress; it needs a look before it resumes.'],
-  ['queued', 'Registered but not started yet; the number is its place in the start order (1 = next).'],
+  ['queued', 'Registered but not started yet; the number is its place in the start order (1 = next). A GitHub project with no running goal yet also shows here, linked to the project.'],
   ['delivered', 'Finished: every ticket in the goal has shipped.'],
   ['stopped', 'Cancelled by hand with the stop command; it does not run again unless resumed.'],
 ];

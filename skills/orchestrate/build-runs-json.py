@@ -26,6 +26,7 @@ import re
 import datetime
 import urllib.parse
 import socket
+import time
 
 aliases_raw, runs_jsonl = sys.argv[1], sys.argv[2]
 pipe_dir = sys.argv[3] if len(sys.argv) > 3 else ""
@@ -518,7 +519,70 @@ def build_goals():
             _fill_name(entry)
             out.append(entry)
             n += 1
-    return [e for e in out if not _is_milestone_goal(e)]
+    out = [e for e in out if not _is_milestone_goal(e)]
+    rows = _project_rows(out)
+    return out if rows is None else rows
+
+
+_PROJECT_RANK = {"running": 0, "waiting_jp": 1, "held": 2, "between_cycles": 3, "queued": 4}
+
+
+def _project_rows(out):
+    """The goal list IS the GitHub projects (goal-project.sh keeps $PIPE/goalprojects.json): one row per open project, its title as the
+    name linking to the project, state / host / priority / progress taken from the live goals bound to it (best state wins); a project
+    no goal is bound to yet is `queued` (not started); a project closed within a week is `delivered`. Goals bound to no project are not
+    rows. None when the cache does not exist (this host cannot list projects): the caller keeps the plain goal rows."""
+    try:
+        with open(os.path.join(pipe_dir, "goalprojects.json"), encoding="utf-8") as f:
+            cache = json.load(f)
+    except (OSError, ValueError):
+        return None
+    projects = cache.get("projects") if isinstance(cache, dict) else None
+    if not isinstance(projects, list):
+        return None
+    proj_re = re.compile(r"^https://github\.com/(users|orgs)/[\w.-]+/projects/\d+$")
+    now = time.time()
+    rows, closed_rows = [], []
+    for p in projects:
+        if not isinstance(p, dict) or not isinstance(p.get("number"), int) or isinstance(p.get("number"), bool):
+            continue
+        title, url = p.get("title"), p.get("url")
+        if not (isinstance(title, str) and title.strip()) or not (isinstance(url, str) and proj_re.match(url)):
+            continue
+        entry = {"id": "project-%d" % p["number"], "host": "", "title": re.sub(r"^Goal:\s*", "", title.strip()), "url": url}
+        if p.get("closed"):
+            seen = p.get("closed_seen")
+            try:
+                age = now - datetime.datetime.strptime(seen, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc).timestamp()
+            except (TypeError, ValueError):
+                continue
+            if age <= 7 * 86400:
+                entry["state"] = "delivered"
+                entry["closed_at"] = seen
+                closed_rows.append((age, entry))
+            continue
+        live = [e for e in out if e.get("url") == url and e.get("state") in _PROJECT_RANK]
+        if live:
+            live.sort(key=lambda e: _PROJECT_RANK[e["state"]])
+            best = live[0]
+            entry["state"] = best["state"]
+            entry["host"] = best.get("host", "")
+            for k in ("last_cycle_at", "paused"):
+                if best.get(k):
+                    entry[k] = best[k]
+            prios = [e["priority"] for e in live if isinstance(e.get("priority"), int)]
+            if prios:
+                entry["priority"] = min(prios)
+            for k in ("scope_total", "scope_delivered"):
+                vals = [e[k] for e in live if isinstance(e.get(k), int)]
+                if vals:
+                    entry[k] = sum(vals)
+        else:
+            entry["state"] = "queued"
+        rows.append(entry)
+    closed_rows.sort(key=lambda t: t[0])
+    rows.sort(key=lambda e: (e.get("priority", 10 ** 6), e["id"]))
+    return (rows + [e for _, e in closed_rows[:GOALS_RECENT_MAX]])[:GOALS_MAX]
 
 
 if mode == "goals":
