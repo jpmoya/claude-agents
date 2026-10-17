@@ -90,6 +90,21 @@ for l in "${host_lines[@]:-}"; do
     [ "$(num disk_max)" -ge 85 ] && suggest+=("${l%%|*}: disk $(num disk_max)% -> prune or add a volume")
   }
 done
+# A slot service can show "active" while its runner is dead (wedged host: disk full, Docker hung). Compare the host's
+# active slot services with the runners GitHub lists as online under the host's name; any mismatch is a down host.
+if [ -z "${CI_REPORT_HOST_DIR:-}" ] && [ -n "$HOSTS" ]; then
+  online_names=$(gh api --paginate "orgs/${ORG:-Benjis-Plants}/actions/runners" --jq '.runners[]|select(.status=="online")|.name' 2>/dev/null || true)
+  for h in $HOSTS; do
+    hn=$(ssh -o ConnectTimeout=15 "$h" 'hostname' 2>/dev/null || true)
+    act=$(ssh -o ConnectTimeout=15 "$h" 'systemctl list-units "gha-slot@*" --no-legend --state=active 2>/dev/null | wc -l' 2>/dev/null | tr -d ' ' || true)
+    if [ -z "$hn" ] || [ -z "$act" ]; then suggest+=("$h: host unreachable over ssh -> treat as down"); continue; fi
+    on=$(grep -ci -- "^gha-${hn}-" <<<"$online_names" || true)
+    echo "$h: slot services active=$act, runners online on GitHub=$on"
+    [ "$act" -gt "$on" ] && suggest+=("$h: $act slot service(s) active but only $on runner(s) online on GitHub -> host looks wedged (disk/Docker); free space and restart the slots")
+  done
+  echo
+fi
+
 echo
 
 # ---- 4. plain-language summary ------------------------------------------------------------------
