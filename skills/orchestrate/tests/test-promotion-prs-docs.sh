@@ -18,4 +18,6 @@ echo "$L" | grep -qE 'as found at writing time' && echo "$L" | grep -qE 'pending
 echo "$L" | grep -qE 'never states? (that )?a migration (was )?applied' && echo "$L" | grep -qE 'until its production ledger row exists' && echo "$L" | grep -qE 'applied_at' || { echo "FAIL: CLAUDE.md: no applied/recorded claim until prod ledger row exists; apply reported in a comment quoting applied_at"; fail=1; }
 # negative-safe: "applied to production" only inside a never/until clause
 if echo "$L" | grep -qiE 'applied to production' && ! echo "$L" | grep -qiE '(never|until)[^.]*applied to production|applied to production[^.]*until'; then echo "FAIL: CLAUDE.md: 'applied to production' outside a never/until clause"; fail=1; fi
+# #222 — kill-switched auto-release workflow named in the promotion exception
+echo "$L" | grep -qF 'release/auto-' || { echo "FAIL: CLAUDE.md: promotion exception names release/auto-* PRs"; fail=1; }
 [ $fail -eq 0 ] && echo "PASS"; exit $fail
