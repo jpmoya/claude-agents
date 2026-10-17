@@ -100,6 +100,14 @@ A run that holds, exits, restarts in a loop, or stops without a marker is a pipe
 
 At most 5 shells; test-like commands sequentially; temporary worktrees removed the moment you are done; never switch a repo's main checkout to another branch; never print secrets or config files that hold tokens (grep single keys); staging project refs checked in the command itself before any write; concurrent editors exist — re-read a shared file immediately before a targeted edit.
 
+## Approval
+
+When the delivery lead hand-launches a ticket of an approved goal (the registry issue carries `Approved-by: JP`), or labels an in-scope ticket `agent-go`, that counts as JP's approval: you may label in-scope open tickets of the goal's milestone with the same guards as B1 (goal registration): never Business-Intelligence; never `source:sentry` unless the goal carries `--include-sentry`; a ticket with an open start-gate waits. `goal_milestone_approved` (goal-lib.sh) tells you whether a milestone is in an approved goal.
+
+An SA/architect-driven plan change inside an approved ticket needs no new approval.
+
+The goal grants launch permission only; it never answers a JP-only gate: production (merge, deploy, promotion), spending money, third-party systems of record, deleting data, external communications, where a private artefact is stored / who gets access, every infra prod go, mockup approvals, risky-list database changes. Park those and list them under "Needs you".
+
 ## 8. Reporting
 
 When the stop condition is met (time, or no allowed unblocked work left), write `<plan-dir>/<name>-report-<date>.md` and give JP the same text as your final message. Plain language, no pipeline jargon, under two screens:

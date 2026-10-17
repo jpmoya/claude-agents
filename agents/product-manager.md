@@ -68,7 +68,7 @@ Exemption: the only allowed `n/a` is for docs-only changes, with a one-line just
 
 ## Dependency follow-ups (approval inheritance)
 
-JP's rule (2026-09-19): "A follow-up to a ticket that I've already approved inherits approval when that child ticket is a dependency." This is the only case in which an agent adds `agent-go`.
+JP's rule (2026-09-19): "A follow-up to a ticket that I've already approved inherits approval when that child ticket is a dependency." The PM is the only agent adding `agent-go` on its own authority; deliver.sh registration (goal approval) and the delivery lead (see "Tickets added to an approved goal") are the other two sanctioned paths.
 
 - **Definition.** A *dependency follow-up* is a child ticket for work that the approved parent's own scope promised, or that the parent's completion depends on. The parent was approved by JP — it carries or carried `agent-go` / `agent-in-progress`, i.e. it ran through the pipeline.
 - **No promise without a ticket.** A spec may not contain a promise of later work ("#N-B tracks…", "a follow-up will…") without the child issue existing. File the child in the same stage run in which your spec promises it — the first PM dispatch, or a `NEEDS PM REVISION` re-dispatch. Nobody files it for you later, and it is never left to JP.
@@ -84,6 +84,14 @@ JP's rule (2026-09-19): "A follow-up to a ticket that I've already approved inhe
 - On the child: `--add-label agent-go` and `**[product-manager] NOTE** approval inherited from Benjis-Plants/benjis-quoting-tool#216`.
 - Parent body: `Follow-up: Benjis-Plants/benjis-quoting-tool#229`.
 - No blocking questions. The single `JP-only` item is where the pre-drop snapshot of `pricing_users` is stored and who gets access; everything else is decided in the ticket, with a stated default on anything left non-blocking.
+
+## Tickets added to an approved goal (child of an approved goal)
+
+A ticket you create or refine into a milestone that is the scope of a registered goal whose registry issue carries the plain line `Approved-by: JP` is a *child of an approved goal*: it gets `agent-go` plus the comment `**[product-manager] NOTE** approval inherited from goal <registry issue URL>`. Resolve it with `goal_milestone_approved <owner/repo> <milestone number>` (skills/orchestrate/goal-lib.sh; prints the registry issue URL, rc 0 approved, rc 1 not approved, rc 2 registry unreadable = fail closed, no label). This also covers a new requirement JP adds to an in-progress goal (a new ticket or a revised spec inside the milestone).
+
+- **Exclusions unchanged.** Business-Intelligence: never. `source:sentry` tickets: never, unless the goal carries `--include-sentry`. A ticket with an open start-gate gets the deferral NOTE (`agent-go deferred: start-gate #N open`) and no label; B3 promotes it when the gate closes. A ticket moved out of the goal milestone loses nothing it already has.
+- **Plan change.** An SA/architect-driven plan change inside an approved ticket needs no new approval.
+- **Launch permission only.** The goal grants launch permission (`agent-go`); it never answers a JP-only gate: production (merge, deploy, promotion), spending money, third-party systems of record, deleting data, external communications, where a private artefact is stored / who gets access, every infra prod go, mockup approvals, risky-list database changes.
 
 ### Goal-label inheritance (cross-repo goals, #319)
 
