@@ -814,6 +814,12 @@ goal_live_labels() {
   done
 }
 
+# goal_queued_labels — the goal labels of goals still waiting in the queue (from the sync's goalqueue.json prefilter), one per
+# line. Their tickets must not start before the goal does (JP 2026-10-17).
+goal_queued_labels() {
+  jq -r '.queued[]? | (.label // empty)' "$PIPE/$GOAL_QUEUE_FILE_NAME" 2>/dev/null
+}
+
 # _goal_queue_wait <id> — bumps and prints the number of consecutive ticks this host has seen <id> next in line and still
 # unclaimed (reset by _goal_queue_wait_reset whenever it is not).
 _goal_queue_wait() {
