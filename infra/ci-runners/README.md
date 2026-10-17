@@ -3,8 +3,29 @@
 `setup.sh` turns a fresh VM into N ephemeral GitHub Actions runner slots (rootless Docker, user `gha`,
 cgroup-limited). Design: #205. It is idempotent: a second run prints `no change`.
 
+## Where CI runs (read this first)
+- Workflows pick their runner with `runs-on: ${{ fromJSON(vars.CI_RUNNER_JSON || '"ubuntu-latest"') }}`. The org variable
+  `CI_RUNNER_JSON` is the switch: `"benjis-ci"` sends the job to any of our self-hosted slots, unset sends it to GitHub-hosted.
+  Nothing in the agent pipeline chooses a runner; GitHub hands each job to whichever `benjis-ci` slot is free, on any host.
+- Hosts (each runs `setup.sh`; slots from every host share the one `benjis-ci` label):
+  - Clog VM (`claude@178.156.187.130`, Hetzner, 8 vCPU / 16 GB, also runs the agent pipeline): 3 slots.
+  - CI host `CI-ubuntu-8gb-ash-2` (`root@178.156.204.167`, Hetzner CPX31-class, 4 vCPU / 8 GB, CI only): 2 slots.
+- Today the variable is scoped to the scheduler repo only; the quoting tool stays on GitHub-hosted until its container-mode
+  workflow is on its `main` branch (#205).
+- `setup.sh` is installed from one pinned commit into `/opt/gha-ci` (SHA in `/opt/gha-ci/SHA`); update by re-extracting
+  `infra/ci-runners` from the new commit and re-running `setup.sh --slots N`.
+
+## Metrics (where are the bottlenecks?)
+Every host logs under `/var/log/gha/` (capped: 14 days of samples, last 5000 runner lives; trimmed by the daily hygiene run):
+- `host.csv`: one row per minute from `gha-metrics.timer`: `ts,memavail_mb,swap_used_mb,load1,steal_pct,disk_pct,gha_mem_mb,gha_oom_kills,slots_up,jobs_running`.
+- `jobs.jsonl`: one line per ephemeral runner life from the launcher: `ts, slot, runner, life_seconds, rc` (`rc` 137 = killed, usually out of memory).
+
+`infra/ci-runners/ci-report.sh [--days N] [--runs N]` (run on the Mac) joins the GitHub job data (queue wait and run time per
+job, self-hosted vs hosted) with the host samples and prints the top bottlenecks plus a plain suggestion (add a slot, memory-bound,
+noisy CPU, disk). `HOSTS="claude@178.156.187.130 root@178.156.204.167" infra/ci-runners/ci-report.sh --days 7`.
+
 ## Prerequisites
-Docker (with `dockerd-rootless-setuptool.sh`), `uidmap`, `curl`, systemd.
+Docker (with `dockerd-rootless-setuptool.sh`), `uidmap`, `curl`, `jq`, systemd. On Ubuntu: `apt-get install docker.io rootlesskit slirp4netns uidmap curl jq`, then symlink `docker`, `dockerd`, `containerd`, `runc`, `rootlesskit`, `dockerd-rootless.sh` and `dockerd-rootless-setuptool.sh` into `/usr/local/bin`.
 
 ## Usage
 ```
