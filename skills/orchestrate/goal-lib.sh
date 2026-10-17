@@ -58,6 +58,44 @@ goal_parse() {
   esac
 }
 
+# goal_name_for <spec> -> a human-readable name for a milestone / ticket goal ("scheduler: Native 3.4", "scheduler #1345: Title");
+# empty (exit 1) when GitHub cannot say. The status page shows it instead of the raw spec.
+goal_name_for() {
+  local line repo kind ref short t
+  line=$(goal_parse "$1" 2>/dev/null) || return 1
+  IFS=$'\t' read -r repo kind ref <<< "$line"
+  short="${repo#*/}"
+  case "$kind" in
+    t) t=$(gh api "repos/$repo/issues/$ref" --jq .title 2>/dev/null) || return 1; [ -n "$t" ] || return 1; printf '%s #%s: %s\n' "$short" "$ref" "$t" ;;
+    ms) case "$ref" in
+          *[!0-9]*) t="$ref" ;;
+          *) t=$(gh api "repos/$repo/milestones/$ref" --jq .title 2>/dev/null) || return 1 ;;
+        esac
+        [ -n "$t" ] || return 1; printf '%s: %s\n' "$short" "$t" ;;
+    msall) printf '%s: all milestones\n' "$short" ;;
+    *) return 1 ;;
+  esac
+}
+
+# goal_names_fill <registry json> — $PIPE/goalnames.json {goal id: name} for goals whose block has no title (v1 goals), looked up
+# once and kept; at most 8 lookups per sync. Best effort: the status page falls back to the spec.
+goal_names_fill() {
+  local f="$PIPE/goalnames.json" cur rows id spec name n=0
+  cur=$(cat "$f" 2>/dev/null); [ -n "$cur" ] || cur='{}'
+  printf '%s' "$cur" | jq -e 'type == "object"' >/dev/null 2>&1 || cur='{}'
+  rows=$(printf '%s' "$1" | jq -r --argjson have "$cur" '.[] | select(.spec != "" and ((.block.title? // "") == "") and ($have[.id] == null)) | "\(.id)\t\(.spec)"' 2>/dev/null) || return 0
+  while IFS=$'\t' read -r id spec; do
+    [ -n "$id" ] || continue
+    [ "$n" -lt 8 ] || break
+    n=$((n + 1))
+    name=$(goal_name_for "$spec") || continue
+    cur=$(printf '%s' "$cur" | jq -c --arg id "$id" --arg n "$name" '. + {($id): $n}')
+  done <<< "$rows"
+  [ "$n" -gt 0 ] || return 0
+  mkdir -p "$PIPE" 2>/dev/null
+  printf '%s\n' "$cur" > "$f.tmp" 2>/dev/null && mv "$f.tmp" "$f" || rm -f "$f.tmp"
+}
+
 # _goal_get_all <rest path> -> one JSON array, all pages (no --jq: it runs per page)
 _goal_get_all() {
   local raw
@@ -533,6 +571,7 @@ goal_sync() {  # registry -> local: rebuild missing caches, propagate stop/close
   local reg g id n st host block f cur
   reg=$(_goal_registry_json) || { goal_err "cannot read the goal registry"; return 0; }
   goal_queue_save "$reg"
+  goal_names_fill "$reg"
   while IFS= read -r g; do
     [ -n "$g" ] || continue
     host=$(printf '%s' "$g" | jq -r '(.host // "") | ascii_downcase')

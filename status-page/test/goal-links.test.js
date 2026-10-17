@@ -66,6 +66,12 @@ describe('goal priority', () => {
     expect(text(html).indexOf('Charlie')).toBeLessThan(text(html).indexOf('Bravo'));
     expect(text(html).indexOf('Bravo')).toBeLessThan(text(html).indexOf('Alpha'));
   });
+  it('numbers goals by their place in the start order, from 1', () => {
+    const html = goalsHtml(render(rec([running({ id: 'a', title: 'Alpha', priority: 9 }), running({ id: 'b', title: 'Bravo', priority: 4 })])));
+    const rows = [...html.matchAll(/<tr><td>(\d+)<\/td><td>([\s\S]*?)<\/td>/g)].map((m) => [m[1], text(m[2])]);
+    expect(rows.map((r) => r[0])).toEqual(['1', '2']);
+    expect(rows[0][1]).toContain('Bravo');
+  });
   it('shows registered goals that have not started', () => {
     const html = goalsHtml(render(rec([{ id: 'q', title: 'Not yet', repos: ['org/repo-a'], host: '', state: 'queued', queue_pos: 1, priority: 1 }])));
     expect(text(html)).toContain('Not yet');

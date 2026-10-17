@@ -312,6 +312,20 @@ def _host_key(h):
     return "vm" if mine == "mac" else "mac"
 
 
+def _fill_name(entry):
+    """A goal whose block has no title (a milestone / ticket goal) gets the name the sync looked up (goalnames.json)."""
+    if entry.get("title") or not pipe_dir:
+        return
+    try:
+        with open(os.path.join(pipe_dir, "goalnames.json"), encoding="utf-8") as f:
+            names = json.load(f)
+        name = names.get(entry["id"]) if isinstance(names, dict) else None
+    except (OSError, ValueError):
+        return
+    if isinstance(name, str) and name:
+        entry["title"] = name
+
+
 def _set_priority(entry, d):
     p = d.get("priority")
     if isinstance(p, int) and not isinstance(p, bool) and p > 0:
@@ -376,6 +390,7 @@ def build_goals():
         if _goal_link(d):
             entry["url"] = _goal_link(d)
         _set_priority(entry, d)
+        _fill_name(entry)
         out.append(entry)
         if len(out) >= GOALS_MAX:
             break
@@ -423,6 +438,7 @@ def build_goals():
             if _goal_link(d):
                 entry["url"] = _goal_link(d)
             _set_priority(entry, d)
+            _fill_name(entry)
             out.append(entry)
     # every other registered, not-yet-reported goal that is still open (e.g. pinned to a host that is offline)
     opened = q.get("open") if isinstance(q, dict) else None
@@ -449,6 +465,7 @@ def build_goals():
             if _goal_link(d):
                 entry["url"] = _goal_link(d)
             _set_priority(entry, d)
+            _fill_name(entry)
             out.append(entry)
     # recently closed goals (delivered / stopped, newest first, max 5): the status page lists them compactly
     recent = q.get("recent") if isinstance(q, dict) else None
@@ -481,6 +498,7 @@ def build_goals():
             if _goal_link(d):
                 entry["url"] = _goal_link(d)
             _set_priority(entry, d)
+            _fill_name(entry)
             out.append(entry)
             n += 1
     return out
