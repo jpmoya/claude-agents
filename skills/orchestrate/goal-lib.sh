@@ -798,10 +798,6 @@ goal_queue_save() {
 # goal_is_mac — the laptop (battery rules, VM-first). Same test as power_ok.
 goal_is_mac() { [ "$(uname)" = "Darwin" ]; }
 
-# goal_queued_labels — the goal labels of queued goals (from the sync's cache), one per line: their tickets wait for the
-# goal's turn, so step 5 of the supervisor must not dispatch them one by one.
-goal_queued_labels() { jq -r '.queued[]? | .label | select(. != "")' "$PIPE/$GOAL_QUEUE_FILE_NAME" 2>/dev/null; }
-
 # goal_live_labels — the goal labels (cross-repo goals, #319) whose delivery lead is alive on THIS host, one per line.
 goal_live_labels() {
   local f id h pid l
@@ -839,6 +835,20 @@ _goal_queue_body() {  # <goal json with the new block> -> the registry issue bod
   else
     printf 'Goal: %s\n\n```json\n%s\n```\n' "$(printf '%s' "$g" | jq -r .spec)" "$block"
   fi
+}
+
+# goal_queue_fail <registry issue> <id> <message> — a failed start attempt: the error row (goal_err), no new attempt within the
+# claim window, and one #engineering alert per goal through the existing notify_engineering path (no new webhook). The alert
+# carries the release (checkout SHA) and the goal id only.
+goal_queue_fail() {
+  goal_err "$3"
+  date +%s > "$PIPE/goalq-lost-$2" 2>/dev/null
+  if [ ! -e "$PIPE/goalq-alerted-$2" ]; then
+    : > "$PIPE/goalq-alerted-$2" 2>/dev/null
+    command -v notify_engineering >/dev/null 2>&1 \
+      && notify_engineering "$1" ":warning:" "Goal queue: $3 (goal $2, release $(goal_release))" "$GOAL_REGISTRY_REPO" || true
+  fi
+  return 0
 }
 
 # goal_queue_step — called from goal_step once per tick, after the live goals were ticked.
@@ -881,10 +891,10 @@ goal_queue_step() {
 
   # two-host race: post a claim on the registry issue and go on only if claim_winner names this host
   ts=$(date -u +%FT%TZ)
-  _goal_note "$issue" "**[supervisor] NOTE** claim: $GOAL_THIS_HOST $ts" || { goal_err "cannot post the start claim of $id"; echo "$now" > "$PIPE/goalq-lost-$id"; return 0; }
+  _goal_note "$issue" "**[supervisor] NOTE** claim: $GOAL_THIS_HOST $ts" || { goal_queue_fail "$issue" "$id" "cannot post the start claim of $id"; return 0; }
   sleep "${CLAIM_SETTLE_SECS:-15}"
   winner=$(claim_winner "$_GOAL_LIB_DIR" "$issue" "$GOAL_REGISTRY_REPO") \
-    || { goal_err "cannot read the start claims of $id"; echo "$now" > "$PIPE/goalq-lost-$id"; return 0; }
+    || { goal_queue_fail "$issue" "$id" "cannot read the start claims of $id"; return 0; }
   if [ "$winner" != "$GOAL_THIS_HOST" ]; then
     slog "[goal] $id — lost the start claim to ${winner:-?}"
     echo "$now" > "$PIPE/goalq-lost-$id"
@@ -895,7 +905,7 @@ goal_queue_step() {
   # won: pin the goal here (block host), leave the queue, write the cache and launch
   g2=$(printf '%s' "$g" | jq -c --arg h "$GOAL_THIS_HOST" '.block.host = $h | .host = $h')
   body=$(_goal_queue_body "$g2")
-  _goal_patch_body "$issue" "$body" >/dev/null 2>&1 || { goal_err "cannot pin $id to $GOAL_THIS_HOST on the registry issue"; echo "$now" > "$PIPE/goalq-lost-$id"; return 0; }
+  _goal_patch_body "$issue" "$body" >/dev/null 2>&1 || { goal_queue_fail "$issue" "$id" "cannot pin $id to $GOAL_THIS_HOST on the registry issue"; return 0; }
   _goal_label_del "$issue" goal-queued
   printf '%s' "$g2" | jq -c --argjson n "$issue" '.block + {issue: $n}' > "$PIPE/goal-$id.json" 2>/dev/null \
     || { goal_err "cannot write the cache of $id"; return 0; }
@@ -904,16 +914,16 @@ goal_queue_step() {
     slog "[goal] $id started from the queue on $GOAL_THIS_HOST (issue #$issue) pid=$(cat "$PIPE/goal-$id.pid" 2>/dev/null) mem=$(mem_available_mb)MB"
     GOAL_CAN_LAUNCH=0; GOAL_LIVE=$((GOAL_LIVE + 1))
     _goal_queue_wait_reset
+    rm -f "$PIPE/goalq-alerted-$id" "$PIPE/goalq-lost-$id"
     report_status_async "goal"
   else
-    goal_err "launch of $id from the queue failed"
+    goal_queue_fail "$issue" "$id" "launch of $id from the queue failed"
     # back to the queue: unpin, re-label, drop the cache
     rc=0
     _goal_patch_body "$issue" "$(_goal_queue_body "$g")" >/dev/null 2>&1 || rc=1
     _goal_label_add "$issue" goal-queued || rc=1
     [ "$rc" -eq 0 ] || goal_err "cannot put $id back in the queue"
     rm -f "$PIPE"/goal-"$id".*
-    echo "$now" > "$PIPE/goalq-lost-$id"
   fi
   return 0
 }

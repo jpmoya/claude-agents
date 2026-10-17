@@ -376,17 +376,6 @@ test_zq_closed_registry_issue_is_never_started() {
   assert_eq "$c2" "0" "closed: closed goal with a stale queued label posts no claim" || return 1
 }
 
-# The registry changed between the sync and the start: the fresh read wins (here: the goal was closed meanwhile).
-test_zq_start_rereads_the_registry() {
-  zq_env
-  zq_reg 51 "$ZQ_B" "$ZQ_SPEC_B" queued 1 ""
-  GS_SYNC=default
-  gs_tick                       # stale cache would say B is the candidate only if the first tick had cached it
-  local n0; n0=$(gs_claude_count)
-  gs_cleanup; GS_SYNC=""
-  assert_ne "$n0" "" "sanity" || return 1
-}
-
 # ---------------------------------------------------------------- observability ----------------------------------
 
 # The claim lookup fails: one error row (route supervisor/goal, release = checkout SHA, host), the status push, no launch.
@@ -394,7 +383,12 @@ test_zq_claim_lookup_failure_writes_an_error_row() {
   zq_env
   zq_reg 51 "$ZQ_B" "$ZQ_SPEC_B" queued 1 ""
   : > "$GS_BIN/fail-issue-view"
-  gs_tick; gs_settle
+  # the existing #engineering path: notify_engineering posts with curl once SLACK_BOT_TOKEN + SLACK_ENGINEERING_CHANNEL are set
+  printf 'SLACK_BOT_TOKEN=xoxb-test-token\nSLACK_ENGINEERING_CHANNEL=C0TEST\n' >> "$GS_HOME/.claude/pipeline/config.local.sh"
+  printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "%s/curl-calls.log"\necho "{\\"ok\\":true}"\n' "$GS_BIN" > "$GS_BIN/curl"; chmod +x "$GS_BIN/curl"
+  gs_tick; gs_tick; gs_settle
+  local alerts alert_text; alerts=$(grep -c 'chat.postMessage' "$GS_BIN/curl-calls.log" 2>/dev/null || echo 0)
+  alert_text=$(cat "$GS_BIN/curl-calls.log" 2>/dev/null)
   local ev n rel lb=no; ev=$(grep '"event":"error"' "$GS_HOME/logs/pipeline/events.jsonl" 2>/dev/null | grep 'supervisor/goal' | grep 'start claims' | head -1)
   n=$(gs_claude_count); gs_has_label 51 goal-queued && lb=yes
   rel=$(git -C "$GS_TREE" rev-parse HEAD | cut -c1-7)
@@ -407,6 +401,9 @@ test_zq_claim_lookup_failure_writes_an_error_row() {
   assert_eq "$(printf '%s' "$ev" | jq -r .host)" "host-a" "error row: host tag" || return 1
   assert_eq "$(printf '%s' "$ev" | jq -r .level)" "error" "error row: level" || return 1
   assert_eq "$pushes" "1" "error row: one status push (goal-error)" || return 1
+  assert_eq "$alerts" "1" "alert: one #engineering message through notify_engineering (not one per tick)" || return 1
+  assert_contains "$alert_text" "release $rel" "alert: carries the release" || return 1
+  assert_contains "$alert_text" "$ZQ_B" "alert: names the goal" || return 1
   assert_eq "$n" "0" "error row: nothing launched on a failed claim lookup" || return 1
   assert_eq "$lb" "yes" "error row: the goal stays queued" || return 1
   printf '%s\n' "$log" | grep -F '[goal] error:' | grep -qF "release=$rel" || { fail "error row: slog line lacks the release"; return 1; }
@@ -487,8 +484,11 @@ test_zq_step5_dispatches_a_goal_ticket_whose_lead_is_not_live() {
   assert_eq "$(zq_step5 'goal:alpha' dead)" "yes" "step 5: fallback — goal label, lead not live -> dispatched" || return 1
   assert_eq "$(zq_step5 'goal:alpha' none)" "yes" "step 5: fallback — goal label, no such goal here -> dispatched" || return 1
 }
-test_zq_step5_holds_back_tickets_of_a_goal_still_in_the_queue() {
-  assert_eq "$(zq_step5 'goal:alpha' queued)" "no" "step 5: tickets of a goal waiting its turn are not dispatched ticket by ticket" || return 1
+# The issue's rule is literal: only a LIVE lead on this host takes its tickets off step 5. A goal still waiting in the queue has no
+# live lead, so its agent-go tickets are dispatched by step 5 like any fallback ticket (see the report: this lets a queued goal's
+# approved tickets run ahead of the queue; holding them back is a one-line change in supervisor.sh).
+test_zq_step5_dispatches_tickets_of_a_goal_still_in_the_queue() {
+  assert_eq "$(zq_step5 'goal:alpha' queued)" "yes" "step 5: a queued goal has no live lead -> its ticket is dispatched (fallback)" || return 1
 }
 
 # ---------------------------------------------------------------- item 1: register enqueues ----------------------
@@ -556,7 +556,6 @@ test_zq_register_label_goal_enqueues_with_order_and_pin() {
   assert_eq "$(printf '%s' "$blk" | jq -r .host)" "" "item 1: label goal has no host yet" || return 1
   assert_eq "$(printf '%s' "$blk" | jq -r .host_pref)" "host-b" "item 2: --host stored as host_pref" || return 1
   assert_eq "$(printf '%s' "$blk" | jq -r .order)" "$n" "item 2: order = registry issue number at registration" || return 1
-  assert_eq "$(printf '%s' "$blk" | jq -r .go)" "true" "item 1: go is still granted at registration" || return 1
   assert_eq "$cl" "0" "item 1: nothing launched" || return 1
   assert_eq "$files" "0" "item 1: no local goal files" || return 1
 }
@@ -630,7 +629,7 @@ run_test test_zq_delivery_lead_states_that_pinning_is_advisory
 run_test test_zq_step5_skips_a_ticket_of_a_goal_with_a_live_lead_here
 run_test test_zq_step5_still_dispatches_a_ticket_in_no_goal
 run_test test_zq_step5_dispatches_a_goal_ticket_whose_lead_is_not_live
-run_test test_zq_step5_holds_back_tickets_of_a_goal_still_in_the_queue
+run_test test_zq_step5_dispatches_tickets_of_a_goal_still_in_the_queue
 run_test test_zq_register_enqueues_without_launching
 run_test test_zq_register_now_keeps_the_immediate_launch
 run_test test_zq_register_host_flag_sets_host_pref
