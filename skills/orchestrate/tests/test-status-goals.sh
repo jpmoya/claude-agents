@@ -71,7 +71,7 @@ test_gl_url_milestone_ticket_and_registry_fallbacks() {
   jq -nc '{id:"T",host:"mac",state:"active",spec:"o/r#9",issue:7}' > "$GL_PIPE/goal-T.json"
   jq -nc '{id:"X",host:"mac",state:"active",spec:"weird",issue:8}' > "$GL_PIPE/goal-X.json"
   local out; out=$(gl_mode); gl_cleanup
-  assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id=="M") | .url')" 'https://github.com/o/r/milestone/4?closed=1' "milestone goal -> milestone page" || return 1
+  assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id=="M") | .id')" '' "milestone goal -> not listed (goals only)" || return 1
   assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id=="T") | .url')" 'https://github.com/o/r/issues/9' "ticket goal -> the ticket" || return 1
   assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id=="X") | .url')" 'https://github.com/jpmoya/claude-agents/issues/8' "otherwise the registry issue" || return 1
 }
@@ -92,11 +92,25 @@ test_gl_hostname_maps_to_mac_or_vm() {
 test_gl_name_from_goalnames_file() {
   gl_env
   jq -nc '{id:"N1",host:"mac",state:"active",spec:"o/scheduler#9",issue:9}' > "$GL_PIPE/goal-N1.json"
-  jq -nc '{id:"N2",host:"mac",state:"active",spec:"o/r:milestone:4",issue:10,title:"Own title"}' > "$GL_PIPE/goal-N2.json"
+  jq -nc '{id:"N2",host:"mac",state:"active",spec:"o/r#10",issue:10,title:"Own title"}' > "$GL_PIPE/goal-N2.json"
   jq -nc '{N1:"scheduler #9: Fix the thing", N2:"ignored"}' > "$GL_PIPE/goalnames.json"
   local out; out=$(gl_mode); gl_cleanup
   assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id=="N1") | .title')" "scheduler #9: Fix the thing" "name looked up by the sync is used" || return 1
   assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id=="N2") | .title')" "Own title" "a title in the block wins" || return 1
+}
+
+test_gl_milestone_goals_not_listed() {
+  gl_env
+  gl_goal MS1 active "o/r:milestone:32"; gl_goal MS2 held "o/r:milestones:all"
+  gl_goal o_r-ms-32 active "x"; gl_goal TK active "o/r#5"
+  cat > "$GL_PIPE/goalqueue.json" <<'J'
+{"queued":[{"id":"o_r-ms-9","spec":"o/r:milestone:9"},{"id":"o_r-t-1","spec":"o/r#1"}],
+ "open":[{"id":"o_r-ms-32","st":"active","title":"m"},{"id":"o_r-ms-all","st":"active","spec":"o/r:milestones:all"},
+         {"id":"label-goal__X","st":"active","title":"X"},{"id":"o_r-t-2","st":"active","title":"t"}],
+ "recent":[{"id":"o_r-ms-99","st":"delivered","title":"m"},{"id":"label-goal__Y","st":"stopped","title":"Y"},{"id":"o_r-t-3","st":"delivered","title":"t"}]}
+J
+  local out; out=$(gl_mode); gl_cleanup
+  assert_eq "$(printf '%s' "$out" | jq -r '[.[].id] | sort | join(",")')" "TK,label-goal__X,label-goal__Y,o_r-t-1,o_r-t-2,o_r-t-3" "only label/ticket goals listed" || return 1
 }
 
 test_gl_ac1_reporter_does_not_sanitise_spec() {
@@ -213,6 +227,7 @@ run_test test_gl_url_label_goal_is_a_cross_repo_search
 run_test test_gl_url_milestone_ticket_and_registry_fallbacks
 run_test test_gl_hostname_maps_to_mac_or_vm
 run_test test_gl_name_from_goalnames_file
+run_test test_gl_milestone_goals_not_listed
 run_test test_gl_ac1_reporter_does_not_sanitise_spec
 run_test test_gl_ac1_empty_pipe_has_no_goals_key
 run_test test_gl_only_skipped_goals_has_no_goals_key

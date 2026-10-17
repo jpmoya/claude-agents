@@ -332,6 +332,13 @@ def _set_priority(entry, d):
         entry["priority"] = p
 
 
+def _is_milestone_goal(e):  # milestone-kind goals (spec owner/repo:milestone(s):..., id ...-ms-<n|all>) are not listed
+    sp, i = e.get("spec"), e.get("id", "")
+    if isinstance(sp, str) and re.match(r"^[\w.-]+/[\w.-]+:milestones?:", sp):
+        return True
+    return not i.startswith("label-goal__") and re.search(r"-ms-(\d+|all)$", i) is not None
+
+
 def build_goals():
     if not pipe_dir:
         return []
@@ -506,7 +513,7 @@ def build_goals():
             _fill_name(entry)
             out.append(entry)
             n += 1
-    return out
+    return [e for e in out if not _is_milestone_goal(e)]
 
 
 if mode == "goals":
