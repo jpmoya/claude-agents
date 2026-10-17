@@ -88,6 +88,10 @@ check_overlap() {
   done <<< "$(printf '%s' "$reg" | jq -r 'def f: if . == null or . == "" then "-" else tostring end; .[] | "\(.issue | f)\t\(.id | f)\t\(.spec | f)\t\(.st | f)"')"
 }
 
+clear_stale_goal_state() {  # <id>: drop local stop/held/retry state left by an earlier goal of the same id (#224)
+  rm -f "$PIPE/goal-$1".stopped "$PIPE/goal-$1".held "$PIPE/goal-$1".restarts "$PIPE/goal-$1".np "$PIPE/goal-$1".snap
+}
+
 write_cache() {  # <id> <block json> <issue number>
   mkdir -p "$PIPE"
   printf '%s' "$2" | jq -c --argjson n "$3" '. + {issue: $n}' > "$PIPE/goal-$1.json"
@@ -208,6 +212,7 @@ cmd_register() {
        '{title:$t, body:$b, labels:(["delivery-goal"] + (if $now == 1 then [] else ["goal-queued"] end))}')") \
     || die "could not create the registry issue"
   n=$(printf '%s' "$resp" | jq -r .number)
+  clear_stale_goal_state "$id"   # #224: a re-registered goal keeps its id, so it must not inherit the old goal's stop/held files
   if [ "$now" != 1 ]; then register_project "$resp"; echo "queued $id (issue #$n)"; return 0; fi
   mkdir -p "$LOGDIR/goals"
   write_cache "$id" "$block" "$n"
@@ -290,6 +295,7 @@ cmd_register_label() {
        '{title:$t, body:$b, labels:(["delivery-goal"] + (if $now == 1 then [] else ["goal-queued"] end))}')") \
     || die "could not create the registry issue"
   n=$(printf '%s' "$resp" | jq -r .number)
+  clear_stale_goal_state "$id"   # #224: a re-registered goal keeps its id, so it must not inherit the old goal's stop/held files
   # the label: full title (cut to fit) then the registry issue URL, same colour in every repo
   url="https://github.com/$GOAL_REGISTRY_REPO/issues/$n"
   room=$((100 - ${#url} - 1))
