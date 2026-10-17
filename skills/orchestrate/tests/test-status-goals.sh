@@ -76,6 +76,18 @@ test_gl_url_milestone_ticket_and_registry_fallbacks() {
   assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id=="X") | .url')" 'https://github.com/jpmoya/claude-agents/issues/8' "otherwise the registry issue" || return 1
 }
 
+# The cache holds the hostname (hostname -s), the status page keys mac|vm: a live goal must not be dropped for that.
+test_gl_hostname_maps_to_mac_or_vm() {
+  gl_env
+  local me other; me=$(hostname -s | tr '[:upper:]' '[:lower:]')
+  [ "$(uname)" = Darwin ] && { me_kind=mac; other_kind=vm; } || { me_kind=vm; other_kind=mac; }
+  jq -nc --arg h "$me" '{id:"H1",host:$h,state:"active",spec:"o/r#1",issue:1}' > "$GL_PIPE/goal-H1.json"
+  jq -nc '{id:"H2",host:"some-other-box",state:"active",spec:"o/r#2",issue:2}' > "$GL_PIPE/goal-H2.json"
+  local out; out=$(gl_mode); gl_cleanup
+  assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id=="H1") | .host')" "$me_kind" "this machine's hostname -> its own kind" || return 1
+  assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id=="H2") | .host')" "$other_kind" "any other hostname -> the other kind" || return 1
+}
+
 test_gl_ac1_reporter_does_not_sanitise_spec() {
   gl_fixture
   local out; out=$(gl_print); gl_cleanup
@@ -180,7 +192,7 @@ test_gl_ac5_builder_is_stdlib_only() {
   # Every import in build-runs-json.py is a stdlib module (hand-listed allowlist).
   local bad
   bad=$(grep -E '^\s*(import|from) ' "$RS_GL/build-runs-json.py" | sed -E 's/^\s*(import|from) +([a-zA-Z0-9_]+).*/\2/' \
-    | grep -vxE 'sys|json|subprocess|os|re|datetime|time|glob|signal|errno|pathlib|collections|urllib' || true)
+    | grep -vxE 'sys|json|subprocess|os|re|datetime|time|glob|signal|errno|pathlib|collections|urllib|socket' || true)
   assert_eq "$bad" "" "AC5: only stdlib imports in build-runs-json.py" || return 1
 }
 
@@ -188,6 +200,7 @@ run_test test_gl_ac1_fixture_emits_exactly_four_entries
 run_test test_gl_ac1_states_and_fields
 run_test test_gl_url_label_goal_is_a_cross_repo_search
 run_test test_gl_url_milestone_ticket_and_registry_fallbacks
+run_test test_gl_hostname_maps_to_mac_or_vm
 run_test test_gl_ac1_reporter_does_not_sanitise_spec
 run_test test_gl_ac1_empty_pipe_has_no_goals_key
 run_test test_gl_only_skipped_goals_has_no_goals_key
