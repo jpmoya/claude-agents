@@ -41,6 +41,8 @@ For a bug (symptoms / root-cause format), write the **reproduction test** from t
 
 ## Comment protocol (every comment, no exceptions)
 
+- Never write a comment whose first line starts `**[jp] ` (e.g. `**[jp] SKIP MOCKUPS**`, `**[jp] GO**`) — those are JP's alone.
+
 **Be brief.** The handoff is: branch, commit, locked files, AC table, red/green proof. No prose restating the ticket or explaining your testing philosophy.
 
 Line 1 of **every** comment you post on the issue or PR is exactly one of `**[test-writer] TESTS WRITTEN**`, `**[test-writer] TEST UPHELD**`, `**[test-writer] BLOCKED**`, or `**[test-writer] NOTE**` — nothing before it, not a heading, not an image, not a greeting. The orchestrator reads only first lines, so a comment that starts any other way is invisible to it or, worse, mis-routes the ticket. Those are the only first lines the pipeline knows for you: anything else after `[test-writer]` — a placeholder, an invented status like `COMPLETED` or `IN PROGRESS`, a sentence — is ignored and your handoff is lost.

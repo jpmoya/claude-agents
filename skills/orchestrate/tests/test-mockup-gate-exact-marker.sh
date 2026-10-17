@@ -216,7 +216,7 @@ MG_AC3_FIXTURES
 
 test_mg_ac4_skip_mockups_outcome_deleted() {
   local hits
-  hits=$(grep -ic "skip mockups" "$ORCH_MG" || true)
+  hits=$(grep -i "skip mockups" "$ORCH_MG" | grep -vF '**[jp] SKIP MOCKUPS**' | grep -c . || true)   # #272: JP's exact marker is the only skip path
   assert_eq "$hits" "0" "AC4: grep -i 'skip mockups' agents/orchestrator.md must return nothing" || return 1
   mg_lacks "$ORCH_MG" "don't need mockups" || return 1
 }
@@ -396,7 +396,7 @@ test_mg_ac7_pipeline_markers_byte_identical() {
   # #192: also strip only the `delivery-lead)` case line and the ` delivery-lead` token, on both sides
   # #115: also strip only `|REJECTED` from the product-manager/fullstack-developer lines, on both sides (REJECTED is #115's marker)
   want=$(cd "$ROOT_MG" && git show "$base:hooks/pipeline-markers.sh" | awk '/^(markers_for|marker_re)\(\)/ {p=1} p {print} p && /^}/ {p=0}' | sed -e '/^ *intake) /d' -e '/^ *orchestrator) /d' -e '/^ *delivery-lead) /d' -e 's/ delivery-lead project-manager/ project-manager/' -e 's/ intake orchestrator; do/; do/' -e 's/ intake; do/; do/' -e 's/|REJECTED//' -e 's/REJECTED|//' -e 's/ infra-operator jp / infra-operator /' | mg_vocab_lines)   # #114: strip only intake)/token on both sides; #202: jp left the any-agent loop
-  got=$(cd "$ROOT_MG" && awk '/^(markers_for|marker_re)\(\)/ {p=1} p {print} p && /^}/ {p=0}' hooks/pipeline-markers.sh | sed -e '/^ *intake) /d' -e '/^ *orchestrator) /d' -e '/^ *delivery-lead) /d' -e 's/ delivery-lead project-manager/ project-manager/' -e 's/ intake orchestrator; do/; do/' -e 's/ intake; do/; do/' -e 's/|REJECTED//' -e 's/REJECTED|//' | mg_vocab_lines)   # #114
+  got=$(cd "$ROOT_MG" && awk '/^(markers_for|marker_re)\(\)/ {p=1} p {print} p && /^}/ {p=0}' hooks/pipeline-markers.sh | sed -e 's/|SKIP MOCKUPS//' -e '/^ *intake) /d' -e '/^ *orchestrator) /d' -e '/^ *delivery-lead) /d' -e 's/ delivery-lead project-manager/ project-manager/' -e 's/ intake orchestrator; do/; do/' -e 's/ intake; do/; do/' -e 's/|REJECTED//' -e 's/REJECTED|//' | mg_vocab_lines)   # #114
   [ -n "$want" ] || { fail "AC7: markers_for/marker_re not found at merge-base"; return 1; }
   assert_eq "$got" "$want" "AC7: markers_for/marker_re unchanged" || return 1
 }
@@ -430,7 +430,7 @@ test_mg_202_jp_exact_line_still_matches() {
     assert_eq "$(mg_re_test jp "$l")" true "202: jp-scoped accepts exact line" || return 1
     assert_eq "$(mg_re_test - "$l")" true "202: any-agent accepts exact line" || return 1
   done
-  assert_eq "$( . "$MARKERS_MG"; markers_for jp )" "GO|MOCKUPS APPROVED" "202: jp vocabulary unchanged" || return 1
+  assert_eq "$( . "$MARKERS_MG"; markers_for jp )" "GO|MOCKUPS APPROVED|SKIP MOCKUPS" "202: jp vocabulary unchanged" || return 1
 }
 
 test_mg_202_other_agents_suffix_unchanged() {

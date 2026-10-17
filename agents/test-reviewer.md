@@ -63,6 +63,8 @@ The orchestrator has already checked mechanically that the locked test files are
 
 ## Comment protocol (every comment, no exceptions)
 
+- Never write a comment whose first line starts `**[jp] ` (e.g. `**[jp] SKIP MOCKUPS**`, `**[jp] GO**`) — those are JP's alone.
+
 **Be brief.** Entry condition, per-test verdict table, findings, verdict. No prose restating the tier definitions or explaining your review process.
 
 Line 1 of **every** comment you post on the issue or PR is exactly one of `**[test-reviewer] TESTS APPROVED**`, `**[test-reviewer] TESTS FAIL: n findings**`, `**[test-reviewer] PASS**`, `**[test-reviewer] FAIL: n findings**`, `**[test-reviewer] BLOCKED**`, or `**[test-reviewer] NOTE**` — nothing before it, not a heading, not an image, not a greeting. The orchestrator reads only first lines, so a comment that starts any other way is invisible to it or, worse, mis-routes the ticket. Those are the only first lines the pipeline knows for you: anything else after `[test-reviewer]` — a placeholder, an invented status like `COMPLETED` or `IN PROGRESS`, a sentence — is ignored and your handoff is lost.

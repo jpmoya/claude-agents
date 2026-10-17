@@ -161,6 +161,8 @@ Only include rows that apply to this change. Targets must be SMART — measurabl
 
 ## Comment protocol (every comment, no exceptions)
 
+- Never write a comment whose first line starts `**[jp] ` (e.g. `**[jp] SKIP MOCKUPS**`, `**[jp] GO**`) — those are JP's alone.
+
 **Be brief.** Lead with the decision and the diagram. Cut background the reader already has from the ticket. No restating ACs, no filler sections, no "let me explain" preambles. The design comment is a contract, not a report.
 
 Line 1 of **every** comment you post on the issue or PR is exactly one of `**[solutions-architect] READY FOR ENGINEERING**`, `**[solutions-architect] NEEDS PM REVISION**`, `**[solutions-architect] SPEC RESOLVED**`, `**[solutions-architect] SPLIT**`, `**[solutions-architect] BLOCKED**`, or `**[solutions-architect] NOTE**` — nothing before it, not a heading, not an image, not a greeting. The orchestrator reads only first lines, so a comment that starts any other way is invisible to it or, worse, mis-routes the ticket. Those are the only first lines the pipeline knows for you: anything else after `[solutions-architect]` — a placeholder, an invented status like `COMPLETED` or `IN PROGRESS`, a sentence — is ignored and your handoff is lost.

@@ -114,7 +114,12 @@ has_capacity() {
 }
 
 marker_last_jq() {  # prints (no gh call) the jq expression yielding the newest real routing marker first line, or "none"; NOTEs and off-vocabulary lines are inert
-  printf '[.comments[] | .body | split("\\n")[0] | select(test(%s))] | last // "none"' "$(marker_re | jq -Rs .)"
+  # #272: a `**[jp] SKIP MOCKUPS**` comment counts only from the issue author (top-level .author.login, else the first comment's author — every gh issue view feeding this now fetches `author`;
+  # REST comments carry .user.login, gh CLI .author.login) AND with a second line `JP said: "<non-empty>"`; any other (incl. malformed author) is dropped.
+  local skip='def lg: ((.author | objects | .login) // (.user | objects | .login)); ((lg // (.comments[0] | lg)) // null) as $ia | '
+  skip="$skip"'[.comments[] | select((.body | type) == "string") | select((.body | split("\n")) as $l | if ($l[0] | rtrimstr("\r") | test("^\\*\\*\\[jp\\] SKIP MOCKUPS\\*\\*[[:space:]]*$")) then (($ia != null) and (lg == $ia) and (($l[1] // "" | rtrimstr("\r")) | test("^JP said: \".+\"$"))) else true end)'
+  # a valid skip posted anywhere (even before the gate comment) supersedes a newest MOCKUPS PENDING APPROVAL
+  printf '%s | .body | split("\\n")[0] | select(test(%s))] | if ((last // "") | contains("] MOCKUPS PENDING APPROVAL")) and (map(select(rtrimstr("\\r") | test("^\\\\*\\\\*\\\\[jp\\\\] SKIP MOCKUPS\\\\*\\\\*[[:space:]]*$"))) | length > 0) then . + ["**[jp] SKIP MOCKUPS**"] else . end | last // "none"' "$skip" "$(marker_re | jq -Rs .)"
 }
 
 marker_name_from_line() {  # <first line of a routing-marker comment | none> -> bare marker name ("TESTS APPROVED"), empty for none
@@ -129,13 +134,14 @@ marker_name_from_line() {  # <first line of a routing-marker comment | none> -> 
 write_title_marker() {
   local repo=$1 issue=$2 rmtitle=${3:-0} rk=${4:-} info title line marker
   [ -n "$rk" ] || rk=$(rk_of "$repo" "$issue")
-  info=$(cd "$repo" && gh issue view "$issue" --json title,comments 2>/dev/null </dev/null) || info=""
+  info=$(cd "$repo" && gh issue view "$issue" --json title,author,comments 2>/dev/null </dev/null) || info=""
   title=$(printf '%s' "$info" | jq -r '.title // empty' 2>/dev/null) || title=""
   if [ -n "$title" ]; then printf '%s\n' "$title" > "$PIPE/orch-$rk.title"
   elif [ "$rmtitle" = 1 ]; then rm -f "$PIPE/orch-$rk.title"; fi
   marker=""
   if [ -n "$info" ]; then
-    line=$(printf '%s' "$info" | jq -r "$(marker_last_jq)" 2>/dev/null) || line=""
+    line=$(printf '%s' "$info" | jq -r "$(marker_last_jq)" 2>/dev/null) || {
+      line=""; type slog >/dev/null 2>&1 && slog "[marker-parse] #$issue — jq failed reading markers; release=$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --short HEAD 2>/dev/null || echo unknown) environment=$(hostname -s 2>/dev/null || echo unknown) route=pipeline-lib/write_title_marker"; }
     marker=$(marker_name_from_line "$line")
   fi
   if [ -n "$marker" ]; then printf '%s\n' "$marker" > "$PIPE/orch-$rk.marker"; else rm -f "$PIPE/orch-$rk.marker"; fi

@@ -312,7 +312,7 @@ test_cc_ac22_markers_for_is_byte_identical_to_main() {
   # #192: also strip only the `delivery-lead)` case line and the ` delivery-lead` token, on both sides
   # #114: strip only the `intake)` case line (and ` intake` token) from both sides; fallback cksum below is from main, so already free of it
   # #115: also strip only `|REJECTED` from the product-manager/fullstack-developer lines, on both sides (REJECTED is #115's marker)
-  cur=$(awk '/^markers_for\(\)/{p=1} p{print} p&&/^}/{exit}' "$MARK_CC" | sed -e '/^ *intake) /d' -e '/^ *orchestrator) /d' -e '/^ *delivery-lead) /d' -e 's/ delivery-lead project-manager/ project-manager/' -e 's/ intake orchestrator; do/; do/' -e 's/ intake; do/; do/' -e 's/|REJECTED//' -e 's/REJECTED|//' | cksum)
+  cur=$(awk '/^markers_for\(\)/{p=1} p{print} p&&/^}/{exit}' "$MARK_CC" | sed -e 's/|SKIP MOCKUPS//' -e '/^ *intake) /d' -e '/^ *orchestrator) /d' -e '/^ *delivery-lead) /d' -e 's/ delivery-lead project-manager/ project-manager/' -e 's/ intake orchestrator; do/; do/' -e 's/ intake; do/; do/' -e 's/|REJECTED//' -e 's/REJECTED|//' | cksum)
   ref=$(cd "$ROOT_CC" && git merge-base HEAD origin/main 2>/dev/null)
   if [ -n "$ref" ] && base=$(cd "$ROOT_CC" && git show "$ref:hooks/pipeline-markers.sh" 2>/dev/null) && [ -n "$base" ]; then
     base=$(printf '%s\n' "$base" | awk '/^markers_for\(\)/{p=1} p{print} p&&/^}/{exit}' | sed -e '/^ *intake) /d' -e '/^ *orchestrator) /d' -e '/^ *delivery-lead) /d' -e 's/ delivery-lead project-manager/ project-manager/' -e 's/ intake orchestrator; do/; do/' -e 's/ intake; do/; do/' -e 's/|REJECTED//' -e 's/REJECTED|//' | cksum)

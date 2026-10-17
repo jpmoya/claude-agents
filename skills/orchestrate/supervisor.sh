@@ -66,7 +66,7 @@ latest_marker() {  # the GATE marker: newest real routing marker whose agent is 
   # Both come out of the same single `gh issue view` call (claude-agents#59).
   local repo=$1 issue=$2 last list prog
   last=$(marker_last_jq); list=${last% | last // \"none\"}   # list = the same expression minus its final `last`
-  prog="($last) as \$last | {comments: [.comments[] | select(.body | test(\"^\\\\*\\\\*\\\\[(delivery-lead|project-manager)\\\\] \") | not)]} as \$np  # legacy alias
+  prog="($last) as \$last | {author: .author, comments: [.comments[] | select(.body | test(\"^\\\\*\\\\*\\\\[(delivery-lead|project-manager)\\\\] \") | not)]} as \$np  # legacy alias
     | (\$np | $last) as \$g0 | (\$np | $list) as \$m | (\$m | length) as \$n
     | ((\$g0 | capture(\"^\\\\*\\\\*\\\\[(?<a>[a-z-]+)\\\\]\")? // {a: \"\"}).a) as \$ga
     | ([\$m[0:(\$n - 1)] | reverse[] | select(((capture(\"^\\\\*\\\\*\\\\[(?<a>[a-z-]+)\\\\]\")? // {a: \"\"}).a) != \$ga)] | first // null) as \$p
@@ -76,7 +76,24 @@ latest_marker() {  # the GATE marker: newest real routing marker whose agent is 
          and (\$pair == [\"solutions-architect\", \"ui-ux-designer\"] or \$pair == [\"fullstack-developer\", \"test-reviewer\"] or \$pair == [\"code-reviewer\", \"test-reviewer\"])
        then \$p else \$g0 end) as \$gate
     | if (\$last | test(\"^\\\\*\\\\*\\\\[(delivery-lead|project-manager)\\\\] \") | not) then \$gate else \$gate + \"\\n\" + \$last end  # legacy alias"
-  (cd "$repo" 2>/dev/null && gh issue view "$issue" --json comments --jq "$prog") 2>/dev/null || echo "?"
+  (cd "$repo" 2>/dev/null && gh issue view "$issue" --json comments,author --jq "$prog") 2>/dev/null || echo "?"
+}
+
+# #272: a comment whose first line is the exact skip marker but whose author/body cannot be read is ignored (the gate
+# stays) and logged once per tick. The `JP said:` quote is never logged.
+skip_marker_malformed_log() {
+  local repo=$1 issue=$2 n
+  n=$(cd "$repo" 2>/dev/null && gh issue view "$issue" --json comments --jq '[.comments[] | select((.body | type) == "string" and (.body | split("\n")[0] | rtrimstr("\r") | test("^\\*\\*\\[jp\\] SKIP MOCKUPS\\*\\*[[:space:]]*$")))
+      | select(((.author | type) != "object") or ((.author.login | type) != "string"))] | length' 2>/dev/null) || n=""
+  case "$n" in ''|0|*[!0-9]*) return 0 ;; esac
+  slog "[skip-mockups] #$issue — malformed SKIP MOCKUPS comment ignored ($n), gate stays"
+  if [ -n "${SLACK_WEBHOOK_URL:-}" ]; then   # tags only (release = commit SHA); never the comment text or the JP quote
+    local rel msg
+    rel=$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --short HEAD 2>/dev/null || echo unknown)
+    msg="skip-mockups marker malformed for #$issue: release=$rel environment=$(hostname -s 2>/dev/null || echo unknown) route=supervisor/skip-mockups"
+    curl -s --max-time 10 -X POST -H 'Content-type: application/json' \
+      --data "$(jq -nc --arg t "$msg" '{text:$t}')" "$SLACK_WEBHOOK_URL" >/dev/null 2>&1 || true
+  fi
 }
 
 # blocked_class_of <issue json with .comments> → the `Blocked on: <class>` word of the latest routing marker when it is a
@@ -437,6 +454,7 @@ for f in "$PIPE"/orch-*.pid; do
       # agent-go) after acting. $marker is the gate marker, never a [delivery-lead] (or legacy [project-manager]) one. A run that is already .held is
       # skipped above and stays held — held runs are not polled; the delivery lead relaunches with orchestrate.sh,
       # which clears .held (claude-agents#59).
+      skip_marker_malformed_log "$repo" "$issue"   # #272: at every gate park (not only MOCKUPS PENDING); an extra per-tick fetch would break the one-comments-call-per-tick pin
       # #306: a run auto-retry (step 1b) re-queued keeps its queue entry for the drain; re-holding it here would swallow the retry.
       if [ -f "$QUEUE/orch-$rk.json" ]; then
         slog "[queue-wait] #$issue — gate marker but already queued for relaunch, leaving the queue entry"
@@ -716,7 +734,7 @@ for f in "$PIPE"/orch-*.held; do
   [ "$ar_ec" = "rate_limited monthly_spend" ] && continue
   if [ -s "$PIPE/orch-$rk.alert" ] && ! grep -q 'BLOCKED' "$PIPE/orch-$rk.alert" 2>/dev/null; then continue; fi
 
-  info=$(cd "$repo" && gh issue view "$issue" --json state,body,comments 2>/dev/null </dev/null) \
+  info=$(cd "$repo" && gh issue view "$issue" --json state,body,author,comments 2>/dev/null </dev/null) \
     || { slog "[auto-retry] #$issue — issue read failed"; autoretry_alert "$issue" "issue view"; continue; }
   [ "$(printf '%s' "$info" | jq -r '.state // empty')" = "OPEN" ] || continue
   cls=$(blocked_class_of "$info")
