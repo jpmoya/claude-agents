@@ -14,6 +14,7 @@
 #                                         cross-repo goal (#319): a `goal: <short title>` label in every repo; also
 #                                         deliver.sh "label:<exact label>" --repos a/b,c/d ... to bind an existing label
 #   deliver.sh status [goal|id]           one line per registry goal (open, plus closed within 7 days)
+#   deliver.sh project <goal|id|all>      bind/sync the goal's existing GitHub Project (--create: make one if none binds; Mac / a host whose gh token has the project scope; register and the supervisor sync do it too)
 #   deliver.sh stop <goal|id>             label goal-stopped, close the registry issue, kill the local cycle (idempotent)
 #   deliver.sh resume <goal|id> [--here]  reopen a stopped/held goal; --here re-pins it to this host
 #   deliver.sh priority <goal|id> <n> | --after <goal> | --before <goal>   move a goal in the start order
@@ -207,10 +208,11 @@ cmd_register() {
        '{title:$t, body:$b, labels:(["delivery-goal"] + (if $now == 1 then [] else ["goal-queued"] end))}')") \
     || die "could not create the registry issue"
   n=$(printf '%s' "$resp" | jq -r .number)
-  if [ "$now" != 1 ]; then echo "queued $id (issue #$n)"; return 0; fi
+  if [ "$now" != 1 ]; then register_project "$resp"; echo "queued $id (issue #$n)"; return 0; fi
   mkdir -p "$LOGDIR/goals"
   write_cache "$id" "$block" "$n"
-  if ! goal_launch "$id" "$(printf '%s' "$resp" | _goal_issue_to_goal)"; then
+  register_project "$resp"   # before the lead starts, so its brief names the project it is pinned to
+  if ! goal_launch "$id" "$(_goal_find "$id" 2>/dev/null || printf '%s' "$resp" | _goal_issue_to_goal)"; then
     launch_alert "$id" "$n"
     # don't leave a ghost active goal behind
     if { add_label "$n" goal-stopped && set_state "$n" closed; } 2>/dev/null; then
@@ -220,6 +222,16 @@ cmd_register() {
   fi
   echo "registered $id (issue #$n)"
   echo "log=$PIPE/goal-$id.log"
+}
+
+# register_project <registry issue JSON> — the goal's GitHub Project (goal-project.sh): created, linked, recorded in the registry block,
+# tickets added. Best effort: skipped without the `project` scope, any error is only logged, never fails the register.
+register_project() {
+  local g
+  g=$(printf '%s' "$1" | _goal_issue_to_goal 2>/dev/null) || return 0
+  [ -n "$g" ] || return 0
+  goal_project_sync_one "$g" create >/dev/null 2>&1 || true
+  return 0
 }
 
 # register_rollback <registry issue> <message> — don't leave a ghost active goal behind
@@ -305,19 +317,42 @@ cmd_register_label() {
 
   fi
   if [ "$now" != 1 ]; then
+    register_project "$resp"
     echo "queued $id (issue #$n)"
     echo "label=$label repos=$kept go=$go"
     return 0
   fi
   mkdir -p "$LOGDIR/goals"
   write_cache "$id" "$block" "$n"
-  if ! goal_launch "$id" "$(printf '%s' "$resp" | _goal_issue_to_goal)"; then
+  register_project "$resp"   # before the lead starts, so its brief names the project it is pinned to
+  if ! goal_launch "$id" "$(_goal_find "$id" 2>/dev/null || printf '%s' "$resp" | _goal_issue_to_goal)"; then
     launch_alert "$id" "$n"
     register_rollback "$n" "registered $id but the launch failed"
   fi
   echo "registered $id (issue #$n)"
   echo "label=$label repos=$kept go=$go"
   echo "log=$PIPE/goal-$id.log"
+}
+
+# cmd_project <goal|id|all> [--create] — bind and sync the goal's existing GitHub Project (goal-project.sh): a "Goal: ..." project that is
+# this goal's (never creates one unless --create; register creates); add every ticket; mirror Status; close it for a delivered/stopped goal.
+cmd_project() {
+  local arg="${1:?goal, id or all required}" reg g id n=0 p mode=bind
+  [ "${2:-}" != --create ] || mode=create
+  goal_project_enabled || die "this host's gh token lacks the project scope (run: gh auth refresh -s project) or GOAL_PROJECTS=0; run it on the Mac"
+  reg=$(_goal_registry_json) || die "cannot read the goal registry"
+  if [ "$arg" != all ]; then id=$(_goal_resolve "$arg") || die "goal not found: $arg"; fi
+  while IFS= read -r g; do
+    [ -n "$g" ] || continue
+    [ "$arg" = all ] || [ "$(printf '%s' "$g" | jq -r .id)" = "$id" ] || continue
+    [ "$(printf '%s' "$g" | jq -r .st)" != unreadable ] || continue
+    if [ "$arg" = all ] && [ "$(printf '%s' "$g" | jq -r .state)" != open ]; then continue; fi
+    goal_project_sync_one "$g" "$mode" || echo "warning: project sync of $(printf '%s' "$g" | jq -r .id) had errors (see the log)" >&2
+    p=$(_goal_find "$(printf '%s' "$g" | jq -r .id)" 2>/dev/null | jq -r '.block.project.url? // "no project"')
+    printf '%s  %s\n' "$(printf '%s' "$g" | jq -r .id)" "$p"
+    n=$((n + 1))
+  done <<< "$(printf '%s' "$reg" | jq -c '.[]')"
+  [ "$n" -gt 0 ] || die "goal not found: $arg"
 }
 
 cmd_status() {
@@ -436,8 +471,9 @@ cmd_resume() {
 case "${1:-}" in
   status) shift; cmd_status "$@" ;;
   priority) shift; cmd_priority "$@" ;;
+  project) shift; cmd_project "$@" ;;
   stop) shift; cmd_stop "$@" ;;
   resume) shift; cmd_resume "$@" ;;
-  ''|-h|--help) sed -n '2,20p' "$0"; exit 2 ;;
+  ''|-h|--help) sed -n '2,21p' "$0"; exit 2 ;;
   *) cmd_register_args "$@" ;;
 esac

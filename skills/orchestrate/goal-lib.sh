@@ -264,7 +264,7 @@ _goal_primary_repo() {
 
 # goal_brief <id> [goal-json] -> the delivery-lead launch prompt, generated from live registry + ticket state (never the cache)
 goal_brief() {
-  local id="$1" g spec instr repo checkout rows row ref st n owner_repo cm last
+  local id="$1" g spec instr repo checkout rows row ref st n owner_repo cm last proj
   if [ $# -ge 2 ] && [ -n "$2" ]; then g=$2; else g=$(_goal_find "$id") || { echo "goal $id not found in the registry" >&2; return 1; }; fi
   spec=$(printf '%s' "$g" | jq -r .spec); instr=$(printf '%s' "$g" | jq -r .instructions)
   repo=$(_goal_primary_repo "$g")
@@ -276,6 +276,11 @@ goal_brief() {
   printf 'Checkout: %s\n' "$checkout"
   if [ "$(goal_parse "$spec" | cut -f2)" = label ]; then
     printf 'Cross-repo goal: tickets carry the label "%s" in %s\n' "$(printf '%s' "$g" | jq -r '.block.label')" "$(printf '%s' "$g" | jq -r '(.block.repos // []) | join(", ")')"
+  fi
+  proj=$(printf '%s' "$g" | jq -r '.block.project? // empty | select(type == "object") | "\(.url) (owner \(.owner), number \(.number))"' 2>/dev/null)
+  if [ -n "$proj" ]; then
+    printf 'GitHub Project: %s\n' "$proj"
+    printf '  This goal is bound to that project: read its ticket list from the project items (the project item list of that number and owner), keep their Status current, and never work from or create another project.\n'
   fi
   printf 'Instructions: %s\n' "${instr:-(none)}"
   printf 'Your memory (read first, append to it): %s/goals/%s.md\n' "$LOGDIR" "$id"
@@ -611,6 +616,11 @@ goal_sync() {  # registry -> local: rebuild missing caches, propagate stop/close
             || goal_err "cannot write the cache of $id"
           rm -f "$f.tmp"
         fi
+        # the project recorded in the registry block (goal-project.sh) reaches the cache the status page reads
+        if [ -f "$f" ] && [ "$(jq -c '.project // null' "$f" 2>/dev/null)" != "$(printf '%s' "$block" | jq -c '.project // null')" ]; then
+          jq -c --argjson p "$(printf '%s' "$block" | jq -c '.project // null')" '. + {project: $p}' "$f" > "$f.tmp" 2>/dev/null && mv "$f.tmp" "$f"
+          rm -f "$f.tmp"
+        fi
         if [ "$st" = held ]; then touch "$PIPE/goal-$id.held"; else
           rm -f "$PIPE/goal-$id.held"
           # lift .stopped only when the registry itself confirmed that stop (resumed elsewhere); an unconfirmed local stop
@@ -622,6 +632,7 @@ goal_sync() {  # registry -> local: rebuild missing caches, propagate stop/close
     esac
   done <<< "$(printf '%s' "$reg" | jq -c '.[]')"
   _goal_cleanup_retry "$reg"
+  goal_project_tick "$reg" || true   # per-goal GitHub Project mirror, background and throttled; never blocks or fails the sync
 }
 
 # goal_eval <id> <spec> — live scope + ticket classes into GE_* (current shell); exit 1 on any failed read
@@ -830,12 +841,12 @@ goal_queue_save() {
   v=$(printf '%s' "$1" | jq -c "$_GOAL_QUEUE_JQ"'
     | {at: (now | floor),
        candidate: (.candidate.id // null),
-       recent: (.recent | map({id, issue, spec, title: (.block.title // ""), label: (.block.label // ""), repos: (.block.repos // []), st, closed_at, priority: (.block.priority? // null)})),
+       recent: (.recent | map({id, issue, spec, title: (.block.title // ""), label: (.block.label // ""), repos: (.block.repos // []), st, closed_at, priority: (.block.priority? // null), project_url: (.block.project?.url? // "")})),
        open: (.open | map({id, issue, spec, title: (.block.title // ""), label: (.block.label // ""), repos: (.block.repos // []),
-                           st, host: (.host // ""), priority: (.block.priority? // null), hosts: (.block.hosts? // "both")})),
+                           st, host: (.host // ""), priority: (.block.priority? // null), hosts: (.block.hosts? // "both"), project_url: (.block.project?.url? // "")})),
        queued: (.queued | map({id, issue, spec, title: (.block.title // ""), label: (.block.label // ""), priority: (.block.priority? // null),
                                repos: (.block.repos // []), order: (.block.order? // .issue), host_pref: (.block.host_pref // ""),
-                               hosts: (.block.hosts? // "both")}))}' 2>/dev/null) \
+                               hosts: (.block.hosts? // "both"), project_url: (.block.project?.url? // "")}))}' 2>/dev/null) \
     || { goal_err "cannot compute the goal queue"; return 0; }
   mkdir -p "$PIPE" 2>/dev/null
   printf '%s\n' "$v" > "$f.tmp" 2>/dev/null && mv "$f.tmp" "$f" || { rm -f "$f.tmp"; goal_err "cannot write the goal queue cache"; }
@@ -1066,3 +1077,6 @@ goal_step() {
   for id in $GOAL_OWNED; do goal_tick_one "$id"; done
   goal_queue_step
 }
+
+# per-goal GitHub Project mirror: the only file that calls `gh project` / GraphQL (needs the `project` scope; skipped without it)
+. "$_GOAL_LIB_DIR/goal-project.sh"

@@ -14,7 +14,7 @@ import { STAGE_VOCAB, MARKER_VOCAB, STATE_VOCAB, NEEDS_VOCAB, PARKED_REASON_VOCA
 const ISO_8601_Z = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 const REPO_ALIAS = /^[a-z0-9][a-z0-9-]{0,23}$/;
 // where a goal name leads: a GitHub issue, a milestone page, or a cross-repo issue search
-const GOAL_URL = /^https:\/\/github\.com\/(?:[\w.-]+\/[\w.-]+\/(?:issues\/\d+|milestone\/\d+(?:\?closed=1)?|issues\?q=[\w%.~-]+)|issues\?q=[\w%.~-]+)$/;
+const GOAL_URL = /^https:\/\/github\.com\/(?:[\w.-]+\/[\w.-]+\/(?:issues\/\d+|milestone\/\d+(?:\?closed=1)?|issues\?q=[\w%.~-]+)|issues\?q=[\w%.~-]+|(?:users|orgs)\/[\w.-]+\/projects\/\d+)$/;
 const ISSUE_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/\d+$/;
 const TITLE_WHITESPACE_OR_CONTROL = /[\u0000-\u001f\u007f\s]+/g;
 const MAX_TITLE_CODE_POINTS = 140;
