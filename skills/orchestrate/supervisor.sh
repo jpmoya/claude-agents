@@ -28,6 +28,8 @@ HOST=$(hostname -s)
 mkdir -p "$PIPE" "$QUEUE" "$LOGDIR"
 
 slog() { printf '[%s] %s\n' "$(date -u +%FT%TZ)" "$*" >> "$SLOG"; }
+# #341: every .held creation logs its path and caller (log line only, no behaviour change)
+touch_held() { touch "$1"; slog "[held-touch] path=$1 caller=${FUNCNAME[1]:-main}:${BASH_LINENO[0]}"; }
 
 # Event push: every tick, deliberately outside the single-flight lock below — this is the
 # keep-alive + safety net (design #10 §4.4), so it must still fire even on a tick that skips
@@ -337,7 +339,7 @@ Relaunch manually with \`orchestrate.sh $repo $issue\` after investigating.
 EOC
 )") 2>/dev/null
 
-  touch "$PIPE/orch-$rk.held"
+  touch_held "$PIPE/orch-$rk.held"
   rm -f "$QUEUE/orch-$rk.json"
   printf '%s Pipeline #%s held — needs manual relaunch after investigation (%s)\n' "$(date -u +%FT%TZ)" "$issue" "$owner_repo" > "$PIPE/orch-$rk.alert"
   slog "[escalate] #$issue — too many restarts without progress (queue entry purged)"
@@ -391,6 +393,7 @@ for f in "$PIPE"/orch-*.pid; do
   # orchestrator writes at the cap). Then wait like for a live orchestrator: no count, no requeue, no relaunch.
   # Anything else (silent exit 0, non-zero exit, no stage, unreadable process table) is counted as before.
   live_stage=$(_rs_live_stage "$issue" 0 2>/dev/null)
+  [ -n "$live_stage" ] && slog "[stage-wait] #$issue — live_stage=$live_stage $(_rs_live_stage_proc "$issue" 2>/dev/null)"
   if [ -n "$live_stage" ] && [ "$(cat "$PIPE/orch-$rk.exit" 2>/dev/null)" = 0 ] && cap_exit_row "$repo" "$issue" "$rk"; then
     [ -f "$PIPE/orch-$rk.cap-exit" ] || slog "[stage-wait] #$issue — orchestrator exited at a stage cap, stage $live_stage still running; deferring"
     touch "$PIPE/orch-$rk.cap-exit" 2>/dev/null || true
@@ -439,7 +442,7 @@ for f in "$PIPE"/orch-*.pid; do
         slog "[queue-wait] #$issue — gate marker but already queued for relaunch, leaving the queue entry"
         continue
       fi
-      touch "$PIPE/orch-$rk.held"
+      touch_held "$PIPE/orch-$rk.held"
       rm -f "$QUEUE/orch-$rk.json"
       gate_reason=$(echo "$marker" | sed 's/\*\*\[[^]]*\]\*\* *//; s/^ *//; s/ *$//')
       [ -z "$gate_reason" ] && gate_reason="$marker"
@@ -484,7 +487,7 @@ except Exception: d = {'count': 0, 'total': 0, 'last_marker': '', 'history': []}
 d.setdefault('history', []).append({'ts': ts, 'exit': ex, 'marker': marker, 'transient': False, 'run_secs': 0, 'class': cls, 'limit_kind': lk or None})
 json.dump(d, open(path, 'w'))
 PY
-    touch "$PIPE/orch-$rk.held"
+    touch_held "$PIPE/orch-$rk.held"
     rm -f "$QUEUE/orch-$rk.json"
     printf '%s Pipeline #%s waiting on JP — monthly spend limit reached; relaunch after credits or a model switch\n' "$(date -u +%FT%TZ)" "$issue" > "$PIPE/orch-$rk.alert"
     slog "[held] #$issue — monthly spend limit: needs JP"
@@ -556,7 +559,7 @@ PY
 )
   fi
   if [ -n "$found_stage" ]; then
-    touch "$PIPE/orch-$rk.held"
+    touch_held "$PIPE/orch-$rk.held"
     case "$found_stage" in
       loop-cap) hold_reason="loop-cap stop" ;;
       delegated-decision) hold_reason="refused delegated decision" ;;

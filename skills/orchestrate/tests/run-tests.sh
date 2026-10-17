@@ -15,7 +15,15 @@ if [ "${PIPE:-}" = "/tmp/pipeline" ]; then
   echo "refusing to run: PIPE=/tmp/pipeline (the host's real pipeline state) — unset PIPE and re-run" >&2
   exit 2
 fi
+# #341: config.sh's one-time legacy-state move (PIPE_LEGACY, default /tmp/pipeline) must never see the real dir.
+if [ "${PIPE_LEGACY:-}" = "/tmp/pipeline" ]; then
+  echo "refusing to run: PIPE_LEGACY=/tmp/pipeline (the host's real pipeline state) — unset PIPE_LEGACY and re-run" >&2
+  exit 2
+fi
 unset PIPE QUEUE LOGDIR
+PIPE_LEGACY="$(mktemp -d "${TMPDIR:-/tmp}/orch-test-legacy.XXXXXX")/legacy"   # fresh path that does not exist
+if [ "$PIPE_LEGACY" = "/tmp/pipeline" ]; then echo "refusing to run: PIPE_LEGACY resolves to /tmp/pipeline" >&2; exit 2; fi
+export PIPE_LEGACY
 export PIPELINE_TEST_CLAIM_SETTLE_SECS=0   # #217: hand launches wait the settle window; suites need not pay it (hand-launch test pins its own)
 
 . "$HERE/lib/assert.sh"
