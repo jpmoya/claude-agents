@@ -160,6 +160,14 @@ const GOAL_STATE_LABELS = { waiting_jp: 'waiting on JP', held: 'held', running: 
 const GOAL_STATE_ORDER = ['waiting_jp', 'held', 'running', 'between_cycles', 'queued'];
 const GOAL_CLOSED_LABELS = { delivered: 'delivered', stopped: 'stopped' };
 const GOALS_CLOSED_SHOWN = 5;
+
+/** A goal's name, linked to its registry issue when the report carries a valid GitHub issue URL. */
+function goalName(g, text) {
+  const name = esc(text);
+  return typeof g.url === 'string' && /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/\d+$/.test(g.url)
+    ? `<a href="${esc(g.url)}">${name}</a>`
+    : name;
+}
 const GOAL_COLUMNS = ['Goal', 'Host', 'State', 'Delivered', 'Last cycle'];
 
 /**
@@ -219,7 +227,7 @@ function renderClosedGoals(closed) {
     .slice(0, GOALS_CLOSED_SHOWN);
   const items = recent
     .map((g) => {
-      const name = esc(g.title || g.spec);
+      const name = goalName(g, g.title || g.spec);
       const when = g.closed_at ? `, ${esc(formatCet(g.closed_at))}` : '';
       return `<li>${name} — <span class="badge goal-${esc(g.state)}">${esc(GOAL_CLOSED_LABELS[g.state])}</span>${when}</li>`;
     })
@@ -237,8 +245,8 @@ function renderGoalsSection(hosts) {
   // a cross-repo label goal (#319) shows its title, repos and order; a v1 goal its spec
   const goalCell = (g) =>
     g.title
-      ? `<strong>${esc(g.title)}</strong><br><small>${esc((g.repos || []).join(', '))}${Number.isInteger(g.order) ? ` · order ${esc(String(g.order))}` : ''}</small>`
-      : esc(g.spec);
+      ? `<strong>${goalName(g, g.title)}</strong><br><small>${esc((g.repos || []).join(', '))}${Number.isInteger(g.order) ? ` · order ${esc(String(g.order))}` : ''}</small>`
+      : goalName(g, g.spec);
   const cells = (g) => [
     goalCell(g),
     esc(HOST_LABELS[g.host] || g.host || '–'),

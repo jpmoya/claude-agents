@@ -53,8 +53,8 @@ test_gl_ac1_states_and_fields() {
   local g; g=$(printf '%s' "$out" | jq -c '.goals | map({(.id): .state}) | add')
   assert_eq "$g" '{"A":"running","B":"held","C":"waiting_jp","E":"between_cycles"}' "AC1: state mapping (live pid / .held / waiting_jp / no live pid)" || return 1
   assert_eq "$(printf '%s' "$out" | jq -c '.goals[] | select(.id=="A")')" \
-    '{"id":"A","spec":"Spec of A","host":"mac","state":"running","scope_total":7,"scope_delivered":3,"last_cycle_at":"2026-09-21T10:00:00Z"}' \
-    "AC1: entry has exactly {id,spec,host,state,scope_total,scope_delivered,last_cycle_at}" || return 1
+    '{"id":"A","spec":"Spec of A","host":"mac","state":"running","scope_total":7,"scope_delivered":3,"last_cycle_at":"2026-09-21T10:00:00Z","url":"https://github.com/jpmoya/claude-agents/issues/193"}' \
+    "AC1: entry has exactly {id,spec,host,state,scope_total,scope_delivered,last_cycle_at,url}" || return 1
 }
 
 test_gl_ac1_reporter_does_not_sanitise_spec() {

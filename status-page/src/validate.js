@@ -206,6 +206,7 @@ function sanitiseGoal(raw) {
   if (total !== null) goal.scope_total = total;
   const delivered = clampInt(raw.scope_delivered, 0, 9999);
   if (delivered !== null) goal.scope_delivered = delivered;
+  if (typeof raw.url === 'string' && ISSUE_URL.test(raw.url)) goal.url = raw.url;
   if (isIsoTimestamp(raw.last_cycle_at)) goal.last_cycle_at = raw.last_cycle_at;
   if ((raw.state === 'delivered' || raw.state === 'stopped') && isIsoTimestamp(raw.closed_at)) goal.closed_at = raw.closed_at;
   if (raw.state === 'queued') {
