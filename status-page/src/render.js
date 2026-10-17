@@ -165,7 +165,7 @@ const GOALS_CLOSED_SHOWN = 5;
 export const GOAL_LEGEND = [
   ['running', 'The delivery lead is working on the goal right now (its process is alive).'],
   ['between cycles', 'Started and not stuck, but no process is running at this moment; the next cycle picks it up.'],
-  ['waiting on JP', 'Every open ticket is waiting on a decision or promotion only JP can give; nothing runs until then.'],
+  ['waiting on JP', 'No ticket can move on its own: the open ones wait on a decision or promotion only JP can give (mockup approval, go, or a promotion). Shown from the tickets themselves, even when no delivery lead is running.'],
   ['held', 'Stopped by itself after several cycles without progress; it needs a look before it resumes.'],
   ['queued', 'Registered but not started yet; the number is its place in the start order (1 = next).'],
   ['delivered', 'Finished: every ticket in the goal has shipped.'],

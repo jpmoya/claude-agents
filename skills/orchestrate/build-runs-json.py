@@ -450,6 +450,11 @@ def build_goals():
             if not isinstance(d, dict) or not (isinstance(d.get("id"), str) and d.get("id")) or d["id"] in known:
                 continue
             st = {"held": "held", "waiting_jp": "waiting_jp", "active": "between_cycles"}.get(d.get("st"))
+            # ticket evidence (supervisor goal_queue_derive): nothing progressable and something waits on JP
+            nj = d.get("needs_jp")
+            if st == "between_cycles" and isinstance(nj, dict) and nj.get("active") == 0 \
+                    and isinstance(nj.get("waiting"), int) and nj["waiting"] > 0:
+                st = "waiting_jp"
             if st is None or not (isinstance(d.get("title"), str) and d["title"]) and not (isinstance(d.get("spec"), str) and d["spec"]):
                 continue
             entry = {"id": d["id"]}
