@@ -571,6 +571,7 @@ goal_sync() {  # registry -> local: rebuild missing caches, propagate stop/close
   local reg g id n st host block f cur
   reg=$(_goal_registry_json) || { goal_err "cannot read the goal registry"; return 0; }
   goal_queue_save "$reg"
+  goal_queue_derive "$reg"
   goal_names_fill "$reg"
   while IFS= read -r g; do
     [ -n "$g" ] || continue
@@ -837,6 +838,33 @@ goal_queue_save() {
     || { goal_err "cannot compute the goal queue"; return 0; }
   mkdir -p "$PIPE" 2>/dev/null
   printf '%s\n' "$v" > "$f.tmp" 2>/dev/null && mv "$f.tmp" "$f" || { rm -f "$f.tmp"; goal_err "cannot write the goal queue cache"; }
+  return 0
+}
+
+# goal_queue_derive <registry json> — display only: the registry state of a live goal is "active" until its lead writes
+# goal-waiting-jp, and a goal with no lead running (re-pinned, between cycles) never gets that. For each open "active"
+# goal whose lead is not alive on this host, read the tickets (goal_eval: the same marker rules the lead's own mirror uses)
+# and, when none is progressable and at least one waits on JP, add needs_jp {waiting, active, total} to its row in
+# goalqueue.json; build-runs-json.py shows such a goal as waiting on JP. Needs the supervisor's latest_marker; best effort.
+goal_queue_derive() {
+  local f="$PIPE/$GOAL_QUEUE_FILE_NAME" ids g id spec pid out="{}" tmp
+  declare -F latest_marker >/dev/null 2>&1 || return 0
+  [ -f "$f" ] || return 0
+  ids=$(printf '%s' "$1" | jq -c '.[] | select(.st == "active") | {id, spec}' 2>/dev/null) || return 0
+  while IFS= read -r g; do
+    [ -n "$g" ] || continue
+    id=$(printf '%s' "$g" | jq -r '.id // empty'); spec=$(printf '%s' "$g" | jq -r '.spec // empty')
+    [ -n "$id" ] && [ -n "$spec" ] || continue
+    pid=$(cat "$PIPE/goal-$id.pid" 2>/dev/null)
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then continue; fi   # a live lead mirrors its own state
+    goal_eval "$id" "$spec" || continue
+    [ "$GE_TOTAL" -gt 0 ] && [ "$GE_WAITING" -gt 0 ] || continue
+    out=$(printf '%s' "$out" | jq -c --arg id "$id" --argjson w "$GE_WAITING" --argjson a "$GE_ACTIVE" --argjson t "$GE_TOTAL" \
+      '. + {($id): {waiting: $w, active: $a, total: $t}}') || continue
+  done <<< "$ids"
+  tmp="$f.tmp"
+  jq -c --argjson d "$out" '.open |= map(. + (if $d[.id] then {needs_jp: $d[.id]} else {} end))' "$f" > "$tmp" 2>/dev/null \
+    && mv "$tmp" "$f" || { rm -f "$tmp"; goal_err "cannot record the JP-gate evidence of the open goals"; }
   return 0
 }
 
