@@ -269,6 +269,13 @@ def _pid_alive(path):
     return True
 
 
+def _goal_url(issue):
+    # the goal's registry issue on GitHub; the status page links the goal name to it
+    if isinstance(issue, int) and not isinstance(issue, bool) and issue > 0:
+        return "https://github.com/%s/issues/%d" % (os.environ.get("GOAL_REGISTRY_REPO") or "jpmoya/claude-agents", issue)
+    return None
+
+
 def build_goals():
     if not pipe_dir:
         return []
@@ -324,6 +331,8 @@ def build_goals():
                 entry[k] = v
         if isinstance(d.get("last_cycle_at"), str) and ISO_Z_RE.match(d["last_cycle_at"]):
             entry["last_cycle_at"] = d["last_cycle_at"]
+        if _goal_url(d.get("issue")):
+            entry["url"] = _goal_url(d.get("issue"))
         out.append(entry)
         if len(out) >= GOALS_MAX:
             break
@@ -397,6 +406,8 @@ def build_goals():
                 entry["repos"] = repos
             if isinstance(d.get("closed_at"), str) and ISO_Z_RE.match(d["closed_at"]):
                 entry["closed_at"] = d["closed_at"]
+            if _goal_url(d.get("issue")):
+                entry["url"] = _goal_url(d.get("issue"))
             out.append(entry)
             n += 1
     return out
