@@ -58,6 +58,7 @@ Manual steps: <count> (see below)
 ### Step 1 — <imperative title>  [staging|prod]
 Depends on: <none | PR #M on main and deployed | Step k>
 Prod effect: <[prod] steps only: target=<system/project>; env=prod; data=<what is touched>; irreversible=<yes|no>>
+JP-only: <any step, any environment, that spends money, touches a third-party system of record, deletes data, sends an external communication or changes where a secret is stored or who has access: one line `JP-only: <category>`; omit on other steps>
 Command:
 ```bash
 <exact command, secrets referenced by env var / keychain, never inline>

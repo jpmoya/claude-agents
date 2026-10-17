@@ -21,19 +21,24 @@ You are the infra operator. You execute the approved runbook on the issue exactl
 
 - Go validity helper — run it before every `AWAITING GO` and before the first `[prod]` step; its output decides whether JP's go still stands after the planner revised the plan:
 ```bash
+  . ~/.claude/hooks/pipeline-markers.sh   # jp_approval_re: the one approval-word set (#310)
   go_inherit() {  # go_inherit <N>: rc 0 go valid/inherited, rc 1 fresh go required, rc 2 failed read
-    local n=$1 a c gt gp chain prev="" cur="" i=0 np ne pe ce why="" out rc
-    a=$(gh api "repos/{owner}/{repo}/issues/$n" --jq '.user.login') && [ -n "$a" ] || return 2
-    c=$(gh api "repos/{owner}/{repo}/issues/$n/comments?per_page=100" --paginate | jq -s 'add // []') || return 2
-    gt=$(printf '%s' "$c" | jq -r --arg a "$a" '[.[] | select(.user.login == $a and ((.body | split("\n")[0] | sub("[ \t\r]+$"; "")) as $l | ($l | ascii_downcase) == "go" or $l == "**[jp] GO**")) | .created_at] | max // ""') || return 2
-    gp=$(printf '%s' "$c" | jq -r --arg g "$gt" '[.[] | select((.body | startswith("**[infra-reviewer] PLAN PASS**")) and .created_at < $g) | .created_at] | max // ""') || return 2
-    if [ -z "$gt" ] || [ -z "$gp" ]; then why="fresh go required: no go by the issue author (first line go or **[jp] GO**) after a PLAN PASS"
-    elif [ "$(printf '%s' "$c" | jq --arg g "$gp" '[.[] | select((.body | startswith("**[infra-reviewer] PLAN PASS**")) and .created_at > $g)] | length')" = 0 ]; then why="go inherited: go is dated after the latest PLAN PASS"
+    local n=$1 a c re gt gp chain prev="" cur="" i=0 np ne pe ce jo pj rl pl why="" out rc
+    re=$(jp_approval_re) && [ -n "$re" ] || { printf '[%s] validate repo=%s issue=%s failed read\n' "$(date -u +%FT%TZ)" "$REPO" "$n" >> "${SLOG:-/dev/null}"; return 2; }
+    a=$(gh api "repos/{owner}/{repo}/issues/$n" --jq '.user.login') && [ -n "$a" ] || { printf '[%s] validate repo=%s issue=%s failed read\n' "$(date -u +%FT%TZ)" "$REPO" "$n" >> "${SLOG:-/dev/null}"; return 2; }
+    c=$(gh api "repos/{owner}/{repo}/issues/$n/comments?per_page=100" --paginate | jq -s 'add // []') || { printf '[%s] validate repo=%s issue=%s failed read\n' "$(date -u +%FT%TZ)" "$REPO" "$n" >> "${SLOG:-/dev/null}"; return 2; }
+    gt=$(printf '%s' "$c" | jq -r --arg a "$a" --arg re "$re" '[.[] | select(.user.login == $a and ((.body | (startswith("**[") and (startswith("**[jp]") | not)) | not)) and (.body | test($re))) | .created_at] | max // ""') || { printf '[%s] validate repo=%s issue=%s failed read\n' "$(date -u +%FT%TZ)" "$REPO" "$n" >> "${SLOG:-/dev/null}"; return 2; }
+    gp=$(printf '%s' "$c" | jq -r --arg g "$gt" '[.[] | select((.body | test("\\A\\*\\*\\[(infra-reviewer|solutions-architect)\\] PLAN PASS\\*\\*")) and .created_at < $g) | .created_at] | max // ""') || { printf '[%s] validate repo=%s issue=%s failed read\n' "$(date -u +%FT%TZ)" "$REPO" "$n" >> "${SLOG:-/dev/null}"; return 2; }
+    if [ -z "$gt" ] || [ -z "$gp" ]; then why="fresh go required: no valid go by the issue author after a PLAN PASS"
+    elif [ "$(printf '%s' "$c" | jq --arg g "$gp" '[.[] | select((.body | test("\\A\\*\\*\\[[^\\]]+\\] PLAN PASS\\*\\*")) and .created_at > $g)] | length')" = 0 ]; then why="go inherited: go is dated after the latest PLAN PASS"
     else
-      chain=$(printf '%s' "$c" | jq -c --arg g "$gp" '. as $all | [$all[] | select((.body | startswith("**[infra-reviewer] PLAN PASS**")) and .created_at >= $g) | .created_at] | sort | .[] as $p | [$all[] | select((.body | startswith("**[infra-planner] PLAN READY**")) and .created_at < $p)] | sort_by(.created_at) | last | {created_at, updated_at, body}') || return 2
+      chain=$(printf '%s' "$c" | jq -c --arg g "$gp" '. as $all | [$all[] | select((.body | test("\\A\\*\\*\\[[^\\]]+\\] PLAN PASS\\*\\*")) and .created_at >= $g)] | sort_by(.created_at) | .[] as $p | [$all[] | select((.body | test("\\A\\*\\*\\[[^\\]]+\\] PLAN READY\\*\\*")) and .created_at < $p.created_at)] | sort_by(.created_at) | last | {created_at, updated_at, body, pass: ($p.body | split("\n")[0])}') || { printf '[%s] validate repo=%s issue=%s failed read\n' "$(date -u +%FT%TZ)" "$REPO" "$n" >> "${SLOG:-/dev/null}"; return 2; }
       while IFS= read -r cur; do
         [ -n "$cur" ] || continue
         i=$((i+1))
+        rl=$(printf '%s' "$cur" | jq -r '.body // "" | split("\n")[0]'); pl=$(printf '%s' "$cur" | jq -r '.pass // ""')
+        case $rl in "**[infra-planner] PLAN READY**"*|"**[solutions-architect] PLAN READY**"*) ;; *) why="fresh go required: PLAN READY not authored by an agent"; break ;; esac
+        case $pl in "**[infra-reviewer] PLAN PASS**"*|"**[solutions-architect] PLAN PASS**"*) ;; *) why="fresh go required: PLAN PASS not authored by an agent"; break ;; esac
         [ "$(printf '%s' "$cur" | jq -r '.updated_at > .created_at')" = true ] && { why="fresh go required: plan comment $(printf '%s' "$cur" | jq -r .created_at) was edited after it was posted"; break; }
         ce=$(printf '%s' "$cur" | jq -r .body | awk '/^Prod effect:/ { sub(/^Prod effect:[ \t]*/, ""); gsub(/[ \t\r]+/, " "); sub(/ $/, ""); print }' | sort)
         np=$(printf '%s' "$cur" | jq -r .body | grep -cE '^###.*\[prod\]')
@@ -44,7 +49,12 @@ You are the infra operator. You execute the approved runbook on the issue exactl
           [ -n "$out" ] || out="removed: $(comm -23 <(printf '%s\n' "$pe") <(printf '%s\n' "$ce") | paste -sd'|' - | sed 's/|/ | /g')"
           why="fresh go required: Prod effect changed or added: $out"; break
         fi
-        pe=$ce
+        jo=$(printf '%s' "$cur" | jq -r .body | sed -n 's/^\(JP-only:.*\)$/\1/p' | sed 's/[ \t\r]*$//' | sort -u)
+        if [ "$i" -gt 1 ]; then
+          out=$(comm -13 <(printf '%s\n' "$pj") <(printf '%s\n' "$jo") | sed '/^$/d' | paste -sd'|' - | sed 's/|/ | /g')
+          [ -z "$out" ] || { why="fresh go required: new JP-only step: $out"; break; }
+        fi
+        pe=$ce; pj=$jo
       done <<< "$chain"
       [ -n "$why" ] || why="go inherited: prod effect unchanged"
     fi

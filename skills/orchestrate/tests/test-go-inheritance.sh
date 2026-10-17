@@ -122,6 +122,7 @@ gi_run() {
       esac
     }
     export -f gh 2>/dev/null
+    . "$ROOT_GI/hooks/pipeline-markers.sh"   # jp_approval_re, the shared approval-word set (#310)
     eval "$code"
     out=$(go_inherit 9 2>/dev/null); rc=$?
     printf '%s\nRC=%s\n' "$out" "$rc"
@@ -461,21 +462,23 @@ GI_JP_GO_GOLDEN='jp_go() {  # jp_go <N> <blocked_created_at>: URL + timestamp of
 gi_sha() { if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi | awk '{print $1}'; }
 
 test_gi_ac4_orchestrator_jp_go_untouched() {
+  # #322: the 4179fc6 golden is retired — #310 moved jp_go onto the shared approval-word set; it must use it and keep its read-failure contract.
   local cur
   cur=$(awk '/^jp_go\(\)/{on=1} on{print} on&&/^}$/{exit}' "$ORCH_GI")
-  assert_eq "$cur" "$GI_JP_GO_GOLDEN" "AC4: jp_go body identical to the 4179fc6 golden"
+  assert_contains "$cur" 'jp_approval_re' "AC4: jp_go uses the shared approval-word set" || return 1
+  assert_contains "$cur" '|| return 1' "AC4: jp_go still fails closed on a failed read" || return 1
 }
 
 test_gi_ac4_orchestrator_mockups_approved_lines_untouched() {
-  assert_eq "$(grep -F 'MOCKUPS APPROVED' "$ORCH_GI" | gi_sha)" "166d752f923d730e0c112545b6e5a1c560921f6a95ec1f66703cfc33af44ec26" "AC4: MOCKUPS APPROVED lines"
+  assert_eq "$(grep -F 'MOCKUPS APPROVED' "$ORCH_GI" | gi_sha)" "56e3f19ccec617e96ff9bade30ce6f5fa516eb950aee1ea4050531b32102d4b5" "AC4: MOCKUPS APPROVED lines"
 }
 
 test_gi_ac4_orchestrator_needs_jp_lines_untouched() {
-  assert_eq "$(grep -F 'needs_jp' "$ORCH_GI" | gi_sha)" "7969b9792806a0eaab1a099644c98f519d9adfd472652a745d42098cd971a754" "AC4: needs_jp lines"
+  assert_eq "$(grep -F 'needs_jp' "$ORCH_GI" | gi_sha)" "5f25fc70c73d63bf00054d2a8536dec801c9eeca5d617c4961f9e5e4cedf0f6f" "AC4: needs_jp lines"
 }
 
 test_gi_ac4_orchestrator_delegated_decision_lines_untouched() {
-  assert_eq "$(grep -F 'delegated-decision' "$ORCH_GI" | gi_sha)" "0d835fa1405afcc2f8a6eb7ca9a0b3b60bee0c653a231156e723f7c8e2907f62" "AC4: delegated-decision lines"
+  assert_eq "$(grep -F 'delegated-decision' "$ORCH_GI" | gi_sha)" "824f0a23661a8be56807ec0caecaa32fd73a0180b4adc53cc8e4be93af0c0f94" "AC4: delegated-decision lines"
 }
 
 test_gi_ac4_orchestrator_states_operator_may_proceed_on_inherited_go() {
