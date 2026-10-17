@@ -193,7 +193,10 @@ goal_project_sync_all() {
 # Calls report_status_async when the list changed, so the page picks a new project up at once.
 goal_project_refresh_list() {
   local f="$PIPE/goalprojects.json" o list prev new now
-  goal_project_enabled || return 0
+  if ! goal_project_enabled; then   # no project scope here: an empty list, so this host lists no goal rows of its own (the Mac's report has them)
+    [ "$(jq -c '.projects' "$f" 2>/dev/null)" = "[]" ] || { mkdir -p "$PIPE" 2>/dev/null; echo '{"projects":[]}' > "$f.tmp" 2>/dev/null && mv "$f.tmp" "$f"; }
+    return 0
+  fi
   o=$(_gp_owner); now=$(date -u +%FT%TZ)
   list=$(gh project list --owner "$o" --closed --format json -L 200 2>/dev/null | jq -c '.projects // empty') || list=""
   [ -n "$list" ] || { _gp_log "cannot list the projects of $o"; return 1; }
