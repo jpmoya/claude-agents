@@ -100,7 +100,7 @@ test_sm_malformed_check_fails_closed_and_reports_with_tags_without_quote() {
   mg_tick
   log=$(cat "$MG_HOME/logs/pipeline/supervisor.log" 2>/dev/null)
   calls=$(grep 'hooks.slack.test' "$MG_GH/curl.calls" 2>/dev/null)
-  held=$(if [ -e "$MG_PIPE/orch-74.held" ]; then echo present; else echo absent; fi)
+  held=$(if [ -e "$(rkp "$MG_PIPE/orch-74.held")" ]; then echo present; else echo absent; fi)
   mg_cleanup
   assert_eq "$held" present "malformed skip fails closed (gate stays)" || return 1
   assert_contains "$calls" "route=supervisor/skip-mockups" "Slack alert carries the route tag" || return 1
