@@ -549,7 +549,7 @@ def _project_rows(out):
         title, url = p.get("title"), p.get("url")
         if not (isinstance(title, str) and title.strip()) or not (isinstance(url, str) and proj_re.match(url)):
             continue
-        entry = {"id": "project-%d" % p["number"], "host": "", "title": re.sub(r"^Goal:\s*", "", title.strip()), "url": url}
+        entry = {"id": "project-%d" % p["number"], "host": "", "title": re.sub(r"[<>\"`]", "", re.sub(r"^Goal:\s*", "", title.strip()).replace("&", "and")), "url": url}   # the page refuses < > & \" `
         if p.get("closed"):
             seen = p.get("closed_seen")
             try:
