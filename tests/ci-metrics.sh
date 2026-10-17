@@ -54,7 +54,7 @@ body=""; url=""
 while [ $# -gt 0 ]; do
   case $1 in -d|--data|--data-binary|--data-raw) body=$2; shift;; http*) url=$1;; esac; shift
 done
-printf '%s' "$url" > "$CURL_STATE/$n.url"; printf '%s' "$body" > "$CURL_STATE/$n.body"
+printf '%s\n' "$url" > "$CURL_STATE/$n.url"; printf '%s' "$body" > "$CURL_STATE/$n.body"
 STUB
 chmod +x "$B/gh" "$B/curl"
 export PATH="$B:$PATH" GH_STUB_FIX=$FIX CURL_STATE=$S
@@ -95,6 +95,8 @@ newenv() { # fresh data dir + env
     SLACK_WEBHOOK_URL=$HOOK SENTRY_DSN=$DSN CI_METRICS_RELEASE=abc123def456 CI_METRICS_ENVIRONMENT=ci-metrics-test
   unset GH_STUB_FAIL GH_STUB_FAIL_MATCH GH_STUB_EMPTY
 }
+# evbody <route>: path of the POSTed body whose .tags.route equals <route> (order-independent)
+evbody() { local f; for f in "$S"/*.body; do [ -e "$f" ] && [ "$(jq -r '.tags.route // empty' "$f" 2>/dev/null)" = "$1" ] && { echo "$f"; return; }; done; }
 J() { echo "$D/ci-jobs.jsonl"; }
 
 # ---- AC1: correct fields; skips in-progress / skipped / cancelled-before-start --------
@@ -154,6 +156,20 @@ chk "AC3 single-sample job: median=p90" "[ \"\$(jq -c '.jobs.test|[.run_s_median
 chk "AC3 longest queue wait 400" "[ \"\$(jq '.longest_queue_s' $R 2>/dev/null)\" = 400 ]"
 chk "AC3 jobs per runner" "[ \"\$(jq -c '.jobs_per_runner|[.[\"gha-1\"],.[\"gha-2\"],.[\"GitHub Actions 3\"]]' $R 2>/dev/null)\" = '[5,1,1]' ]"
 chk "AC3 slot busy 10%" "jq -e '(.slot_busy_pct-10)|fabs<0.01' $R >/dev/null 2>&1"
+# slots come from config (SLOTS=2 -> 34560/(2*86400)=20 %), not hardcoded
+printf 'acme/app\nSLOTS=2\n' > "$TMP/repos2"
+CI_METRICS_REPOS=$TMP/repos2 bash "$SCRIPT" rollup >/dev/null 2>&1
+chk "AC3 slot busy follows SLOTS=2 -> 20%" "jq -e '(.slot_busy_pct-20)|fabs<0.01' $R >/dev/null 2>&1"
+# rollup is read-only on the jsonl (no trim/rewrite)
+cp "$(J)" "$TMP/before.jsonl"; bash "$SCRIPT" rollup >/dev/null 2>&1
+chk "AC3 rollup leaves ci-jobs.jsonl untouched" "cmp -s $(J) $TMP/before.jsonl"
+# daily window (86400 s): row 24h+60s old is ignored, row 24h-60s old is counted
+{ row win gha-1 1 100 1; row win gha-1 1 300 2
+  printf '{"ts":"%s","repo":"acme/app","workflow":"CI","job":"win","runner_name":"gha-1","result":"success","queue_s":1,"run_s":99999,"job_id":3}\n' "$(iso -$((86400+60)))"
+  printf '{"ts":"%s","repo":"acme/app","workflow":"CI","job":"win","runner_name":"gha-1","result":"success","queue_s":1,"run_s":500,"job_id":4}\n' "$(iso -$((86400-60)))"; } > "$(J)"
+bash "$SCRIPT" rollup >/dev/null 2>&1
+# in-window run_s: 100,300,500 -> median 300, p90=ceil(2.7)=3rd=500; the 99999 row must not appear
+chk "AC3 rollup ignores rows older than 24h, keeps 24h-60s" "[ \"\$(jq -c '.jobs.win|[.run_s_median,.run_s_p90]' $R 2>/dev/null)\" = '[300,500]' ] && [ \"\$(jq '.jobs_per_runner[\"gha-1\"]' $R 2>/dev/null)\" = 3 ]"
 # even-count median: run 10,20,30,40 -> 25
 { row even gha-1 1 10 1; row even gha-1 1 20 2; row even gha-1 1 30 3; row even gha-1 1 40 4; } > "$(J)"
 bash "$SCRIPT" rollup >/dev/null 2>&1
@@ -162,9 +178,10 @@ chk "AC3 even-count median is mean of middle two (25)" "[ \"\$(jq '.jobs.even.ru
 # ---- AC4: weekly message ---------------------------------------------------
 daily() { # build_q90 busy test_median
   jq -n --argjson q "$1" --argjson b "$2" --argjson m "$3" '{
-    jobs:{build:{run_s_median:100,run_s_p90:150,queue_s_median:10,queue_s_p90:$q},
-          test:{run_s_median:$m,run_s_p90:($m+50),queue_s_median:5,queue_s_p90:20}},
-    longest_queue_s:($q+10),jobs_per_runner:{"gha-1":9,"gha-2":2},slot_busy_pct:$b}' > "$D/ci-daily.json"
+    jobs:{"build-q":{run_s_median:90,run_s_p90:150,queue_s_median:10,queue_s_p90:$q},
+          "slow-test":{run_s_median:$m,run_s_p90:($m+50),queue_s_median:5,queue_s_p90:20},
+          "quick":{run_s_median:50,run_s_p90:60,queue_s_median:1,queue_s_p90:5}},
+    longest_queue_s:($q+10),jobs_per_runner:{"gha-busy":9,"gha-mid":5,"gha-idle":2},slot_busy_pct:$b}' > "$D/ci-daily.json"
 }
 weekly_case() { # name q90 busy median expected
   newenv; daily "$2" "$3" "$4"
@@ -185,7 +202,13 @@ weekly_case "boundary busy =60 (not >)" 300 60 100 "no change"
 weekly_case "boundary median =600 (not >)" 30 20 600 "no change"
 weekly_case "both rules fire: add slot wins" 300 75 700 "add slot"
 newenv; daily 300 75 700; bash "$SCRIPT" weekly >/dev/null 2>&1; msg=$(jq -r '.text' "$S/1.body" 2>/dev/null)
-chk "AC4 message names worst-queue job (build), longest-median job (test), busiest runner (gha-1)" "[[ \"\$msg\" == *build* && \"\$msg\" == *test* && \"\$msg\" == *gha-1* ]]"
+# top-3 bottlenecks are three distinct items: worst p90 queue = build-q (300), longest median = slow-test (700),
+# lowest-throughput runner = gha-idle (2 jobs, vs gha-mid 5, gha-busy 9).
+ml() { printf '%s\n' "$msg" | grep -F -e "$1" | grep -vF -e "$2" | grep -q .; }
+chk "AC4 worst-queue job build-q is named on a line without slow-test" "ml build-q slow-test"
+chk "AC4 longest-median job slow-test is named on a line without build-q" "ml slow-test build-q"
+chk "AC4 lowest-throughput runner gha-idle is named on a line without the other runners" "printf '%s\n' \"\$msg\" | grep -F gha-idle | grep -vF -e gha-busy -e gha-mid | grep -q ."
+chk "AC4 busiest runner gha-busy is never named alone (not picked as bottleneck)" "! { printf '%s\n' \"\$msg\" | grep -F gha-busy | grep -vF gha-idle | grep -q .; }"
 chk "AC6 message has no token/webhook" "[ -n \"\$msg\" ] && [[ \"\$msg\" != *$TOKEN* && \"\$msg\" != *SECRETHOOK* ]]"
 
 # ---- AC6/AC8: failures -----------------------------------------------------
@@ -221,11 +244,13 @@ chk "AC6 existing jsonl untouched on failure" "grep -q 403 $TMP/err && [ \"\$(ca
 newenv; rm -f "$D/ci-jobs.jsonl"
 bash "$SCRIPT" rollup >/dev/null 2>"$TMP/err"; rc=$?
 chk "AC8 rollup with no data: non-zero, no rollup file" "[ $rc -ne 0 ] && [ $rc -ne 99 ] && [ ! -e $D/ci-daily.json ]"
-chk "AC8 rollup Sentry route ci-metrics/rollup" "[ \"\$(jq -r '.tags.route' $S/1.body 2>/dev/null)\" = ci-metrics/rollup ]"
+rb=$(evbody ci-metrics/rollup)
+chk "AC8 rollup Sentry event: route, release SHA, environment" "[ -n '$rb' ] && [ \"\$(jq -r '[.release,.environment]|join(\"|\")' '$rb')\" = 'abc123def456|ci-metrics-test' ]"
 newenv; rm -f "$D/ci-daily.json"
 bash "$SCRIPT" weekly >/dev/null 2>&1; rc=$?
 chk "AC8 weekly with no rollup: non-zero" "[ $rc -ne 0 ] && [ $rc -ne 99 ]"
-chk "AC8 weekly Sentry route ci-metrics/weekly" "grep -l 'ci-metrics/weekly' $S/*.body >/dev/null 2>&1"
+wb=$(evbody ci-metrics/weekly)
+chk "AC8 weekly Sentry event: route, release SHA, environment" "[ -n '$wb' ] && [ \"\$(jq -r '[.release,.environment]|join(\"|\")' '$wb')\" = 'abc123def456|ci-metrics-test' ]"
 
 # ---- AC6: secrets never land in data files on success ----------------------
 newenv; bash "$SCRIPT" collect >/dev/null 2>&1; bash "$SCRIPT" rollup >/dev/null 2>&1
@@ -241,6 +266,10 @@ chk "AC7 daily schedule (cron with * * * day fields)" "[ -f $W ] && grep -Eq 'cr
 chk "AC7 runs on ubuntu-latest, never self-hosted" "[ -f $W ] && grep -q 'runs-on: *ubuntu-latest' $W && ! grep -q self-hosted $W"
 chk "AC7 runs scripts/ci-metrics.sh" "[ -f $W ] && grep -q 'scripts/ci-metrics.sh' $W"
 chk "AC7 cross-repo token comes from a secret" "[ -f $W ] && grep -Eq 'GH_TOKEN: *\\$\\{\\{ *secrets\\.' $W"
+
+chk "AC7 weekly summary gated to Mondays" "[ -f $W ] && grep -n weekly $W | grep -q . && grep -Eq '%u|%a|%A|%w|getDay|MON|Mon' $W"
+chk "AC7 rollup step runs after collect step" "[ -f $W ] && c=\$(grep -n 'ci-metrics.sh collect' $W | head -1 | cut -d: -f1) && r=\$(grep -n 'ci-metrics.sh rollup' $W | head -1 | cut -d: -f1) && [ -n \"\$c\" ] && [ -n \"\$r\" ] && [ \"\$c\" -lt \"\$r\" ]"
+chk "AC7 data stored on orphan branch ci-metrics and pushed" "[ -f $W ] && grep -q -e '--orphan' $W && grep -q 'git push' $W && grep -q 'ci-metrics' $W"
 
 # AC9: pre-existing tests stay green (run separately; not re-baselined here).
 [ $fails -eq 0 ]
