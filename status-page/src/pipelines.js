@@ -96,3 +96,43 @@ export function findDrift(data, sourceText) {
   }
   return [...drift];
 }
+
+/**
+ * Stage inputs for the Pipelines tab diagram (simple UML-style boxes: stage name on top, what it takes in below).
+ * Shape: Array<{ id, title, stages: Array<{ name, inputs: string[] }> }>. Each stage box points to the next.
+ * Stage names must be agents (agents/<name>.md); inputs are the comment markers / fields the stage reads
+ * (see "Readiness checks" in agents/orchestrator.md). Keep in step with PIPELINES above.
+ */
+export const STAGE_INPUTS = [
+  {
+    id: 'code',
+    title: 'Code ticket: what each stage takes in',
+    stages: [
+      { name: 'product-manager', inputs: ['JP request or idea', 'GitHub issue (title, body)'] },
+      { name: 'ux-flow-designer', inputs: ['PM comment: UX flow: yes, UI change: yes', 'Why, Acceptance Criteria, Files'] },
+      { name: 'ui-ux-designer', inputs: ['User flow (or PM spec)', 'Repo design system', 'Waits for **[jp] MOCKUPS APPROVED**'] },
+      { name: 'solutions-architect', inputs: ['PM comment: READY FOR ARCHITECTURE', 'Ticket body'] },
+      { name: 'test-writer', inputs: ['Acceptance Criteria', 'Approved mockups (UI tickets)', 'Architecture design (if any)'] },
+      { name: 'test-reviewer', inputs: ['TESTS WRITTEN: Branch, Commit', 'Locked test files', 'Acceptance Criteria to test table'] },
+      { name: 'fullstack-developer', inputs: ['TESTS WRITTEN and lock file', 'Fast lane: PM spec only'] },
+      { name: 'code-reviewer', inputs: ['IMPLEMENTED: PR, Added test files'] },
+      { name: 'deployer', inputs: ['code-reviewer PASS', 'test-reviewer PASS', 'TESTS APPROVED for the latest commit'] },
+    ],
+  },
+  {
+    id: 'infra',
+    title: 'Infra track: what each stage takes in',
+    stages: [
+      { name: 'infra-planner', inputs: ['Issue labelled infra', 'Read-only look at current state'] },
+      { name: 'infra-reviewer', inputs: ['Runbook: command, expected, verify, rollback, environment per step'] },
+      { name: 'infra-operator', inputs: ['PLAN PASS', 'JP go comment for production steps'] },
+    ],
+  },
+  {
+    id: 'delivery',
+    title: 'Goals: what the delivery lead takes in',
+    stages: [
+      { name: 'delivery-lead', inputs: ['Goal: owner/repo:milestone, milestones:all or a single issue', 'Ticket markers and PR state'] },
+    ],
+  },
+];
