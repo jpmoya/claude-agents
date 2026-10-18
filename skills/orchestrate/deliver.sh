@@ -162,7 +162,7 @@ reg_priority() {
 }
 
 cmd_register_args() {
-  local spec="" repos="" title="" req="" sentry=0 mockups=review instr="" now=0 pin="" a hosts=both
+  local spec="" repos="" title="" req="" sentry=0 mockups=review instr="" now=0 pin="" a hosts=both approve_all=0
   case "${1:-}" in --*|'') ;; *) spec="$1"; shift ;; esac
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -172,6 +172,7 @@ cmd_register_args() {
       --mockups) mockups="${2:-}"; case "$mockups" in review|skip) ;; *) die "--mockups takes review or skip" ;; esac; shift 2 ;;
       --include-sentry) sentry=1; shift ;;
       --now) now=1; shift ;;
+      --approve-all) approve_all=1; shift ;;
       --priority) PRIORITY="${2:-}"; case "$PRIORITY" in ''|*[!0-9]*|0) die "--priority needs a whole number, 1 or more (1 starts first)" ;; esac; shift 2 ;;
       --after|--before) PLACE_MODE="${1#--}"; PLACE_REF="${2:-}"; [ -n "$PLACE_REF" ] || die "$1 needs a goal (spec or id)"; shift 2 ;;
       --hosts) hosts="${2:-}"; case "$hosts" in both|mac|vm) ;; *) die "--hosts takes both, mac or vm" ;; esac; shift 2 ;;
@@ -180,20 +181,21 @@ cmd_register_args() {
     esac
   done
   PRIORITY=$(reg_priority) || exit 1; PLACE_MODE=""   # resolved once: the others are renumbered now
+  case "$spec" in ''|label:*) [ "$approve_all" = 0 ] || die "--approve-all only applies to msall goals" ;; esac
   [ "$hosts" = both ] || case "$spec" in ''|label:*) ;; *) die "--hosts only applies to label goals" ;; esac
   case "$spec" in
     ''|label:*) cmd_register_label "$spec" "$repos" "$title" "$req" "$sentry" "$mockups" "$instr" "$now" "$pin" "$hosts" ;;
     *)
-      if [ -n "$repos$title$req" ] || [ "$sentry" = 1 ]; then die "--repos/--title/--requirements/--include-sentry only apply to label goals"; fi
-      cmd_register "$spec" "$instr" "$now" "$pin" ;;
+      if [ -n "$repos$title$req" ]; then die "--repos/--title/--requirements only apply to label goals"; fi
+      cmd_register "$spec" "$instr" "$now" "$pin" "$sentry" "$approve_all" ;;
   esac
 }
 
 cmd_register() {
-  local spec="$1" instr="$2" now="${3:-0}" pin="${4:-}"
-  local line repo id checkout rows block body resp n host=""
+  local spec="$1" instr="$2" now="${3:-0}" pin="${4:-}" sentry="${5:-0}" approve_all="${6:-0}"
+  local line repo id checkout rows block body resp n host="" kind go=false granted='[]' granted_at=""
   line=$(goal_parse "$spec") || exit 1
-  repo=$(printf '%s' "$line" | cut -f1)
+  repo=$(printf '%s' "$line" | cut -f1); kind=$(printf '%s' "$line" | cut -f2)
   checkout=$(_goal_checkout "$repo") || die "$repo is not in DISPATCH_REPOS; goals only run on dispatched repos"
   [ -e "$checkout/.git" ] || die "checkout $checkout for $repo is not a git checkout"
   id=$(goal_id "$spec") || exit 1
@@ -204,6 +206,15 @@ cmd_register() {
   block=$(jq -nc --arg id "$id" --arg spec "$spec" --arg host "$host" --arg pin "$pin" --arg created "$(now_utc)" --arg ins "$instr" \
     --argjson prio "$PRIORITY" --arg name "$(goal_name_for "$spec" 2>/dev/null)" \
     '{v:1,id:$id,spec:$spec,host:$host,host_pref:$pin,priority:$prio,created:$created,instructions:$ins} + (if $name != "" then {title:$name} else {} end)')
+  # #410: registering the goal is JP's go. It is recorded in the block (go/granted/granted_at), which every body rewrite keeps.
+  if [ "$kind" = msall ] && [ "$approve_all" != 1 ]; then
+    echo "no go granted: $spec covers every open milestone; re-register with --approve-all to give agent-go to all of them" >&2
+  else
+    go=true; granted_at=$(date -u +%F)
+    block=$(printf '%s' "$block" | jq -c --argjson s "$([ "$sentry" = 1 ] && echo true || echo false)" '. + {include_sentry:$s}')
+  fi
+  # go:true is in the create body, so a failed grant or launch can never leave agent-go labels without a live goal
+  [ "$go" = true ] && block=$(printf '%s' "$block" | jq -c --arg d "$granted_at" '. + {go:true, granted:[], granted_at:$d}')
   body=$(body_for "$spec" "$block")
   ensure_label delivery-goal
   [ "$now" = 1 ] || ensure_label goal-queued
@@ -212,6 +223,15 @@ cmd_register() {
        '{title:$t, body:$b, labels:(["delivery-goal"] + (if $now == 1 then [] else ["goal-queued"] end))}')") \
     || die "could not create the registry issue"
   n=$(printf '%s' "$resp" | jq -r .number)
+  if [ "$go" = true ]; then
+    granted=$(_goal_grant_scope "$spec" "$id" "$sentry" '[]') \
+      || goal_err "cannot grant go on every in-scope ticket of $id"
+    block=$(printf '%s' "$block" | jq -c --argjson g "${granted:-[]}" '.granted = $g')
+    # non-fatal: the goal sync reconciles a missed record (already-labelled tickets are recorded without re-adding)
+    api_json PATCH "repos/$GOAL_REGISTRY_REPO/issues/$n" \
+      "$(jq -nc --arg b "$(body_for "$spec" "$block")" '{body:$b}')" >/dev/null \
+      || goal_err "could not record the granted tickets of $id; the next goal sync reconciles them"
+  fi
   clear_stale_goal_state "$id"   # #224: a re-registered goal keeps its id, so it must not inherit the old goal's stop/held files
   if [ "$now" != 1 ]; then register_project "$resp"; echo "queued $id (issue #$n)"; return 0; fi
   mkdir -p "$LOGDIR/goals"
@@ -220,6 +240,11 @@ cmd_register() {
   if ! goal_launch "$id" "$(_goal_find "$id" 2>/dev/null || printf '%s' "$resp" | _goal_issue_to_goal)"; then
     launch_alert "$id" "$n"
     # don't leave a ghost active goal behind
+    if [ "$go" = true ]; then   # take the dispatchable labels back with the goal
+      local gr; for gr in $(printf '%s' "$granted" | jq -r '.[]' 2>/dev/null); do
+        _goal_issue_label_del "${gr%%#*}" "${gr##*#}" agent-go 2>/dev/null || true
+      done
+    fi
     if { add_label "$n" goal-stopped && set_state "$n" closed; } 2>/dev/null; then
       die "registered $id (issue #$n) but the launch failed; closed it as stopped"
     fi

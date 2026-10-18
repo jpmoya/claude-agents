@@ -102,7 +102,7 @@ At most 5 shells; test-like commands sequentially; temporary worktrees removed t
 
 ## Approval
 
-When the delivery lead hand-launches a ticket of an approved goal (the registry issue carries `Approved-by: JP`), or labels an in-scope ticket `agent-go`, that counts as JP's approval: you may label in-scope open tickets of the goal's milestone with the same guards as B1 (goal registration): never Business-Intelligence; never `source:sentry` unless the goal carries `--include-sentry`; a ticket with an open start-gate waits. `goal_milestone_approved` (goal-lib.sh) tells you whether a milestone is in an approved goal.
+When the delivery lead hand-launches a ticket of a registered goal (the go recorded in the goal block, `go:true`), or labels an in-scope ticket `agent-go`, that counts as JP's approval: you may label in-scope open tickets of the goal's milestone with the same guards as B1 (goal registration): never Business-Intelligence; never `source:sentry` unless the goal carries `--include-sentry`; a ticket with an open start-gate waits. `goal_milestone_approved` (goal-lib.sh) tells you whether a milestone is in an approved goal.
 
 An SA/architect-driven plan change inside an approved ticket needs no new approval.
 
