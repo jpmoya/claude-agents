@@ -30,6 +30,7 @@ goal_project_enabled() {
 # _gp_bound — stdin: goal json; prints its recorded project {owner,number,url} unless that project no longer exists (a deleted project is
 # an unbound goal again, so it re-binds instead of mirroring into nothing). The existence check needs _GP_NUMS (set by goal_project_sync_all).
 _gp_bound() {
+  [ -n "${_GP_NUMS+x}" ] || _GP_NUMS=$(_gp_list | jq -r '[.[].number] | join(" ")' 2>/dev/null) || _GP_NUMS=""
   jq -c --arg nums "${_GP_NUMS:-}" '.block.project? // empty | select(type == "object" and (.number | type) == "number")
     | . as $p | select($nums == "" or ((" " + $nums + " ") | contains(" " + ($p.number | tostring) + " ")))'
 }
@@ -87,22 +88,39 @@ _gp_items() {
     content: {repository: .content.repository.nameWithOwner, number: .content.number}}]}' <<< "$nodes"
 }
 
+# _gp_canon — stdin: lines starting with owner/repo#N; prints them with each repo renamed to its current full name (the project items carry
+# the current name; the registry may still hold the old one after a rename). One REST call per distinct repo.
+_gp_canon() {
+  local in r cr
+  in=$(cat)
+  for r in $(printf '%s\n' "$in" | sed -E 's/#.*//' | sort -u); do
+    cr=$(gh api "repos/$r" --jq .full_name 2>/dev/null) || cr=""
+    [ -z "$cr" ] || [ "$cr" = "$r" ] || in=$(printf '%s\n' "$in" | sed "s|^$r#|$cr#|")
+  done
+  printf '%s\n' "$in"
+}
+
 # _gp_find <title> <scope refs> <full 0|1> -> number of an existing project that is this goal's: the same title, or (full) the
-# smallest "Goal: " project that holds every ticket of the goal (several goals may share one project).
+# "Goal: " project that holds at least half of the goal's tickets (several goals may share one project).
 _gp_find() {
-  local title="$1" refs="$2" full="$3" list n c items best="" bestc=0 cnt
+  local title="$1" refs="$2" full="$3" list n c items best="" bestc=0 bestcnt=0 cnt
   list=$(_gp_list) || return 0
   n=$(printf '%s' "$list" | jq -r --arg t "$title" '[.[] | select((.title | ascii_downcase) == ($t | ascii_downcase)) | .number] | first // empty')
   if [ -n "$n" ]; then printf '%s\n' "$n"; return 0; fi
   [ "$full" = 1 ] && [ -n "$refs" ] || return 0
+  # a "Goal: " project that holds at least half of the goal's tickets, the one with the most of them, the smallest on a tie. Refs are
+  # canonicalised first (a renamed repo answers with its current full name), because the project items carry the current name.
+  local want hits
+  refs=$(printf '%s\n' "$refs" | _gp_canon)
+  want=$(printf '%s\n' "$refs" | sort -u | grep -c .)
   for c in $(printf '%s' "$list" | jq -r '.[] | select(.title | startswith("Goal: ")) | .number'); do
     items=$(_gp_items "$(_gp_owner)" "$c" 2>/dev/null \
       | jq -r '.items[] | select(.content.repository != null) | "\(.content.repository)#\(.content.number)"') || continue
     [ -n "$items" ] || continue
-    if [ -z "$(printf '%s\n' "$refs" | grep -vxFf <(printf '%s\n' "$items") || true)" ]; then
-      cnt=$(printf '%s\n' "$items" | grep -c .)
-      if [ -z "$best" ] || [ "$cnt" -lt "$bestc" ]; then best=$c; bestc=$cnt; fi
-    fi
+    hits=$(printf '%s\n' "$refs" | sort -u | grep -cxFf <(printf '%s\n' "$items") || true)
+    [ "$hits" -ge 1 ] && [ $((hits * 2)) -ge "$want" ] || continue
+    cnt=$(printf '%s\n' "$items" | grep -c .)
+    if [ -z "$best" ] || [ "$hits" -gt "$bestc" ] || { [ "$hits" -eq "$bestc" ] && [ "$cnt" -lt "$bestcnt" ]; }; then best=$c; bestc=$hits; bestcnt=$cnt; fi
   done
   [ -z "$best" ] || printf '%s\n' "$best"
 }
@@ -178,6 +196,7 @@ goal_project_sync_one() {
   n=$(printf '%s' "$p" | jq -r '.number')
   repos=$(printf '%s' "$g" | jq -r '(.block.repos // []) | join(",")')
   rows=$(_goal_scope_rows "$spec" "$id" "$repos" 2>/dev/null) || { _gp_log "cannot read the scope of $id"; return 1; }
+  rows=$(printf '%s\n' "$rows" | _gp_canon)
   items=$(_gp_items "$o" "$n") || { _gp_log "cannot list project $n"; return 1; }
   while IFS=$'\t' read -r ref s; do
     [ -n "$ref" ] || continue
