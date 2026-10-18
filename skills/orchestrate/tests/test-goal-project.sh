@@ -15,6 +15,13 @@ if [ "$1" = api ] && [ "$2" = -i ] && [ "$3" = user ]; then
   else printf 'HTTP/2.0 200 OK\r\nX-Oauth-Scopes: gist, read:org, repo, workflow\r\n\r\n{}\n'; fi
   exit 0
 fi
+if [ "$1" = api ] && [ "$2" = graphql ]; then   # #402: items listing = one graphql query; project number is the arg "number=N" (-F number=N)
+  printf '%s\n' "$*" >> "$P/graphql.log"; num=""
+  for a in "$@"; do case "$a" in number=[0-9]*) num=${a#number=} ;; esac; done
+  [ -n "$num" ] && [ -f "$P/items-$num.json" ] || { echo "fake gh: graphql without number=N" >&2; exit 1; }
+  jq -c '{data:{repositoryOwner:{projectV2:{items:{pageInfo:{hasNextPage:false, endCursor:null}, nodes: map({id:.id, fieldValueByName:(if (.status // "") == "" then null else {name:.status} end), content:(if .content.repository == null then {} else {number:.content.number, repository:{nameWithOwner:.content.repository}, labels:{nodes:[(.labels // [])[] | {name:.}]}} end)})}}}}}' "$P/items-$num.json"
+  exit 0
+fi
 if [ "$1" != project ]; then exec "$HERE/gh.base" "$@"; fi
 echo "$*" >> "$P/calls.log"
 sub=$2; shift 2

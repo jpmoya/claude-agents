@@ -1,6 +1,6 @@
 # #402: goal_project_sync_one reads project items with ONE cheap `gh api graphql` query (no `gh project item-list`, no fieldValues(
 # connection), paginated by pageInfo/after. Self-contained: a fake gh on PATH, goal-project.sh sourced in a subshell with slog and
-# _goal_scope_rows stubbed. Expected values are hand-written. Page 2 is chosen by any -f/-F arg whose value is the cursor "c1".
+# _goal_scope_rows stubbed. Expected values are hand-written. Cursor convention: pass it as `-f after=<cursor>` / `-F after=<cursor>` (any arg containing "=c1" serves page 2, "=c2" page 3); do not pass it via --input.
 GQ_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/goal-project.sh"
 
 gq_setup() {
@@ -13,7 +13,7 @@ echo "$*" >> "$D/calls.log"
 if [ "$1" = api ] && [ "$2" = graphql ]; then
   echo "GRAPHQL $*" >> "$D/graphql.log"
   [ ! -f "$D/fail-graphql" ] || { echo "gh: HTTP 403 rate limit" >&2; exit 1; }
-  case "$*" in *=c1*) f="$D/page2.json" ;; *) f="$D/page1.json" ;; esac
+  case "$*" in *=c2*) f="$D/page3.json" ;; *=c1*) f="$D/page2.json" ;; *) f="$D/page1.json" ;; esac
   cat "$f"; exit 0
 fi
 [ "$1" = project ] || { echo "fake gh: unsupported $*" >&2; exit 1; }
@@ -117,6 +117,33 @@ o/r#2${T}open"
   gq_teardown; return $rc
 }
 
+test_gq_three_pages_follow_the_cursor_chain() {
+  gq_setup; local rc=0 T=$'\t'
+  gq_page "$GQ_DIR/page1.json" true c1 "$(gq_node I_1 o/r 1 "")"
+  gq_page "$GQ_DIR/page2.json" true c2 "$(gq_node I_2 o/r 2 "")"
+  gq_page "$GQ_DIR/page3.json" false "" "$(gq_node I_3 o/r 3 "")"
+  gq_sync "o/r#1${T}open
+o/r#2${T}open
+o/r#3${T}open"
+  assert_eq "$GQ_RC" "0" "sync returns 0 (stderr: $(cat "$GQ_DIR/err.log"))" || rc=1
+  assert_eq "$(gq_count GRAPHQL "$GQ_DIR/graphql.log")" "3" "three graphql calls (one per page)" || rc=1
+  assert_contains "$(sed -n 3p "$GQ_DIR/graphql.log" 2>/dev/null)" "=c2" "third call carries the cursor c2" || rc=1
+  assert_eq "$(gq_edits)" "EDIT I_1:o1 EDIT I_2:o1 EDIT I_3:o1 " "items of all three pages are set to Todo" || rc=1
+  gq_teardown; return $rc
+}
+
+test_gq_empty_project_adds_every_ticket_then_relists() {
+  gq_setup; local rc=0 T=$'\t'
+  gq_page "$GQ_DIR/page1.json" false ""
+  gq_sync "o/r#1${T}open
+o/r#2${T}open"
+  assert_eq "$GQ_RC" "0" "sync returns 0 (stderr: $(cat "$GQ_DIR/err.log"))" || rc=1
+  assert_eq "$(sort "$GQ_DIR/adds.log" 2>/dev/null | tr '\n' ' ')" "ADD o/r#1 ADD o/r#2 " "0 items listed: both tickets are added" || rc=1
+  assert_eq "$(gq_count GRAPHQL "$GQ_DIR/graphql.log")" "2" "one list, one re-list after the adds" || rc=1
+  assert_eq "$(gq_count . "$GQ_DIR/edits.log")" "2" "the re-listed (new) items each get a Status edit" || rc=1
+  gq_teardown; return $rc
+}
+
 test_gq_graphql_failure_logs_cannot_list_and_changes_nothing() {
   gq_setup; local rc=0 T=$'\t'
   touch "$GQ_DIR/fail-graphql"
@@ -176,7 +203,7 @@ test_gq_no_new_throttle_and_interval_unchanged() {
   return $rc
 }
 
-for t in test_gq_two_pages_follow_the_cursor_and_every_item_reaches_the_status_loop test_gq_status_mix_edits_only_items_whose_status_differs \
+for t in test_gq_three_pages_follow_the_cursor_chain test_gq_empty_project_adds_every_ticket_then_relists test_gq_two_pages_follow_the_cursor_and_every_item_reaches_the_status_loop test_gq_status_mix_edits_only_items_whose_status_differs \
          test_gq_missing_item_is_added_then_relisted_with_the_graphql_query test_gq_graphql_failure_logs_cannot_list_and_changes_nothing \
          test_gq_failure_on_a_later_page_also_fails_without_edits test_gq_draft_and_non_issue_nodes_are_skipped_without_error \
          test_gq_query_text_is_cheap_and_item_list_is_gone test_gq_no_new_throttle_and_interval_unchanged; do
