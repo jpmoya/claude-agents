@@ -184,7 +184,7 @@ test_gp_new_project_appears_on_the_status_page_without_manual_steps() {
   jq -nc '[{number:3, title:"Goal: Brand new", closed:false, id:"PVT_3", url:"https://github.com/users/example-owner/projects/3"},
            {number:4, title:"Goal: Done one", closed:true, id:"PVT_4", url:"https://github.com/users/example-owner/projects/4"},
            {number:5, title:"Old", closed:true, id:"PVT_5", url:"https://github.com/users/example-owner/projects/5"},
-           {number:6, title:"o/quoting-tool: v1.35.0 - Sales Workflow 2.0: Won/Lost stages", closed:false, id:"PVT_6", url:"https://github.com/users/example-owner/projects/6"}]' > "$DG_BIN/proj/projects.json"
+           {number:6, title:"quoting-tool: v1.35.0 - Sales Workflow 2.0: Won/Lost stages", closed:false, id:"PVT_6", url:"https://github.com/users/example-owner/projects/6"}]' > "$DG_BIN/proj/projects.json"
   jq -nc '{owner:"example-owner", projects:[{number:5,title:"Old",url:"https://github.com/users/example-owner/projects/5",closed:true,closed_seen:"2020-01-01T00:00:00Z"}]}' > "$DG_PIPE/goalprojects.json"
   dg_lib 'goal_project_refresh_list'; assert_eq "$DG_RC" "0" "refresh exits 0 (stderr: $DG_ERR)" || rc=1
   out=$(PATH="$PATH" python3 "$DG_SKILL/build-runs-json.py" "" "$DG_HOME/r.jsonl" "$DG_PIPE" goals </dev/null 2>/dev/null)
