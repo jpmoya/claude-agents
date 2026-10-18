@@ -10,7 +10,8 @@ chk "CLAUDE.md: only ancestors of origin/staging" 'ancestors? of `origin/staging
 chk "CLAUDE.md: read-only prod-migration ledger check in PR body" 'prod-migration ledger check' "$C"
 chk "CLAUDE.md: no pipeline ticket for a promotion" 'No pipeline ticket' "$C"
 chk "CLAUDE.md: fixes land on staging first, never only on release branch" 'never committed only to the release branch' "$C"
-chk "CLAUDE.md: line 11 carves out promotions" 'except (for )?(a |the )?(staging.main )?promotion' "$C"
+# staging.{1,4}main tolerates the arrow being a multi-byte UTF-8 char: under LC_CTYPE=C, grep's `.` matches one byte, not one codepoint
+chk "CLAUDE.md: line 11 carves out promotions" 'except (for )?(a |the )?(staging.{1,4}main )?promotion' "$C"
 chk "project-manager.md: preparing a promotion PR is done directly, merging JP-only" 'preparing a promotion PR.*directly|directly.*preparing a promotion PR' "$PM"
 # #221 — PR body states the ledger check as found; never pre-claims a prod apply
 L=$(grep -F 'Exception — promotion PRs' "$C")
