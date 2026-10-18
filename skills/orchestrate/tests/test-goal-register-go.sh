@@ -2,7 +2,7 @@
 # the open in-scope tickets (shared _goal_grant_go path), goal_sync grants later arrivals, the body-line approval is gone.
 #   AC1 grg_reg_*       register writes go/granted/granted_at and labels (milestone and #N goals)
 #   AC2 grg_guard_*     BI, source:sentry, msall without --approve-all, closed, no duplicate edits, stripped agent-go
-#   AC3 grg_sync_*      goal_sync grants tickets added after registration (milestone goal)
+#   AC3 grg_sync_*      goal_sync grants tickets added after registration (milestone and #N goals)
 #   AC4 grg_appr_*      goal_milestone_approved reads block.go; no "Approved-by" in skills/orchestrate/*.sh or agents/
 #   AC6 grg_waiting_*   characterisation: an agent-proposed ticket without agent-go still classes waiting_jp (green by design)
 #   AC7 grg_gates_*     only agent-go / agent-proposed labels are written, no non-REST call
@@ -225,6 +225,22 @@ test_grg_sync_grants_ticket_added_to_milestone_after_registration() {
   glb_teardown; return $rc
 }
 
+test_grg_sync_grants_ticket_goal_when_ticket_becomes_open_after_registration() {   # AC3, #N scope
+  grg_world; local rc=0
+  grg_ticket $GRG_A 7 closed "" ""                    # closed at registration -> skipped, not in granted
+  dg_run "$DG_SPEC_T7" --now
+  assert_eq "$(grg_reg_block | jq -r .go)" "true" "#N goal: block.go is true" || rc=1
+  grg_has $GRG_A 7 agent-go && { fail "precondition: closed a#7 not labelled at registration"; rc=1; }
+  grg_ticket $GRG_A 7 open "agent-proposed" ""        # reopened and proposed after JP's registration
+  grg_cache_registered
+  glb_sync
+  assert_eq "$DG_RC" "0" "goal_sync exits 0 (stderr: $DG_ERR)" || rc=1
+  grg_has $GRG_A 7 agent-go || { fail "#N goal: a#7 gets agent-go from the sync"; rc=1; }
+  grg_has $GRG_A 7 agent-proposed && { fail "#N goal: a#7 loses agent-proposed"; rc=1; }
+  assert_eq "$(grg_reg_block | jq -r --arg a "$GRG_RA#7" '(.granted // []) | index($a) != null')" "true" "#N goal: granted gains a#7 in the block" || rc=1
+  glb_teardown; return $rc
+}
+
 test_grg_sync_survives_body_rewrite() {   # the whole point: go is in the block, so a registry body rewrite keeps it
   grg_world; local rc=0
   dg_run "$DG_SPEC_MS" --now
@@ -363,6 +379,7 @@ for t in test_grg_reg_milestone_goal_writes_go_granted_and_labels \
          test_grg_guard_no_duplicate_label_edits \
          test_grg_guard_stripped_agent_go_not_relabelled_but_new_arrival_is \
          test_grg_sync_grants_ticket_added_to_milestone_after_registration \
+         test_grg_sync_grants_ticket_goal_when_ticket_becomes_open_after_registration \
          test_grg_sync_survives_body_rewrite \
          test_grg_appr_no_approved_by_in_scripts_or_agents \
          test_grg_waiting_proposed_without_agent_go_is_waiting_jp \
