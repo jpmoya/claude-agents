@@ -27,6 +27,13 @@ goal_project_enabled() {
   [ "$_GP_SCOPE" = yes ]
 }
 
+# _gp_bound — stdin: goal json; prints its recorded project {owner,number,url} unless that project no longer exists (a deleted project is
+# an unbound goal again, so it re-binds instead of mirroring into nothing). The existence check needs _GP_NUMS (set by goal_project_sync_all).
+_gp_bound() {
+  jq -c --arg nums "${_GP_NUMS:-}" '.block.project? // empty | select(type == "object" and (.number | type) == "number")
+    | . as $p | select($nums == "" or ((" " + $nums + " ") | contains(" " + ($p.number | tostring) + " ")))'
+}
+
 # goal_project_title <goal json> -> "Goal: <readable title>"
 goal_project_title() {
   local t spec
@@ -108,7 +115,7 @@ _gp_find() {
 goal_project_ensure() {
   local g="$1" mode="${2:-bind}" full=1 cur o title issue id spec refs n out url p repo reg_url
   goal_project_enabled || return 1
-  cur=$(printf '%s' "$g" | jq -c '.block.project? // empty | select(type == "object" and (.number | type) == "number")')
+  cur=$(printf '%s' "$g" | _gp_bound)
   if [ -n "$cur" ]; then printf '%s\n' "$cur"; return 0; fi
   o=$(_gp_owner); issue=$(printf '%s' "$g" | jq -r '.issue'); id=$(printf '%s' "$g" | jq -r '.id'); spec=$(printf '%s' "$g" | jq -r '.spec')
   title=$(goal_project_title "$g")
@@ -162,7 +169,7 @@ goal_project_sync_one() {
   goal_project_enabled || return 1
   st=$(printf '%s' "$g" | jq -r '.st'); id=$(printf '%s' "$g" | jq -r '.id'); spec=$(printf '%s' "$g" | jq -r '.spec')
   case "$st" in unreadable) return 0 ;; stopped|delivered) live=0 ;; esac
-  p=$(printf '%s' "$g" | jq -c '.block.project? // empty | select(type == "object" and (.number | type) == "number")')
+  p=$(printf '%s' "$g" | _gp_bound)
   if [ -z "$p" ]; then
     [ "$live" = 1 ] || return 0
     p=$(goal_project_ensure "$g" "$mode") || return 0   # no project bound and none to create: nothing to mirror
@@ -215,6 +222,7 @@ goal_project_sync_one() {
 goal_project_sync_all() {
   local g
   goal_project_enabled || return 0
+  _GP_NUMS=$(_gp_list | jq -r '[.[].number] | join(" ")' 2>/dev/null) || _GP_NUMS=""
   while IFS= read -r g; do
     [ -n "$g" ] || continue
     goal_project_sync_one "$g" bind || _gp_log "sync of $(printf '%s' "$g" | jq -r '.id // "?"') skipped"
