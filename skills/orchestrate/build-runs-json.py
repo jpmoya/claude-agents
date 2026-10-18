@@ -521,9 +521,10 @@ def build_goals():
             _fill_name(entry)
             out.append(entry)
             n += 1
-    out = [e for e in out if not _is_milestone_goal(e)]
-    rows = _project_rows(out)
-    return out if rows is None else rows
+    rows = _project_rows(out)   # every goal (milestone ones too) can give its bound project its state / host / priority
+    if rows is not None:
+        return rows
+    return [e for e in out if not _is_milestone_goal(e)]
 
 
 _PROJECT_RANK = {"running": 0, "waiting_jp": 1, "held": 2, "between_cycles": 3, "queued": 4}
