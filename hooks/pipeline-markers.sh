@@ -29,13 +29,19 @@ markers_for() {  # markers_for <agent> → that agent's routing markers, |-separ
   esac
 }
 
-jp_approval_re() {  # jq (oniguruma) regex over a FULL comment body: JP's approval — the ONE word set (#310). Callers must also check the author (identity is the anti-forgery) and the date.
-  # Case-insensitive. Matches when the first non-empty line is a word phrase optionally followed by a separator (, ; : -) and free text,
-  # or when any line is only a phrase plus optional trailing .! / whitespace / CR. A phrase inside a sentence never matches.
-  local words legacy
+jp_approval_re() {  # jq (oniguruma) regex over a FULL comment body: JP's approval — the ONE word set (#310, widened 2026-10-18 by JP's direct instruction: a real approval of his ("Approved — proceed.") kept failing over the exact punctuation character used, and he never wants that class of miss again). Callers must also check the author (identity is the anti-forgery) and the date.
+  # Case-insensitive. Matches when the first non-empty line is a word phrase optionally followed by a separator and free text,
+  # or when any line is only a phrase plus optional trailing punctuation / whitespace / CR. A phrase inside a sentence never matches.
+  # The separator is deliberately "any run of characters that are neither letters/digits nor whitespace" rather than a
+  # hand-picked punctuation list: a plain hyphen, an en dash, an em dash, a colon, an arrow, a bullet, two typos in a
+  # row — anything — all count, so no future punctuation character can silently break a real approval the way the
+  # em dash did here. The only thing this never accepts is the word glued directly to more letters/digits with
+  # nothing between (e.g. "go ahead", "disapproved", "gone") — that is what keeps it from firing on ordinary sentences.
+  local words legacy sep
   words='approved|approve|go|proceed|lgtm|ok to proceed'
+  sep='[^A-Za-z0-9\s]+'
   legacy="\\*\\*\\[jp\\] ($(markers_for jp))\\*\\*"   # the legacy marker forms, from markers_for jp
-  printf '%s' "(?i)(?:\\A\\s*(?:$words)[ \\t]*[,;:-][ \\t]*\\S|(?:\\A|\\n)[ \\t]*(?:$words|$legacy)[.!]*[ \\t\\r]*(?=\\n|\\z))"
+  printf '%s' "(?i)(?:\\A\\s*(?:$words)\\s*(?:$sep)\\s*\\S|(?:\\A|\\n)\\s*(?:$words|$legacy)[.!,;:]*\\s*(?=\\n|\\z))"
 }
 
 is_jp_approval() {  # is_jp_approval <body> → exit 0 when the body is an approval phrase (word set only; author/date are the caller's checks)
