@@ -120,6 +120,17 @@ test_gp_binds_existing_project_with_the_same_title() {
   dg_teardown; return $rc
 }
 
+test_gp_register_joins_the_project_that_already_holds_all_its_tickets() {
+  gp_setup
+  local rc=0
+  jq -nc '[{number:4, title:"Goal: The bigger goal", closed:false, id:"PVT_4", url:"https://github.com/users/example-owner/projects/4"}]' > "$DG_BIN/proj/projects.json"
+  jq -nc '[{id:"I_1", status:"Todo", labels:[], content:{repository:"example-owner/project-a", number:101}},{id:"I_2", status:"Todo", labels:[], content:{repository:"example-owner/project-a", number:102}}]' > "$DG_BIN/proj/items-4.json"
+  dg_run "$DG_SPEC_MS"; assert_eq "$DG_RC" "0" "register exits 0 (stderr: $DG_ERR)" || rc=1
+  assert_eq "$(gp_nproj)" "1" "a slice of a bigger goal gets no project of its own" || rc=1
+  assert_eq "$(dg_block "$(dg_reg_file_for "$DG_ID_MS")" | jq -r '.project.number')" "4" "it is bound to the bigger goal's project" || rc=1
+  dg_teardown; return $rc
+}
+
 test_gp_project_command_binds_but_never_creates_for_existing_goals() {
   gp_setup
   local rc=0
@@ -216,7 +227,7 @@ test_gp_gh_project_and_graphql_only_in_goal_project_sh() {
 }
 
 for t in test_gp_register_creates_project_adds_tickets_and_records_it test_gp_project_command_is_idempotent_and_mirrors_status \
-         test_gp_stopped_goal_closes_its_project_not_the_registry_row test_gp_project_command_binds_but_never_creates_for_existing_goals test_gp_brief_names_the_bound_project test_gp_binds_existing_project_with_the_same_title \
+         test_gp_stopped_goal_closes_its_project_not_the_registry_row test_gp_project_command_binds_but_never_creates_for_existing_goals test_gp_brief_names_the_bound_project test_gp_binds_existing_project_with_the_same_title test_gp_register_joins_the_project_that_already_holds_all_its_tickets \
          test_gp_without_project_scope_nothing_runs_and_register_succeeds test_gp_project_failure_never_fails_the_goal \
          test_gp_status_page_link_prefers_the_project test_gp_new_project_appears_on_the_status_page_without_manual_steps test_gp_gh_project_and_graphql_only_in_goal_project_sh; do
   run_test "$t"
