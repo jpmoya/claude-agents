@@ -1108,8 +1108,9 @@ if [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
   done
 fi
 
-# 5 (was 4). Shared dispatch — one agent-go issue per tick, claimed before launch so two machines never take the same one
-if [ "$launched" -eq 0 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
+# 5 (was 4). Shared dispatch — one agent-go issue per tick, claimed before launch so two machines never take the same one.
+# JP (2026-10-18): only the goal-based pipeline launches work; SHARED_DISPATCH_ENABLED=0 turns this whole step off.
+if [ "$launched" -eq 0 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ] && [ "${SHARED_DISPATCH_ENABLED:-1}" = 1 ]; then
   if ! power_ok; then
     slog "[dispatch] skipped — on battery power"
   elif [ "$HAS_CAP" -ne 1 ]; then

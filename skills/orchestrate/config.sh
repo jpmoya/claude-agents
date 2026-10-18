@@ -28,6 +28,11 @@ SENTRY_AUTO_GO=0
 
 # Shared dispatch: "owner/repo:/local/checkout" entries. Empty = this machine never dispatches from labels.
 DISPATCH_REPOS=()
+# JP (2026-10-18): only the goal-based pipeline (deliver.sh / delivery-lead) should launch work; a bare agent-go
+# ticket with no goal must not auto-run. 0 = supervisor step 5 (shared dispatch) never claims or launches a ticket,
+# whatever DISPATCH_REPOS says; a goal's own dispatch (goal_launch, the delivery lead's hand-launches) is unaffected.
+# A hand launch (orchestrate.sh <repo> <issue>, run by JP or an agent he points at it) still works either way.
+SHARED_DISPATCH_ENABLED=${SHARED_DISPATCH_ENABLED:-1}
 # Scanned by scan-backlog.sh, never dispatched. "owner/repo" entries; a ":path" suffix is tolerated and ignored.
 SCAN_ONLY_REPOS=()
 CLAIM_SETTLE_SECS=${PIPELINE_TEST_CLAIM_SETTLE_SECS:-15}  # (test-only override) wait after posting a claim before checking who was first
