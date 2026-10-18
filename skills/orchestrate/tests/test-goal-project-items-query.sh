@@ -124,6 +124,7 @@ test_gq_graphql_failure_logs_cannot_list_and_changes_nothing() {
   gq_sync "o/r#1${T}open
 o/r#2${T}open"
   assert_eq "$GQ_RC" "1" "sync returns 1" || rc=1
+  assert_eq "$(gq_count GRAPHQL "$GQ_DIR/graphql.log")" "1" "the failing read was the one graphql query" || rc=1
   assert_contains "$(cat "$GQ_DIR/slog.log")" "[goal] project: cannot list project 5" "failure is logged through _gp_log" || rc=1
   assert_eq "$(gq_count . "$GQ_DIR/edits.log")" "0" "no item-edit" || rc=1
   assert_eq "$(gq_count . "$GQ_DIR/adds.log")" "0" "no item-add" || rc=1
@@ -136,6 +137,7 @@ test_gq_failure_on_a_later_page_also_fails_without_edits() {
   echo 'not json' > "$GQ_DIR/page2.json"   # page 2 unparsable
   gq_sync "o/r#1${T}open"
   assert_eq "$GQ_RC" "1" "sync returns 1 when page 2 is unusable" || rc=1
+  assert_eq "$(gq_count GRAPHQL "$GQ_DIR/graphql.log")" "2" "page 2 was requested" || rc=1
   assert_contains "$(cat "$GQ_DIR/slog.log")" "cannot list project 5" "logged" || rc=1
   assert_eq "$(gq_count . "$GQ_DIR/edits.log")" "0" "no edits from a partial read" || rc=1
   gq_teardown; return $rc
