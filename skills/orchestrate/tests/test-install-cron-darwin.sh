@@ -37,6 +37,14 @@ test_408_darwin_idempotent() {
   assert_contains "$OUT408" "crontab already correct" "second run" || return 1
   assert_eq "$(writes_408)" 1 "crontab writes"
 }
+test_408_darwin_exact_supervisor_line_is_stripped() {
+  setup_408 Darwin
+  run_408 --minute odd
+  printf '%s\n' "1-59/2 * * * * $T408/home/.claude/skills/orchestrate/supervisor.sh >> $T408/home/logs/pipeline/supervisor.log 2>&1" >> "$T408/cron.txt"
+  run_408 --minute odd
+  assert_eq "$(sup_count_408)" 0 "supervisor lines" || return 1
+  assert_contains "$OUT408" "crontab updated" "rewrote"
+}
 test_408_darwin_missing_plist_warns_exit0() {
   setup_408 Darwin
   run_408 --minute odd
@@ -66,3 +74,4 @@ run_test test_408_darwin_idempotent
 run_test test_408_darwin_missing_plist_warns_exit0
 run_test test_408_linux_writes_supervisor_line_and_idempotent
 run_test test_408_scan_line_both_os
+run_test test_408_darwin_exact_supervisor_line_is_stripped
