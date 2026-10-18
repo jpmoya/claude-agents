@@ -15,7 +15,7 @@ Post a plain-language summary of recently shipped changes to the portal's Slack 
 
 | Portal | Slack channel | channel_id | Repo | Version scheme |
 |---|---|---|---|---|
-| Quoting portal (quotes.benjis.com) | #quoting_portal | `C0BFS1X1Z3N` | `~/dev/benjis-quoting-tool` | `1.0.<commit count>` — `git rev-list --count origin/main`. Matches the sidebar footer. |
+| Sales portal (sales.benjis.com) | #quoting_portal | `C0BFS1X1Z3N` | `~/dev/benjis-sales-tool` | `1.0.<commit count>` — `git rev-list --count origin/main`. Matches the sidebar footer. |
 | Ops portal / scheduler | #ops_portal | `C0AHAU7GAR4` | `~/dev/scheduler` | `version` field in `package.json` on main. |
 
 Post with `mcp__plugin_slack_slack__slack_send_message` to the channel_id. Do NOT DM Kyle separately — the channel replaces the old DM updates. Members post bugs/questions in these channels too; only respond to those if JP asks.
