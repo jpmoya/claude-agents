@@ -59,6 +59,27 @@ _gp_cache_set() {
   rm -f "$f.tmp"
 }
 
+# _gp_items <owner> <project number> -> {"items":[{id,status,labels,content:{repository,number}}]} for the project's issue items, read with
+# a paginated `gh api graphql` query that asks only for what the sync uses (id, issue repo/number, label names, Status), so each page
+# costs 1 point. Exit 1 when any page fails or is unreadable.
+_GP_ITEMS_Q='query($owner:String!,$number:Int!,$cursor:String){repositoryOwner(login:$owner){... on ProjectV2Owner{projectV2(number:$number){items(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{id fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{name}} content{... on Issue{number repository{nameWithOwner} labels(first:20){nodes{name}}}}}}}}}}'
+_gp_items() {
+  local o="$1" n="$2" cur="" page nodes="[]" more
+  while :; do
+    if [ -n "$cur" ]; then
+      page=$(gh api graphql -f query="$_GP_ITEMS_Q" -f owner="$o" -F number="$n" -f cursor="$cur" 2>/dev/null) || return 1
+    else
+      page=$(gh api graphql -f query="$_GP_ITEMS_Q" -f owner="$o" -F number="$n" 2>/dev/null) || return 1
+    fi
+    nodes=$(jq -c --argjson acc "$nodes" '$acc + (.data.repositoryOwner.projectV2.items.nodes | if type == "array" then . else error("no nodes") end)' <<< "$page" 2>/dev/null) || return 1
+    more=$(jq -r '.data.repositoryOwner.projectV2.items.pageInfo | if .hasNextPage == true then (.endCursor // "") else "" end' <<< "$page" 2>/dev/null) || return 1
+    [ -n "$more" ] || break
+    cur="$more"
+  done
+  jq -c '{items: [.[] | select((.content.number? // null) != null) | {id, status: (.fieldValueByName.name? // null), labels: [.content.labels.nodes[]?.name],
+    content: {repository: .content.repository.nameWithOwner, number: .content.number}}]}' <<< "$nodes"
+}
+
 # _gp_find <title> <scope refs> <full 0|1> -> number of an existing project that is this goal's: the same title, or (full) the
 # smallest "Goal: " project that holds every ticket of the goal (several goals may share one project).
 _gp_find() {
@@ -68,7 +89,7 @@ _gp_find() {
   if [ -n "$n" ]; then printf '%s\n' "$n"; return 0; fi
   [ "$full" = 1 ] && [ -n "$refs" ] || return 0
   for c in $(printf '%s' "$list" | jq -r '.[] | select(.title | startswith("Goal: ")) | .number'); do
-    items=$(gh project item-list "$c" --owner "$(_gp_owner)" --format json -L 500 2>/dev/null \
+    items=$(_gp_items "$(_gp_owner)" "$c" 2>/dev/null \
       | jq -r '.items[] | select(.content.repository != null) | "\(.content.repository)#\(.content.number)"') || continue
     [ -n "$items" ] || continue
     if [ -z "$(printf '%s\n' "$refs" | grep -vxFf <(printf '%s\n' "$items") || true)" ]; then
@@ -136,7 +157,7 @@ goal_project_sync_one() {
   n=$(printf '%s' "$p" | jq -r '.number')
   repos=$(printf '%s' "$g" | jq -r '(.block.repos // []) | join(",")')
   rows=$(_goal_scope_rows "$spec" "$id" "$repos" 2>/dev/null) || { _gp_log "cannot read the scope of $id"; return 1; }
-  items=$(gh project item-list "$n" --owner "$o" --format json -L 500 2>/dev/null) || { _gp_log "cannot list project $n"; return 1; }
+  items=$(_gp_items "$o" "$n") || { _gp_log "cannot list project $n"; return 1; }
   while IFS=$'\t' read -r ref s; do
     [ -n "$ref" ] || continue
     repo=${ref%%#*}; num=${ref##*#}
@@ -144,7 +165,7 @@ goal_project_sync_one() {
       if gh project item-add "$n" --owner "$o" --url "https://github.com/$repo/issues/$num" >/dev/null 2>&1; then added=1; else _gp_log "cannot add $ref to project $n"; rc=1; fi
     fi
   done <<< "$rows"
-  [ "$added" = 0 ] || items=$(gh project item-list "$n" --owner "$o" --format json -L 500 2>/dev/null) || items='{"items":[]}'
+  [ "$added" = 0 ] || items=$(_gp_items "$o" "$n") || items='{"items":[]}'
   pid=""
   while IFS=$'\t' read -r ref s; do
     [ -n "$ref" ] || continue
