@@ -435,6 +435,7 @@ for f in "$PIPE"/orch-*.pid; do
   if issue_is_closed "$repo" "$issue"; then
     touch "$PIPE/orch-$rk.done"
     slog "[done] #$issue — issue closed"
+    cleanup_finished_worktree "$repo" "$issue"
     continue
   fi
 
@@ -447,6 +448,7 @@ for f in "$PIPE"/orch-*.pid; do
       slog "[done] #$issue — terminal marker: $marker"
       done_text="Deployed"; case "$marker" in *"] SPLIT"*) done_text="Split into sub-issues" ;; esac
       case "$marker" in *"] REJECTED"*) done_text="Rejected" ;; esac
+      cleanup_finished_worktree "$repo" "$issue"
       notify_engineering "$issue" ":white_check_mark:" "$done_text" "$(cd "$repo" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo "unknown")"
       continue ;;
     gate)

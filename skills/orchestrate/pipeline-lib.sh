@@ -207,6 +207,28 @@ launch_alert() {
     "$SLACK_WEBHOOK_URL" >/dev/null 2>&1 </dev/null || true
 }
 
+# cleanup_finished_worktree <local_repo_path> <issue> — removes THIS host's copy of a finished ticket's worktree, if
+# any. Called at every terminal transition (issue closed, or a DEPLOYED/SPLIT/REJECTED marker), on every host, so a
+# ticket built on one machine and merged by a deployer on the other still gets its leftover copy cleared (the deployer's
+# own pre-merge removal in deployer.md only ever reaches the worktree on the host that runs the merge). Matches by the
+# `issue-<N>-*` / `issue-<N>` directory convention under <repo>/.worktrees/ — never touches a reviewer/scratch worktree
+# (those are the creating agent's own responsibility) or anything outside .worktrees/. Best-effort: logs and continues
+# on failure (e.g. a background process still writing inside it) rather than blocking the caller's done/held bookkeeping.
+cleanup_finished_worktree() {
+  type slog >/dev/null 2>&1 || slog() { echo "$*" >&2; }
+  local repo="$1" issue="$2" wt
+  [ -n "$repo" ] && [ -n "$issue" ] && [ -d "$repo/.worktrees" ] || return 0
+  for wt in "$repo"/.worktrees/issue-"$issue"-* "$repo"/.worktrees/issue-"$issue"; do
+    [ -e "$wt" ] || continue
+    if git -C "$repo" worktree remove --force "$wt" 2>>"$SLOG"; then
+      slog "[worktree-cleanup] #$issue — removed $wt"
+    else
+      slog "[worktree-cleanup] #$issue — remove failed for $wt (left in place; will retry next terminal check)"
+    fi
+  done
+  git -C "$repo" worktree prune 2>/dev/null || true
+}
+
 # claim_winner <local_path> <issue> [owner/repo] — the optional repo reads a claim on an issue of a repo other than the
 # checkout's (the goal registry issue, #320); same comment shape, same window, same fail-closed behaviour.
 claim_winner() {
