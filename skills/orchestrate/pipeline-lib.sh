@@ -160,6 +160,14 @@ limit_kind_of() {
   esac
 }
 
+# last_launch_segment_line <log> — prints the last non-empty line after the last `===== … LAUNCH … =====` header of a
+# run/goal log (the whole file when there is no header); nothing when the log is missing. Used to classify an exit.
+last_launch_segment_line() {
+  [ -f "$1" ] || return 0
+  awk '/^===== .* LAUNCH .* =====$/ {buf=""; next} {buf = buf $0 "\n"} END {printf "%s", buf}' "$1" 2>/dev/null \
+    | awk 'NF {l=$0} END {print l}' 2>/dev/null
+}
+
 # pipeline_event <event> [jq --arg/--argjson pairs…] — appends one row (v, ts, host, event + the given fields) to
 # $LOGDIR/events.jsonl. Any failure is swallowed: logging never blocks a launch or a supervisor tick.
 pipeline_event() {

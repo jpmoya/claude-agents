@@ -796,7 +796,7 @@ goal_park() {  # <id> <issue>
 }
 
 goal_tick_one() {  # <id>
-  local id=$1 cache="$PIPE/goal-$1.json" spec issue pid alive=0 now la age restarts ec clean=0 run em idx wait_secs new old np
+  local id=$1 cache="$PIPE/goal-$1.json" spec issue pid alive=0 now la age restarts ec clean=0 run em idx wait_secs new old np seg lk=""
   spec=$(jq -r '.spec // empty' "$cache" 2>/dev/null); issue=$(jq -r '.issue // empty' "$cache" 2>/dev/null)
   [ -n "$spec" ] && [ -n "$issue" ] || return 0
   pid=$(cat "$PIPE/goal-$id.pid" 2>/dev/null)
@@ -839,6 +839,13 @@ goal_tick_one() {  # <id>
       wait_secs=${BACKOFF[$idx]}
     fi
   fi
+  # a usage-limit exit (last launch segment only) is not a crash: wait RATE_LIMIT_BACKOFF_SECS and never count it (#417)
+  seg=$(mktemp "${TMPDIR:-/tmp}/goal-exit.XXXXXX" 2>/dev/null) || seg=""
+  if [ -n "$seg" ]; then
+    last_launch_segment_line "$PIPE/goal-$id.log" > "$seg" 2>/dev/null
+    lk=$(limit_kind_of "$seg"); rm -f "$seg"
+    [ -n "$lk" ] && [ "$RATE_LIMIT_BACKOFF_SECS" -gt "$wait_secs" ] && wait_secs=$RATE_LIMIT_BACKOFF_SECS
+  fi
   [ "$age" -ge "$wait_secs" ] || return 0
   # evaluating costs one gh read per ticket: a goal parked on JP is looked at once per sync, others whenever they could launch
   if [ "$GOAL_SYNC_DUE" -ne 1 ]; then
@@ -864,9 +871,13 @@ goal_tick_one() {  # <id>
   new=$(printf '%s' "$GE_SNAP" | goal_snapshot)
   old=$(cat "$PIPE/goal-$id.snap" 2>/dev/null)
   np=$(cat "$PIPE/goal-$id.np" 2>/dev/null); case "$np" in ''|*[!0-9]*) np=0 ;; esac
-  if [ "$GE_TOTAL" -eq 0 ] || { [ -n "$old" ] && [ "$new" = "$old" ]; }; then np=$((np + 1)); else np=0; fi
-  echo "$np" > "$PIPE/goal-$id.np"; echo "$new" > "$PIPE/goal-$id.snap"
-  if [ "$np" -ge "$GOAL_MAX_NO_PROGRESS" ]; then goal_park "$id" "$issue"; return 0; fi
+  if [ -n "$lk" ]; then   # usage-limit exit: np and snap stay as they were
+    slog "[goal] $id rate-limited limit=$lk backoff=${RATE_LIMIT_BACKOFF_SECS}s"
+  else
+    if [ "$GE_TOTAL" -eq 0 ] || { [ -n "$old" ] && [ "$new" = "$old" ]; }; then np=$((np + 1)); else np=0; fi
+    echo "$np" > "$PIPE/goal-$id.np"; echo "$new" > "$PIPE/goal-$id.snap"
+    if [ "$np" -ge "$GOAL_MAX_NO_PROGRESS" ]; then goal_park "$id" "$issue"; return 0; fi
+  fi
 
   [ -f "$PIPE/goal-$id.stopped" ] && return 0   # a stop that landed during the scope reads
   if goal_launch "$id" >/dev/null 2>&1; then
