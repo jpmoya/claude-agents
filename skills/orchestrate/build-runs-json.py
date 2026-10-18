@@ -551,6 +551,8 @@ def _project_rows(out):
         title, url = p.get("title"), p.get("url")
         if not (isinstance(title, str) and title.strip()) or not (isinstance(url, str) and proj_re.match(url)):
             continue
+        if re.match(r"^(Goal:\s*)?[\w.-]+:\s*v\d+\.\d+\.\d+\b", title.strip()):
+            continue   # a release-milestone project ("repo: v1.35.0 - ..."), a slice of a goal, not a goal
         entry = {"id": "project-%d" % p["number"], "host": "", "title": re.sub(r"[<>\"`]", "", re.sub(r"^Goal:\s*", "", title.strip()).replace("&", "and")), "url": url}   # the page refuses < > & \" `
         if p.get("closed"):
             seen = p.get("closed_seen")
