@@ -301,8 +301,7 @@ log_run_exit() {
   [ -f "$exf" ] && ex=$(tr -dc '0-9' < "$exf")
   last_line=""; seg=$(mktemp "${TMPDIR:-/tmp}/run-exit.XXXXXX" 2>/dev/null) || seg=""
   if [ -n "$seg" ] && [ -f "$lf" ]; then
-    awk '/^===== .* LAUNCH .* =====$/ {buf=""; next} {buf = buf $0 "\n"} END {printf "%s", buf}' "$lf" 2>/dev/null \
-      | awk 'NF {l=$0} END {print l}' > "$seg" 2>/dev/null
+    last_launch_segment_line "$lf" > "$seg" 2>/dev/null
     last_line=$(cat "$seg" 2>/dev/null)
   fi
   if [ -f "$PIPE/orch-$rk.stopped" ]; then cls=stopped
