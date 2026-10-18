@@ -183,13 +183,15 @@ test_gp_new_project_appears_on_the_status_page_without_manual_steps() {
   local rc=0 out
   jq -nc '[{number:3, title:"Goal: Brand new", closed:false, id:"PVT_3", url:"https://github.com/users/example-owner/projects/3"},
            {number:4, title:"Goal: Done one", closed:true, id:"PVT_4", url:"https://github.com/users/example-owner/projects/4"},
-           {number:5, title:"Old", closed:true, id:"PVT_5", url:"https://github.com/users/example-owner/projects/5"}]' > "$DG_BIN/proj/projects.json"
+           {number:5, title:"Old", closed:true, id:"PVT_5", url:"https://github.com/users/example-owner/projects/5"},
+           {number:6, title:"o/quoting-tool: v1.35.0 - Sales Workflow 2.0: Won/Lost stages", closed:false, id:"PVT_6", url:"https://github.com/users/example-owner/projects/6"}]' > "$DG_BIN/proj/projects.json"
   jq -nc '{owner:"example-owner", projects:[{number:5,title:"Old",url:"https://github.com/users/example-owner/projects/5",closed:true,closed_seen:"2020-01-01T00:00:00Z"}]}' > "$DG_PIPE/goalprojects.json"
   dg_lib 'goal_project_refresh_list'; assert_eq "$DG_RC" "0" "refresh exits 0 (stderr: $DG_ERR)" || rc=1
   out=$(PATH="$PATH" python3 "$DG_SKILL/build-runs-json.py" "" "$DG_HOME/r.jsonl" "$DG_PIPE" goals </dev/null 2>/dev/null)
   assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id == "project-3") | "\(.state) \(.title) \(.url)"')" "queued Brand new https://github.com/users/example-owner/projects/3" "an open project with no goal is a not-started row linking to the project" || rc=1
   assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id == "project-4") | .state')" "delivered" "a freshly closed project is recently closed" || rc=1
   assert_eq "$(printf '%s' "$out" | jq -r '[.[] | select(.id == "project-5")] | length')" "0" "a project closed long ago is not listed" || rc=1
+  assert_eq "$(printf '%s' "$out" | jq -r '[.[] | select(.id == "project-6")] | length')" "0" "a release-milestone project is not a goal row" || rc=1
   # goals are the projects: a bound goal gives its project row state/host/priority; an unbound goal is not a row
   jq -nc '{id:"g1", host:"mac", spec:"o/r#5", state:"waiting_jp", priority:2, project:{owner:"x",number:3,url:"https://github.com/users/example-owner/projects/3"}}' > "$DG_PIPE/goal-g1.json"
   jq -nc '{id:"g2", host:"mac", spec:"o/r#6", state:"active", priority:1}' > "$DG_PIPE/goal-g2.json"
