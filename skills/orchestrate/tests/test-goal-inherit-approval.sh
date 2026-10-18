@@ -9,7 +9,8 @@
 # AC4 = the existing suites stay green (not a new test).
 # Contract chosen here (the ticket names no signature): `goal_milestone_approved <owner/repo> <milestone number>` in
 # goal-lib.sh -> stdout = registry issue URL, rc 0 approved | rc 1 not approved | rc 2 registry unreadable (fail closed).
-# Registry body format comes from #313: a plain line `Approved-by: JP (register <ISO date>)` next to the json block.
+# #410: approval is the registry block's `go` field (go:true), written by deliver.sh at registration; the old body line
+# `Approved-by: JP` is gone (every body rewrite dropped it). A body line alone must NOT approve any more.
 # Reuses the dg_ sandbox (test-goal-deliver.sh is sourced first). Expected values are hand-written from the ticket.
 
 DGI_ROOT=$(cd "$DG_SKILL/../.." && pwd)
@@ -51,7 +52,7 @@ DGI_GATES=("production" "spending money" "third-party systems of record" "deleti
 
 test_dgi_doc_pm_rule1_inherit_from_approved_goal() {
   local s; s=$(dgi_section "$DGI_PM" '[Aa]pproved goal')
-  dgi_line "$s" "PM rule 1 heading rule" "child of an approved goal" "Approved-by: JP" "registry" "agent-go" || return 1
+  dgi_line "$s" "PM rule 1 heading rule" "child of an approved goal" "registered goal" "go recorded in the goal block" "agent-go" || return 1
   dgi_line "$s" "PM rule 1 note" "**[product-manager] NOTE** approval inherited from goal" "registry issue URL" || return 1
   dgi_line "$s" "PM rule 1 new requirements" "new requirement" "in-progress goal" "agent-go" || return 1
 }
@@ -78,7 +79,7 @@ test_dgi_doc_pm_rule5_line71_reworded() {
 
 test_dgi_doc_dl_approval_section_rule4() {
   local s; s=$(dgi_section "$DGI_DL" '^## ([0-9]+\. )?Approval')
-  dgi_line "$s" "DL rule 4 approval" "hand-launches" "labels an in-scope ticket" "agent-go" "approved goal" "counts as JP's approval" || return 1
+  dgi_line "$s" "DL rule 4 approval" "hand-launches" "labels an in-scope ticket" "agent-go" "registered goal" "go recorded in the goal block" "counts as JP's approval" || return 1
   dgi_line "$s" "DL rule 4 labelling" "in-scope open tickets" "same guards" "B1" || return 1
 }
 
@@ -107,19 +108,23 @@ test_dgi_gates_dl_section_lists_gates_and_launch_permission_only() {
 
 # ------------------------------------------------------------------ AC2: helper fixtures
 
-# dgi_registry <n> <spec> <id> <approved-line|""> [open|closed] — a registry issue with an optional plain approval line
+# dgi_registry <n> <spec> <id> <go:true|go:false|bodyline:<text>|""> [open|closed] — a registry issue. "go:true" puts go:true in the
+# block; "bodyline:<text>" adds a plain body line (the retired approval channel); "" / "go:false" = not approved.
 dgi_registry() {
-  local n=$1 spec=$2 id=$3 appr=$4 st=${5:-open} block body closed=null
-  block=$(jq -nc --arg id "$id" --arg spec "$spec" --arg c "$DG_NOW" '{v:1,id:$id,spec:$spec,host:"host-a",created:$c,instructions:""}')
+  local n=$1 spec=$2 id=$3 appr=$4 st=${5:-open} block body closed=null go=null
+  [ "$appr" = "go:true" ] && go=true
+  [ "$appr" = "go:false" ] && go=false
+  block=$(jq -nc --arg id "$id" --arg spec "$spec" --arg c "$DG_NOW" --argjson go "$go" \
+    '{v:1,id:$id,spec:$spec,host:"host-a",created:$c,instructions:""} + (if $go == null then {} else {go:$go} end)')
   body=$(printf 'Goal: %s\n\n```json\n%s\n```\n' "$spec" "$block")
-  [ -z "$appr" ] || body=$(printf '%s\n%s\n' "$body" "$appr")
+  case "$appr" in bodyline:*) body=$(printf '%s\n%s\n' "$body" "${appr#bodyline:}") ;; esac
   [ "$st" = closed ] && closed="\"$DG_NOW\""
   jq -nc --argjson n "$n" --arg title "Goal: $spec" --arg body "$body" --arg st "$st" --argjson closed "$closed" --arg now "$DG_NOW" \
     '{number:$n, title:$title, body:$body, state:$st, labels:[{name:"delivery-goal"}], milestone:null,
       closed_at:$closed, created_at:$now, updated_at:$now}' > "$DG_ST/issues/$DG_REG/$n.json"
 }
 
-DGI_OK="Approved-by: JP (register 2026-10-16)"
+DGI_OK="go:true"
 
 # dgi_call <repo> <ms> — runs the helper; sets DG_RC / DG_OUT / DG_ERR and DGI_LOG (slog lines captured)
 dgi_call() {
@@ -146,12 +151,33 @@ test_dgi_help_unapproved_goal_refused() {
   dg_teardown; return $rc
 }
 
-test_dgi_help_approval_line_must_say_JP() {
+test_dgi_help_go_false_refused() {
   dg_setup; local rc=0
-  dgi_registry 900 "$DG_SPEC_MS" "$DG_ID_MS" "Approved-by: someone-else"
+  dgi_registry 900 "$DG_SPEC_MS" "$DG_ID_MS" "go:false"
   dgi_call example-owner/project-a 12
-  assert_eq "$DG_RC" "1" "Approved-by someone else: rc (stderr: $DG_ERR)" || rc=1
-  assert_eq "$DG_OUT" "" "Approved-by someone else: no URL" || rc=1
+  assert_eq "$DG_RC" "1" "block.go=false: rc (stderr: $DG_ERR)" || rc=1
+  assert_eq "$DG_OUT" "" "block.go=false: no URL" || rc=1
+  dg_teardown; return $rc
+}
+
+# #410 AC4: the retired body line alone approves nothing (a rewrite of the body would drop it anyway).
+test_dgi_help_body_line_alone_does_not_approve() {
+  dg_setup; local rc=0
+  dgi_registry 900 "$DG_SPEC_MS" "$DG_ID_MS" "bodyline:Approved-by: JP (register 2026-10-16)"
+  dgi_call example-owner/project-a 12
+  assert_eq "$DG_RC" "1" "body line without block.go: rc (stderr: $DG_ERR)" || rc=1
+  assert_eq "$DG_OUT" "" "body line without block.go: no URL" || rc=1
+  dg_teardown; return $rc
+}
+
+# #410 AC4: block.go=true approves with a body that has no approval line at all.
+test_dgi_help_go_true_without_body_line_approves() {
+  dg_setup; local rc=0
+  dgi_registry 900 "$DG_SPEC_MS" "$DG_ID_MS" "go:true"
+  assert_not_contains "$(jq -r .body "$DG_ST/issues/$DG_REG/900.json")" "Approved-by" "fixture body has no approval line" || rc=1
+  dgi_call example-owner/project-a 12
+  assert_eq "$DG_RC" "0" "block.go=true, no body line: rc (stderr: $DG_ERR)" || rc=1
+  assert_eq "$DG_OUT" "$DGI_URL" "block.go=true, no body line: registry URL" || rc=1
   dg_teardown; return $rc
 }
 
@@ -279,7 +305,9 @@ for t in test_dgi_doc_pm_rule1_inherit_from_approved_goal \
          test_dgi_gates_dl_section_lists_gates_and_launch_permission_only \
          test_dgi_help_approved_milestone_goal_yields_registry_url \
          test_dgi_help_unapproved_goal_refused \
-         test_dgi_help_approval_line_must_say_JP \
+         test_dgi_help_go_false_refused \
+         test_dgi_help_body_line_alone_does_not_approve \
+         test_dgi_help_go_true_without_body_line_approves \
          test_dgi_help_no_goal_at_all_refused \
          test_dgi_help_approved_goal_of_another_milestone_refused \
          test_dgi_help_approved_goal_of_another_repo_refused \
