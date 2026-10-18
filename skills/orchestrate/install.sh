@@ -59,6 +59,7 @@ print('  ok   trusted: '+(', '.join(changed) if changed else 'nothing new'))
 PY
 
 echo "4. cron"
+OS=$(uname -s)
 [ "$MINUTE" = even ] && M='*/2' || M='1-59/2'
 SUP="$M * * * * $CL/skills/orchestrate/supervisor.sh >> $LOGS/supervisor.log 2>&1"
 SCN="0 * * * * $CL/skills/orchestrate/scan-backlog.sh >> $LOGS/scan.log 2>&1"
@@ -66,12 +67,16 @@ BKF="23 13 * * * $CL/skills/orchestrate/session-backfill.sh >> $LOGS/session-bac
 ROT="41 13 * * * $CL/skills/orchestrate/rotate-logs.sh >> $LOGS/rotate-logs.log 2>&1"
 cur=$(crontab -l 2>/dev/null || true)
 new=$(printf '%s\n' "$cur" | grep -v -E 'orchestrate/supervisor\.sh|scan-backlog\.sh|pipeline/dispatch\.sh|orchestrate/session-backfill\.sh|orchestrate/rotate-logs\.sh')
-new="$new"$'\n'"# Agent pipeline supervisor (installed by claude-agents install.sh)"$'\n'"$SUP"
+if [ "$OS" != Darwin ]; then new="$new"$'\n'"# Agent pipeline supervisor (installed by claude-agents install.sh)"$'\n'"$SUP"; fi
 new="$new"$'\n'"# Agent pipeline session backfill (installed by claude-agents install.sh)"$'\n'"$BKF"
 new="$new"$'\n'"# Agent pipeline log rotation (installed by claude-agents install.sh)"$'\n'"$ROT"
 [ "$SCAN" = 1 ] && new="$new"$'\n'"# Agent pipeline hourly backlog scan"$'\n'"$SCN"
-if [ "$(printf '%s\n' "$cur" | grep -c -F "$SUP")" = 1 ] && [ "$(printf '%s\n' "$cur" | grep -c -F "$BKF")" = 1 ] && [ "$(printf '%s\n' "$cur" | grep -c 'orchestrate/session-backfill\.sh')" = 1 ] && [ "$(printf '%s\n' "$cur" | grep -c -F "$ROT")" = 1 ] && [ "$(printf '%s\n' "$cur" | grep -c 'orchestrate/rotate-logs\.sh')" = 1 ] && { [ "$SCAN" = 0 ] || [ "$(printf '%s\n' "$cur" | grep -c -F "$SCN")" = 1 ]; } && ! printf '%s\n' "$cur" | grep -q 'pipeline/dispatch\.sh'; then ok "crontab already correct"
-else printf '%s\n' "$new" | sed '/^$/N;/^\n$/D' | crontab - && ok "crontab updated: supervisor on $MINUTE minutes$([ "$SCAN" = 1 ] && echo ', hourly scan')"; fi
+if { { [ "$OS" = Darwin ] && ! printf '%s\n' "$cur" | grep -q 'orchestrate/supervisor\.sh'; } || [ "$(printf '%s\n' "$cur" | grep -c -F "$SUP")" = 1 ]; } && [ "$(printf '%s\n' "$cur" | grep -c -F "$BKF")" = 1 ] && [ "$(printf '%s\n' "$cur" | grep -c 'orchestrate/session-backfill\.sh')" = 1 ] && [ "$(printf '%s\n' "$cur" | grep -c -F "$ROT")" = 1 ] && [ "$(printf '%s\n' "$cur" | grep -c 'orchestrate/rotate-logs\.sh')" = 1 ] && { [ "$SCAN" = 0 ] || [ "$(printf '%s\n' "$cur" | grep -c -F "$SCN")" = 1 ]; } && ! printf '%s\n' "$cur" | grep -q 'pipeline/dispatch\.sh'; then ok "crontab already correct"
+else printf '%s\n' "$new" | sed '/^$/N;/^\n$/D' | crontab - && ok "crontab updated: $([ "$OS" = Darwin ] && echo 'no supervisor line (launchd)' || echo "supervisor on $MINUTE minutes")$([ "$SCAN" = 1 ] && echo ', hourly scan')"; fi
+if [ "$OS" = Darwin ]; then
+  ok "supervisor runs from the launchd agent com.jp.pipeline-supervisor (not cron: cron cannot read the keychain)"
+  [ -f "$HOME/Library/LaunchAgents/com.jp.pipeline-supervisor.plist" ] || printf '  WARN %s\n' "~/Library/LaunchAgents/com.jp.pipeline-supervisor.plist is missing — the Mac supervisor will not run until it is installed (see SKILL.md)"
+fi
 
 echo "5. tools"
 for t in gh jq git claude; do command -v "$t" >/dev/null && ok "$t" || todo "$t not on PATH"; done
