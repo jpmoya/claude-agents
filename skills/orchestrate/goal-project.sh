@@ -62,14 +62,14 @@ _gp_cache_set() {
 # _gp_items <owner> <project number> -> {"items":[{id,status,labels,content:{repository,number}}]} for the project's issue items, read with
 # a paginated `gh api graphql` query that asks only for what the sync uses (id, issue repo/number, label names, Status), so each page
 # costs 1 point. Exit 1 when any page fails or is unreadable.
-_GP_ITEMS_Q='query($o:String!,$n:Int!,$c:String){repositoryOwner(login:$o){... on ProjectV2Owner{projectV2(number:$n){items(first:100,after:$c){pageInfo{hasNextPage endCursor} nodes{id fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{name}} content{... on Issue{number repository{nameWithOwner} labels(first:20){nodes{name}}}}}}}}}}'
+_GP_ITEMS_Q='query($owner:String!,$number:Int!,$cursor:String){repositoryOwner(login:$owner){... on ProjectV2Owner{projectV2(number:$number){items(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{id fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{name}} content{... on Issue{number repository{nameWithOwner} labels(first:20){nodes{name}}}}}}}}}}'
 _gp_items() {
   local o="$1" n="$2" cur="" page nodes="[]" more
   while :; do
     if [ -n "$cur" ]; then
-      page=$(gh api graphql -f query="$_GP_ITEMS_Q" -f o="$o" -F n="$n" -f c="$cur" 2>/dev/null) || return 1
+      page=$(gh api graphql -f query="$_GP_ITEMS_Q" -f owner="$o" -F number="$n" -f cursor="$cur" 2>/dev/null) || return 1
     else
-      page=$(gh api graphql -f query="$_GP_ITEMS_Q" -f o="$o" -F n="$n" 2>/dev/null) || return 1
+      page=$(gh api graphql -f query="$_GP_ITEMS_Q" -f owner="$o" -F number="$n" 2>/dev/null) || return 1
     fi
     nodes=$(jq -c --argjson acc "$nodes" '$acc + (.data.repositoryOwner.projectV2.items.nodes | if type == "array" then . else error("no nodes") end)' <<< "$page" 2>/dev/null) || return 1
     more=$(jq -r '.data.repositoryOwner.projectV2.items.pageInfo | if .hasNextPage == true then (.endCursor // "") else "" end' <<< "$page" 2>/dev/null) || return 1
