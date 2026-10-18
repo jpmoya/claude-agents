@@ -90,10 +90,17 @@ The repo holds the agent definitions, hooks and orchestrate skill. Integration b
    - **Scheduler only — verify.** `migration-ledger.ts pending --env staging` is not possible for the deployer (it needs the key). Instead run `SELECT filename FROM public.scheduler_migration_ledger WHERE environment='staging'` via the Management API and confirm every new file is listed.
    - **Scheduler only — scope.** "Changed since applied" checksums are not re-recorded by the deployer (owner/runbook #688), and production is never recorded by the deployer.
 
-4. **Merge the PR.** Check the PR's commits (all pages) for a merge commit — a back-merge PR (e.g. `main` merged into `staging`) carries one, and squashing it would drop the parent it exists to preserve:
+4. **Merge the PR.** `--merge` is only for a true back-merge PR (e.g. `main` merged into `staging`), whose merge commit exists to bring `main` into the base and squashing it would drop that parent. Every other PR is squashed — including a feature PR that absorbed the base branch in a catch-up merge (`git merge origin/staging`): the release bot finds a change's PR only from a trailing `(#N)` in a single squashed commit title, so a merge-committed feature PR is never shipped. List the PR's merge commits (all pages) with their parents:
    ```bash
-   gh api --paginate repos/<owner>/<repo>/pulls/<N>/commits --jq '.[] | select((.parents|length) > 1) | .sha'
+   gh api --paginate repos/<owner>/<repo>/pulls/<N>/commits --jq '.[] | select((.parents|length) > 1) | .sha as $s | .parents[1:][] | "\($s) \(.sha)"'
    ```
+   For each non-first parent `<P>` listed, with `<base>` the PR's base branch, compare against both branches:
+   ```bash
+   gh api repos/<owner>/<repo>/compare/main...<P> --jq .status      # on main?   behind|identical = yes
+   gh api repos/<owner>/<repo>/compare/<base>...<P> --jq .status    # on base?   behind|identical = yes
+   ```
+   `<P>` is a back-merge parent only when it is on `main` (status `behind`/`identical`) and NOT on `<base>` (any other status). The first parent, a parent that is on neither, and a parent already on `<base>` (a branch-sync or staging catch-up merge) never qualify.
+
    **Before either merge command below**, remove the PR's worktree so the local branch delete can succeed. Run from the main checkout:
    ```bash
    branch=$(gh pr view <N> --json headRefName --jq .headRefName)
@@ -103,11 +110,11 @@ The repo holds the agent definitions, hooks and orchestrate skill. Integration b
    ```
    Look up by branch, not directory name (directories are `issue-N-slug`, branches may differ). Only remove a path under `<main checkout>/.worktrees/` — never a path outside it and never the main checkout. No worktree found → no-op, continue. `--force` is safe: the PR's pushed commits (`--match-head-commit`) are what gets merged; anything left in the copy (build/test output, unpushed edits) is not part of the merge. Applies to the `--merge` and `--squash` commands alike and to release-PR (`release-v*`) merges. If the merge then fails, note in the step 7 report that the worktree was removed; a later fix cycle re-creates it with `git worktree add .worktrees/<dir> <branch>`.
 
-   Non-empty output (a 2+-parent commit exists) → merge with `--merge` so that parent survives:
+   Back-merge parent found (on `main`, not on `<base>`) → merge with `--merge` so that parent survives:
    ```bash
    gh pr merge <N> --merge --delete-branch --match-head-commit <sha>
    ```
-   Empty output → merge as usual:
+   No merge commits, or none with a back-merge parent (catch-up merges included) → squash:
    ```bash
    gh pr merge <N> --squash --delete-branch --match-head-commit <sha>
    ```
@@ -131,7 +138,7 @@ The repo holds the agent definitions, hooks and orchestrate skill. Integration b
    ```
    **[deployer] DEPLOYED**
    - PR #<N> merged to <main|staging>
-   - Merge method: <squash | merge> (merged commit has <1|2> parent(s))
+   - Merge method: <squash | merge> (merged commit has <1|2> parent(s)) — <back-merge | squash despite catch-up merges | no merge commits>
    - Migrations: <applied / none / REFUSED — escalated to JP>
    - Verification: <verified OK / failed — details>
    - E2E: deferred to the final suite run (JP 2026-09-22)

@@ -43,15 +43,15 @@ test_dbm_ac1_merge_methods_wired_to_correct_branch() {
   # the "Non-empty output" / "Empty output" markers and the following step.
   local body non_empty_block empty_block
   body=$(cat "$DEPLOYER_DBM")
-  assert_contains "$body" "Non-empty output" "deployer.md (non-empty-output branch marker)" || return 1
-  assert_contains "$body" "Empty output" "deployer.md (empty-output branch marker)" || return 1
+  assert_contains "$body" "Back-merge parent found" "deployer.md (back-merge branch marker)" || return 1
+  assert_contains "$body" "No merge commits, or none with a back-merge parent" "deployer.md (squash branch marker)" || return 1
 
-  non_empty_block="${body#*Non-empty output}"
-  non_empty_block="${non_empty_block%%Empty output*}"
+  non_empty_block="${body#*Back-merge parent found}"
+  non_empty_block="${non_empty_block%%No merge commits, or none*}"
   assert_contains "$non_empty_block" "--merge --delete-branch" "deployer.md (non-empty-output branch must use --merge)" || return 1
   assert_not_contains "$non_empty_block" "--squash --delete-branch" "deployer.md (non-empty-output branch must not use --squash)" || return 1
 
-  empty_block="${body#*Empty output}"
+  empty_block="${body#*No merge commits, or none with a back-merge parent}"
   empty_block="${empty_block%%Note the merged commit*}"
   assert_contains "$empty_block" "--squash --delete-branch" "deployer.md (empty-output branch must use --squash)" || return 1
   assert_not_contains "$empty_block" "--merge --delete-branch" "deployer.md (empty-output branch must not use --merge)" || return 1
@@ -60,7 +60,32 @@ test_dbm_ac1_merge_methods_wired_to_correct_branch() {
 test_dbm_ac2_deployed_template_states_method_and_parents() {
   local body
   body=$(cat "$DEPLOYER_DBM")
-  assert_contains "$body" "Merge method: <squash | merge> (merged commit has <1|2> parent(s))" "deployer.md DEPLOYED template" || return 1
+  assert_contains "$body" "Merge method: <squash | merge> (merged commit has <1|2> parent(s)) — <back-merge | squash despite catch-up merges | no merge commits>" "deployer.md DEPLOYED template" || return 1
+}
+
+# Issue #400: --merge only when a non-first parent is on main and not on the base; catch-up
+# merges (parent on neither / already on base) must be squashed so the commit title ends "(#N)".
+test_dbm_400_back_merge_discriminator() {
+  local body step
+  body=$(cat "$DEPLOYER_DBM")
+  step="${body#*4. **Merge the PR.**}"
+  step="${step%%5. **Verify deployment.**}"
+  assert_contains "$step" "compare/main...<P>" "deployer.md step 4 (is parent on main)" || return 1
+  assert_contains "$step" "compare/<base>...<P>" "deployer.md step 4 (is parent on base)" || return 1
+  assert_contains "$step" "behind" "deployer.md step 4 (behind status)" || return 1
+  assert_contains "$step" "identical" "deployer.md step 4 (identical status)" || return 1
+  assert_contains "$step" "on \`main\` (status \`behind\`/\`identical\`) and NOT on \`<base>\`" "deployer.md step 4 (rule)" || return 1
+}
+
+test_dbm_400_catch_up_merge_is_squashed() {
+  local body step
+  body=$(cat "$DEPLOYER_DBM")
+  step="${body#*4. **Merge the PR.**}"
+  step="${step%%5. **Verify deployment.**}"
+  assert_contains "$step" "a parent that is on neither" "deployer.md step 4 (feature catch-up case)" || return 1
+  assert_contains "$step" "a parent already on \`<base>\`" "deployer.md step 4 (branch-sync case)" || return 1
+  assert_contains "$step" "catch-up merges included" "deployer.md step 4 (squash despite catch-up)" || return 1
+  assert_not_contains "$step" "Non-empty output (a 2+-parent" "deployer.md step 4 (old any-2-parent rule)" || return 1
 }
 
 echo "-- deployer back-merge method (issue #101)"
@@ -68,3 +93,5 @@ run_test test_dbm_ac1_paginated_commits_check
 run_test test_dbm_ac1_both_merge_methods_present
 run_test test_dbm_ac1_merge_methods_wired_to_correct_branch
 run_test test_dbm_ac2_deployed_template_states_method_and_parents
+run_test test_dbm_400_back_merge_discriminator
+run_test test_dbm_400_catch_up_merge_is_squashed
