@@ -162,7 +162,7 @@ reg_priority() {
 }
 
 cmd_register_args() {
-  local spec="" repos="" title="" req="" sentry=0 mockups=review instr="" now=0 pin="" a hosts=both
+  local spec="" repos="" title="" req="" sentry=0 mockups=review instr="" now=0 pin="" a hosts=both approve_all=0
   case "${1:-}" in --*|'') ;; *) spec="$1"; shift ;; esac
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -172,6 +172,7 @@ cmd_register_args() {
       --mockups) mockups="${2:-}"; case "$mockups" in review|skip) ;; *) die "--mockups takes review or skip" ;; esac; shift 2 ;;
       --include-sentry) sentry=1; shift ;;
       --now) now=1; shift ;;
+      --approve-all) approve_all=1; shift ;;
       --priority) PRIORITY="${2:-}"; case "$PRIORITY" in ''|*[!0-9]*|0) die "--priority needs a whole number, 1 or more (1 starts first)" ;; esac; shift 2 ;;
       --after|--before) PLACE_MODE="${1#--}"; PLACE_REF="${2:-}"; [ -n "$PLACE_REF" ] || die "$1 needs a goal (spec or id)"; shift 2 ;;
       --hosts) hosts="${2:-}"; case "$hosts" in both|mac|vm) ;; *) die "--hosts takes both, mac or vm" ;; esac; shift 2 ;;
@@ -184,16 +185,16 @@ cmd_register_args() {
   case "$spec" in
     ''|label:*) cmd_register_label "$spec" "$repos" "$title" "$req" "$sentry" "$mockups" "$instr" "$now" "$pin" "$hosts" ;;
     *)
-      if [ -n "$repos$title$req" ] || [ "$sentry" = 1 ]; then die "--repos/--title/--requirements/--include-sentry only apply to label goals"; fi
-      cmd_register "$spec" "$instr" "$now" "$pin" ;;
+      if [ -n "$repos$title$req" ]; then die "--repos/--title/--requirements only apply to label goals"; fi
+      cmd_register "$spec" "$instr" "$now" "$pin" "$sentry" "$approve_all" ;;
   esac
 }
 
 cmd_register() {
-  local spec="$1" instr="$2" now="${3:-0}" pin="${4:-}"
-  local line repo id checkout rows block body resp n host=""
+  local spec="$1" instr="$2" now="${3:-0}" pin="${4:-}" sentry="${5:-0}" approve_all="${6:-0}"
+  local line repo id checkout rows block body resp n host="" kind go=false granted='[]' granted_at=""
   line=$(goal_parse "$spec") || exit 1
-  repo=$(printf '%s' "$line" | cut -f1)
+  repo=$(printf '%s' "$line" | cut -f1); kind=$(printf '%s' "$line" | cut -f2)
   checkout=$(_goal_checkout "$repo") || die "$repo is not in DISPATCH_REPOS; goals only run on dispatched repos"
   [ -e "$checkout/.git" ] || die "checkout $checkout for $repo is not a git checkout"
   id=$(goal_id "$spec") || exit 1
@@ -204,6 +205,13 @@ cmd_register() {
   block=$(jq -nc --arg id "$id" --arg spec "$spec" --arg host "$host" --arg pin "$pin" --arg created "$(now_utc)" --arg ins "$instr" \
     --argjson prio "$PRIORITY" --arg name "$(goal_name_for "$spec" 2>/dev/null)" \
     '{v:1,id:$id,spec:$spec,host:$host,host_pref:$pin,priority:$prio,created:$created,instructions:$ins} + (if $name != "" then {title:$name} else {} end)')
+  # #410: registering the goal is JP's go. It is recorded in the block (go/granted/granted_at), which every body rewrite keeps.
+  if [ "$kind" = msall ] && [ "$approve_all" != 1 ]; then
+    echo "no go granted: $spec covers every open milestone; re-register with --approve-all to give agent-go to all of them" >&2
+  else
+    go=true; granted_at=$(date -u +%F)
+    block=$(printf '%s' "$block" | jq -c --argjson s "$([ "$sentry" = 1 ] && echo true || echo false)" '. + {include_sentry:$s}')
+  fi
   body=$(body_for "$spec" "$block")
   ensure_label delivery-goal
   [ "$now" = 1 ] || ensure_label goal-queued
@@ -212,6 +220,13 @@ cmd_register() {
        '{title:$t, body:$b, labels:(["delivery-goal"] + (if $now == 1 then [] else ["goal-queued"] end))}')") \
     || die "could not create the registry issue"
   n=$(printf '%s' "$resp" | jq -r .number)
+  if [ "$go" = true ]; then
+    granted=$(_goal_grant_scope "$spec" "$id" "$sentry" '[]') \
+      || echo "some tickets could not be given agent-go; the next goal sync retries them" >&2
+    block=$(printf '%s' "$block" | jq -c --argjson g "${granted:-[]}" --arg d "$granted_at" '. + {go:true, granted:$g, granted_at:$d}')
+    resp=$(api_json PATCH "repos/$GOAL_REGISTRY_REPO/issues/$n" \
+      "$(jq -nc --arg b "$(body_for "$spec" "$block")" '{body:$b}')") || register_rollback "$n" "could not write the registry block"
+  fi
   clear_stale_goal_state "$id"   # #224: a re-registered goal keeps its id, so it must not inherit the old goal's stop/held files
   if [ "$now" != 1 ]; then register_project "$resp"; echo "queued $id (issue #$n)"; return 0; fi
   mkdir -p "$LOGDIR/goals"

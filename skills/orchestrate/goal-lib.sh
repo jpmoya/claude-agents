@@ -340,7 +340,7 @@ goal_launch() {
 }
 
 # goal_milestone_approved <owner/repo> <milestone number> (#314) — is this milestone the scope of a registered, live goal
-# whose registry issue carries the plain line `Approved-by: JP`? Prints the registry issue URL and returns 0 when so;
+# whose registry block records `go:true` (set by `deliver.sh register`, #410)? Prints the registry issue URL and returns 0 when so;
 # returns 1 when not (no goal / goal without approval / other scope / goal closed); returns 2 when the registry cannot be read
 # (fail closed). Refusals (1 with a goal present but unapproved, and 2) emit a `slog` line with repo, milestone and reason.
 goal_milestone_approved() {
@@ -355,14 +355,14 @@ goal_milestone_approved() {
     def covers: .spec == "\($repo):milestone:\($ms)" or .spec == "\($repo):milestones:all"
                 or ((.spec | startswith("\($repo):milestone:")) and (.id | endswith("-ms-\($ms)")));
     [.[] | select(has("pull_request") | not) | . as $i | goal_of | select(.st != "unreadable" and covers)
-      | {n: .issue, appr: (($i.body // "") | test("(^|\n)Approved-by: JP([^A-Za-z0-9_-]|$)"))}]
+      | {n: .issue, appr: ((.block.go // false) == true)}]
     | (map(select(.appr)) | first // null) as $a | (first // null) as $f
     | if $a then "yes\t\($a.n)" elif $f then "no\t\($f.n)" else "none\t" end') || {
     slog "goal_milestone_approved: repo=$repo milestone=$ms reason=registry-unparseable (fail closed)"; return 2; }
   case "$url" in
     yes*) rid="${url#*$'\t'}"; printf 'https://github.com/%s/issues/%s\n' "$GOAL_REGISTRY_REPO" "$rid"
           return 0 ;;
-    no*)  why="goal-not-approved (registry issue ${url#*$'\t'} has no 'Approved-by: JP' line)" ;;
+    no*)  why="goal-not-approved (registry issue ${url#*$'\t'} has no go:true in its block)" ;;
     *)    why="no-open-goal-covers-milestone" ;;
   esac
   slog "goal_milestone_approved: repo=$repo milestone=$ms reason=$why"
@@ -488,47 +488,81 @@ goal_requirements_ok() {
   [ -n "$(printf '%s' "$body" | tr -d '[:space:]')" ]
 }
 
-# _goal_grant_go <label> <include_sentry 0|1> <granted json array> <repo>… -> prints the new granted array.
-# Open labelled tickets get agent-go (agent-proposed removed) unless source:sentry (without include_sentry) or already
-# in the granted list: the grant is applied once per ticket, so an agent-go JP removed later is never re-added.
-# Exit 1 when a read failed; a ticket whose label write failed is not recorded (retried next sync).
-_goal_grant_go() {
-  local label=$1 sentry=$2 granted=$3 r js n labels ref rc=0
-  shift 3
-  for r in "$@"; do
-    _goal_is_bi "$r" && continue
-    js=$(_goal_label_issues "$r" "$label" open) || return 1
-    while IFS=$'\t' read -r n labels; do
-      [ -n "$n" ] || continue
-      ref="$r#$n"
-      if printf '%s' "$granted" | jq -e --arg x "$ref" 'index($x) != null' >/dev/null; then continue; fi
-      case ",$labels," in *",source:sentry,"*) [ "$sentry" = 1 ] || continue ;; esac
-      case ",$labels," in
-        *",agent-go,"*) ;;
-        *)
-          _goal_issue_label_add "$r" "$n" agent-go || { rc=1; continue; }
-          case ",$labels," in *",agent-proposed,"*) _goal_issue_label_del "$r" "$n" agent-proposed ;; esac ;;
-      esac
-      granted=$(printf '%s' "$granted" | jq -c --arg x "$ref" '. + [$x]')
-    done <<< "$(printf '%s' "$js" | jq -r '.[] | "\(.number)\t\([.labels[].name] | join(","))"')"
+# _goal_grant_rows <include_sentry 0|1> <granted json array> — reads "owner/repo<TAB>n<TAB>state<TAB>labels-csv" lines on stdin
+# and prints the new granted array. Open tickets get agent-go (agent-proposed removed) unless Business-Intelligence, source:sentry
+# (without include_sentry) or already in the granted list: the grant is applied once per ticket, so an agent-go JP removed later
+# is never re-added. Every refusal or failed write logs `repo=<owner/repo> issue=<n> reason=<text>` (no ticket text).
+# Exit 1 when a label write failed; that ticket is not recorded (retried next sync).
+_goal_grant_rows() {
+  local sentry=$1 granted=$2 r n labels st ref rc=0
+  while IFS=$'\t' read -r r n st labels; do
+    [ -n "$n" ] || continue
+    [ "$st" = open ] || continue
+    ref="$r#$n"
+    if printf '%s' "$granted" | jq -e --arg x "$ref" 'index($x) != null' >/dev/null; then continue; fi
+    if _goal_is_bi "$r"; then slog "repo=$r issue=$n reason=Business-Intelligence is never part of a goal, no agent-go"; continue; fi
+    case ",$labels," in *",source:sentry,"*) [ "$sentry" = 1 ] || { slog "repo=$r issue=$n reason=source:sentry ticket skipped (goal has no --include-sentry)"; continue; } ;; esac
+    case ",$labels," in
+      *",agent-go,"*) ;;
+      *)
+        _goal_issue_label_add "$r" "$n" agent-go || { slog "repo=$r issue=$n reason=agent-go label write failed, retried at the next sync"; rc=1; continue; }
+        case ",$labels," in *",agent-proposed,"*) _goal_issue_label_del "$r" "$n" agent-proposed ;; esac ;;
+    esac
+    granted=$(printf '%s' "$granted" | jq -c --arg x "$ref" '. + [$x]')
   done
   printf '%s\n' "$granted"
   return $rc
 }
 
-# _goal_sync_grant <goal json> — an approved label goal (go:true) gives agent-go to labelled tickets that arrived since
+# _goal_grant_go <label> <include_sentry 0|1> <granted json array> <repo>… -> prints the new granted array (label goals).
+# Exit 1 when a read failed or a label write failed.
+_goal_grant_go() {
+  local label=$1 sentry=$2 granted=$3 r js rows="" rc=0
+  shift 3
+  for r in "$@"; do
+    _goal_is_bi "$r" && continue
+    js=$(_goal_label_issues "$r" "$label" open) || return 1
+    rows+=$(printf '%s' "$js" | jq -r --arg r "$r" '.[] | "\($r)\t\(.number)\topen\t\([.labels[].name] | join(","))"')$'\n'
+  done
+  _goal_grant_rows "$sentry" "$granted" <<< "$rows" || rc=1
+  return $rc
+}
+
+# _goal_grant_scope <spec> <id> <include_sentry 0|1> <granted json array> -> prints the new granted array (milestone / #N / msall
+# goals, #410): the open tickets of the goal's scope (_goal_scope_rows) go through the same _goal_grant_rows.
+# Exit 1 when the scope or a ticket could not be read, or a label write failed.
+_goal_grant_scope() {
+  local spec=$1 id=$2 sentry=$3 granted=$4 srows lines="" ref st r n one rc=0
+  srows=$(_goal_scope_rows "$spec" "$id") || return 1
+  while IFS=$'\t' read -r ref st; do
+    [ "$st" = open ] || continue
+    r="${ref%%#*}"; n="${ref##*#}"
+    if printf '%s' "$granted" | jq -e --arg x "$ref" 'index($x) != null' >/dev/null; then continue; fi
+    if _goal_is_bi "$r"; then lines+="$r"$'\t'"$n"$'\topen\t\n'; continue; fi   # refused (and logged) by _goal_grant_rows
+    one=$(gh api "repos/$r/issues/$n" 2>/dev/null) || { rc=1; continue; }
+    lines+=$(printf '%s' "$one" | jq -r --arg r "$r" '"\($r)\t\(.number)\topen\t\([.labels[].name] | join(","))"')$'\n'
+  done <<< "$srows"
+  _goal_grant_rows "$sentry" "$granted" <<< "$lines" || rc=1
+  return $rc
+}
+
+# _goal_sync_grant <goal json> — an approved goal (go:true in its block: label, milestone or #N) gives agent-go to in-scope tickets that arrived since
 # (any repo of the goal); the registry block and body record each grant.
 _goal_sync_grant() {
   local g=$1 block id issue label sentry granted new repos body date
   block=$(printf '%s' "$g" | jq -c '.block // empty'); [ -n "$block" ] || return 0
-  [ "$(printf '%s' "$block" | jq -r '((.v // 1) == 2) and ((.go // false) == true) and ((.label // "") != "")')" = true ] || return 0
+  [ "$(printf '%s' "$block" | jq -r '(.go // false) == true')" = true ] || return 0
   id=$(printf '%s' "$g" | jq -r .id); issue=$(printf '%s' "$g" | jq -r .issue)
-  label=$(printf '%s' "$block" | jq -r .label)
   sentry=0; [ "$(printf '%s' "$block" | jq -r '(.include_sentry // false)')" = true ] && sentry=1
   granted=$(printf '%s' "$block" | jq -c '.granted // []')
-  repos=$(printf '%s' "$block" | jq -r '(.repos // [])[]')
-  # shellcheck disable=SC2086
-  new=$(_goal_grant_go "$label" "$sentry" "$granted" $repos) || { goal_err "cannot grant go on every labelled ticket of $id"; }
+  if [ "$(printf '%s' "$block" | jq -r '((.v // 1) == 2) and ((.label // "") != "")')" = true ]; then
+    label=$(printf '%s' "$block" | jq -r .label)
+    repos=$(printf '%s' "$block" | jq -r '(.repos // [])[]')
+    # shellcheck disable=SC2086
+    new=$(_goal_grant_go "$label" "$sentry" "$granted" $repos) || { goal_err "cannot grant go on every labelled ticket of $id"; }
+  else   # milestone / #N / msall goal (#410): go lives in the block, the scope is read live
+    new=$(_goal_grant_scope "$(printf '%s' "$block" | jq -r '.spec // empty')" "$id" "$sentry" "$granted") || { goal_err "cannot grant go on every in-scope ticket of $id"; }
+  fi
   [ -n "$new" ] || return 0
   [ "$new" != "$granted" ] || return 0
   block=$(printf '%s' "$block" | jq -c --argjson n "$new" '.granted = $n')
