@@ -106,6 +106,15 @@
             "command": "~/.claude/hooks/block-orchestrator-agent.sh"
           }
         ]
+      },
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/require-question-justification.sh"
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
