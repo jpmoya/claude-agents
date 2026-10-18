@@ -1125,8 +1125,23 @@ if [ "$launched" -eq 0 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
       # and goal tickets whose lead is not live (fallback), stay dispatched here. A goal still queued has not started: its tickets wait.
       # Spread: with the default `hosts: both`, a goal whose lead is on the other host is dispatched here too (the claim comment keeps
       # a ticket on one host); a goal confined with `hosts: mac|vm` to the other host is skipped (goal_foreign_labels).
-      candidates=$(gh issue list --repo "$owner_repo" --state open --label "$LABEL_GO" --limit 50 --json number,labels \
-        --jq ".[] | select([.labels[].name] | index(\"$LABEL_IN_PROGRESS\") | not) | select(([.labels[].name] | map(. as \$l | $goal_skip_json | index(\$l)) | any(. != null)) | not) | .number" 2>/dev/null) || continue
+      # #247 begin
+      # Release order (#247): in-progress dropped server-side before the cap (and again in jq), then sort by milestone
+      # vX.Y.Z numerically asc, then issue number asc; no / staging / non-version / malformed milestone last (#247).
+      # A failed listing or sort is logged with release/environment/route tags and alerted via notify_engineering (#247).
+      rq_err=$(mktemp); rq_tags="release=$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --short HEAD 2>/dev/null || echo unknown) environment=${HOST} route=dispatch-order"
+      candidates=$(gh issue list --repo "$owner_repo" --state open --label "$LABEL_GO" --limit 500 \
+        --search "-label:\"$LABEL_IN_PROGRESS\"" --json number,labels,milestone \
+        --jq "[.[] | select([.labels[].name] | index(\"$LABEL_IN_PROGRESS\") | not) | select(([.labels[].name] | map(. as \$l | $goal_skip_json | index(\$l)) | any(. != null)) | not)]
+          | map(. as \$i | ((((\$i.milestone.title? // \"\") | tostring) | capture(\"^v(?<a>[0-9]+)\\\\.(?<b>[0-9]+)\\\\.(?<c>[0-9]+)\")) // null) as \$v
+            | {n: \$i.number, k: (if \$v then [0, (\$v.a|tonumber), (\$v.b|tonumber), (\$v.c|tonumber), \$i.number] else [1, 0, 0, 0, \$i.number] end)})
+          | sort_by(.k) | .[].n" 2>"$rq_err") || {
+        slog "[dispatch] $owner_repo — listing or release sort failed ($rq_tags): $(head -c 300 "$rq_err" | tr '\n' ' ')"
+        notify_engineering 0 ":warning:" "dispatch listing/sort failed for $owner_repo ($rq_tags)" "$owner_repo"; rm -f "$rq_err"; continue; }
+      rm -f "$rq_err"
+      cand_n=$(printf '%s\n' "$candidates" | grep -c '[0-9]')
+      [ "$cand_n" -ge 500 ] && slog "[dispatch] $owner_repo — candidate list reached the 500 cap; later tickets are not visible this tick"
+      # #247 end
       for num in $candidates; do
         rk=$(run_key "$owner_repo" "$num")
         # local state: alive or queued here → not a candidate
@@ -1144,7 +1159,7 @@ if [ "$launched" -eq 0 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
         # Won: a re-dispatch is JP's explicit "go again", so clear local tombstones like a manual launch does.
         rm -f "$PIPE/orch-$rk".{stopped,held,done,closed,marker,milestone,alert,label-cleared} "$PIPE/orch-$rk.restarts"
         out=$(LAUNCH_REASON=agent-go "$(dirname "${BASH_SOURCE[0]}")/orchestrate.sh" --force "$local_path" "$num" 2>&1 | tail -1)
-        slog "[dispatch] $owner_repo#$num — claimed by $HOST, $out"
+        slog "[dispatch] $owner_repo#$num — claimed by $HOST, candidates=$cand_n, $out"
         launched=1
         break
       done
