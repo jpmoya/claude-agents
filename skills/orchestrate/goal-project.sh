@@ -229,8 +229,9 @@ goal_project_sync_all() {
 # Calls report_status_async when the list changed, so the page picks a new project up at once.
 goal_project_refresh_list() {
   local f="$PIPE/goalprojects.json" o list prev new now
-  if ! goal_project_enabled; then   # no project scope here: an empty list, so this host lists no goal rows of its own (the Mac's report has them)
-    [ "$(jq -c '.projects' "$f" 2>/dev/null)" = "[]" ] || { mkdir -p "$PIPE" 2>/dev/null; echo '{"projects":[]}' > "$f.tmp" 2>/dev/null && mv "$f.tmp" "$f"; }
+  if ! goal_project_enabled; then   # no project scope in THIS process (the VM, or a session holding the bot token): never touch a list that exists,
+    # or one such process blanks the Mac's goal rows for everyone. A host that never had a list gets an empty one once, so it lists no rows of its own.
+    [ -f "$f" ] || { mkdir -p "$PIPE" 2>/dev/null; echo '{"projects":[]}' > "$f.tmp" 2>/dev/null && mv "$f.tmp" "$f"; }
     return 0
   fi
   o=$(_gp_owner); now=$(date -u +%FT%TZ)

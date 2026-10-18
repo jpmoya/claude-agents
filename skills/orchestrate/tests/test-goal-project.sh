@@ -214,6 +214,18 @@ test_gp_new_project_appears_on_the_status_page_without_manual_steps() {
   dg_teardown; return $rc
 }
 
+test_gp_process_without_project_scope_never_blanks_an_existing_list() {
+  gp_setup
+  local rc=0
+  rm -f "$DG_BIN/scope"
+  echo '{"owner":"o","projects":[{"number":3,"title":"Goal: X","url":"https://github.com/users/o/projects/3","closed":false,"closed_seen":null}]}' > "$DG_PIPE/goalprojects.json"
+  dg_lib 'goal_project_refresh_list'
+  assert_eq "$(jq -r '.projects|length' "$DG_PIPE/goalprojects.json")" "1" "a process without the scope leaves the list alone" || rc=1
+  rm -f "$DG_PIPE/goalprojects.json"; dg_lib 'goal_project_refresh_list'
+  assert_eq "$(jq -c '.projects' "$DG_PIPE/goalprojects.json")" "[]" "a host that never had a list gets an empty one" || rc=1
+  dg_teardown; return $rc
+}
+
 test_gp_gh_project_and_graphql_only_in_goal_project_sh() {
   local rc=0 f hits
   for f in "$DG_SKILL"/*.sh; do
@@ -229,6 +241,6 @@ test_gp_gh_project_and_graphql_only_in_goal_project_sh() {
 for t in test_gp_register_creates_project_adds_tickets_and_records_it test_gp_project_command_is_idempotent_and_mirrors_status \
          test_gp_stopped_goal_closes_its_project_not_the_registry_row test_gp_project_command_binds_but_never_creates_for_existing_goals test_gp_brief_names_the_bound_project test_gp_binds_existing_project_with_the_same_title test_gp_register_joins_the_project_that_already_holds_all_its_tickets \
          test_gp_without_project_scope_nothing_runs_and_register_succeeds test_gp_project_failure_never_fails_the_goal \
-         test_gp_status_page_link_prefers_the_project test_gp_new_project_appears_on_the_status_page_without_manual_steps test_gp_gh_project_and_graphql_only_in_goal_project_sh; do
+         test_gp_status_page_link_prefers_the_project test_gp_new_project_appears_on_the_status_page_without_manual_steps test_gp_process_without_project_scope_never_blanks_an_existing_list test_gp_gh_project_and_graphql_only_in_goal_project_sh; do
   run_test "$t"
 done
