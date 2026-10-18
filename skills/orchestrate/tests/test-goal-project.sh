@@ -209,6 +209,11 @@ test_gp_new_project_appears_on_the_status_page_without_manual_steps() {
   out=$(PATH="$PATH" python3 "$DG_SKILL/build-runs-json.py" "" "$DG_HOME/r.jsonl" "$DG_PIPE" goals </dev/null 2>/dev/null)
   assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id == "project-3") | "\(.state) \(.host) \(.priority)"')" "waiting_jp mac 2" "the project row carries its goal's state, host and priority" || rc=1
   assert_eq "$(printf '%s' "$out" | jq -r '[.[] | select(.id == "g1" or .id == "g2")] | length')" "0" "ticket goals are not rows of their own" || rc=1
+  # a milestone goal bound to a project gives that project its state, though it is no row of its own
+  jq -nc '{id:"o_r-ms-3", host:"mac", spec:"o/r:milestone:3", state:"held", priority:7, project:{owner:"x",number:3,url:"https://github.com/users/example-owner/projects/3"}}' > "$DG_PIPE/goal-g1.json"
+  out=$(PATH="$PATH" python3 "$DG_SKILL/build-runs-json.py" "" "$DG_HOME/r.jsonl" "$DG_PIPE" goals </dev/null 2>/dev/null)
+  assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id == "project-3") | "\(.state) \(.priority)"')" "held 7" "a bound milestone goal supplies the project's state" || rc=1
+  assert_eq "$(printf '%s' "$out" | jq -r '[.[] | select(.id == "o_r-ms-3")] | length')" "0" "and is not a row itself" || rc=1
   # nothing manual: the registry has no goal for it
   assert_eq "$(dg_reg_count)" "0" "no registry goal needed" || rc=1
   dg_teardown; return $rc
