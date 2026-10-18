@@ -28,7 +28,7 @@ FILES=(
   ".config/gcloud/service-accounts/|.config/gcloud/service-accounts/"
   "dev/benjis-hub/.env|benjis-hub/.env"                          # Ramp, Gmail client secret
   "dev/benjis-hub/gws/.env|benjis-hub/gws/.env"
-  "dev/benjis-quoting-tool/app/.env.local|benjis-quoting-tool/app/.env.local"   # Copper
+  "dev/benjis-sales-tool/app/.env.local|benjis-quoting-tool/app/.env.local"   # Copper
 )
 NPM_TOOLS=(resend-cli supabase @sentry/cli wrangler vercel firebase-tools neonctl@2)
 
