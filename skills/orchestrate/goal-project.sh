@@ -62,7 +62,7 @@ _gp_cache_set() {
 # _gp_items <owner> <project number> -> {"items":[{id,status,labels,content:{repository,number}}]} for the project's issue items, read with
 # a paginated `gh api graphql` query that asks only for what the sync uses (id, issue repo/number, label names, Status), so each page
 # costs 1 point. Exit 1 when any page fails or is unreadable.
-_GP_ITEMS_Q='query($owner:String!,$number:Int!,$cursor:String){repositoryOwner(login:$owner){... on ProjectV2Owner{projectV2(number:$number){items(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{id fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{name}} content{... on Issue{number repository{nameWithOwner} labels(first:20){nodes{name}}}}}}}}}}'
+_GP_ITEMS_Q='query($owner:String!,$number:Int!,$cursor:String){repositoryOwner(login:$owner){... on ProjectV2Owner{projectV2(number:$number){items(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{id fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{name}} content{... on Issue{number state repository{nameWithOwner} labels(first:20){nodes{name}}}}}}}}}}'
 _gp_items() {
   local o="$1" n="$2" cur="" page nodes="[]" more
   while :; do
@@ -76,7 +76,7 @@ _gp_items() {
     [ -n "$more" ] || break
     cur="$more"
   done
-  jq -c '{items: [.[] | select((.content.number? // null) != null) | {id, status: (.fieldValueByName.name? // null), labels: [.content.labels.nodes[]?.name],
+  jq -c '{items: [.[] | select((.content.number? // null) != null) | {id, status: (.fieldValueByName.name? // null), closed: (.content.state? == "CLOSED"), labels: [.content.labels.nodes[]?.name],
     content: {repository: .content.repository.nameWithOwner, number: .content.number}}]}' <<< "$nodes"
 }
 
@@ -102,7 +102,8 @@ _gp_find() {
 
 # goal_project_ensure <goal json> [bind|create] -> prints the project json {owner,number,url} when the block has none: binds an
 # existing "Goal: ..." project (same title, or at least half of its items are this goal's tickets) and records it in the registry
-# block and the local cache. `create` (register, or `deliver.sh project --create`) creates one from the template when none binds;
+# block and the local cache. `create` (register, or `deliver.sh project --create`) creates one from the template when none binds (an open "Goal: " project that
+# already holds every ticket of the goal binds first, so a milestone slice of a bigger goal joins that goal's project instead of getting its own);
 # `bind` (default; sync, backfill) never creates one: the projects JP already has are the goals' projects. Exit 1 when none.
 goal_project_ensure() {
   local g="$1" mode="${2:-bind}" full=1 cur o title issue id spec refs n out url p repo reg_url
@@ -111,7 +112,6 @@ goal_project_ensure() {
   if [ -n "$cur" ]; then printf '%s\n' "$cur"; return 0; fi
   o=$(_gp_owner); issue=$(printf '%s' "$g" | jq -r '.issue'); id=$(printf '%s' "$g" | jq -r '.id'); spec=$(printf '%s' "$g" | jq -r '.spec')
   title=$(goal_project_title "$g")
-  [ "$mode" != create ] || full=0
   refs=""; [ "$full" != 1 ] || refs=$(goal_scope "$spec" "$id" "$(printf '%s' "$g" | jq -r '(.block.repos // []) | join(",")')" 2>/dev/null || true)
   n=$(_gp_find "$title" "$refs" "$full") || n=""
   if [ -n "$n" ]; then
@@ -139,6 +139,20 @@ goal_project_ensure() {
   _gp_cache_set "$id" "$p"
   _gp_log "goal $id -> project $n"
   printf '%s\n' "$p"
+}
+
+# goal_project_sweep_done — close every open "Goal: " project whose tickets are all closed (at least one ticket), whatever goal it is
+# bound to or none: a finished goal's project closes by itself and moves to "recently closed" on the status page.
+goal_project_sweep_done() {
+  local o n items
+  goal_project_enabled || return 0
+  o=$(_gp_owner)
+  for n in $(gh project list --owner "$o" --format json -L 200 2>/dev/null | jq -r '.projects[]? | select(.title | startswith("Goal: ")) | .number'); do
+    items=$(_gp_items "$o" "$n" 2>/dev/null) || continue
+    [ "$(printf '%s' "$items" | jq -r '(.items | length) > 0 and (all(.items[]; .closed == true))')" = true ] || continue
+    gh project close "$n" --owner "$o" >/dev/null 2>&1 && _gp_log "project $n: every ticket is closed, closed the project" || _gp_log "cannot close project $n"
+  done
+  return 0
 }
 
 # goal_project_sync_one <goal json> [bind|create] — ensure the project, add every ticket of the goal (idempotent), mirror Status, and
@@ -205,6 +219,7 @@ goal_project_sync_all() {
     [ -n "$g" ] || continue
     goal_project_sync_one "$g" bind || _gp_log "sync of $(printf '%s' "$g" | jq -r '.id // "?"') skipped"
   done <<< "$(printf '%s' "$1" | jq -c '.[]')"
+  goal_project_sweep_done || true
   return 0
 }
 
