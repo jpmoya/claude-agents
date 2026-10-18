@@ -181,6 +181,7 @@ cmd_register_args() {
     esac
   done
   PRIORITY=$(reg_priority) || exit 1; PLACE_MODE=""   # resolved once: the others are renumbered now
+  case "$spec" in ''|label:*) [ "$approve_all" = 0 ] || die "--approve-all only applies to msall goals" ;; esac
   [ "$hosts" = both ] || case "$spec" in ''|label:*) ;; *) die "--hosts only applies to label goals" ;; esac
   case "$spec" in
     ''|label:*) cmd_register_label "$spec" "$repos" "$title" "$req" "$sentry" "$mockups" "$instr" "$now" "$pin" "$hosts" ;;
@@ -212,6 +213,8 @@ cmd_register() {
     go=true; granted_at=$(date -u +%F)
     block=$(printf '%s' "$block" | jq -c --argjson s "$([ "$sentry" = 1 ] && echo true || echo false)" '. + {include_sentry:$s}')
   fi
+  # go:true is in the create body, so a failed grant or launch can never leave agent-go labels without a live goal
+  [ "$go" = true ] && block=$(printf '%s' "$block" | jq -c --arg d "$granted_at" '. + {go:true, granted:[], granted_at:$d}')
   body=$(body_for "$spec" "$block")
   ensure_label delivery-goal
   [ "$now" = 1 ] || ensure_label goal-queued
@@ -222,10 +225,12 @@ cmd_register() {
   n=$(printf '%s' "$resp" | jq -r .number)
   if [ "$go" = true ]; then
     granted=$(_goal_grant_scope "$spec" "$id" "$sentry" '[]') \
-      || echo "some tickets could not be given agent-go; the next goal sync retries them" >&2
-    block=$(printf '%s' "$block" | jq -c --argjson g "${granted:-[]}" --arg d "$granted_at" '. + {go:true, granted:$g, granted_at:$d}')
-    resp=$(api_json PATCH "repos/$GOAL_REGISTRY_REPO/issues/$n" \
-      "$(jq -nc --arg b "$(body_for "$spec" "$block")" '{body:$b}')") || register_rollback "$n" "could not write the registry block"
+      || goal_err "cannot grant go on every in-scope ticket of $id"
+    block=$(printf '%s' "$block" | jq -c --argjson g "${granted:-[]}" '.granted = $g')
+    # non-fatal: the goal sync reconciles a missed record (already-labelled tickets are recorded without re-adding)
+    api_json PATCH "repos/$GOAL_REGISTRY_REPO/issues/$n" \
+      "$(jq -nc --arg b "$(body_for "$spec" "$block")" '{body:$b}')" >/dev/null \
+      || goal_err "could not record the granted tickets of $id; the next goal sync reconciles them"
   fi
   clear_stale_goal_state "$id"   # #224: a re-registered goal keeps its id, so it must not inherit the old goal's stop/held files
   if [ "$now" != 1 ]; then register_project "$resp"; echo "queued $id (issue #$n)"; return 0; fi
@@ -235,6 +240,11 @@ cmd_register() {
   if ! goal_launch "$id" "$(_goal_find "$id" 2>/dev/null || printf '%s' "$resp" | _goal_issue_to_goal)"; then
     launch_alert "$id" "$n"
     # don't leave a ghost active goal behind
+    if [ "$go" = true ]; then   # take the dispatchable labels back with the goal
+      local gr; for gr in $(printf '%s' "$granted" | jq -r '.[]' 2>/dev/null); do
+        _goal_issue_label_del "${gr%%#*}" "${gr##*#}" agent-go 2>/dev/null || true
+      done
+    fi
     if { add_label "$n" goal-stopped && set_state "$n" closed; } 2>/dev/null; then
       die "registered $id (issue #$n) but the launch failed; closed it as stopped"
     fi

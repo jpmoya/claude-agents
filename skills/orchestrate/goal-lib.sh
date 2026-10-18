@@ -144,7 +144,7 @@ _goal_repos() {
 _goal_ms_rows() {  # <repo> <milestone number> -> owner/repo#N<TAB>state, issues only
   local all
   all=$(_goal_get_all "repos/$1/issues?milestone=$2&state=all&per_page=100") || return 1
-  printf '%s' "$all" | jq -r --arg r "$1" '.[] | select(has("pull_request") | not) | "\($r)#\(.number)\t\(.state)"'
+  printf '%s' "$all" | jq -r --arg r "$1" --argjson l "${GOAL_SCOPE_LABELS:-0}" '.[] | select(has("pull_request") | not) | "\($r)#\(.number)\t\(.state)" + (if $l == 1 then "\t" + ([.labels[].name] | join(",")) else "" end)'
 }
 
 # _goal_scope_rows <spec> [id] [repos csv] -> owner/repo#N<TAB>open|closed, one set of live REST calls.
@@ -176,7 +176,7 @@ _goal_scope_rows() {
       one=$(gh api "repos/$repo/issues/$ref" 2>&1) || {
         case "$one" in *"HTTP 404"*|*"Not Found"*|*"HTTP 410"*|*"Gone"*) return 0 ;; *) return 1 ;; esac
       }
-      printf '%s' "$one" | jq -r --arg r "$repo" 'select(has("pull_request") | not) | "\($r)#\(.number)\t\(.state)"' ;;
+      printf '%s' "$one" | jq -r --arg r "$repo" --argjson l "${GOAL_SCOPE_LABELS:-0}" 'select(has("pull_request") | not) | "\($r)#\(.number)\t\(.state)" + (if $l == 1 then "\t" + ([.labels[].name] | join(",")) else "" end)' ;;
   esac
 }
 
@@ -532,15 +532,13 @@ _goal_grant_go() {
 # goals, #410): the open tickets of the goal's scope (_goal_scope_rows) go through the same _goal_grant_rows.
 # Exit 1 when the scope or a ticket could not be read, or a label write failed.
 _goal_grant_scope() {
-  local spec=$1 id=$2 sentry=$3 granted=$4 srows lines="" ref st r n one rc=0
-  srows=$(_goal_scope_rows "$spec" "$id") || return 1
-  while IFS=$'\t' read -r ref st; do
+  local spec=$1 id=$2 sentry=$3 granted=$4 srows lines="" ref st labels r n rc=0
+  srows=$(GOAL_SCOPE_LABELS=1 _goal_scope_rows "$spec" "$id") || return 1   # rows carry the label CSV: no per-ticket GET
+  while IFS=$'\t' read -r ref st labels; do
     [ "$st" = open ] || continue
     r="${ref%%#*}"; n="${ref##*#}"
     if printf '%s' "$granted" | jq -e --arg x "$ref" 'index($x) != null' >/dev/null; then continue; fi
-    if _goal_is_bi "$r"; then lines+="$r"$'\t'"$n"$'\topen\t\n'; continue; fi   # refused (and logged) by _goal_grant_rows
-    one=$(gh api "repos/$r/issues/$n" 2>/dev/null) || { rc=1; continue; }
-    lines+=$(printf '%s' "$one" | jq -r --arg r "$r" '"\($r)\t\(.number)\topen\t\([.labels[].name] | join(","))"')$'\n'
+    lines+="$r"$'\t'"$n"$'\topen\t'"$labels"$'\n'   # BI / sentry refusals are logged by _goal_grant_rows
   done <<< "$srows"
   _goal_grant_rows "$sentry" "$granted" <<< "$lines" || rc=1
   return $rc
