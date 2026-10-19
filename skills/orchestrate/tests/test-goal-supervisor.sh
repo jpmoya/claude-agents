@@ -679,6 +679,87 @@ test_gs_428_goal_with_start_gated_ticket_reaches_waiting_branch() {   # AC6 (han
   assert_eq "$cards" "1" "428 AC6: waiting card posted" || return 1
 }
 
+# ---------------------------------------------------------------- #427: a held goal is looked at again -----------
+
+# gs_held_seed <snap|"-"> — ms-12 parked: .held + goal-held label + np=3; "-" leaves the .snap a normal launch tick wrote.
+gs_held_seed() {
+  gs_env
+  gs_own "$GS_ID_MS12" 50 "$GS_SPEC_MS12" 3600 ""
+  if [ "$1" = "-" ]; then
+    gs_tick; gs_wait_claude 1; gs_settle   # a normal tick stores the real snapshot of the current scope
+    gs_launch_state "$GS_ID_MS12" 3600 0 60
+  else
+    echo "$1" > "$GS_PIPE/goal-$GS_ID_MS12.snap"
+  fi
+  touch "$GS_PIPE/goal-$GS_ID_MS12.held"; echo 3 > "$GS_PIPE/goal-$GS_ID_MS12.np"
+  gs_reg 50 "$GS_SPEC_MS12" "$GS_ID_MS12" host-a held
+}
+
+test_gs_427_held_goal_with_all_tickets_closed_is_delivered() {   # AC2 (hand: 101 and 102 closed -> 2 of 2)
+  gs_held_seed stale
+  gs_issue 101 closed 12
+  gs_tick; gs_settle
+  local st lab c log; st=$(gs_reg_state 50); gs_has_label 50 goal-held && lab=yes || lab=no
+  c=$(gs_claude_count); log=$(gs_log | grep -c "$GS_ID_MS12 delivered")
+  gs_cleanup
+  assert_eq "$st" "closed" "427 AC2: registry issue closed" || return 1
+  assert_eq "$lab" "no" "427 AC2: goal-held label removed" || return 1
+  assert_eq "$log" "1" "427 AC2: delivered line logged" || return 1
+  assert_eq "$c" "0" "427 AC2: nothing launched" || return 1
+}
+
+test_gs_427_held_goal_with_changed_snapshot_is_unheld() {   # AC3
+  gs_held_seed stale
+  gs_tick; gs_settle
+  local held lab np log st
+  [ -e "$GS_PIPE/goal-$GS_ID_MS12.held" ] && held=yes || held=no
+  gs_has_label 50 goal-held && lab=yes || lab=no
+  np=$(gs_file "$GS_ID_MS12" np); log=$(gs_log | grep -c "$GS_ID_MS12 unheld — scope changed"); st=$(gs_reg_state 50)
+  gs_cleanup
+  assert_eq "$held" "no" "427 AC3: .held removed" || return 1
+  assert_eq "$lab" "no" "427 AC3: goal-held label removed" || return 1
+  assert_eq "$np" "0" "427 AC3: .np reset" || return 1
+  assert_eq "$log" "1" "427 AC3: unheld line logged" || return 1
+  assert_eq "$st" "open" "427 AC3: registry issue stays open" || return 1
+}
+
+test_gs_427_held_goal_with_unchanged_snapshot_stays_held_and_is_not_launched() {   # AC4
+  gs_held_seed -
+  gs_tick; gs_settle
+  local held lab c
+  [ -e "$GS_PIPE/goal-$GS_ID_MS12.held" ] && held=yes || held=no
+  gs_has_label 50 goal-held && lab=yes || lab=no
+  c=$(gs_claude_count)
+  gs_cleanup
+  assert_eq "$held" "yes" "427 AC4: still held" || return 1
+  assert_eq "$lab" "yes" "427 AC4: label kept" || return 1
+  assert_eq "$c" "1" "427 AC4: no relaunch (the one launch is the seeding tick)" || return 1
+}
+
+test_gs_427_held_goal_costs_no_reads_between_syncs() {   # AC5
+  GS_SYNC=default gs_held_seed stale
+  gs_issue 101 closed 12
+  date +%s > "$GS_PIPE/goal-sync.last"
+  gs_tick; gs_settle
+  local held st; [ -e "$GS_PIPE/goal-$GS_ID_MS12.held" ] && held=yes || held=no; st=$(gs_reg_state 50)
+  gs_cleanup
+  assert_eq "$held" "yes" "427 AC5: not re-evaluated when the sync is not due" || return 1
+  assert_eq "$st" "open" "427 AC5: not delivered when the sync is not due" || return 1
+}
+
+test_gs_427_held_goal_with_unreadable_scope_stays_held() {   # AC1 (failed read: ticket 7 answers 404)
+  gs_env
+  gs_own "$GS_ID_T7" 50 "$GS_SPEC_T7" 3600 ""
+  echo stale > "$GS_PIPE/goal-$GS_ID_T7.snap"; touch "$GS_PIPE/goal-$GS_ID_T7.held"
+  gs_reg 50 "$GS_SPEC_T7" "$GS_ID_T7" host-a held
+  rm -f "$GS_ST/issues/$GS_A/7.json"
+  gs_tick; gs_settle
+  local held st; [ -e "$GS_PIPE/goal-$GS_ID_T7.held" ] && held=yes || held=no; st=$(gs_reg_state 50)
+  gs_cleanup
+  assert_eq "$held" "yes" "427 AC1: a failed read leaves the goal held" || return 1
+  assert_eq "$st" "open" "427 AC1: and not delivered" || return 1
+}
+
 # ---------------------------------------------------------------- AC5: waiting on JP --------------------------
 
 # Hand arithmetic: 101 DEPLOYED TO STAGING (waiting), 102 closed (delivered) -> no active, 1 waiting -> waiting on JP,
@@ -1111,6 +1192,11 @@ run_test test_gs_428_closed_start_gate_is_active
 run_test test_gs_428_open_gate_with_marker_is_classified_as_today
 run_test test_gs_428_unreadable_gate_is_neither_waiting_nor_delivered
 run_test test_gs_428_goal_with_start_gated_ticket_reaches_waiting_branch
+run_test test_gs_427_held_goal_with_all_tickets_closed_is_delivered
+run_test test_gs_427_held_goal_with_changed_snapshot_is_unheld
+run_test test_gs_427_held_goal_with_unchanged_snapshot_stays_held_and_is_not_launched
+run_test test_gs_427_held_goal_costs_no_reads_between_syncs
+run_test test_gs_427_held_goal_with_unreadable_scope_stays_held
 run_test test_gs_ac5_waiting_on_jp_parks_then_resumes_when_ticket_becomes_active
 run_test test_gs_ac6_three_unchanged_cycles_park_the_goal
 run_test test_gs_ac6_changed_snapshot_resets_no_progress
