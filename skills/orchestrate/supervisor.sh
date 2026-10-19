@@ -30,6 +30,8 @@ mkdir -p "$PIPE" "$QUEUE" "$LOGDIR"
 slog() { printf '[%s] %s\n' "$(date -u +%FT%TZ)" "$*" >> "$SLOG"; }
 # #341: every .held creation logs its path and caller (log line only, no behaviour change)
 touch_held() { touch "$1"; slog "[held-touch] path=$1 caller=${FUNCNAME[1]:-main}:${BASH_LINENO[0]}"; }
+# A GitHub rename must never silently blind the scan: resolve canonical names, WARN loudly on rename/unresolvable.
+canonicalize_repo_lists
 
 # Event push: every tick, deliberately outside the single-flight lock below — this is the
 # keep-alive + safety net (design #10 §4.4), so it must still fire even on a tick that skips

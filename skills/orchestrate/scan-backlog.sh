@@ -52,6 +52,7 @@ goal_scan_record() {
     'if .label == $l then (.block = $b | .granted = $b.granted) else . end')
 }
 
+canonicalize_repo_lists
 # ${arr[@]+...}: an empty or unset array is an unbound variable under `set -u` on bash 3.2 (macOS).
 for entry in ${DISPATCH_REPOS[@]+"${DISPATCH_REPOS[@]}"} ${SCAN_ONLY_REPOS[@]+"${SCAN_ONLY_REPOS[@]}"}; do
   repo="${entry%%:*}"

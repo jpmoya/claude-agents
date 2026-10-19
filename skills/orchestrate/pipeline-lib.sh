@@ -249,3 +249,37 @@ claim_winner() {
     || { pipeline_event claim_lookup_failed --argjson issue "${issue:-0}" --arg stage gh; claim_alert "$issue" gh; return 1; }
   printf '%s\n' "$out" | awk '{print $4}'
 }
+
+# canonicalize_repo_lists — a repo renamed on GitHub keeps redirecting for `gh repo view` but `gh issue list -R <old>` returns []
+# (2026-10-19: quoting-tool -> sales-tool blinded the supervisor). For every DISPATCH_REPOS / SCAN_ONLY_REPOS entry, resolve the
+# canonical owner/name with `gh repo view` (cached 1h in $PIPE/repo-canon) and rewrite the entry in place; log a loud WARN on a
+# rename or on a repo that cannot be resolved (entry kept as configured). Uses slog when defined, else stderr.
+repo_canon() {  # repo_canon <owner/repo> -> canonical owner/name (cached 1h in $PIPE/repo-canon); empty when unresolvable
+  local cdir="${PIPE:-$HOME/.claude/pipeline}/repo-canon" cf canon=""
+  mkdir -p "$cdir" 2>/dev/null; cf="$cdir/${1//\//__}"
+  if [ -f "$cf" ] && [ -n "$(find "$cf" -mmin -60 2>/dev/null)" ]; then canon=$(cat "$cf"); fi
+  if [ -z "$canon" ]; then
+    canon=$(gh repo view "$1" --json nameWithOwner --jq .nameWithOwner 2>/dev/null)
+    case "$canon" in */*) printf '%s' "$canon" > "$cf" ;; *) canon="" ;; esac
+  fi
+  printf '%s' "$canon"
+}
+canonicalize_repo_lists() {
+  local arr i entry slug rest canon
+  for arr in DISPATCH_REPOS SCAN_ONLY_REPOS; do
+    eval "[ \${#$arr[@]} -gt 0 ]" 2>/dev/null || continue
+    eval "n=\${#$arr[@]}"
+    for ((i = 0; i < n; i++)); do
+      eval "entry=\${$arr[$i]}"
+      slug="${entry%%:*}"; rest=""; [ "$slug" != "$entry" ] && rest=":${entry#*:}"
+      canon=$(repo_canon "$slug")
+      if [ -z "$canon" ]; then
+        _canon_warn "WARN [repo-canon] $arr entry '$slug' does not resolve on GitHub (deleted, renamed without redirect, or no access); it will return nothing until fixed"
+      elif [ "$canon" != "$slug" ]; then
+        _canon_warn "WARN [repo-canon] $arr entry '$slug' was renamed to '$canon'; using '$canon' (fix config.local.sh)"
+        eval "$arr[$i]=\"\$canon\$rest\""
+      fi
+    done
+  done
+}
+_canon_warn() { if declare -F slog >/dev/null 2>&1; then slog "$1"; else echo "$1" >&2; fi; }
