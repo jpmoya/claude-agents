@@ -25,6 +25,10 @@ PIPE_LEGACY="$(mktemp -d "${TMPDIR:-/tmp}/orch-test-legacy.XXXXXX")/legacy"   # 
 if [ "$PIPE_LEGACY" = "/tmp/pipeline" ]; then echo "refusing to run: PIPE_LEGACY resolves to /tmp/pipeline" >&2; exit 2; fi
 export PIPE_LEGACY
 export PIPELINE_TEST_CLAIM_SETTLE_SECS=0   # #217: hand launches wait the settle window; suites need not pay it (hand-launch test pins its own)
+# Supervisor tests run supervisor.sh, whose code-sync gate refuses to launch when the checkout is off main / behind origin/main /
+# dirty (any worktree or feature branch, or a stale local main). That is host state, not what these suites test: switch it off here.
+# test-code-sync.sh drives code-sync.sh directly and sets its own state.
+export CODE_SYNC_ENABLED=0
 
 . "$HERE/lib/assert.sh"
 . "$HERE/lib/fixture.sh"

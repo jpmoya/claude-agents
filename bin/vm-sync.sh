@@ -84,7 +84,8 @@ do_status() {
     vm "$t --version 2>&1 | head -1 | cut -c1-30" 2>/dev/null || echo MISSING
   done
   echo "== logins on the VM"
-  vm 'echo "vercel:   $(vercel whoami 2>&1 | tail -1)"
+  # never `vercel whoami` on the VM: an expired token starts a device-login flow and pings JP's phone. Check the token file.
+  vm 'echo "vercel:   $( { [ -n "${VERCEL_TOKEN:-}" ] || grep -qs "\"token\"" "$HOME/.local/share/com.vercel.cli/auth.json" "$HOME/Library/Application Support/com.vercel.cli/auth.json"; } && echo "token present (not verified live)" || echo "no token")"
       echo "supabase: $(supabase orgs list 2>&1 | grep -c "|") org rows"
       echo "sentry:   $(sentry-cli info 2>&1 | grep -m1 "User:" || echo FAIL)"
       echo "wrangler: $(wrangler whoami 2>&1 | grep -m1 -iE "email|not authenticated" | cut -c1-80)"
