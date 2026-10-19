@@ -244,10 +244,17 @@ _goal_resolve() {
 
 # _goal_checkout <owner/repo> -> the DISPATCH_REPOS checkout path (~ expanded); exit 1 if not dispatched
 _goal_checkout() {
-  local entry p
+  local entry p c
   for entry in ${DISPATCH_REPOS[@]+"${DISPATCH_REPOS[@]}"}; do
     if [ "${entry%%:*}" = "$1" ]; then p="${entry#*:}"; printf '%s\n' "${p/#\~/$HOME}"; return 0; fi
   done
+  # a goal written before a GitHub rename still names the old slug: match through the canonical name
+  c=$(repo_canon "$1" 2>/dev/null)
+  if [ -n "$c" ] && [ "$c" != "$1" ]; then
+    for entry in ${DISPATCH_REPOS[@]+"${DISPATCH_REPOS[@]}"}; do
+      if [ "${entry%%:*}" = "$c" ]; then p="${entry#*:}"; printf '%s\n' "${p/#\~/$HOME}"; return 0; fi
+    done
+  fi
   return 1
 }
 
