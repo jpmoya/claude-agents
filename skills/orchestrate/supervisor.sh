@@ -1108,13 +1108,21 @@ if [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
 fi
 
 # 5 (was 4). Shared dispatch — one agent-go issue per tick, claimed before launch so two machines never take the same one.
-# JP (2026-10-18): only the goal-based pipeline launches work; SHARED_DISPATCH_ENABLED=0 turns this whole step off.
-if [ "$launched" -eq 0 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ] && [ "${SHARED_DISPATCH_ENABLED:-1}" = 1 ]; then
+# JP (2026-10-18): only the goal-based pipeline launches work; SHARED_DISPATCH_ENABLED=0 turns this whole step off for
+# ordinary agent-go tickets. Exception (JP 2026-10-19): a ticket labeled user-feedback (staff-reported bug/idea) still
+# dispatches even then — feedback bugs must keep auto-fixing regardless of goal-gating.
+if [ "$launched" -eq 0 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
   if ! power_ok; then
     slog "[dispatch] skipped — on battery power"
   elif [ "$HAS_CAP" -ne 1 ]; then
     :  # nothing to log every 2 min; status shows the running set
   else
+    if [ "${SHARED_DISPATCH_ENABLED:-1}" = 1 ]; then
+      dispatch_feedback_only=0
+    else
+      dispatch_feedback_only=1
+      slog "[dispatch] SHARED_DISPATCH_ENABLED=0 — restricting this tick to $LABEL_FEEDBACK tickets"
+    fi
     now_epoch=$(date +%s)
     cutoff=$(python3 -c "import datetime; print((datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(seconds=$CLAIM_WINDOW_SECS)).strftime('%Y-%m-%dT%H:%M:%SZ'))")
     goal_skip_json=$( { goal_live_labels; goal_queued_labels; goal_foreign_labels; } 2>/dev/null | jq -Rsc 'split("\n") | map(select(length > 0))' 2>/dev/null) || goal_skip_json='[]'
@@ -1132,8 +1140,10 @@ if [ "$launched" -eq 0 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ] && [ "${SHARED_DIS
       # vX.Y.Z numerically asc, then issue number asc; no / staging / non-version / malformed milestone last (#247).
       # A failed listing or sort is logged with release/environment/route tags and alerted via notify_engineering (#247).
       rq_err=$(mktemp); rq_tags="release=$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --short HEAD 2>/dev/null || echo unknown) environment=${HOST} route=dispatch-order"
+      dispatch_search="-label:\"$LABEL_IN_PROGRESS\""
+      [ "$dispatch_feedback_only" -eq 1 ] && dispatch_search="$dispatch_search label:\"$LABEL_FEEDBACK\""
       candidates=$(gh issue list --repo "$owner_repo" --state open --label "$LABEL_GO" --limit 500 \
-        --search "-label:\"$LABEL_IN_PROGRESS\"" --json number,labels,milestone \
+        --search "$dispatch_search" --json number,labels,milestone \
         --jq "[.[] | select([.labels[].name] | index(\"$LABEL_IN_PROGRESS\") | not) | select(([.labels[].name] | map(. as \$l | $goal_skip_json | index(\$l)) | any(. != null)) | not)]
           | map(. as \$i | ((((\$i.milestone.title? // \"\") | tostring) | capture(\"^v(?<a>[0-9]+)\\\\.(?<b>[0-9]+)\\\\.(?<c>[0-9]+)\")) // null) as \$v
             | {n: \$i.number, k: (if \$v then [0, (\$v.a|tonumber), (\$v.b|tonumber), (\$v.c|tonumber), \$i.number] else [1, 0, 0, 0, \$i.number] end)})
