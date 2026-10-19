@@ -8,8 +8,8 @@ Principle: **sync what can be derived from git automatically, check-and-alert ev
 
 | What | How |
 |---|---|
-| Pipeline code (`agents/ hooks/ skills/ CLAUDE.md settings.json`) | Every supervisor tick runs `skills/orchestrate/code-sync.sh` first: fetch, fast-forward `main`, re-exec the tick on the new code. Interactive sessions still pull via `hooks/sync-agents.sh`. |
-| Refuse to run stale | If the checkout is behind `origin/main` and cannot fast-forward (other branch, dirty tracked tree, diverged), the tick logs `[code-sync] STALE` and launches nothing. Offline (fetch fails) is not stale: GitHub is down too. Kill switch: `CODE_SYNC_ENABLED=0` in `config.local.sh`. |
+| Pipeline code (`agents/ hooks/ skills/ CLAUDE.md settings.json`) | Every supervisor tick, inside its lock, runs `skills/orchestrate/code-sync.sh check` (fetch with a 40 s limit). If the checkout is behind or off `main` but safe to fix (tracked tree clean, nothing unpushed), the tick's EXIT trap switches to `main` and fast-forwards after the script finished reading itself; the next tick runs the new code (at most one tick of lag, no re-exec). Interactive sessions still pull via `hooks/sync-agents.sh`, which now logs the full git error. |
+| Refuse to run stale | If the checkout cannot be fixed safely (uncommitted tracked edits, unpushed commits on another branch, diverged), the tick logs `[code-sync] STALE` and launches nothing, and the daily drift check raises it. Offline (fetch fails) is not stale. Kill switch: `CODE_SYNC_ENABLED=0` in `config.local.sh`. |
 | Main checkout stays on `main` | The checkout the supervisor executes (`~/dev/claude-agents`, `~/claude-agents`) must never sit on a feature branch: a Mac tick once ran unmerged branch code and missed #426. Develop in `.worktrees/`. `host-drift.py --fix` switches it back when tracked files are clean and nothing is unpushed; otherwise it alerts. |
 | Git hooks path | `bin/host-drift.py --fix` points `core.hooksPath` at the repo's `.githooks` (or unsets a dead path) in manifest repos. |
 | Stale `claude` on non-interactive PATH (VM) | `--fix` puts `~/.local/bin` first in `~/.bashrc` (before the interactive guard). |
@@ -19,7 +19,7 @@ Principle: **sync what can be derived from git automatically, check-and-alert ev
 
 ## 2. Checked daily, alerted only on drift
 
-`bin/host-drift.py --fix --alert` runs daily on both hosts (Mac launchd `com.jp.host-drift`, VM cron). It prints nothing when clean. When the set of drift items changes it opens or updates one issue per host, "Host drift: mac" / "Host drift: vm" (label `host-drift`, jpmoya/claude-agents), and closes it when clean. Its latest snapshot is `~/.claude/pipeline/host-snapshot.json`.
+`bin/host-drift.py --fix --alert` runs daily on both hosts (Mac launchd `com.jp.host-drift`, VM cron). It prints nothing when clean. When the set of drift items changes it opens or updates one issue per host (ids only, no paths or file names, because the repo is public; details stay in the host snapshot), "Host drift: mac" / "Host drift: vm" (label `host-drift`, jpmoya/claude-agents), and closes it when clean. Its latest snapshot is `~/.claude/pipeline/host-snapshot.json`.
 
 Checked: `~/.claude` symlinks; claude-agents behind origin/main; node major, claude/gh/wrangler floors and PATH order; per-host config values and the 1000/day push budget; supervisor schedule loaded; required clones; required env files (presence only, values never read); `gh` login and scopes; wrangler login; headless claude login file; memory sync freshness.
 

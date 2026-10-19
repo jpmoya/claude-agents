@@ -65,30 +65,18 @@ def check_symlinks(repo):
             drift("symlink:" + item, f"~/.claude/{item} is not a symlink to {want}", "run skills/orchestrate/install.sh")
 
 
-def check_branch(repo, fix):
-    """A main checkout must stay on main: the supervisor executes whatever is checked out there."""
-    br = git(repo, "branch", "--show-current")[1].strip()
-    if br == "main":
-        return
-    clean = git(repo, "diff", "--quiet", "HEAD")[0] == 0
-    unpushed = git(repo, "log", "--oneline", "HEAD", "--not", "--remotes")[1].strip()
-    if fix and clean and not unpushed and git(repo, "checkout", "-q", "main")[0] == 0:
-        F.append("claude-agents main checkout was on '%s', switched to main" % (br or "detached HEAD"))
-        return
-    drift("branch:claude-agents", "claude-agents main checkout is on '%s', not main" % (br or "detached HEAD"),
-          "work in a worktree under .worktrees/, then git -C %s checkout main" % repo)
-
-
 def check_code(repo, fix):
-    check_branch(repo, fix)
+    """Main checkout must be on main and at origin/main (the supervisor executes whatever is checked out there)."""
     sync = os.path.join(repo, "skills", "orchestrate", "code-sync.sh")
-    rc, out = run(["bash", sync], timeout=90)
-    verdict = out.strip().splitlines()[-1] if out.strip() else "?"
-    if verdict == "updated":
-        F.append("claude-agents fast-forwarded to origin/main")
-    elif verdict == "stale":
-        drift("code:stale", "claude-agents checkout is behind origin/main and cannot fast-forward (other branch, dirty tree, or diverged); supervisor refuses to launch",
-              "git -C %s checkout main && git pull --ff-only" % repo)
+    verdict = (run(["bash", sync, "check"], timeout=90)[1].strip().splitlines() or ["?"])[-1]
+    if verdict == "fixable" and fix:
+        if run(["bash", sync, "apply"], timeout=60)[0] == 0:
+            F.append("claude-agents main checkout switched to main / fast-forwarded to origin/main"); return
+        verdict = "stale"
+    if verdict in ("fixable", "stale"):
+        drift("code:" + verdict, "claude-agents checkout is behind origin/main or off main"
+              + (" and cannot be fixed safely (uncommitted tracked edits or unpushed commits); the supervisor refuses to launch" if verdict == "stale" else ""),
+              "work in a worktree under .worktrees/, then git -C %s checkout main && git pull --ff-only" % repo)
 
 
 def check_tools(man, env):
@@ -304,8 +292,9 @@ def alert(drifts):
     issues = [i for i in (json.loads(out) if rc == 0 and out.strip().startswith("[") else []) if i["title"] == title]
     if rc != 0:
         return  # offline: try again next run (signature not saved)
-    body = "\n".join(f"- {d['msg']}" + (f" (fix: {d['hint']})" if d.get("hint") else "") for d in drifts) or "Clean."
-    body = f"Automatic report from bin/host-drift.py on {HOST} ({time.strftime('%Y-%m-%d %H:%MZ', time.gmtime())}). Names and paths only.\n\n{body}\n"
+    # This repo is PUBLIC: the issue carries drift ids only (no paths, no file names). Details stay in the host snapshot.
+    ids = "\n".join("- " + re.sub(r":[^:]*\.env[^:]*$", ":<env file>", d["id"]) for d in drifts) or "Clean."
+    body = f"Automatic report from bin/host-drift.py on {HOST} ({time.strftime('%Y-%m-%d %H:%MZ', time.gmtime())}).\n\n{ids}\n\nDetails on the host: python3 bin/host-drift.py (or ~/.claude/pipeline/host-snapshot.json).\n"
     if drifts:
         run(["gh", "label", "create", "host-drift", "-R", ALERT_REPO, "--color", "B60205", "--description", "daily host drift report"])
         if issues:

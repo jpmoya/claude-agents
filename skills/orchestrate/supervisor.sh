@@ -34,18 +34,7 @@ touch_held() { touch "$1"; slog "[held-touch] path=$1 caller=${FUNCNAME[1]:-main
 # Event push: every tick, deliberately outside the single-flight lock below — this is the
 # keep-alive + safety net (design #10 §4.4), so it must still fire even on a tick that skips
 # because a previous one is still running.
-[ -n "${CODE_SYNC_DONE:-}" ] || report_status_async "tick"
-
-# Code sync (docs/host-sync.md): pull claude-agents main before doing anything; refuse to launch on stale code.
-# Done BEFORE taking the lock so the exec below does not trip over its own inherited lock. The whole `if` is parsed
-# before it runs, so the pull cannot corrupt this script mid-read; exec then restarts the tick on the new code.
-if [ "${CODE_SYNC_ENABLED:-1}" = 1 ]; then
-  source "$HERE/code-sync.sh"
-  cs=$(code_sync_tick 2>>"$SLOG"); csrc=$?
-  if [ "$csrc" = 10 ] && [ -z "${CODE_SYNC_DONE:-}" ]; then slog "[code-sync] updated to $(git -C "$HERE" rev-parse --short HEAD); restarting tick"; CODE_SYNC_DONE=1 exec "$HERE/supervisor.sh" "$@"
-  elif [ "$csrc" = 20 ]; then slog "[code-sync] STALE: behind origin/main and cannot fast-forward ($(git -C "$HERE" rev-parse --short HEAD)); refusing to launch this tick"; exit 0
-  fi
-fi
+report_status_async "tick"
 
 # Acquire lock — exit if previous tick still running
 if command -v flock >/dev/null 2>&1; then
@@ -59,6 +48,17 @@ else
     else exit 0; fi
   fi
   trap 'rmdir "$LOCKDIR" 2>/dev/null' EXIT
+fi
+
+# Code sync (docs/host-sync.md), inside the lock: refuse to launch on code that cannot be brought current; otherwise
+# the EXIT trap fast-forwards main after this script has finished reading itself (the next tick runs the new code).
+CS_STATE=fresh
+if [ "${CODE_SYNC_ENABLED:-1}" = 1 ]; then
+  source "$HERE/code-sync.sh"
+  CS_STATE=$(code_sync_state 2>>"$SLOG")
+  _cs_exit() { [ -n "${LOCKDIR:-}" ] && rmdir "$LOCKDIR" 2>/dev/null; [ "$CS_STATE" = fixable ] && code_sync_apply 2>>"$SLOG" && slog "[code-sync] fast-forwarded to $(git -C "$HERE" rev-parse --short HEAD)"; }
+  trap _cs_exit EXIT
+  if [ "$CS_STATE" = stale ]; then slog "[code-sync] STALE: checkout is behind origin/main or off main and cannot be fixed safely (uncommitted tracked edits or unpushed commits); refusing to launch this tick"; exit 0; fi
 fi
 
 to_epoch() {  # ISO-8601 UTC → epoch; portable (macOS date has no -d)

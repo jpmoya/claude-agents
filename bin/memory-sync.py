@@ -24,7 +24,7 @@ SECRET_RES = [re.compile(p) for p in (
     r"xox[abprs]-[0-9A-Za-z-]{10,}", r"gh[pousr]_[0-9A-Za-z]{20,}", r"github_pat_[0-9A-Za-z_]{20,}", r"sk-[A-Za-z0-9_-]{20,}",
     r"sbp_[0-9a-f]{20,}", r"eyJ[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{10,}\.", r"-----BEGIN [A-Z ]*PRIVATE KEY-----",
     r"(?i)\b[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_?KEY|SERVICE_ROLE_KEY|PAT)\b\s*[=:]\s*['\"]?[A-Za-z0-9_\-./+=]{24,}",
-    r"AKIA[0-9A-Z]{16}",
+    r"AKIA[0-9A-Z]{16}", r"ph[xcs]_[A-Za-z0-9]{20,}", r"(?i)(?:key|token|secret|password)[\w ]{0,20}[=:]\s*['\"`]?[A-Za-z0-9_\-]{32,}",
 )]
 
 
