@@ -147,12 +147,25 @@ latest_marker() {  # the GATE marker: newest real routing marker whose agent is 
        then \$p else \$g0 end) as \$gate
     | if (\$last | test(\"^\\\\*\\\\*\\\\[(delivery-lead|project-manager)\\\\] \") | not) then \$gate else \$gate + \"\\n\" + \$last end  # legacy alias"
   # REST, not GraphQL (#388): the shared GraphQL budget runs out hourly; the REST core limit is separate (same shape as #57's hook).
-  # A failed read is "?" — callers must treat it as unknown, never as "no progress" (#387) — and is logged with gh's error.
-  local info out
-  if info=$(issue_info_rest "$repo" "$issue") && out=$(printf '%s' "$info" | jq -r "$prog" 2>/dev/null) && [ -n "$out" ]; then
-    printf '%s\n' "$out"; return 0
+  # A failed read is "?" — callers must treat it as unknown, never as "no progress" (#387) — and is logged with rc + gh's first error line.
+  # One comments call per read; the issue author (SKIP MOCKUPS check, #272) is fetched only when such a comment exists.
+  local slug errf raw out rc=0 author=""
+  slug=$(repo_slug "$repo"); errf=$(mktemp "${TMPDIR:-/tmp}/lm-err.XXXXXX")
+  if [ -z "$slug" ]; then rc=1; echo "repo name not resolvable" > "$errf"
+  else raw=$(cd "$repo" 2>/dev/null && gh api "repos/$slug/issues/$issue/comments?per_page=100" --paginate 2>"$errf" </dev/null) || rc=$?; fi
+  if [ "$rc" -eq 0 ]; then
+    raw=$(printf '%s' "$raw" | jq -s '{comments: (map(if type == "array" then .[] else . end))}' 2>>"$errf") || rc=1
   fi
-  slog "[marker] $(repo_slug "$repo")#$issue — marker read failed $(printf '%s' "${info:-no error text}" | head -1 | cut -c1-200)"
+  if [ "$rc" -eq 0 ] && printf '%s' "$raw" | grep -q 'SKIP MOCKUPS'; then
+    author=$(cd "$repo" 2>/dev/null && gh api "repos/$slug/issues/$issue" --jq '.user.login // empty' 2>/dev/null </dev/null) || author=""   # failure => no author => the skip is ignored, the gate stays
+    [ -z "$author" ] || raw=$(printf '%s' "$raw" | jq -c --arg a "$author" '. + {author: {login: $a}}')
+  fi
+  if [ "$rc" -eq 0 ] && out=$(printf '%s' "$raw" | jq -r "$prog" 2>>"$errf") && [ -n "$out" ]; then
+    rm -f "$errf"; printf '%s\n' "$out"; return 0
+  fi
+  [ "$rc" -ne 0 ] || rc=1
+  slog "[marker] ${slug:-$repo}#$issue — marker read failed rc=$rc: $(gh_err_line "$errf")"
+  rm -f "$errf"
   autoretry_alert "$issue" "latest_marker" latest_marker
   echo "?"
 }
