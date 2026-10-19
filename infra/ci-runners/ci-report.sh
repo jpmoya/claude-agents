@@ -2,7 +2,7 @@
 # ci-report.sh: where is CI slow? Queue waits and run times per job (GitHub API) plus host pressure
 # (the per-minute samples gha-metrics.sh writes on each runner host). Run it from the Mac.
 # Usage: ci-report.sh [--days N] [--runs N]
-# Env:   REPOS  repos to read   (default: Benjis-Plants/scheduler Benjis-Plants/benjis-quoting-tool)
+# Env:   REPOS  repos to read   (default: Benjis-Plants/scheduler Benjis-Plants/benjis-sales-tool)
 #        HOSTS  ssh targets     (default: none; e.g. "claude@178.156.187.130 root@178.156.204.167")
 #        CI_REPORT_JOBS_FILE / CI_REPORT_HOST_DIR  test seams: read fixtures instead of GitHub / ssh
 set -euo pipefail
@@ -17,7 +17,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 [[ $DAYS =~ ^[0-9]+$ ]] && [[ $RUNS =~ ^[0-9]+$ ]] || { echo "ci-report.sh: --days/--runs must be integers" >&2; exit 2; }
-REPOS=${REPOS:-"Benjis-Plants/scheduler Benjis-Plants/benjis-quoting-tool"}
+REPOS=${REPOS:-"Benjis-Plants/scheduler Benjis-Plants/benjis-sales-tool"}
 HOSTS=${HOSTS:-}
 
 since=$(date -u -v-"${DAYS}"d +%Y-%m-%d 2>/dev/null || date -u -d "-$DAYS days" +%Y-%m-%d)
