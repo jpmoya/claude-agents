@@ -26,6 +26,7 @@ printf '%s\n' "\$*" >> "\$D/gh-args.log"
 [ "\$1" = "api" ] && [ "\$2" != "graphql" ] || { echo "GraphQL: API rate limit already exceeded for user ID 1" >&2; exit 1; }
 [ -e "\$D/rest-fail" ] && { echo "HTTP 403: API rate limit exceeded token=\$TOK Bearer xyz" >&2; echo "second line" >&2; exit 1; }
 case "\$2" in
+  repos/project-a/repo-a/issues/601) echo '{"state":"open","body":"","user":{"login":"jpmoya"},"updated_at":"2026-10-17T18:00:00Z"}' ;;
   repos/project-a/repo-a/issues/601/comments*) for p in "\$D"/pages/page*.json; do cat "\$p"; done ;;
   *) echo "fake gh: unexpected \$*" >&2; exit 1 ;;
 esac
@@ -42,7 +43,7 @@ sr_teardown() { rm -rf "$SR_DIR"; }
 
 # sr_run_lm <repo> <issue> — runs the shipped latest_marker (+ its helpers) against the fake gh. Sets SR_OUT; log in $SR_DIR/slog.
 sr_run_lm() {
-  { sr_fn "$SUP_SR" latest_marker; sr_fn "$SUP_SR" gh_err_line; sr_fn "$SUP_SR" autoretry_alert; } > "$SR_DIR/fns.sh"
+  { sr_fn "$SUP_SR" latest_marker; sr_fn "$SUP_SR" issue_info_rest; sr_fn "$SUP_SR" gh_err_line; sr_fn "$SUP_SR" autoretry_alert; } > "$SR_DIR/fns.sh"
   SR_OUT=$( PATH="$SR_DIR/bin:$PATH" SLACK_WEBHOOK_URL=https://hooks.example.test/x SLOG="$SR_DIR/slog"
     . "$ROOT_SR/hooks/pipeline-markers.sh"; . "$HERE_SR/../pipeline-lib.sh"
     slog() { printf '%s\n' "$*" >> "$SLOG"; }
@@ -66,7 +67,7 @@ test_sr_ac3_failed_read_is_logged_and_alerted() {
   local log; log=$(cat "$SR_DIR/slog" 2>/dev/null) rc=0
   assert_eq "$SR_OUT" "?" "AC3: a failed read still answers ?" \
     && assert_contains "$log" "#601" "AC3: log names the ticket" \
-    && assert_contains "$log" "latest_marker" "AC3: log names the step" \
+    && assert_contains "$log" "[marker]" "AC3: log names the step" \
     && assert_contains "$log" "API rate limit exceeded" "AC3: log carries gh's error text" \
     && assert_not_contains "$log" "ghp_x" "AC3: token redacted" \
     && assert_not_contains "$log" "second line" "AC3: one line only" \
