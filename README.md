@@ -44,6 +44,10 @@ Retire each hand-rolled relauncher once its plan is covered by a goal. Docs only
 - **VM cron `refactor-tracker/pm-cycle.sh`**: register `skills/orchestrate/deliver.sh <owner/repo>:milestone:<refactor-tracker milestone>`, then delete the cron line (`crontab -e`). Verify: `crontab -l | grep pm-` prints nothing for it, and `skills/orchestrate/deliver.sh status` shows the goal.
 - **VM cron `pm-logging/pm-log-cycle.sh`**: register `skills/orchestrate/deliver.sh <owner/repo>:milestone:<pm-logging milestone>`, then delete the cron line (`crontab -e`). Verify: `crontab -l | grep pm-` prints nothing, and `skills/orchestrate/deliver.sh status` shows the goal.
 
+## Host sync (Mac and Clog VM)
+
+Code sync at every supervisor tick, a daily drift check with safe auto-fixes, and a memory sync: see [docs/host-sync.md](docs/host-sync.md). Install the schedules with `bin/host-sync-install.sh`.
+
 ## Install on a new machine
 
 ```bash

@@ -34,7 +34,18 @@ touch_held() { touch "$1"; slog "[held-touch] path=$1 caller=${FUNCNAME[1]:-main
 # Event push: every tick, deliberately outside the single-flight lock below — this is the
 # keep-alive + safety net (design #10 §4.4), so it must still fire even on a tick that skips
 # because a previous one is still running.
-report_status_async "tick"
+[ -n "${CODE_SYNC_DONE:-}" ] || report_status_async "tick"
+
+# Code sync (docs/host-sync.md): pull claude-agents main before doing anything; refuse to launch on stale code.
+# Done BEFORE taking the lock so the exec below does not trip over its own inherited lock. The whole `if` is parsed
+# before it runs, so the pull cannot corrupt this script mid-read; exec then restarts the tick on the new code.
+if [ "${CODE_SYNC_ENABLED:-1}" = 1 ]; then
+  source "$HERE/code-sync.sh"
+  cs=$(code_sync_tick 2>>"$SLOG"); csrc=$?
+  if [ "$csrc" = 10 ] && [ -z "${CODE_SYNC_DONE:-}" ]; then slog "[code-sync] updated to $(git -C "$HERE" rev-parse --short HEAD); restarting tick"; CODE_SYNC_DONE=1 exec "$HERE/supervisor.sh" "$@"
+  elif [ "$csrc" = 20 ]; then slog "[code-sync] STALE: behind origin/main and cannot fast-forward ($(git -C "$HERE" rev-parse --short HEAD)); refusing to launch this tick"; exit 0
+  fi
+fi
 
 # Acquire lock — exit if previous tick still running
 if command -v flock >/dev/null 2>&1; then

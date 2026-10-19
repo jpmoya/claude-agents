@@ -58,3 +58,10 @@ GOAL_MAX_NO_PROGRESS=3      # relaunch decisions with an unchanged scope snapsho
 [ -f "$HOME/.claude/pipeline/config.local.sh" ] && source "$HOME/.claude/pipeline/config.local.sh"
 
 export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:/opt/homebrew/bin:$PATH"
+# Node pin (docs/host-sync.md): headless agents run the pinned major on every host (CI uses 22). Homebrew's keg-only node@22
+# is preferred when present; the VM's system node is already 22. bin/host-drift.py alerts if the pipeline PATH resolves another major.
+PIPELINE_NODE_MAJOR="${PIPELINE_NODE_MAJOR:-22}"
+for _nd in "/opt/homebrew/opt/node@$PIPELINE_NODE_MAJOR/bin" "/usr/local/opt/node@$PIPELINE_NODE_MAJOR/bin"; do
+  [ -x "$_nd/node" ] && { export PATH="$_nd:$PATH"; break; }
+done
+unset _nd

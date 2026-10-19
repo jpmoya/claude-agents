@@ -1,0 +1,270 @@
+{
+  "_comment": "Declared state of every pipeline host. NO SECRET VALUES here: names, paths and version floors only. Read by bin/host-drift.py (daily, both hosts). See docs/host-sync.md.",
+  "hosts": {
+    "mac": {
+      "home_glob": "/Users/*",
+      "ssh": null
+    },
+    "vm": {
+      "home_glob": "/home/claude",
+      "ssh": "clog-exec"
+    }
+  },
+  "tools": {
+    "node_major": 22,
+    "node_pipeline_path": [
+      "/opt/homebrew/opt/node@22/bin",
+      "/usr/local/opt/node@22/bin"
+    ],
+    "min": {
+      "claude": "2.1.300",
+      "gh": "2.60.0",
+      "wrangler": "4.130.0"
+    }
+  },
+  "per_host_config": {
+    "_comment": "Deliberate differences, sourced from config.sh + config.local.sh. MAX_PUSHES_PER_DAY must sum to <= push_budget_total (status-page KV cap).",
+    "push_budget_total": 1000,
+    "mac": {
+      "MAX_CONCURRENT": "7",
+      "MAX_PUSHES_PER_DAY": "550"
+    },
+    "vm": {
+      "MAX_CONCURRENT": "4",
+      "MAX_PUSHES_PER_DAY": "450"
+    }
+  },
+  "config_local_required_keys": [
+    "DISPATCH_REPOS",
+    "STATUS_PUSH_URL",
+    "STATUS_PUSH_TOKEN"
+  ],
+  "repos": [
+    {
+      "name": "claude-agents",
+      "github": "jpmoya/claude-agents",
+      "mac": "~/dev/claude-agents",
+      "vm": "~/claude-agents",
+      "required": [
+        "mac",
+        "vm"
+      ]
+    },
+    {
+      "name": "scheduler",
+      "github": "Benjis-Plants/scheduler",
+      "mac": "~/dev/scheduler",
+      "vm": "~/scheduler",
+      "required": [
+        "mac",
+        "vm"
+      ],
+      "hooks": "auto",
+      "env": {
+        "mac": [
+          ".env.local",
+          ".env.staging",
+          ".env.mobile.staging",
+          ".env.mobile.production"
+        ],
+        "vm": [
+          ".env.local"
+        ]
+      }
+    },
+    {
+      "name": "benjis-quoting-tool",
+      "github": "Benjis-Plants/benjis-sales-tool",
+      "mac": "~/dev/benjis-sales-tool",
+      "vm": "~/benjis-quoting-tool",
+      "required": [
+        "mac",
+        "vm"
+      ],
+      "hooks": "auto",
+      "env": {
+        "mac": [
+          "app/.env.local"
+        ],
+        "vm": [
+          "app/.env.local"
+        ]
+      }
+    },
+    {
+      "name": "Benjis_rfp_finder",
+      "github": "jpmoya/Benjis_rfp_finder",
+      "mac": "~/dev/Benjis_rfp_finder",
+      "vm": "~/Benjis_rfp_finder",
+      "required": [
+        "mac",
+        "vm"
+      ],
+      "hooks": "auto",
+      "env": {
+        "mac": [
+          ".env"
+        ],
+        "vm": [
+          ".env"
+        ]
+      }
+    },
+    {
+      "name": "casa-verde-site",
+      "github": "jpmoya/casa-verde-site",
+      "mac": "~/dev/casa-verde-site",
+      "vm": "~/casa-verde-site",
+      "required": [
+        "mac",
+        "vm"
+      ]
+    },
+    {
+      "name": "benjis-hub",
+      "github": "jpmoya/benjis-hub",
+      "mac": "~/dev/benjis-hub",
+      "vm": "~/benjis-hub",
+      "required": [
+        "mac",
+        "vm"
+      ],
+      "env": {
+        "mac": [
+          ".env"
+        ],
+        "vm": [
+          ".env"
+        ]
+      }
+    },
+    {
+      "name": "ci-runner-health",
+      "github": "Benjis-Plants/ci-runner-health",
+      "mac": "~/dev/ci-runner-health",
+      "vm": "~/ci-runner-health",
+      "required": [
+        "mac",
+        "vm"
+      ]
+    },
+    {
+      "name": "benjis-design-system",
+      "github": null,
+      "mac": "~/dev/benjis-design-system",
+      "vm": "~/benjis-design-system",
+      "required": [
+        "mac"
+      ],
+      "optional": [
+        "vm"
+      ],
+      "non_git": true,
+      "_comment": "Plain folder (tokens.css, tailwind-preset.css), not a git repo anywhere. Hosting it needs a JP decision (where it is stored)."
+    },
+    {
+      "name": "xaki",
+      "github": "jpmoya/xaki",
+      "mac": "~/dev/xaki",
+      "vm": "~/xaki",
+      "required": [
+        "mac"
+      ],
+      "hooks": "auto",
+      "env": {
+        "mac": [
+          ".env.local",
+          "app/.env.local"
+        ]
+      }
+    },
+    {
+      "name": "Business-Intelligence",
+      "github": "Benjis-Plants/Business-Intelligence",
+      "mac": "~/dev/Business-Intelligence",
+      "vm": null,
+      "required": [
+        "mac"
+      ],
+      "_comment": "Deliberately NOT on the VM (no-BI-pipeline rule)."
+    },
+    {
+      "name": "benjis-newwebsite",
+      "github": "Benjis-Plants/benjis-newwebsite",
+      "mac": "~/dev/benjis-newwebsite",
+      "vm": "~/benjis-newwebsite",
+      "required": [
+        "mac"
+      ],
+      "optional": [
+        "vm"
+      ]
+    },
+    {
+      "name": "Lechuza",
+      "github": null,
+      "mac": "~/dev/Lechuza",
+      "vm": null,
+      "required": [
+        "mac"
+      ],
+      "_comment": "Local-only working folder, no remote worth cloning."
+    },
+    {
+      "name": "jp-personal-finance",
+      "github": "jpmoya/jp-personal-finance",
+      "mac": "~/dev/jp-personal-finance",
+      "vm": "~/jp-personal-finance",
+      "required": [
+        "mac"
+      ],
+      "optional": [
+        "vm"
+      ]
+    },
+    {
+      "name": "jp-personal-therapist",
+      "github": "jpmoya/jp-personal-therapist",
+      "mac": "~/dev/jp-personal-therapist",
+      "vm": "~/jp-personal-therapist",
+      "required": [
+        "mac"
+      ],
+      "optional": [
+        "vm"
+      ]
+    },
+    {
+      "name": "jp-and-mena-health-tracker",
+      "github": "jpmoya/jp-and-mena-health-tracker",
+      "mac": "~/dev/jp-and-mena-health-tracker",
+      "vm": "~/jp-and-mena-health-tracker",
+      "required": [
+        "mac"
+      ],
+      "optional": [
+        "vm"
+      ]
+    },
+    {
+      "name": "moyadigital-site",
+      "github": "jpmoya/moyadigital-site",
+      "mac": "~/dev/moyadigital-site",
+      "vm": "~/moyadigital-site",
+      "required": [
+        "mac"
+      ],
+      "optional": [
+        "vm"
+      ]
+    }
+  ],
+  "memory": {
+    "_comment": "Project memory dirs ~/.claude/projects/<encoded path>/memory are keyed logically so the Mac and VM paths meet. 'home' = the user's home dir project.",
+    "home_key": "home"
+  },
+  "gh_scopes_required": [
+    "repo",
+    "workflow"
+  ]
+}
