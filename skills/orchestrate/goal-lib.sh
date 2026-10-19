@@ -783,6 +783,7 @@ $(goal_cards delivered)"
     _goal_note "$issue" "$body" || { goal_err "cannot post the delivery card of $id"; return 0; }
     touch "$PIPE/goal-$id.carded"
   fi
+  _goal_label_del "$issue" goal-held
   _goal_close "$issue" || { goal_err "cannot close the registry issue of $id"; return 0; }
   lb=$(jq -r '.label // empty' "$PIPE/goal-$id.json" 2>/dev/null)
   [ -z "$lb" ] || goal_label_close "$id" "$lb" "$(jq -r '(.repos // []) | join(",")' "$PIPE/goal-$id.json")"
@@ -830,7 +831,7 @@ goal_tick_one() {  # <id>
       if goal_eval "$id" "$spec"; then
         if [ "$GE_TOTAL" -gt 0 ] && [ "$GE_DELIVERED" -eq "$GE_TOTAL" ]; then goal_deliver "$id" "$issue" "$spec"; return 0; fi
         new=$(printf '%s' "$GE_SNAP" | goal_snapshot); old=$(cat "$PIPE/goal-$id.snap" 2>/dev/null)
-        if [ -n "$old" ] && [ "$new" != "$old" ]; then
+        if [ "$GE_TOTAL" -gt 0 ] && [ -n "$old" ] && [ "$new" != "$old" ]; then
           rm -f "$PIPE/goal-$id.held"; echo 0 > "$PIPE/goal-$id.np"
           _goal_label_del "$issue" goal-held
           slog "[goal] $id unheld — scope changed"
