@@ -783,6 +783,7 @@ $(goal_cards delivered)"
     _goal_note "$issue" "$body" || { goal_err "cannot post the delivery card of $id"; return 0; }
     touch "$PIPE/goal-$id.carded"
   fi
+  _goal_label_del "$issue" goal-held
   _goal_close "$issue" || { goal_err "cannot close the registry issue of $id"; return 0; }
   lb=$(jq -r '.label // empty' "$PIPE/goal-$id.json" 2>/dev/null)
   [ -z "$lb" ] || goal_label_close "$id" "$lb" "$(jq -r '(.repos // []) | join(",")' "$PIPE/goal-$id.json")"
@@ -824,7 +825,22 @@ goal_tick_one() {  # <id>
   pid=$(cat "$PIPE/goal-$id.pid" 2>/dev/null)
   if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then alive=1; fi
   if [ -f "$PIPE/goal-$id.stopped" ]; then [ "$alive" -eq 0 ] || goal_kill "$id"; return 0; fi
-  if [ -f "$PIPE/goal-$id.held" ]; then goal_mirror "$id" held; return 0; fi
+  if [ -f "$PIPE/goal-$id.held" ]; then
+    # #427: a held goal is looked at once per sync: delivered when its scope is done, unheld when the snapshot moved
+    if [ "$GOAL_SYNC_DUE" -eq 1 ]; then
+      if goal_eval "$id" "$spec"; then
+        if [ "$GE_TOTAL" -gt 0 ] && [ "$GE_DELIVERED" -eq "$GE_TOTAL" ]; then goal_deliver "$id" "$issue" "$spec"; return 0; fi
+        new=$(printf '%s' "$GE_SNAP" | goal_snapshot); old=$(cat "$PIPE/goal-$id.snap" 2>/dev/null)
+        if [ "$GE_TOTAL" -gt 0 ] && [ -n "$old" ] && [ "$new" != "$old" ]; then
+          rm -f "$PIPE/goal-$id.held"; echo 0 > "$PIPE/goal-$id.np"
+          _goal_label_del "$issue" goal-held
+          slog "[goal] $id unheld — scope changed"
+          goal_mirror "$id" active "$GE_TOTAL" "$GE_DELIVERED"; return 0
+        fi
+      else goal_err "cannot read the scope of $id"; fi
+    fi
+    goal_mirror "$id" held; return 0
+  fi
 
   if [ "$alive" -eq 1 ]; then   # alive: leave it alone; re-evaluate (mirror only) once per sync
     if [ "$GOAL_SYNC_DUE" -eq 1 ]; then
