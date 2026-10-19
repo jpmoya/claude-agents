@@ -42,3 +42,7 @@ DISPATCH_REPOS=(
 # set it on ONE machine only (the one whose supervisor should poll).
 # PM_SLACK_BOT_TOKEN="..."      # secret (bot token: chat:write, im:write, im:history, im:read, reactions:write) — this file only, never the repo
 # PM_SLACK_USER_ID="U0123456789"   # placeholder — JP's Slack user id (only this user's DM replies are accepted)
+
+# Mac power (stall fix 2026-10-19): dispatch on battery while charge >= BATTERY_MIN_PCT (default 30; 0 = AC only; ALLOW_BATTERY=1 ignores charge).
+# While any run is live the supervisor holds `caffeinate -i` so the lid-open Mac does not idle-sleep; KEEP_AWAKE=0 turns that off.
+# BATTERY_MIN_PCT=30

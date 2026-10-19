@@ -70,7 +70,29 @@ to_epoch() {  # ISO-8601 UTC → epoch; portable (macOS date has no -d)
 power_ok() {  # Mac: dispatch new work only on AC power (a sleeping laptop strands claimed issues). Linux: always.
   [ "$(uname)" = "Darwin" ] || return 0
   [ "${ALLOW_BATTERY:-0}" = "1" ] && return 0   # machine-local opt-out (config.local.sh); the Mac must be kept awake
-  pmset -g batt 2>/dev/null | grep -q "AC Power"
+  local batt pct
+  batt=$(pmset -g batt 2>/dev/null)
+  printf '%s' "$batt" | grep -q "AC Power" && return 0
+  # On battery: dispatch while charge >= BATTERY_MIN_PCT (default 30; 0 = never on battery). keep_awake holds the machine awake, so the
+  # old "a sleeping laptop strands claimed issues" reason no longer applies above the floor (20.3 h of dispatch lost 10-14..10-16).
+  pct=$(printf '%s' "$batt" | grep -oE '[0-9]+%' | head -1 | tr -d '%')
+  [ -n "$pct" ] && [ "${BATTERY_MIN_PCT:-30}" -gt 0 ] && [ "$pct" -ge "${BATTERY_MIN_PCT:-30}" ]
+}
+
+# keep_awake — Mac only: every tick (launchd, every 2 min) holds an idle-sleep assertion for 5 min while any orchestrator/goal/queued run
+# exists, so ticks overlap and the lid-open Mac never idles to sleep mid-run. No-op on Linux or when caffeinate is missing.
+keep_awake() {
+  [ "$(uname)" = "Darwin" ] || return 0
+  [ "${KEEP_AWAKE:-1}" = "1" ] || return 0
+  command -v caffeinate >/dev/null 2>&1 || return 0
+  local f busy=0
+  ls "$QUEUE"/orch-*.json >/dev/null 2>&1 && busy=1
+  for f in "$PIPE"/orch-*.pid "$PIPE"/goal-*.pid; do
+    [ -f "$f" ] && kill -0 "$(cat "$f" 2>/dev/null)" 2>/dev/null && busy=1
+  done
+  [ "$busy" -eq 1 ] || return 0
+  nohup caffeinate -i -t 300 >/dev/null 2>&1 &
+  slog "[keep-awake] caffeinate -i -t 300 (pid $!)"
 }
 
 latest_marker() {  # the GATE marker: newest real routing marker whose agent is not delivery-lead (or its legacy alias project-manager) (NOTEs and off-vocabulary lines are inert).
@@ -405,6 +427,8 @@ launched=0
 # 0. One-time legacy migration (#318): orch-<N>.* sets whose .repo names a known checkout move to orch-<run_key>.*
 migrate_legacy_runs
 
+keep_awake   # Mac: hold the machine awake while runs exist (stall cause A)
+
 # 1. Check each recorded orchestrator
 for f in "$PIPE"/orch-*.pid; do
   [ -e "$f" ] || break
@@ -730,6 +754,27 @@ autoretry_cleared() {
   return 1
 }
 
+# Loop-cap resume: a loop-cap stop is held "needs a relaunch after it is resolved", and nothing re-read it (#1141 sat 161 h).
+# held_by_loopcap <rk> <issue> — local state only: the hold has no alert (gate/spend holds write one) and the run's newest
+# deliberate-stop validate row in runs.jsonl is a loop-cap one (same stage list as the exit handler above).
+held_by_loopcap() {
+  [ -s "$PIPE/orch-$1.alert" ] && return 1
+  [ -f "$HOME/.claude/pipeline/runs.jsonl" ] || return 1
+  [ "$(python3 - "$HOME/.claude/pipeline/runs.jsonl" "$2" <<'PY' 2>/dev/null
+import json, sys
+last = ""
+for line in open(sys.argv[1]):
+    try: r = json.loads(line)
+    except ValueError: continue
+    if (r.get("issue") == int(sys.argv[2]) and r.get("event") == "validate" and r.get("result") == "fail"
+            and r.get("stage") in ("structural", "delegated-decision", "loop-cap", "hand-to-jp")):
+        last = r.get("stage")
+print(last)
+PY
+)" = "loop-cap" ]
+}
+LOOPCAP_THROTTLE_SECS=300
+
 for f in "$PIPE"/orch-*.held; do
   [ -e "$f" ] || break
   rk=$(basename "$f" .held); rk=${rk#orch-}; issue=${rk##*-}
@@ -737,10 +782,12 @@ for f in "$PIPE"/orch-*.held; do
   [ -n "$repo" ] || continue
   [ -f "$PIPE/orch-$rk.stopped" ] || [ -f "$PIPE/orch-$rk.done" ] && continue
   n=$(tr -dc '0-9' 2>/dev/null < "$PIPE/orch-$rk.autoretry"); n=${n:-0}
-  [ "$n" -lt "$AUTORETRY_MAX" ] || continue
+  is_lc=0; held_by_loopcap "$rk" "$issue" && is_lc=1
+  [ "$n" -lt "$AUTORETRY_MAX" ] || [ "$is_lc" -eq 1 ] || continue
   stamp="$PIPE/orch-$rk.autoretry-check"
   last=$(file_mtime "$stamp")
-  if [ -n "$last" ] && [ $(( $(date +%s) - last )) -lt "$AUTORETRY_THROTTLE_SECS" ]; then continue; fi
+  thr=$AUTORETRY_THROTTLE_SECS; [ "$is_lc" -eq 1 ] && thr=$LOOPCAP_THROTTLE_SECS
+  if [ -n "$last" ] && [ $(( $(date +%s) - last )) -lt "$thr" ]; then continue; fi
   touch "$stamp" 2>/dev/null || true   # throttle failed checks too
 
   # Local state first (#269): no API call for a run that is not parked on a BLOCKED
@@ -751,6 +798,32 @@ for f in "$PIPE"/orch-*.held; do
   info=$(cd "$repo" && gh issue view "$issue" --json state,body,author,comments 2>/dev/null </dev/null) \
     || { slog "[auto-retry] #$issue — issue read failed"; autoretry_alert "$issue" "issue view"; continue; }
   [ "$(printf '%s' "$info" | jq -r '.state // empty')" = "OPEN" ] || continue
+  if [ "$is_lc" -eq 1 ]; then
+    # Resume only on a delegated decision posted AFTER the hold: [delivery-lead] DECISION / JP CONFIRMED (legacy [project-manager] spelling).
+    # The relaunched orchestrator validates it (Resolves: line); if it refuses, the new hold is later than the decision, so no loop.
+    held_at=$(file_mtime "$f")
+    if [ -n "$held_at" ] && printf '%s' "$info" | jq -e --argjson t "$held_at" '[.comments[]
+        | select((.body | split("\n")[0] | rtrimstr("\r")) as $l | ($l == "**[delivery-lead] DECISION**" or $l == "**[delivery-lead] JP CONFIRMED**"
+            or $l == "**[project-manager] DECISION**" or $l == "**[project-manager] JP CONFIRMED**")
+          and (.createdAt | fromdateiso8601) > $t)] | length > 0' >/dev/null 2>&1; then
+      if ! (cd "$repo" && gh issue comment "$issue" --body "**[supervisor] NOTE** loop-cap hold resumed: a delegated decision was posted after the stop" >/dev/null 2>&1 </dev/null); then
+        slog "[loopcap-resume] #$issue — NOTE post failed, staying held"
+        continue
+      fi
+      rm -f "$PIPE/orch-$rk.held" "$PIPE/orch-$rk.alert"
+      python3 - "$issue" "$repo" "$QUEUE/orch-$rk.json" "$(date -u +%FT%TZ)" "$PIPE/orch-$rk.extra" <<'PY' 2>/dev/null
+import json, sys
+issue, repo, out, ts, ex = sys.argv[1:6]
+try: extra = open(ex).read()
+except Exception: extra = ''
+json.dump({'issue': issue, 'repo': repo, 'extra': extra, 'reason': 'queued', 'queued_at': ts, 'not_before': 0}, open(out, 'w'))
+PY
+      slog "[loopcap-resume] #$issue — decision posted after the loop-cap stop, relaunching"
+      report_status_async "auto-retry"
+    fi
+    continue
+  fi
+  [ "$n" -lt "$AUTORETRY_MAX" ] || continue
   cls=$(blocked_class_of "$info")
   case "|$(autoretry_classes)|" in *"|$cls|"*) ;; *) continue ;; esac
 
