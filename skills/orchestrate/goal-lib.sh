@@ -837,7 +837,7 @@ goal_tick_one() {  # <id>
           slog "[goal] $id unheld — scope changed"
           goal_mirror "$id" active "$GE_TOTAL" "$GE_DELIVERED"; return 0
         fi
-      else goal_err "cannot read the scope of $id"; fi
+      else goal_err "goal $id evaluation failed (see the preceding error for the ticket and step)"; fi
     fi
     goal_mirror "$id" held; return 0
   fi
