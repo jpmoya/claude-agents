@@ -324,6 +324,11 @@ gs_issue() {
     + (if $pr != "" then {pull_request:{url:"x"}} else {} end)' > "$GS_ST/issues/$GS_A/$n.json"
 }
 
+gs_body() {  # <n> <body> — set a project-a ticket body
+  local f="$GS_ST/issues/$GS_A/$1.json"
+  jq -c --arg b "$2" '.body = $b' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+}
+
 gs_comment() {  # <n> <body>  (project-a ticket comment, chronological append)
   local f="$GS_ST/comments/$GS_A-$1.json"; [ -f "$f" ] || echo '[]' > "$f"
   jq -c --arg b "$2" --arg now "$GS_NOW" '. + [{created_at:$now, user:{login:"fixture"}, body:$b}]' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
@@ -618,6 +623,60 @@ test_gs_classify_active() {
   gs_check_class active "agent-proposed + agent-go" open "agent-proposed,agent-go" $'**[product-manager] READY FOR ENGINEERING**\nLane: fast' || return 1
   gs_check_class active "agent-proposed + agent-in-progress" open "agent-proposed,agent-in-progress" $'**[product-manager] READY FOR ENGINEERING**\nLane: fast' || return 1
   gs_check_class active "REJECTED without the user-feedback label is inert" open "" $'**[product-manager] REJECTED**\nReason: not-a-bug' || return 1
+}
+
+
+# ---------------------------------------------------------------- #428: start-gated, never-started ticket -------
+
+# gs_gate_class <gate issue state|missing> <ticket comments…> — t-7 whose body names "Depends on #42 for starting work".
+gs_gate_class() {
+  local gst=$1 b out=none
+  shift
+  gs_env
+  gs_issue 7 open
+  gs_body 7 $'Do the thing.\n\nDepends on #42 for starting work'
+  rm -f "$GS_ST/comments/$GS_A-7.json"
+  for b in "$@"; do gs_comment 7 "$b"; done
+  if [ "$gst" = missing ]; then rm -f "$GS_ST/issues/$GS_A/42.json"; else gs_issue 42 "$gst"; fi
+  gs_own "$GS_ID_T7" 50 "$GS_SPEC_T7" 3600 ""
+  gs_tick
+  if [ "$(gs_reg_state 50)" = closed ] && ! gs_has_label 50 goal-stopped; then out=delivered
+  elif gs_has_label 50 goal-waiting-jp; then out=waiting_jp
+  elif gs_wait_claude 1; then out=active
+  fi
+  gs_cleanup
+  printf '%s' "$out"
+}
+
+test_gs_428_open_start_gate_without_marker_is_waiting() {   # AC1
+  assert_eq "$(gs_gate_class open)" "waiting_jp" "428 AC1: open gate, no marker" || return 1
+}
+test_gs_428_closed_start_gate_is_active() {   # AC2
+  assert_eq "$(gs_gate_class closed)" "active" "428 AC2: gate closed" || return 1
+}
+test_gs_428_open_gate_with_marker_is_classified_as_today() {   # AC3
+  assert_eq "$(gs_gate_class open $'**[product-manager] READY FOR ENGINEERING**\nLane: fast')" "active" "428 AC3: marker present, gate ignored" || return 1
+}
+test_gs_428_unreadable_gate_is_neither_waiting_nor_delivered() {   # AC4
+  local out
+  out=$(gs_gate_class missing)
+  assert_eq "$out" "none" "428 AC4: failed gate read: not waiting, not delivered, no launch" || return 1
+}
+test_gs_428_goal_with_start_gated_ticket_reaches_waiting_branch() {   # AC6 (hand: 102 delivered, 101 waiting, 104 gated -> 0 active)
+  gs_env
+  gs_comment 101 $'**[deployer] DEPLOYED TO STAGING**\nstaging up'
+  gs_issue 104 open 12; gs_body 104 'Depends on #42 for starting work'
+  gs_own "$GS_ID_MS12" 50 "$GS_SPEC_MS12" 3600 ""
+  gs_tick; gs_settle
+  local lab held c cards
+  gs_has_label 50 goal-waiting-jp && lab=yes || lab=no
+  [ -e "$GS_PIPE/goal-$GS_ID_MS12.held" ] && held=yes || held=no
+  c=$(gs_claude_count); cards=$(gs_reg_comment_count 50 '**[deliver] NOTE** card')
+  gs_cleanup
+  assert_eq "$lab" "yes" "428 AC6: goal-waiting-jp label" || return 1
+  assert_eq "$held" "no" "428 AC6: not parked" || return 1
+  assert_eq "$c" "0" "428 AC6: no launch" || return 1
+  assert_eq "$cards" "1" "428 AC6: waiting card posted" || return 1
 }
 
 # ---------------------------------------------------------------- AC5: waiting on JP --------------------------
@@ -1047,6 +1106,11 @@ run_test test_gs_ac4_all_delivered_closes_registry_with_card_and_removes_cache
 run_test test_gs_classify_delivered
 run_test test_gs_classify_waiting_jp
 run_test test_gs_classify_active
+run_test test_gs_428_open_start_gate_without_marker_is_waiting
+run_test test_gs_428_closed_start_gate_is_active
+run_test test_gs_428_open_gate_with_marker_is_classified_as_today
+run_test test_gs_428_unreadable_gate_is_neither_waiting_nor_delivered
+run_test test_gs_428_goal_with_start_gated_ticket_reaches_waiting_branch
 run_test test_gs_ac5_waiting_on_jp_parks_then_resumes_when_ticket_becomes_active
 run_test test_gs_ac6_three_unchanged_cycles_park_the_goal
 run_test test_gs_ac6_changed_snapshot_resets_no_progress

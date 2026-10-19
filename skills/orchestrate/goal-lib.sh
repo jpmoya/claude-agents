@@ -425,6 +425,21 @@ _goal_ticket_eval() {
         esac ;;
     esac
   fi
+  # #428: an approved ticket that has not started (no routing marker) and whose "Depends on <ref> for starting work"
+  # gate is still open cannot move (same parse as supervisor.sh promote_deferred): waiting, not active.
+  if [ "$cls" = active ] && [ "$first" = none ]; then
+    local g gr gn gst
+    while IFS= read -r g; do
+      [ -n "$g" ] || continue
+      case "$g" in "#"*) gr="$repo"; gn="${g#\#}" ;; *) gr="${g%#*}"; gn="${g##*#}" ;; esac
+      gst=$(gh api "repos/$gr/issues/$gn" --jq '(.state // "") | ascii_upcase' 2>/dev/null) || return 1
+      case "$gst" in
+        OPEN|REOPENED) cls=waiting_jp; why="waits on $g (start-gate still open)"; break ;;
+        CLOSED) ;;
+        *) return 1 ;;
+      esac
+    done < <(printf '%s' "$info" | jq -r '.body // ""' | grep -oE 'Depends on [A-Za-z0-9._/-]*#[0-9]+ for starting work' | sed -E 's/^Depends on ([^ ]+) for starting work$/\1/')
+  fi
   printf '%s\t%s\t%s\t%s\n' "$cls" "$st" "${first:--}" "$why"
 }
 
