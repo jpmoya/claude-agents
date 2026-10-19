@@ -52,6 +52,17 @@ else
   trap 'rmdir "$LOCKDIR" 2>/dev/null' EXIT
 fi
 
+# Code sync (docs/host-sync.md), inside the lock: refuse to launch on code that cannot be brought current; otherwise
+# the EXIT trap fast-forwards main after this script has finished reading itself (the next tick runs the new code).
+CS_STATE=fresh
+if [ "${CODE_SYNC_ENABLED:-1}" = 1 ]; then
+  source "$HERE/code-sync.sh"
+  CS_STATE=$(code_sync_state 2>>"$SLOG")
+  _cs_exit() { [ -n "${LOCKDIR:-}" ] && rmdir "$LOCKDIR" 2>/dev/null; [ "$CS_STATE" = fixable ] && code_sync_apply 2>>"$SLOG" && slog "[code-sync] fast-forwarded to $(git -C "$HERE" rev-parse --short HEAD)"; }
+  trap _cs_exit EXIT
+  if [ "$CS_STATE" = stale ]; then slog "[code-sync] STALE: checkout is behind origin/main or off main and cannot be fixed safely (uncommitted tracked edits or unpushed commits); refusing to launch this tick"; exit 0; fi
+fi
+
 to_epoch() {  # ISO-8601 UTC → epoch; portable (macOS date has no -d)
   python3 -c "import sys,datetime; print(int(datetime.datetime.strptime(sys.argv[1],'%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=datetime.timezone.utc).timestamp()))" "$1" 2>/dev/null || echo 0
 }

@@ -8,7 +8,7 @@ REPO="$HOME/dev/claude-agents"
 # A detached HEAD (e.g. a reviewer's checkout that never switched back) has no branch to fast-forward: go back to main first.
 err=$({ git -C "$REPO" symbolic-ref -q HEAD >/dev/null 2>&1 || git -C "$REPO" checkout -q main; } 2>&1 \
   && git -C "$REPO" pull --ff-only --quiet 2>&1) \
-  || echo "claude-config: $REPO did not update ($(printf '%s' "$err" | tail -n 1)) — running with the local copy"
+  || echo "claude-config: $REPO did not update ($(printf '%s' "$err" | tr '\n' ' ' | cut -c1-300)) — running with the local copy"
 for item in agents hooks skills CLAUDE.md settings.json; do
   case "$(readlink "$HOME/.claude/$item" 2>/dev/null)" in
     "$REPO/$item") ;;
