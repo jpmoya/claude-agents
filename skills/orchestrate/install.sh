@@ -81,7 +81,9 @@ fi
 echo "5. tools"
 for t in gh jq git claude; do command -v "$t" >/dev/null && ok "$t" || todo "$t not on PATH"; done
 gh auth status >/dev/null 2>&1 && ok "gh logged in" || todo "gh auth login"
-command -v vercel >/dev/null && { vercel whoami >/dev/null 2>&1 && ok "vercel logged in" || todo "vercel login (infra track)"; } || todo "vercel CLI missing (infra track only)"
+# never run `vercel whoami` here: with an expired token the CLI starts a device-login flow, which pops an
+# "Authorize Device" prompt on JP's phone/browser every time install.sh or a test runs. Read the token file instead.
+command -v vercel >/dev/null && { { [ -n "${VERCEL_TOKEN:-}" ] || grep -qs '"token"' "$HOME/Library/Application Support/com.vercel.cli/auth.json" "$HOME/.local/share/com.vercel.cli/auth.json"; } && ok "vercel token present (not verified live)" || todo "vercel login (infra track)"; } || todo "vercel CLI missing (infra track only)"
 command -v flock >/dev/null || ok "no flock — supervisor uses its mkdir lock (macOS)"
 [ -f "$CL/settings.local.json" ] && ok "settings.local.json present" || todo "create ~/.claude/settings.local.json (model, theme; env block for SUPABASE_MGMT_PAT etc. — see README)"
 
