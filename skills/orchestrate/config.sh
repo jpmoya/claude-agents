@@ -57,7 +57,14 @@ GOAL_MAX_NO_PROGRESS=3      # relaunch decisions with an unchanged scope snapsho
 
 [ -f "$HOME/.claude/pipeline/config.local.sh" ] && source "$HOME/.claude/pipeline/config.local.sh"
 
-export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:/opt/homebrew/bin:$PATH"
+# Prepend the tool dirs, but keep any that the caller already put on PATH where it put them: tests (and
+# operators) shadow claude/gh with stubs by putting a dir first, and an unconditional prepend let the real
+# /usr/local/bin/claude or /opt/homebrew/bin/claude win over the stub on a Mac (68 test failures on main).
+_pp=""
+for _d in "$HOME/.local/bin" "$HOME/bin" /usr/local/bin /opt/homebrew/bin; do
+  case ":$PATH:" in *":$_d:"*) ;; *) _pp="$_pp$_d:" ;; esac
+done
+export PATH="$_pp$PATH"; unset _pp _d
 # Node pin (docs/host-sync.md): headless agents run the pinned major on every host (CI uses 22). Homebrew's keg-only node@22
 # is preferred when present; the VM's system node is already 22. bin/host-drift.py alerts if the pipeline PATH resolves another major.
 PIPELINE_NODE_MAJOR="${PIPELINE_NODE_MAJOR:-22}"
