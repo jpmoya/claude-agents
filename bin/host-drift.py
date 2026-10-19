@@ -65,7 +65,22 @@ def check_symlinks(repo):
             drift("symlink:" + item, f"~/.claude/{item} is not a symlink to {want}", "run skills/orchestrate/install.sh")
 
 
+def check_branch(repo, fix):
+    """A main checkout must stay on main: the supervisor executes whatever is checked out there."""
+    br = git(repo, "branch", "--show-current")[1].strip()
+    if br == "main":
+        return
+    clean = git(repo, "diff", "--quiet", "HEAD")[0] == 0
+    unpushed = git(repo, "log", "--oneline", "HEAD", "--not", "--remotes")[1].strip()
+    if fix and clean and not unpushed and git(repo, "checkout", "-q", "main")[0] == 0:
+        F.append("claude-agents main checkout was on '%s', switched to main" % (br or "detached HEAD"))
+        return
+    drift("branch:claude-agents", "claude-agents main checkout is on '%s', not main" % (br or "detached HEAD"),
+          "work in a worktree under .worktrees/, then git -C %s checkout main" % repo)
+
+
 def check_code(repo, fix):
+    check_branch(repo, fix)
     sync = os.path.join(repo, "skills", "orchestrate", "code-sync.sh")
     rc, out = run(["bash", sync], timeout=90)
     verdict = out.strip().splitlines()[-1] if out.strip() else "?"

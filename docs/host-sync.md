@@ -10,6 +10,7 @@ Principle: **sync what can be derived from git automatically, check-and-alert ev
 |---|---|
 | Pipeline code (`agents/ hooks/ skills/ CLAUDE.md settings.json`) | Every supervisor tick runs `skills/orchestrate/code-sync.sh` first: fetch, fast-forward `main`, re-exec the tick on the new code. Interactive sessions still pull via `hooks/sync-agents.sh`. |
 | Refuse to run stale | If the checkout is behind `origin/main` and cannot fast-forward (other branch, dirty tracked tree, diverged), the tick logs `[code-sync] STALE` and launches nothing. Offline (fetch fails) is not stale: GitHub is down too. Kill switch: `CODE_SYNC_ENABLED=0` in `config.local.sh`. |
+| Main checkout stays on `main` | The checkout the supervisor executes (`~/dev/claude-agents`, `~/claude-agents`) must never sit on a feature branch: a Mac tick once ran unmerged branch code and missed #426. Develop in `.worktrees/`. `host-drift.py --fix` switches it back when tracked files are clean and nothing is unpushed; otherwise it alerts. |
 | Git hooks path | `bin/host-drift.py --fix` points `core.hooksPath` at the repo's `.githooks` (or unsets a dead path) in manifest repos. |
 | Stale `claude` on non-interactive PATH (VM) | `--fix` puts `~/.local/bin` first in `~/.bashrc` (before the interactive guard). |
 | Claude Code / node versions seen by agents | `config.sh` prepends the pinned node major (22, matches CI) from Homebrew `node@22` when present; claude must be the newest on PATH. |
