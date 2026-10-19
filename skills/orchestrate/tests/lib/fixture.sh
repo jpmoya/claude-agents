@@ -217,14 +217,21 @@ case "$*" in
           arr=$(jq -n --arg body "$(cat "$(pick gh-issue-latest-marker)")" '[{body: $body, createdAt: "2026-01-01T00:00:00Z"}]')
         else arr='[]'; fi
         if [ -s "$HERE/gh-claims.jsonl" ]; then arr=$(printf '%s' "$arr" | jq --slurpfile c "$HERE/gh-claims.jsonl" '. + $c'); fi
-        printf '%s' "$arr" | jq -c 'map({body: .body, created_at: (.createdAt // .created_at)})'
+        printf '%s' "$arr" | jq -c 'map({body: .body, created_at: (.createdAt // .created_at)} + (if ((.author // null) | if type == "object" then .login else null end | type) == "string" then {user: {login: .author.login}} else {} end))'
         exit 0 ;;
       *)
         state=$(cat "$(pick gh-issue-state)" 2>/dev/null || echo "OPEN")
-        jq -nc --arg s "$state" --arg u "$(cat "$(pick gh-issue-updated-at)" 2>/dev/null || echo 2026-01-01T00:00:00Z)" \
-          '{state: ($s | ascii_downcase), body: "", updated_at: $u}'
+        # the issue author: the fixture has no separate field, so it is the first comment's author (the old GraphQL fake gave no top-level author either)
+        ia=$(jq -r '.[0].author.login? // empty' "$(pick gh-issue-comments-json)" 2>/dev/null)
+        jq -nc --arg s "$state" --arg u "$(cat "$(pick gh-issue-updated-at)" 2>/dev/null || echo 2026-01-01T00:00:00Z)" --arg ia "$ia" \
+          '{state: ($s | ascii_downcase), body: "", updated_at: $u} + (if $ia == "" then {} else {user: {login: $ia}} end)'
         exit 0 ;;
     esac
+    ;;
+  "api repos/{owner}/{repo}"*|"api repos/"[!/]*"/"[!/]*" --jq .full_name")
+    # #387: the repo name over REST (`gh api repos/{owner}/{repo} --jq .full_name`), same fixture as the old `repo view`
+    cat "$HERE/gh-name-with-owner" 2>/dev/null || echo "unknown/unknown"
+    exit 0
     ;;
   "issue comment"*)
     # #217: a posted claim is readable back via `issue view --json comments` (hand launch arbitrates on it).
