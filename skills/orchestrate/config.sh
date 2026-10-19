@@ -9,6 +9,7 @@ LOGDIR="${LOGDIR:-$HOME/logs/pipeline}"
 LABEL_PROPOSED="agent-proposed"     # hourly scan (VM) marks new issues
 LABEL_GO="agent-go"                 # JP: launch this anywhere — consumed at launch
 LABEL_IN_PROGRESS="agent-in-progress"  # an orchestrator owns this issue on some machine; removed when terminal/held
+LABEL_FEEDBACK="user-feedback"      # a bug/idea that started as staff feedback — always auto-dispatched, even when SHARED_DISPATCH_ENABLED=0 (JP 2026-10-19)
 
 MAX_CONCURRENT=3
 MAX_CLAUDE_PROCS=10                         # orchestrator pre-dispatch gate ceiling: counts pipeline-launched claude processes (orchestrators, their stages, delivery-lead goal runs and supervisor-launched intake/product-manager runs, minus the caller; a rough bound). must stay ≥ 3 × (1 + 2 stages) − 1 + MAX_GOALS — raise it whenever MAX_CONCURRENT or MAX_GOALS is raised.
