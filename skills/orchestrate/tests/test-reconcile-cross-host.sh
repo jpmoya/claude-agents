@@ -141,7 +141,7 @@ test_rh_g_failed_issue_read_keeps_label_and_logs_skip() {
   rh_tick "[]"
   rh_cleanup
   assert_not_contains "$RH_CALLS" "issue edit 88 --remove-label" "#326/g: label not removed" || return 1
-  assert_contains "$RH_LOG" "[reconcile] project-a/repo-a#88 — issue read failed: HTTP 403: API rate limit exceeded, skipped" "#326/g: skip logged with gh error text (#388)" || return 1
+  assert_contains "$RH_LOG" "[reconcile] project-a/repo-a#88 — issue read failed: rc=7: HTTP 403: API rate limit exceeded, skipped" "#326/g: skip logged with gh error text (#388)" || return 1
 }
 
 test_rh_h_empty_line1_keeps_label() {
