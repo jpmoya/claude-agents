@@ -266,9 +266,9 @@ test_dd_ac9_one_comments_call_per_issue_per_tick() {
   dd_thread '**[deployer] BLOCKED**' $'**[project-manager] DECISION**\nResolves: https://example.test/c/1'
   dd_tick
   local n
-  n=$(grep -F 'issue view 42' "$DD_GH/gh-calls.log" | grep -cF -- '--json comments')
+  n=$(grep -cF -- 'issues/42/comments' "$DD_GH/gh-calls.log")   # #388: the marker read is REST now
   dd_cleanup
-  assert_eq "$n" "1" "AC9: exactly one 'issue view 42 ... --json comments' call in the tick" || return 1
+  assert_eq "$n" "1" "AC9: exactly one comments read for issue 42 in the tick" || return 1
 }
 
 # ---------------------------------------------------------------------------------------- AC10-AC15 orchestrator

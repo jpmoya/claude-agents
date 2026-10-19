@@ -140,14 +140,17 @@ dlr_latest() {
 #!/bin/bash
 args=("$@"); jq_expr=""
 for ((i=0;i<${#args[@]};i++)); do case "${args[i]}" in --jq|-q) jq_expr=${args[i+1]};; esac; done
-if [ -n "$jq_expr" ]; then jq -r "$jq_expr" "$CASE_JSON"; else cat "$CASE_JSON"; fi
+if [ -n "$jq_expr" ]; then jq -r "$jq_expr" "$CASE_JSON"; else jq -c '.comments | map({body: .body, created_at: .createdAt})' "$CASE_JSON"; fi   # #388: REST page
 SH
   chmod +x "$tmp/bin/gh"
   out=$(
     export CASE_JSON="$tmp/case.json" PATH="$tmp/bin:$PATH"
     . "$MARKERS_DLR"
     eval "$(dlr_fn "$LIB_DLR" marker_last_jq)"
+    eval "$(dlr_fn "$LIB_DLR" repo_slug)"; eval "$(dlr_fn "$SUP_DLR" gh_err_line)"; eval "$(dlr_fn "$SUP_DLR" autoretry_alert)"
+    slog() { :; }
     eval "$(dlr_fn "$SUP_DLR" latest_marker)"
+    ( cd "$tmp/repo" && git init -q && git remote add origin https://github.com/project-a/repo-a.git ) >/dev/null 2>&1
     latest_marker "$tmp/repo" 42
   )
   rm -rf "$tmp"

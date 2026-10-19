@@ -50,6 +50,12 @@ done
 out() { if [ -n "$jqx" ]; then printf '%s' "$1" | jq -r "$jqx"; else printf '%s\n' "$1"; fi; }
 num=$(printf '%s' "$3" | grep -E '^[0-9]+$')
 withc() { jq -c --slurpfile c "$D/comments.json" '. as $i | $i + {state:($i.state // "OPEN"), comments: [$c[0][] | select(.number==$i.number)]}'; }
+case "$1" in api)   # #388: REST twin of `issue view` (state lower-case, created_at)
+  anum=$(printf '%s' "$2" | sed -n 's|^repos/[^/]*/[^/]*/issues/\([0-9][0-9]*\).*|\1|p')
+  case "$2" in
+    */comments*) jq -c --argjson n "${anum:-0}" '[.[]|select(.number==$n)|{body:.body, created_at:.createdAt}]' "$D/comments.json" ;;
+    *) jq -c --argjson n "${anum:-0}" '.[]|select(.number==$n)|{state:((.state // "OPEN")|ascii_downcase), body:"", updated_at:"2026-01-01T00:00:00Z", labels:.labels}' "$D/issues.json" ;;
+  esac; exit 0;; esac
 case "$1 $2" in
   "repo view") echo "${repo:-project-a/repo-a}"; exit 0;;
   "issue list")

@@ -27,6 +27,10 @@ case "$*" in
   "issue view"*)
     upd=$(cat "$HERE/updated-at"); com=$(cat "$HERE/comments-json")
     emit "{\"state\":\"OPEN\",\"labels\":[{\"name\":\"agent-in-progress\"}],\"updatedAt\":\"$upd\",\"comments\":$com}" ;;
+  "api repos/"*"/comments"*)   # #388: REST
+    jq -c 'map({body: .body, created_at: .createdAt})' "$HERE/comments-json" ;;
+  "api repos/"*)
+    jq -nc --arg u "$(cat "$HERE/updated-at")" '{state:"open", body:"", updated_at:$u}' ;;
   *) exit 0 ;;
 esac
 GH_EOF
