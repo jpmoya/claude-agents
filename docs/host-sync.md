@@ -33,7 +33,7 @@ Reported in the snapshot but not alerted: dirty trees, detached HEADs, stale `.e
 - Folder names: Mac `~/dev/<repo>`, VM `~/<repo>` (VM quoting tool is still `~/benjis-quoting-tool`); the manifest maps both.
 - Secrets and env files are host-local. `bin/vm-sync.sh creds` is the one existing Mac-to-VM copy path; drift only reports a missing file.
 - Mac-only: iOS release env files, Business-Intelligence, Lechuza, personal apps. VM-optional: the personal repos and the new website.
-- `/tmp/pipeline` run state stays local (claude-agents#332 tracks surviving reboots).
+- `~/.claude/pipeline/state` run state stays local and survives reboots (claude-agents#332).
 
 ## Install
 

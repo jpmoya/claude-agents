@@ -100,7 +100,7 @@ test_hr_hook_has_no_graphql_read_or_post() {
   local n
   n=$(grep -c 'gh issue view' "$HOOK_HR"); assert_eq "$n" "0" "AC1: hook must not call gh issue view (GraphQL)" || return 1
   n=$(grep -c 'gh issue comment' "$HOOK_HR"); assert_eq "$n" "0" "AC5: hook must not mention gh issue comment" || return 1
-  n=$(grep -c '^PIPE="${PIPE:-/tmp/pipeline}"$' "$HOOK_HR"); assert_eq "$n" "1" "AC6: PIPE must be overridable, same form as config.sh" || return 1
+  n=$(grep -c '^PIPE="${PIPE:-$HOME/.claude/pipeline/state}"$' "$HOOK_HR"); assert_eq "$n" "1" "AC6: PIPE must be overridable, same form as config.sh" || return 1
 }
 
 test_hr_orchestrator_has_no_graphql_marker_read() {

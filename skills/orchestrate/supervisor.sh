@@ -10,7 +10,7 @@
 #   3d. goal step (#195): keep-alive, pacing, parking, completion of goal-bound delivery leads pinned to this host
 #   7. status reconcile: refresh listed tickets from GitHub (backgrounded, throttled to once per 600 s; issue #51)
 #   8. PM Slack DM poll: record JP's replies to project-manager asks (backgrounded, no-op without PM_SLACK_BOT_TOKEN; issue #117)
-# One launch per tick max. All state is local (/tmp/pipeline); the only shared state is the issue's markers and labels.
+# One launch per tick max. All state is local (~/.claude/pipeline/state); the only shared state is the issue's markers and labels.
 set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source "$HERE/config.sh"

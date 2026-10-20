@@ -401,7 +401,7 @@ test_dd_ac18_project_manager_sections_and_untouched_parts_byte_identical() {
   # re-pinned for #311 PR: head hash set to origin/main's current delivery-lead.md (#335 changed §1); #311 itself does not touch delivery-lead.md
   # re-pinned for #198 (§3 pacing sentence and §4 headless line) and #192 (status-card sentence rename only)
   # re-pinned for #236 (§5 deployer-merged-no-marker row narrowed; no no-decision relaunch for a deployer BLOCKED)
-  assert_eq "$tail" "fd037c0d5657eba64d3090b6ce2ca6e438e15b345d3c1db4f28eca83be894bea" "AC18: sections 3-8 (re-pinned for #198 + #192, rename only; #236 playbook row)" || return 1
+  assert_eq "$tail" "8730a1b063d99d9f06f610758604d4183e2096a08f6e05ba0fcfde736192cf3a" "AC18: sections 3-8 (re-pinned for #198 + #192, rename only; #236 playbook row; #332 run-state path)" || return 1
 }
 
 # ---------------------------------------------------------------------------------------- AC19-AC20 docs

@@ -10,7 +10,7 @@ HERE=$(cd "$(dirname "$0")" && pwd -P)
 for f in "$HERE/config.sh" "$HERE/pipeline-lib.sh"; do [ -f "$f" ] && . "$f" 2>/dev/null; done
 if [ -f "$HERE/../../hooks/pipeline-markers.sh" ]; then . "$HERE/../../hooks/pipeline-markers.sh" 2>/dev/null
 elif [ -f "$HOME/.claude/hooks/pipeline-markers.sh" ]; then . "$HOME/.claude/hooks/pipeline-markers.sh" 2>/dev/null; fi
-PIPE="${PIPE:-/tmp/pipeline}"
+PIPE="${PIPE:-$HOME/.claude/pipeline/state}"
 LOGDIR="${LOGDIR:-$HOME/logs/pipeline}"
 
 # ---- flags (an invalid value becomes null; a bad flag never stops the stage)

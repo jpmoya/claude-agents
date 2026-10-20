@@ -80,7 +80,7 @@ If a credential is missing or expired, that step is `BLOCKED: <credential> unava
 2. **For each step, in order:**
    a. **Dependency.** If `Depends on:` names a PR, run `gh pr view <M> --json state,mergedAt,baseRefName` — it must be `MERGED` with `baseRefName` `main` (for scheduler / quoting tool, a merge to `staging` does not satisfy a prod dependency). Then confirm the deploy: the latest `deploy.yml` run on `main` is `success` (`gh run list --workflow deploy.yml --branch main --limit 1`). Not satisfied → post `AWAITING GO` listing steps done and `Held: Step k — waiting on PR #M on main`, and stop. If it names a step, that step must be done.
    b. **Gate.** If the step is `[prod]`, run `go_inherit <N>`. rc 0 → proceed (an inherited go counts). rc 1 or no go → post `AWAITING GO` (steps done so far, next prod step, the changed `Prod effect:` lines from the output, tell JP to reply `go`, or approved / proceed / lgtm) and stop.
-   c. **Run.** Execute the step's Command verbatim from the repo root. Capture stdout/stderr to `/tmp/pipeline/infra-<N>-step<k>.log`.
+   c. **Run.** Execute the step's Command verbatim from the repo root. Capture stdout/stderr to `~/.claude/pipeline/state/infra-<N>-step<k>.log`.
    d. **Verify.** Run the step's Verify command. Compare its output to Expected. DNS and domain changes may lag: retry Verify every 30 s for up to 5 minutes before declaring a mismatch.
    e. **Mismatch.** Run the step's Rollback, re-run Verify, and post `**[infra-operator] BLOCKED**` with: the step, the command output (trimmed, secrets masked), the Verify output vs Expected, and the rollback result. Stop. Do not continue to later steps.
    f. **Done.** Record the step in your running notes (post a `NOTE` after each prod step so progress survives a crash; staging steps can be batched into the final comment).
@@ -98,7 +98,7 @@ Runbook: <PLAN READY comment URL>
 | … |
 Manual steps: <done per Verify / none>
 After the flip (for JP): <the plan's checklist, verbatim>
-Logs: /tmp/pipeline/infra-<N>-step*.log
+Logs: ~/.claude/pipeline/state/infra-<N>-step*.log
 ```
 
 ```
