@@ -108,7 +108,7 @@ test_gm_ac1_tick_holds_for_jp_and_does_not_restart() {
   mk_restarting "$GM_PIPE" 42 "$GM_REPO"
   gm_iso_ago 1300 > "$(rkp "$GM_PIPE/orch-42.start")"   # past GRACE_PERIOD_SECS
   gm_thread "$GM_WRITTEN" "$GM_BLOCKED" "$GM_APPROVED"
-  HOME="$GM_HOME" PATH="$GM_GH:/usr/bin:/bin" PIPE="$GM_PIPE" QUEUE="$GM_PIPE/queue" LOGDIR="$GM_HOME/logs/pipeline" \
+  HOME="$GM_HOME" PATH="$GM_GH:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$GM_PIPE" QUEUE="$GM_PIPE/queue" LOGDIR="$GM_HOME/logs/pipeline" \
     SLACK_BOT_TOKEN="" SLACK_ENGINEERING_CHANNEL="" "$SUP_GM" >/dev/null 2>&1
   local held log queued
   held=$([ -e "$(rkp "$GM_PIPE/orch-42.held")" ] && echo present || echo absent)
@@ -134,7 +134,7 @@ test_gm_ac2_tick_with_decision_takes_the_restart_path() {
   mk_restarting "$GM_PIPE" 42 "$GM_REPO"
   gm_iso_ago 1300 > "$(rkp "$GM_PIPE/orch-42.start")"
   gm_thread "$GM_WRITTEN" "$GM_BLOCKED" "$GM_APPROVED" "$GM_DECISION"
-  HOME="$GM_HOME" PATH="$GM_GH:/usr/bin:/bin" PIPE="$GM_PIPE" QUEUE="$GM_PIPE/queue" LOGDIR="$GM_HOME/logs/pipeline" \
+  HOME="$GM_HOME" PATH="$GM_GH:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$GM_PIPE" QUEUE="$GM_PIPE/queue" LOGDIR="$GM_HOME/logs/pipeline" \
     SLACK_BOT_TOKEN="" SLACK_ENGINEERING_CHANNEL="" "$SUP_GM" >/dev/null 2>&1
   local held log
   held=$([ -e "$(rkp "$GM_PIPE/orch-42.held")" ] && echo present || echo absent)
@@ -265,7 +265,7 @@ test_gm_169_tick_holds_and_does_not_restart() {
   mk_restarting "$GM_PIPE" 42 "$GM_REPO"
   gm_iso_ago 1300 > "$(rkp "$GM_PIPE/orch-42.start")"
   gm_thread "$GM_IMPL" '**[code-reviewer] BLOCKED**' '**[test-reviewer] PASS**'
-  HOME="$GM_HOME" PATH="$GM_GH:/usr/bin:/bin" PIPE="$GM_PIPE" QUEUE="$GM_PIPE/queue" LOGDIR="$GM_HOME/logs/pipeline" \
+  HOME="$GM_HOME" PATH="$GM_GH:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$GM_PIPE" QUEUE="$GM_PIPE/queue" LOGDIR="$GM_HOME/logs/pipeline" \
     SLACK_BOT_TOKEN="" SLACK_ENGINEERING_CHANNEL="" "$SUP_GM" >/dev/null 2>&1
   local held log
   held=$([ -e "$(rkp "$GM_PIPE/orch-42.held")" ] && echo present || echo absent)

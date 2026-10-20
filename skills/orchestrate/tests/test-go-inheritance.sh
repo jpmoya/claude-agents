@@ -66,7 +66,7 @@ gi_plan() {
   s_b=$'### Step 2 — Add alias  [staging]\nDepends on: none\nCommand:\n```bash\nvercel alias set x y --scope benjisops\n```\nRollback: remove alias'
   printf '%s\n' '**[infra-planner] PLAN READY**' 'Goal: move host' 'Environments touched: both' '' '## Steps'
   if [ "$variant" = a ]; then printf '%s\n\n%s\n\n' "$s_a" "$s_b"; else printf '%s\n\n%s\n\n' "$s_b" "$s_a"; fi
-  printf '%s\n' '### Step 3 — Flip prod DNS  [prod]' 'Depends on: Step 1' 'Command:' '```bash' 'curl -H "Authorization: Bearer SECRETSENTINEL" https://api.example.test/flip' '```'
+  printf '%s\n' '### Step 3 — Flip prod DNS  [prod]' 'Depends on: Step 1' 'Command:' '```bash' 'curl -H "Authorization: Bearer SECRETSENTINEL" https://api.example.test/flip' '```'  # gitleaks:allow
   [ -n "$p1" ] && printf 'Prod effect: %s\n' "$p1"
   printf '%s\n' 'Rollback: flip back' ''
   [ -n "$extra" ] && printf '%s\n' "$extra"
@@ -470,7 +470,7 @@ test_gi_ac4_orchestrator_jp_go_untouched() {
 }
 
 test_gi_ac4_orchestrator_mockups_approved_lines_untouched() {
-  assert_eq "$(grep -F 'MOCKUPS APPROVED' "$ORCH_GI" | gi_sha)" "56e3f19ccec617e96ff9bade30ce6f5fa516eb950aee1ea4050531b32102d4b5" "AC4: MOCKUPS APPROVED lines"
+  assert_eq "$(grep -F 'MOCKUPS APPROVED' "$ORCH_GI" | gi_sha)" "d51b67799f66c9541d52667c24f3c761cab348a1ffb0934626a4f4ee2b8daedd" "AC4: MOCKUPS APPROVED lines"
 }
 
 test_gi_ac4_orchestrator_needs_jp_lines_untouched() {

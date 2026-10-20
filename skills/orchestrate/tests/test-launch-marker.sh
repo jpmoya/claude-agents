@@ -45,12 +45,12 @@ lm_cleanup() {
 }
 
 lm_launch() {  # lm_launch <issue>
-  HOME="$LM_HOME" PATH="$LM_BIN:/usr/bin:/bin" PIPE="$LM_PIPE" QUEUE="$LM_PIPE/queue" \
+  HOME="$LM_HOME" PATH="$LM_BIN:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$LM_PIPE" QUEUE="$LM_PIPE/queue" \
     "$ORCH_LM" "$LM_REPO" "$1" 2>&1
 }
 
 lm_tick() {  # one supervisor tick (drains the queue -> do_launch)
-  HOME="$LM_HOME" PATH="$LM_BIN:/usr/bin:/bin" PIPE="$LM_PIPE" QUEUE="$LM_PIPE/queue" LOGDIR="$LM_HOME/logs/pipeline" \
+  HOME="$LM_HOME" PATH="$LM_BIN:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$LM_PIPE" QUEUE="$LM_PIPE/queue" LOGDIR="$LM_HOME/logs/pipeline" \
     "$SUP_LM" >/dev/null 2>&1
 }
 

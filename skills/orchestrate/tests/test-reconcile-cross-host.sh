@@ -57,7 +57,7 @@ rh_comment() { jq -cn --arg b "$1" --arg t "$(rh_iso_ago "$2")" '{body:$b,create
 rh_tick() {
   if [ -n "${RH_UPDATED_AT+x}" ]; then printf '%s' "$RH_UPDATED_AT" > "$RH_GH/updated-at"; else rh_iso_ago 7200 > "$RH_GH/updated-at"; fi
   printf '%s' "$1" > "$RH_GH/comments-json"
-  HOME="$RH_HOME" PATH="$RH_GH:/usr/bin:/bin" PIPE="$RH_PIPE" QUEUE="$RH_PIPE/queue" LOGDIR="$RH_HOME/logs/pipeline" \
+  HOME="$RH_HOME" PATH="$RH_GH:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$RH_PIPE" QUEUE="$RH_PIPE/queue" LOGDIR="$RH_HOME/logs/pipeline" \
     SLACK_BOT_TOKEN="" SLACK_ENGINEERING_CHANNEL="" "$SUP_RH" >/dev/null 2>&1
   RH_LOG=$(cat "$RH_HOME/logs/pipeline/supervisor.log" 2>/dev/null)
   RH_CALLS=$(cat "$RH_GH/gh-calls.log")
@@ -178,7 +178,7 @@ rh_o_cleanup() {
   cleanup_running; rm -rf "$RO_PIPE" "$RO_HOME"
 }
 rh_o_launch() {
-  RO_OUT=$(HOME="$RO_HOME" PATH="$RO_BIN:/usr/bin:/bin" PIPE="$RO_PIPE" QUEUE="$RO_PIPE/queue" "$ORCH_RH" "$RO_REPO" "$1" 2>&1); RO_RC=$?
+  RO_OUT=$(HOME="$RO_HOME" PATH="$RO_BIN:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$RO_PIPE" QUEUE="$RO_PIPE/queue" "$ORCH_RH" "$RO_REPO" "$1" 2>&1); RO_RC=$?
   RO_CLAIMS=$(grep -F 'issue comment' "$RO_BIN/gh-calls.log" | grep -F '**[supervisor] NOTE** claim: ' || true)
   RO_NCLAIMS=$(printf '%s' "$RO_CLAIMS" | grep -c . || true)
 }

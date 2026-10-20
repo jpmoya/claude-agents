@@ -56,7 +56,7 @@ qo_cleanup() { cleanup_running; rm -rf "$QO_PIPE" "$QO_HOME" "${QO_COPY:-}"; QO_
 qo_dispatch_on() { printf 'DISPATCH_REPOS=("project-a/repo-a:%s")\n' "$QO_REPO" >> "$QO_HOME/.claude/pipeline/config.local.sh"; }
 
 qo_run() {  # qo_run <script> — the script under test in the isolated env
-  HOME="$QO_HOME" PATH="$QO_GH:/usr/bin:/bin" PIPE="$QO_PIPE" QUEUE="$QO_PIPE/queue" LOGDIR="$QO_HOME/logs/pipeline" \
+  HOME="$QO_HOME" PATH="$QO_GH:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$QO_PIPE" QUEUE="$QO_PIPE/queue" LOGDIR="$QO_HOME/logs/pipeline" \
     SLACK_BOT_TOKEN="" SLACK_ENGINEERING_CHANNEL="" "$@"
 }
 qo_tick() { qo_run "${1:-$ORCH_DIR_QO/supervisor.sh}" >/dev/null 2>&1; }

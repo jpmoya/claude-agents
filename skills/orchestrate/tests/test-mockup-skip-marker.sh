@@ -125,8 +125,8 @@ sm_status() {
   mk_held "$P" 501 "$R"; printf 'Title of 501\n' > "$P/orch-501.title"
   jq -nc --arg g "$SM_PEND" --arg c "$1" --arg a "$2" --arg t1 "$SM_GATE_T" --arg t2 "$SM_LATER_T" \
     '[{body:$g,createdAt:$t1,author:{login:"jpmoya"}},{body:$c,createdAt:$t2,author:{login:$a}}]' > "$B/gh-issue-comments-json-501"
-  HOME="$H" PATH="$B:/usr/bin:/bin" PIPE="$P" QUEUE="$P/queue" LOGDIR="$H/logs/pipeline" "$HERE_MG/../reconcile-status.sh" --force >/dev/null 2>&1
-  out=$(HOME="$H" PATH="$B:/usr/bin:/bin" PIPE="$P" QUEUE="$P/queue" LOGDIR="$H/logs/pipeline" "$HERE_MG/../report-status.sh" --print 2>/dev/null \
+  HOME="$H" PATH="$B:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$P" QUEUE="$P/queue" LOGDIR="$H/logs/pipeline" "$HERE_MG/../reconcile-status.sh" --force >/dev/null 2>&1
+  out=$(HOME="$H" PATH="$B:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$P" QUEUE="$P/queue" LOGDIR="$H/logs/pipeline" "$HERE_MG/../report-status.sh" --print 2>/dev/null \
     | jq -c '[.runs[] | select((.issue|tostring)=="501")] | .[0] // "NORUN"' 2>/dev/null)
   cleanup_running; rm -rf "$P" "$H"
   printf '%s' "$out"

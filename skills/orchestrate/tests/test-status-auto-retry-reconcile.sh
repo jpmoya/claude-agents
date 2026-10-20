@@ -29,11 +29,11 @@ ar_gate() {
   jq -nc --arg b "$body" --arg t "$AR_GATE_T" '[{body:$b, createdAt:$t, author:{login:"x"}}]' > "$AR_BIN/gh-issue-comments-json-$n"
 }
 ar_reconcile() {
-  HOME="$AR_HOME" PATH="$AR_BIN:/usr/bin:/bin" PIPE="$AR_PIPE" QUEUE="$AR_PIPE/queue" LOGDIR="$AR_HOME/logs/pipeline" \
+  HOME="$AR_HOME" PATH="$AR_BIN:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$AR_PIPE" QUEUE="$AR_PIPE/queue" LOGDIR="$AR_HOME/logs/pipeline" \
     "$RS_AR/reconcile-status.sh" --force >/dev/null 2>&1
 }
 ar_print() {
-  HOME="$AR_HOME" PATH="$AR_BIN:/usr/bin:/bin" PIPE="$AR_PIPE" QUEUE="$AR_PIPE/queue" LOGDIR="$AR_HOME/logs/pipeline" \
+  HOME="$AR_HOME" PATH="$AR_BIN:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$AR_PIPE" QUEUE="$AR_PIPE/queue" LOGDIR="$AR_HOME/logs/pipeline" \
     "$RS_AR/report-status.sh" --print 2>/dev/null
 }
 ar_field() {  # ar_field <json> <issue> <field>

@@ -79,7 +79,8 @@ if [ -f "$HERE/battery" ]; then echo Darwin; else exec /usr/bin/uname "$@"; fi
 EOF
   cat > "$GS_BIN/pmset" <<'EOF'
 #!/bin/bash
-echo "Now drawing from 'Battery Power'"
+HERE=$(cd "$(dirname "$0")" && pwd)
+if [ -f "$HERE/battery" ]; then echo "Now drawing from 'Battery Power'"; else echo "Now drawing from 'AC Power'"; fi
 EOF
   # claude: record argv + cwd, then stay alive until killed (so a launched goal is a live goal)
   cat > "$GS_BIN/claude" <<EOF
@@ -408,7 +409,7 @@ gs_argv_after() { awk -v k="$2" 'p{print;exit} $0==k{p=1}' "$1/argv"; }
 
 gs_tick() {
   GS_RC=0
-  ( cd "$GS_HOME" && env HOME="$GS_HOME" PATH="$GS_BIN:/usr/bin:/bin" PIPE="$GS_PIPE" QUEUE="$GS_PIPE/queue" \
+  ( cd "$GS_HOME" && env HOME="$GS_HOME" PATH="$GS_BIN:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$GS_PIPE" QUEUE="$GS_PIPE/queue" \
       LOGDIR="$GS_HOME/logs/pipeline" GS_RS_LOG="$GS_RS_LOG" \
       SLACK_BOT_TOKEN="${GS_SLACK_TOKEN:-}" SLACK_ENGINEERING_CHANNEL="" \
       STATUS_PUSH_URL="${GS_PUSH_URL:-}" STATUS_PUSH_TOKEN="${GS_PUSH_TOKEN:-}" GH_TOKEN="${GS_GH_TOKEN:-}" \

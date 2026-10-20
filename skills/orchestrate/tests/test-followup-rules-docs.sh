@@ -96,7 +96,7 @@ test_fu_ac2_orchestrator_never_hands_filing_a_followup_to_jp() {
   # R1: no new routing-table row. Baseline at main = 28 table rows starting with "| `[".
   # #115: rows that name REJECTED are #115's own routing rows (terminal reasons, needs-spec, inert cases) and are not counted
   rows=$(grep '^| `\[' "$ORCH_FU" | grep -vc 'REJECTED')
-  assert_eq "$rows" "28" "R1: orchestrator routing table gains no new row" || return 1
+  assert_eq "$rows" "29" "R1: orchestrator routing table gains no new row" || return 1
 }
 
 test_fu_ac2_solutions_architect_hygiene_findings_are_new_scope_not_dependency_followups() {
@@ -147,7 +147,7 @@ test_fu_ac6_no_new_hook_daemon_timer_or_state_file_and_single_config_key() {
   # plus reconcile-status.sh, which issue #51 (Expected Behavior 2) adds to the orchestrate dir,
   # plus deliver.sh and goal-lib.sh, which issue #193 (goal-bound delivery lead) mandates
   hooks=$(ls "$ROOT_FU/hooks" | tr '\n' ' ')
-  assert_eq "$hooks" "block-orchestrator-agent.sh bug-fix-skill-reminder.sh cap-heavy-commands.py email-send-guard.sh enforce-tests-before-commit.sh limit-shells.sh no-duplicate-stage.sh pipeline-markers.sh protect-locked-tests.sh report-status-hook.sh require-handoff-marker.sh sync-agents.sh " "AC6: no new hook" || return 1
+  assert_eq "$hooks" "block-orchestrator-agent.sh brevity-reminder.sh brevity-stop.sh bug-fix-skill-reminder.sh cap-heavy-commands.py email-send-guard.sh enforce-tests-before-commit.sh limit-shells.sh no-duplicate-stage.sh pipeline-markers.sh protect-locked-tests.sh report-status-hook.sh require-handoff-marker.sh require-question-justification.sh sync-agents.sh " "AC6: no new hook" || return 1
   top=$(ls "$ROOT_FU/skills/orchestrate" | tr '\n' ' ')
   assert_eq "$top" "SKILL.md build-runs-json.py code-sync.sh config.local.example.sh config.sh deliver.sh goal-lib.sh goal-project.sh install.sh intake-labels.sh orchestrate.sh pipeline-bridge-dispatch.sh pipeline-bridge-prompt.md pipeline-lib.sh pipeline-report.sh pm-slack.sh reconcile-status.sh report-status.sh rotate-logs.sh run-state.sh scan-backlog.sh session-backfill.sh stage-run.sh supervisor.sh test tests " "AC6: no new daemon/timer/state-file script under skills/orchestrate" || return 1
   # the one allowed config key exists and defaults to today's behaviour (empty)

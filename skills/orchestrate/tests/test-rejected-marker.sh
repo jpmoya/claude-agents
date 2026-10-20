@@ -229,7 +229,7 @@ exit 0
 STUB
   chmod +x "$home/bin/gh"
   printf 'SCAN_BACKLOG=1\nDISPATCH_REPOS=("o/a:/tmp/a")\n' > "$home/.claude/pipeline/config.local.sh"
-  HOME="$home" GH_LOG="$log" PATH="$home/bin:/usr/bin:/bin" /bin/bash "$ROOT_RJ/skills/orchestrate/scan-backlog.sh" >/dev/null 2>&1
+  HOME="$home" GH_LOG="$log" PATH="$home/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" /bin/bash "$ROOT_RJ/skills/orchestrate/scan-backlog.sh" >/dev/null 2>&1
   edits=$(grep '^issue edit ' "$log"); rm -rf "$home"
   assert_contains "$edits" "issue edit 3 --repo o/a" "AC7: the unlabelled control is stamped" || return 1
   assert_eq "$(printf '%s\n' "$edits" | grep -c .)" "1" "AC7: only the control is edited (needs-spec issues #1 and #2 are not)" || return 1

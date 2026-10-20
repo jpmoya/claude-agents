@@ -65,13 +65,13 @@ sg_cleanup() {
 
 sg_run() {  # sg_run <script> [args] -> SG_OUT (stdout+stderr), SG_RC
   local script=$1; shift
-  SG_OUT=$(HOME="$SG_HOME" PATH="$SG_BIN:/usr/bin:/bin" PIPE="$SG_PIPE" QUEUE="$SG_PIPE/queue" LOGDIR="$SG_HOME/logs/pipeline" \
+  SG_OUT=$(HOME="$SG_HOME" PATH="$SG_BIN:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$SG_PIPE" QUEUE="$SG_PIPE/queue" LOGDIR="$SG_HOME/logs/pipeline" \
     "$script" "$@" 2>&1)
   SG_RC=$?
 }
 sg_reconcile() { sg_run "$RS_SG/reconcile-status.sh" "$@"; }
 sg_print() {
-  HOME="$SG_HOME" PATH="$SG_BIN:/usr/bin:/bin" PIPE="$SG_PIPE" QUEUE="$SG_PIPE/queue" LOGDIR="$SG_HOME/logs/pipeline" \
+  HOME="$SG_HOME" PATH="$SG_BIN:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$SG_PIPE" QUEUE="$SG_PIPE/queue" LOGDIR="$SG_HOME/logs/pipeline" \
     "$RS_SG/report-status.sh" --print 2>/dev/null
 }
 

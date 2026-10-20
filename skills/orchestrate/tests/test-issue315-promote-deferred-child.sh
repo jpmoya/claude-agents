@@ -23,7 +23,7 @@ out() { if [ -n "$jqx" ]; then printf '%s' "$1" | jq -r "$jqx"; else printf '%s\
 num=$(printf '%s' "$3" | grep -E '^[0-9]+$')
 FIELDS='{number,title,body,state,stateReason,labels,comments,closedByPullRequestsReferences}'
 case "$1 $2" in
-  "repo view") echo "$repo"; exit 0;;
+  "repo view") echo "${3:-$repo}"; exit 0;;
   "issue list")
     j=$(jq -c --arg r "$repo" --arg l "$label" --arg s "$state" "[.[] | select(.repo==\$r)
       | select(\$s==\"all\" or (.state|ascii_downcase)==\$s) | select(\$l==\"\" or ([.labels[].name]|index(\$l))) | $FIELDS]" "$D/issues.json")

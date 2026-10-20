@@ -315,7 +315,7 @@ test_cc_ac22_markers_for_is_byte_identical_to_main() {
   cur=$(awk '/^markers_for\(\)/{p=1} p{print} p&&/^}/{exit}' "$MARK_CC" | sed -e 's/|SKIP MOCKUPS//' -e '/^ *intake) /d' -e '/^ *orchestrator) /d' -e '/^ *delivery-lead) /d' -e 's/ delivery-lead project-manager/ project-manager/' -e 's/ intake orchestrator; do/; do/' -e 's/ intake; do/; do/' -e 's/|REJECTED//' -e 's/REJECTED|//' | cksum)
   ref=$(cd "$ROOT_CC" && git merge-base HEAD origin/main 2>/dev/null)
   if [ -n "$ref" ] && base=$(cd "$ROOT_CC" && git show "$ref:hooks/pipeline-markers.sh" 2>/dev/null) && [ -n "$base" ]; then
-    base=$(printf '%s\n' "$base" | awk '/^markers_for\(\)/{p=1} p{print} p&&/^}/{exit}' | sed -e '/^ *intake) /d' -e '/^ *orchestrator) /d' -e '/^ *delivery-lead) /d' -e 's/ delivery-lead project-manager/ project-manager/' -e 's/ intake orchestrator; do/; do/' -e 's/ intake; do/; do/' -e 's/|REJECTED//' -e 's/REJECTED|//' | cksum)
+    base=$(printf '%s\n' "$base" | awk '/^markers_for\(\)/{p=1} p{print} p&&/^}/{exit}' | sed -e 's/|SKIP MOCKUPS//' -e '/^ *intake) /d' -e '/^ *orchestrator) /d' -e '/^ *delivery-lead) /d' -e 's/ delivery-lead project-manager/ project-manager/' -e 's/ intake orchestrator; do/; do/' -e 's/ intake; do/; do/' -e 's/|REJECTED//' -e 's/REJECTED|//' | cksum)
   else
     base="1931356475 1340"   # hand-recorded from main c0e8e6f (2026-10-03) when no origin/main is available
   fi

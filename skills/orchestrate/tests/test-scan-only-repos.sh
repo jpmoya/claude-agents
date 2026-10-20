@@ -29,7 +29,7 @@ STUB
 
 # so_run_scan <home> <log> — runs the scan in the fixture home; sets SO_RC.
 so_run_scan() {
-  HOME="$1" GH_LOG="$2" PATH="$1/bin:/usr/bin:/bin" /bin/bash "$RS_SO/scan-backlog.sh" >/dev/null 2>&1
+  HOME="$1" GH_LOG="$2" PATH="$1/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" /bin/bash "$RS_SO/scan-backlog.sh" >/dev/null 2>&1
   SO_RC=$?
 }
 

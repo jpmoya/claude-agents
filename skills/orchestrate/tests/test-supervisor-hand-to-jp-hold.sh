@@ -41,7 +41,7 @@ while [ $# -gt 0 ]; do [ "$1" = -d ] && printf '%s' "$2" > "$(dirname "$0")/slac
 echo '{"ok":true}'
 CURL
     chmod +x "$SQ_GH/curl"
-    HOME="$SQ_HOME" PATH="$SQ_GH:/usr/bin:/bin" PIPE="$SQ_PIPE" QUEUE="$SQ_PIPE/queue" LOGDIR="$SQ_HOME/logs/pipeline" \
+    HOME="$SQ_HOME" PATH="$SQ_GH:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$SQ_PIPE" QUEUE="$SQ_PIPE/queue" LOGDIR="$SQ_HOME/logs/pipeline" \
       SLACK_BOT_TOKEN="fake-credential-for-tests-only" SLACK_ENGINEERING_CHANNEL="C0TEST" "$SUP_SQ" >/dev/null 2>&1
     I129_PAYLOAD=$(cat "$SQ_GH/slack-payload" 2>/dev/null)
   else

@@ -22,7 +22,7 @@ echo "curl $*" >> "$GH_LOG"; echo ok
 STUB
   chmod +x "$home/bin/gh" "$home/bin/curl"
   printf 'SCAN_BACKLOG=1\nSLACK_WEBHOOK_URL=https://example.invalid/hook\nDISPATCH_REPOS=("o/a:/tmp/a")\n' > "$home/.claude/pipeline/config.local.sh"
-  HOME="$home" GH_LOG="$log" CLAIM_MODE="$1" PATH="$home/bin:/usr/bin:/bin" /bin/bash "$HERE_166/../scan-backlog.sh" >/dev/null 2>&1
+  HOME="$home" GH_LOG="$log" CLAIM_MODE="$1" PATH="$home/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" /bin/bash "$HERE_166/../scan-backlog.sh" >/dev/null 2>&1
   cat "$log"; rm -rf "$home"
 }
 HERE_166=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)

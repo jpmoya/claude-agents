@@ -32,12 +32,12 @@ ms_cleanup() { cleanup_running; rm -rf "$MS_PIPE" "$MS_HOME"; return 0; }
 
 ms_run() {  # ms_run <script> [args]
   local script=$1; shift
-  MS_OUT=$(HOME="$MS_HOME" PATH="$MS_BIN:/usr/bin:/bin" PIPE="$MS_PIPE" QUEUE="$MS_PIPE/queue" LOGDIR="$MS_HOME/logs/pipeline" \
+  MS_OUT=$(HOME="$MS_HOME" PATH="$MS_BIN:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$MS_PIPE" QUEUE="$MS_PIPE/queue" LOGDIR="$MS_HOME/logs/pipeline" \
     "$script" "$@" 2>&1)
   MS_RC=$?
 }
 ms_print() {
-  HOME="$MS_HOME" PATH="$MS_BIN:/usr/bin:/bin" PIPE="$MS_PIPE" QUEUE="$MS_PIPE/queue" LOGDIR="$MS_HOME/logs/pipeline" \
+  HOME="$MS_HOME" PATH="$MS_BIN:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$MS_PIPE" QUEUE="$MS_PIPE/queue" LOGDIR="$MS_HOME/logs/pipeline" \
     "$RS_MS/report-status.sh" --print 2>/dev/null
 }
 ms_file() { head -n1 "$(rkp "$MS_PIPE/orch-$1.milestone")" 2>/dev/null || echo ABSENT; }

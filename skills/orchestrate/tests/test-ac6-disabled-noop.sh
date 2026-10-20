@@ -22,7 +22,7 @@ run_reporter_case() {  # run_reporter_case <pipe> <home> <curl_marker> -> prints
   local pipe=$1 home=$2 marker=$3 bindir rc
   bindir=$(mktemp -d "${TMPDIR:-/tmp}/orch-test-bin.XXXXXX")
   write_fake_curl "$bindir" "$marker"
-  ( PIPE="$pipe" QUEUE="$pipe/queue" HOME="$home" PATH="$bindir:/usr/bin:/bin" "$RS_AC6/report-status.sh" event )
+  ( PIPE="$pipe" QUEUE="$pipe/queue" HOME="$home" PATH="$bindir:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" "$RS_AC6/report-status.sh" event )
   rc=$?
   rm -rf "$bindir"
   return "$rc"

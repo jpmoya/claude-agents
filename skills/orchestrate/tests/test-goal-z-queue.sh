@@ -556,7 +556,7 @@ test_zq_hosts_goal_lead_starts_only_on_its_machine() {
 }
 test_zq_register_hosts_flag_writes_the_block() {
   zq_env
-  ( cd "$GS_HOME" && env HOME="$GS_HOME" PATH="$GS_BIN:/usr/bin:/bin" PIPE="$GS_PIPE" bash "$GS_TREE/skills/orchestrate/deliver.sh" --hosts bogus >/dev/null 2>&1 ); local rc=$?
+  ( cd "$GS_HOME" && env HOME="$GS_HOME" PATH="$GS_BIN:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$GS_PIPE" bash "$GS_TREE/skills/orchestrate/deliver.sh" --hosts bogus >/dev/null 2>&1 ); local rc=$?
   gs_cleanup
   [ "$rc" -ne 0 ] || { fail "register --hosts bogus must be refused"; return 1; }
 }
@@ -689,6 +689,7 @@ test_zq_reporter_emits_queue_position_and_pause_reason() {
   zq_kind mac; zq_ac off
   gs_tick; gs_tick; gs_settle
   local j
+  rm -f "$GS_PIPE/goalprojects.json"   # #434: the background project-list job writes an empty list on a host without the project scope; that list replaces the goal rows, so drop it
   j=$(PATH="$GS_BIN:$PATH" python3 "$GS_SKILL/build-runs-json.py" "" "$GS_HOME/.claude/pipeline/runs.jsonl" "$GS_PIPE" goals </dev/null 2>/dev/null)
   gs_cleanup
   # A is active on another host: it holds the line, so there is no pause; B and C are queued 1 and 2
@@ -707,6 +708,7 @@ test_zq_reporter_marks_the_head_of_the_queue_paused_on_a_battery_mac() {
   zq_kind mac; zq_ac off
   gs_tick; gs_tick; gs_tick; gs_settle
   local j
+  rm -f "$GS_PIPE/goalprojects.json"   # #434: the background project-list job writes an empty list on a host without the project scope; that list replaces the goal rows, so drop it
   j=$(PATH="$GS_BIN:$PATH" python3 "$GS_SKILL/build-runs-json.py" "" "$GS_HOME/.claude/pipeline/runs.jsonl" "$GS_PIPE" goals </dev/null 2>/dev/null)
   gs_cleanup
   assert_eq "$(printf '%s' "$j" | jq -c 'map({id, queue_pos, paused: (.paused // null)})')" \

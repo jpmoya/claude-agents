@@ -89,7 +89,7 @@ sp_issue() {
 sp_comment() {
   jq --argjson n "$1" --arg b "$2" '. + [{number:$n,body:$b,createdAt:"2026-01-01T00:00:00Z"}]' "$SP_D/comments.json" > "$SP_D/c.tmp" && mv "$SP_D/c.tmp" "$SP_D/comments.json"
 }
-sp_tick() { HOME="$SP_HOME" PATH="$SP_D:/usr/bin:/bin" PIPE="$SP_PIPE" QUEUE="$SP_PIPE/queue" LOGDIR="$SP_HOME/logs/pipeline" \
+sp_tick() { HOME="$SP_HOME" PATH="$SP_D:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$SP_PIPE" QUEUE="$SP_PIPE/queue" LOGDIR="$SP_HOME/logs/pipeline" \
   SLACK_BOT_TOKEN="" SLACK_ENGINEERING_CHANNEL="" /bin/bash "$SUP_SP" >/dev/null 2>&1
   # poll (max ~15 s) until the detached stub claude has exited, instead of a fixed sleep
   local i; for i in $(seq 1 150); do pgrep -f "$SP_D/claude" >/dev/null 2>&1 || break; sleep 0.1; done; sleep 0.2; }
