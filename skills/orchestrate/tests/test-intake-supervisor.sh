@@ -63,7 +63,7 @@ si_issue() {
   jq --argjson n "$n" --arg r "$r" --argjson l "$(printf '%s\n' "$@" | jq -R . | jq -sc 'map({name:.})')" \
     '. + [{number:$n,repo:$r,labels:$l}]' "$SI_D/issues.json" > "$SI_D/i.tmp" && mv "$SI_D/i.tmp" "$SI_D/issues.json"
 }
-si_tick() { HOME="$SI_HOME" PATH="$SI_D:/usr/bin:/bin" PIPE="$SI_PIPE" QUEUE="$SI_PIPE/queue" LOGDIR="$SI_HOME/logs/pipeline" \
+si_tick() { HOME="$SI_HOME" PATH="$SI_D:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$SI_PIPE" QUEUE="$SI_PIPE/queue" LOGDIR="$SI_HOME/logs/pipeline" \
   SLACK_BOT_TOKEN="" SLACK_ENGINEERING_CHANNEL="" /bin/bash "$SUP_SI" >/dev/null 2>&1; sleep 1.5; }
 si_launches() { grep -c -- '--agent intake' "$SI_D/claude.log"; }
 si_labels() { jq -r --argjson n "$1" '.[]|select(.number==$n)|[.labels[].name]|sort|join(",")' "$SI_D/issues.json"; }

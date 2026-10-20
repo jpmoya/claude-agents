@@ -40,7 +40,7 @@ GH_EOF
 z_cleanup() { rm -rf "$Z_PIPE" "$Z_HOME"; }
 z_iso_ago() { python3 -c "import datetime,sys; print((datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(seconds=int(sys.argv[1]))).strftime('%Y-%m-%dT%H:%M:%SZ'))" "$1"; }
 z_run() {
-  HOME="$Z_HOME" PATH="$Z_GH:/usr/bin:/bin" PIPE="$Z_PIPE" QUEUE="$Z_PIPE/queue" LOGDIR="$Z_HOME/logs/pipeline" \
+  HOME="$Z_HOME" PATH="$Z_GH:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$Z_PIPE" QUEUE="$Z_PIPE/queue" LOGDIR="$Z_HOME/logs/pipeline" \
     SLACK_BOT_TOKEN="" SLACK_ENGINEERING_CHANNEL="" "$@"
 }
 # z_tick <updatedAt-secs-ago> <comments-json>

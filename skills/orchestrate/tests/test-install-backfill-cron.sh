@@ -20,6 +20,9 @@ EOS
   chmod +x "$IC_HOME/.local/bin/"*
 }
 
+# #434: on macOS install.sh puts the supervisor in a launchd agent, not cron, so the crontab holds zero supervisor lines there
+ic_sup_lines() { if [ "$(uname -s)" = Darwin ]; then echo 0; else echo 1; fi; }
+
 # ic_install <args...> — runs the repo's install.sh under the fake HOME. Hard stop unless crontab is the stub.
 ic_install() {
   local resolved
@@ -39,7 +42,7 @@ test_ic_ac12_install_twice_one_backfill_line_and_one_supervisor_line() {
   ic_install --minute even
   local tab; tab=$(cat "$IC_TAB")
   assert_eq "$(printf '%s\n' "$tab" | grep -c 'orchestrate/session-backfill\.sh')" "1" "AC12 exactly one backfill line after two runs" || r=1
-  assert_eq "$(printf '%s\n' "$tab" | grep -c 'orchestrate/supervisor\.sh')" "1" "AC12 exactly one supervisor line" || r=1
+  assert_eq "$(printf '%s\n' "$tab" | grep -c 'orchestrate/supervisor\.sh')" "$(ic_sup_lines)" "AC12 exactly one supervisor line" || r=1
   assert_contains "$tab" "0 14 * * 1 /usr/bin/true" "AC12 unrelated seeded line kept" || r=1
   rm -rf "$IC_HOME"; return $r
 }
@@ -111,7 +114,7 @@ test_ic_141_ac20_install_twice_one_rotate_line_one_each_of_the_others_and_seeded
   ic_install --minute even
   local tab r=0; tab=$(cat "$IC_TAB")
   assert_eq "$(printf '%s\n' "$tab" | grep -c 'orchestrate/rotate-logs\.sh')" "1" "AC20: exactly one rotate-logs line after two runs" || r=1
-  assert_eq "$(printf '%s\n' "$tab" | grep -c 'orchestrate/supervisor\.sh')" "1" "AC20: exactly one supervisor line" || r=1
+  assert_eq "$(printf '%s\n' "$tab" | grep -c 'orchestrate/supervisor\.sh')" "$(ic_sup_lines)" "AC20: exactly one supervisor line" || r=1
   assert_eq "$(printf '%s\n' "$tab" | grep -c 'orchestrate/session-backfill\.sh')" "1" "AC20: exactly one backfill line" || r=1
   assert_contains "$tab" "0 14 * * 1 /usr/bin/true" "AC20: unrelated seeded line kept" || r=1
   assert_contains "$tab" "41 13 * * * $IC_HOME/.claude/skills/orchestrate/rotate-logs.sh >> $IC_HOME/logs/pipeline/rotate-logs.log 2>&1" "AC20: the exact daily 13:41 line" || r=1

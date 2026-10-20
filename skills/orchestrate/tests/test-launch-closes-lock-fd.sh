@@ -45,7 +45,7 @@ lfd_wait_for() {
 test_lfd_launch_closes_inherited_fd9() {
   lfd_env
   local out rc state=missing
-  out=$(HOME="$LFD_HOME" PATH="$LFD_HOME/.local/bin:/usr/bin:/bin" PIPE="$LFD_PIPE" QUEUE="$LFD_PIPE/queue" \
+  out=$(HOME="$LFD_HOME" PATH="$LFD_HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$LFD_PIPE" QUEUE="$LFD_PIPE/queue" \
     "$ORCH_LFD" "$LFD_REPO" 42 2>&1 9>"$LFD_TMP/lock"); rc=$?
   lfd_wait_for "$LFD_OUT" && state=$(cat "$LFD_OUT")
   lfd_cleanup
@@ -57,7 +57,7 @@ test_lfd_launch_closes_inherited_fd9() {
 test_lfd_launch_without_fd9_is_unchanged() {
   lfd_env
   local out rc state=missing pidfile=absent
-  out=$(HOME="$LFD_HOME" PATH="$LFD_HOME/.local/bin:/usr/bin:/bin" PIPE="$LFD_PIPE" QUEUE="$LFD_PIPE/queue" \
+  out=$(HOME="$LFD_HOME" PATH="$LFD_HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$LFD_PIPE" QUEUE="$LFD_PIPE/queue" \
     "$ORCH_LFD" "$LFD_REPO" 42 2>&1 9>&-); rc=$?
   lfd_wait_for "$LFD_OUT" && state=$(cat "$LFD_OUT")
   [ -s "$(rkp "$LFD_PIPE/orch-42.pid")" ] && pidfile=present

@@ -79,13 +79,13 @@ sc_title() { printf 'Title of %s\n' "$1" > "$(rkp "$SC_PIPE/orch-$1.title")"; }
 # sc_run <script> [args] -> SC_OUT (stdout+stderr), SC_RC. The isolated env; fake gh wins on PATH.
 sc_run() {
   local script=$1; shift
-  SC_OUT=$(HOME="$SC_HOME" PATH="$SC_BIN:/usr/bin:/bin" PIPE="$SC_PIPE" QUEUE="$SC_PIPE/queue" LOGDIR="$SC_HOME/logs/pipeline" \
+  SC_OUT=$(HOME="$SC_HOME" PATH="$SC_BIN:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$SC_PIPE" QUEUE="$SC_PIPE/queue" LOGDIR="$SC_HOME/logs/pipeline" \
     "$script" "$@" 2>&1)
   SC_RC=$?
 }
 sc_reconcile() { sc_run "$RS_SC/reconcile-status.sh" "$@"; }
 sc_print() {  # payload on stdout
-  HOME="$SC_HOME" PATH="$SC_BIN:/usr/bin:/bin" PIPE="$SC_PIPE" QUEUE="$SC_PIPE/queue" LOGDIR="$SC_HOME/logs/pipeline" \
+  HOME="$SC_HOME" PATH="$SC_BIN:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$SC_PIPE" QUEUE="$SC_PIPE/queue" LOGDIR="$SC_HOME/logs/pipeline" \
     "$RS_SC/report-status.sh" --print 2>/dev/null
 }
 
@@ -477,7 +477,7 @@ test_sc_ac4_reconcile_asks_for_one_push_and_only_when_something_changed() {
 sc_tick_mirror() {  # one supervisor tick from the mirror; prints elapsed seconds; sets SC_RC
   local t0 t1
   t0=$(date +%s)
-  HOME="$SC_HOME" PATH="$SC_BIN:/usr/bin:/bin" PIPE="$SC_PIPE" QUEUE="$SC_PIPE/queue" LOGDIR="$SC_HOME/logs/pipeline" \
+  HOME="$SC_HOME" PATH="$SC_BIN:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$SC_PIPE" QUEUE="$SC_PIPE/queue" LOGDIR="$SC_HOME/logs/pipeline" \
     SLACK_BOT_TOKEN="" SLACK_ENGINEERING_CHANNEL="" "$SC_ROOT/skills/orchestrate/supervisor.sh" >/dev/null 2>&1
   SC_RC=$?
   t1=$(date +%s)

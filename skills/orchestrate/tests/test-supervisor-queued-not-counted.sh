@@ -52,7 +52,7 @@ sq_cleanup() { cleanup_running; rm -rf "$SQ_PIPE" "$SQ_HOME"; }
 sq_marker() { printf '%s\n' "$1" > "$SQ_GH/gh-issue-latest-marker"; }
 
 sq_run() {  # sq_run <script> [args...] — the script under test in the isolated env
-  HOME="$SQ_HOME" PATH="$SQ_GH:/usr/bin:/bin" PIPE="$SQ_PIPE" QUEUE="$SQ_PIPE/queue" LOGDIR="$SQ_HOME/logs/pipeline" \
+  HOME="$SQ_HOME" PATH="$SQ_GH:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$SQ_PIPE" QUEUE="$SQ_PIPE/queue" LOGDIR="$SQ_HOME/logs/pipeline" \
     SLACK_BOT_TOKEN="" SLACK_ENGINEERING_CHANNEL="" "$@"
 }
 sq_tick() { sq_run "$SUP_SQ" >/dev/null 2>&1; }

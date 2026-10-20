@@ -125,7 +125,7 @@ dd_env() {
 dd_cleanup() { cleanup_running; rm -rf "$DD_PIPE" "$DD_HOME"; }
 
 dd_tick() {
-  HOME="$DD_HOME" PATH="$DD_GH:/usr/bin:/bin" PIPE="$DD_PIPE" QUEUE="$DD_PIPE/queue" LOGDIR="$DD_HOME/logs/pipeline" \
+  HOME="$DD_HOME" PATH="$DD_GH:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$DD_PIPE" QUEUE="$DD_PIPE/queue" LOGDIR="$DD_HOME/logs/pipeline" \
     SLACK_BOT_TOKEN="" SLACK_ENGINEERING_CHANNEL="" "$SUP_DD" >/dev/null 2>&1
 }
 
@@ -397,11 +397,11 @@ test_dd_ac18_project_manager_sections_and_untouched_parts_byte_identical() {
   # re-pinned for #98 (model line only)
   # re-pinned for #106 (tail hash: project-manager.md line 104 only)
   # re-pinned for #168 (promotion-PR exception, §1 only) and #192 (delivery-lead.md: name, intro sentence, DECISION marker spelling)
-  assert_eq "$head" "bb79605d8b091cca914ce4706ccc5f00a73dc95e6b5fcf3317102a925ca52dae" "AC18: frontmatter + section 1 (re-pinned for #117, JP-only paragraph Slack carve-out only)" || return 1
+  assert_eq "$head" "54f65e47b18380dcfbdd989e1bd31ba9e90df138f0fc7badf35ad773a0e6d8af" "AC18: frontmatter + section 1 (re-pinned for #434 after #437; earlier #117, JP-only paragraph Slack carve-out only)" || return 1
   # re-pinned for #311 PR: head hash set to origin/main's current delivery-lead.md (#335 changed §1); #311 itself does not touch delivery-lead.md
   # re-pinned for #198 (§3 pacing sentence and §4 headless line) and #192 (status-card sentence rename only)
   # re-pinned for #236 (§5 deployer-merged-no-marker row narrowed; no no-decision relaunch for a deployer BLOCKED)
-  assert_eq "$tail" "ec321064f2580e6f274bc769a893ece66078e0355f3e57418ef93fab96863f95" "AC18: sections 3-8 (re-pinned for #198 + #192, rename only; #236 playbook row)" || return 1
+  assert_eq "$tail" "fd037c0d5657eba64d3090b6ce2ca6e438e15b345d3c1db4f28eca83be894bea" "AC18: sections 3-8 (re-pinned for #198 + #192, rename only; #236 playbook row)" || return 1
 }
 
 # ---------------------------------------------------------------------------------------- AC19-AC20 docs
@@ -486,7 +486,7 @@ test_dd_i76_ac3_gate_rows_byte_identical_and_carve_out_keeps_exclusions() {   # 
   assert_ne "$cur" "" "i76 AC3: AWAITING GO + go row present" || return 1
   assert_eq "$cur" "$old" "i76 AC3: AWAITING GO + go row byte-identical" || return 1
   cur=$(grep '^| `\[ui-ux-designer\] MOCKUPS PENDING APPROVAL`' "$ORCH_DD" | grep -v 'JP approval comment' | sed 's/ \*\*Skip marker:\*\*.* |$/ |/')   # #311: the approval row now resolves via jp_go
-  old=$(cd "$ROOT_DD" && git show "$base:agents/orchestrator.md" | grep '^| `\[ui-ux-designer\] MOCKUPS PENDING APPROVAL`' | grep -v 'JP approval comment')
+  old=$(cd "$ROOT_DD" && git show "$base:agents/orchestrator.md" | grep '^| `\[ui-ux-designer\] MOCKUPS PENDING APPROVAL`' | grep -v 'JP approval comment' | sed 's/ \*\*Skip marker:\*\*.* |$/ |/')   # #434: base now carries the skip-marker sentence too
   assert_ne "$cur" "" "i76 AC3: MOCKUPS PENDING APPROVAL rows present" || return 1
   assert_eq "$cur" "$old" "i76 AC3: MOCKUPS PENDING APPROVAL rows byte-identical" || return 1
   # issue #144: the row's head now also mentions claude-agents; pin only the unsupported-project sentence (row tail).
@@ -600,7 +600,7 @@ test_dd_i76_ac8_no_new_mechanisms() {   # characterisation
   local want got
   # #192: also strip only the `delivery-lead)` case line and the ` delivery-lead` token, on both sides
   # #115: also strip only `|REJECTED` from the product-manager/fullstack-developer lines, on both sides (REJECTED is #115's marker)
-  want=$(cd "$ROOT_DD" && git show "$base:hooks/pipeline-markers.sh" | awk '/^markers_for\(\)/ {p=1} p {print} p && /^}/ {p=0}' | sed -e '/^ *intake) /d' -e '/^ *orchestrator) /d' -e '/^ *delivery-lead) /d' -e 's/ delivery-lead project-manager/ project-manager/' -e 's/ intake orchestrator; do/; do/' -e 's/ intake; do/; do/' -e 's/|REJECTED//' -e 's/REJECTED|//')   # #114: strip only intake)/token on both sides
+  want=$(cd "$ROOT_DD" && git show "$base:hooks/pipeline-markers.sh" | awk '/^markers_for\(\)/ {p=1} p {print} p && /^}/ {p=0}' | sed -e 's/|SKIP MOCKUPS//' -e '/^ *intake) /d' -e '/^ *orchestrator) /d' -e '/^ *delivery-lead) /d' -e 's/ delivery-lead project-manager/ project-manager/' -e 's/ intake orchestrator; do/; do/' -e 's/ intake; do/; do/' -e 's/|REJECTED//' -e 's/REJECTED|//')   # #114: strip only intake)/token on both sides
   got=$(cd "$ROOT_DD" && awk '/^markers_for\(\)/ {p=1} p {print} p && /^}/ {p=0}' hooks/pipeline-markers.sh | sed -e 's/|SKIP MOCKUPS//' -e '/^ *intake) /d' -e '/^ *orchestrator) /d' -e '/^ *delivery-lead) /d' -e 's/ delivery-lead project-manager/ project-manager/' -e 's/ intake orchestrator; do/; do/' -e 's/ intake; do/; do/' -e 's/|REJECTED//' -e 's/REJECTED|//')   # #114
   [ -n "$want" ] || { fail "i76 AC8: markers_for/marker_re not found at merge-base"; return 1; }
   assert_eq "$got" "$want" "i76 AC8: markers_for unchanged (#310: marker_re jp branch moved to the shared matcher)" || return 1

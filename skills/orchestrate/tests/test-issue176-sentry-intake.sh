@@ -187,7 +187,7 @@ expr=""; while [ \$# -gt 0 ]; do case "\$1" in --jq) expr=\$2; shift;; esac; shi
 jq -r "\$expr" "$d/page.json"
 EOF2
   chmod +x "$d/bin/gh"; echo 0 > "$d/pipe/o_a-9-intake-before.txt"
-  echo '{}' | PIPE="$d/pipe" PATH="$d/bin:/usr/bin:/bin" PIPELINE_ISSUE=9 PIPELINE_AGENT=intake PIPELINE_REPO=o/a \
+  echo '{}' | PIPE="$d/pipe" PATH="$d/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPELINE_ISSUE=9 PIPELINE_AGENT=intake PIPELINE_REPO=o/a \
     /bin/bash "$ROOT_S176/hooks/require-handoff-marker.sh" >/dev/null 2>&1; rc=$?
   rm -rf "$d"
   assert_eq "$rc" "0" "AC4: hook accepts [intake] NOISE as an intake handoff" || return 1

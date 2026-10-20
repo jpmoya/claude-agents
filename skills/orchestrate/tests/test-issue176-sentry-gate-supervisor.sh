@@ -110,7 +110,7 @@ test_s176g_label_read_failure_keeps_state_and_retries() {
   si_tick                       # launch; the run adds agent-go + marker
   touch "$SI_D/labels-fail"
   # make the labels-only read fail
-  sed -i 's|^  "issue view "\*"--json labels --jq"\*)|  "issue view "*"--json labels --jq"*)\n    [ -f "$D/labels-fail" ] \&\& exit 1|' "$SI_D/gh"
+  perl -pi -e 's|^(  "issue view "\*"--json labels --jq"\*\))|$1\n    [ -f "\$D/labels-fail" ] && exit 1|' "$SI_D/gh"   # #434: perl, not sed -i (BSD sed has no \n in the replacement)
   si_tick; si_tick
   local kept=0; ls "$SI_PIPE"/intake-*.id >/dev/null 2>&1 && kept=1
   assert_eq "$kept" "1" "intake state kept while the label read fails" || { si_cleanup; return 1; }
@@ -157,7 +157,7 @@ s176g_tick_noflock() {
     mkdir -p "$SI_D/nof"; local f lk="fl"; lk="${lk}ock"
     for f in /usr/bin/* /bin/*; do [ "${f##*/}" = "$lk" ] || ln -sf "$f" "$SI_D/nof/${f##*/}" 2>/dev/null; done
   fi
-  HOME="$SI_HOME" PATH="$SI_D:$SI_D/nof" PIPE="$SI_PIPE" QUEUE="$SI_PIPE/queue" LOGDIR="$SI_HOME/logs/pipeline" \
+  HOME="$SI_HOME" PATH="$SI_D:$SI_D/nof:/usr/local/bin:/opt/homebrew/bin" PIPE="$SI_PIPE" QUEUE="$SI_PIPE/queue" LOGDIR="$SI_HOME/logs/pipeline" \
     SLACK_BOT_TOKEN="" SLACK_ENGINEERING_CHANNEL="" /bin/bash "$SUP_SI" >/dev/null 2>&1; sleep 1.5
 }
 

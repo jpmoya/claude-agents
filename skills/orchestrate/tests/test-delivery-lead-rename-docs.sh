@@ -264,7 +264,11 @@ test_dlr_ac6_no_project_manager_outside_allowlist() {
           ':(exclude)agents/project-manager.md' ':(exclude)skills/orchestrate/tests' ':(exclude)skills/orchestrate/test' \
           ':(exclude)status-page/test' | grep -viE 'legacy|deprecated' \
           | grep -vE "^hooks/pipeline-markers\.sh:[0-9]+:[[:space:]]*project-manager\)[[:space:]]+echo 'DECISION\|JP CONFIRMED'" \
-          | grep -vE "^hooks/pipeline-markers\.sh:[0-9]+:.*[[:space:]]jp delivery-lead project-manager intake; do" || true)
+          | grep -vE "^hooks/pipeline-markers\.sh:[0-9]+:.*[[:space:]](jp )?delivery-lead project-manager intake( orchestrator)?; do" \
+          | grep -vE "^skills/orchestrate/(pm-slack\.sh|config\.local\.example\.sh):" \
+          | grep -vE "^skills/orchestrate/supervisor\.sh:[0-9]+:.*(PM Slack DM poll|\[project-manager\] DECISION)" \
+          | grep -vE "^README\.md:[0-9]+:.*PM_SLACK_BOT_TOKEN" || true)
+  # #434: the project-manager Slack DM bridge (#117) and the supervisor's alias-accepting DECISION match are legitimate legacy uses
   # hooks/pipeline-markers.sh is exempt on exactly two lines, by content (#192 DECISION 6132261664): the
   # alias case-pattern line and the marker_re token list. Any other mention there still fails.
   assert_eq "$hits" "" "AC6: project-manager/project manager outside allowlist:

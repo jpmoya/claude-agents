@@ -18,10 +18,10 @@ EOT
   local pid_f repo_f
   pid_f=absent; [ -e "$(rkp "$pipe/orch-301.pid")" ] && pid_f=present
   repo_f=absent; [ -e "$(rkp "$pipe/orch-301.repo")" ] && repo_f=present
-  HOME="$home" PATH="$bin:/usr/bin:/bin" PIPE="$pipe" QUEUE="$pipe/queue" LOGDIR="$home/logs/pipeline" \
+  HOME="$home" PATH="$bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$pipe" QUEUE="$pipe/queue" LOGDIR="$home/logs/pipeline" \
     "$ROOT_SQ/skills/orchestrate/reconcile-status.sh" --force >/dev/null 2>&1; rc=$?
   local payload runs completed c_closed queue
-  payload=$(HOME="$home" PATH="$bin:/usr/bin:/bin" PIPE="$pipe" QUEUE="$pipe/queue" LOGDIR="$home/logs/pipeline" \
+  payload=$(HOME="$home" PATH="$bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$pipe" QUEUE="$pipe/queue" LOGDIR="$home/logs/pipeline" \
     "$ROOT_SQ/skills/orchestrate/report-status.sh" --print 2>/dev/null)
   runs=$(printf '%s' "$payload" | jq -r '[.runs[].issue|tostring]|join(" ")')
   completed=$(printf '%s' "$payload" | jq -r '[.completed[].issue|tostring]|join(" ")')

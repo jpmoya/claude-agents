@@ -35,7 +35,7 @@ ext_cleanup() { cleanup_running; rm -rf "$EXT_PIPE" "$EXT_HOME"; }
 # ext_launch <issue> [extra...] -> runs orchestrate.sh in the isolated env; stdout+stderr on stdout, rc returned
 ext_launch() {
   local issue=$1; shift
-  HOME="$EXT_HOME" PATH="$EXT_HOME/.local/bin:/usr/bin:/bin" PIPE="$EXT_PIPE" QUEUE="$EXT_PIPE/queue" \
+  HOME="$EXT_HOME" PATH="$EXT_HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$EXT_PIPE" QUEUE="$EXT_PIPE/queue" \
     "$ORCH_EXT" "$EXT_REPO" "$issue" "$@" 2>&1
 }
 
@@ -128,7 +128,7 @@ test_extra_supervisor_reenqueue_keeps_extra() {
   echo "$EXT_REPO" > "$stem.repo"
   echo 1 > "$stem.exit"
   rm -f "$qf"
-  HOME="$EXT_HOME" PATH="$EXT_HOME/.local/bin:/usr/bin:/bin" PIPE="$EXT_PIPE" QUEUE="$EXT_PIPE/queue" LOGDIR="$EXT_HOME/logs/pipeline" \
+  HOME="$EXT_HOME" PATH="$EXT_HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$EXT_PIPE" QUEUE="$EXT_PIPE/queue" LOGDIR="$EXT_HOME/logs/pipeline" \
     "$SUP_EXT" >/dev/null 2>&1
   local reason queued_extra
   reason=$(python3 -c "import json; print(json.load(open('$(rkp $EXT_PIPE/queue/orch-42.json)')).get('reason','MISSING'))" 2>/dev/null || echo "NO-QUEUE-ENTRY")

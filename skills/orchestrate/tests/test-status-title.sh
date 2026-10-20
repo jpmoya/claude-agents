@@ -266,7 +266,7 @@ st_sleepy_claude() {
 }
 
 st_launch() {  # st_launch <issue> — orchestrate.sh in the isolated env; combined output on stdout
-  HOME="$ST_HOME" PATH="$ST_BIN:/usr/bin:/bin" PIPE="$ST_PIPE" QUEUE="$ST_PIPE/queue" \
+  HOME="$ST_HOME" PATH="$ST_BIN:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$ST_PIPE" QUEUE="$ST_PIPE/queue" \
     "$ORCH_ST" "$ST_REPO" "$1" 2>&1
 }
 
@@ -360,7 +360,7 @@ test_st_ac12_empty_fetch_leaves_no_title_file() {
 
 # st_supervisor_tick — one supervisor tick in the isolated env (drains the queue -> do_launch).
 st_supervisor_tick() {
-  HOME="$ST_HOME" PATH="$ST_BIN:/usr/bin:/bin" PIPE="$ST_PIPE" QUEUE="$ST_PIPE/queue" LOGDIR="$ST_HOME/logs/pipeline" \
+  HOME="$ST_HOME" PATH="$ST_BIN:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$ST_PIPE" QUEUE="$ST_PIPE/queue" LOGDIR="$ST_HOME/logs/pipeline" \
     "$SUP_ST" >/dev/null 2>&1
 }
 

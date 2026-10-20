@@ -42,7 +42,7 @@ GHW
 fd_cleanup() { cleanup_running; rm -rf "$FD_PIPE" "$FD_HOME"; }
 
 fd_run() {
-  HOME="$FD_HOME" PATH="$FD_GH:/usr/bin:/bin" PIPE="$FD_PIPE" QUEUE="$FD_PIPE/queue" LOGDIR="$FD_HOME/logs/pipeline" \
+  HOME="$FD_HOME" PATH="$FD_GH:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$FD_PIPE" QUEUE="$FD_PIPE/queue" LOGDIR="$FD_HOME/logs/pipeline" \
     SLACK_BOT_TOKEN="" SLACK_ENGINEERING_CHANNEL="" "${1:-$ORCH_DIR_FD/supervisor.sh}" >/dev/null 2>&1
 }
 

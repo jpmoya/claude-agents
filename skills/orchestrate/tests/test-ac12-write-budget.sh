@@ -52,7 +52,7 @@ test_ac12_under_daily_cap_pushes() {
 import json
 json.dump({'last_hash':'not-the-real-hash','last_push_epoch':0,'last_attempt_epoch':0,'day':'$day','count':399,'fails':0,'last_status':'204'}, open('$pipe/status-push.state','w'))
 "
-  ( PIPE="$pipe" QUEUE="$pipe/queue" HOME="$home" PATH="$bindir:/usr/bin:/bin" "$RS_AC12/report-status.sh" event )
+  ( PIPE="$pipe" QUEUE="$pipe/queue" HOME="$home" PATH="$bindir:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" "$RS_AC12/report-status.sh" event )
   rc=$?
   calls=$(count_curl_calls "$bindir")
   cleanup_running; rm -rf "$pipe" "$home" "$bindir"
@@ -71,7 +71,7 @@ test_ac12_at_daily_cap_never_pushes() {
 import json
 json.dump({'last_hash':'not-the-real-hash','last_push_epoch':0,'last_attempt_epoch':0,'day':'$day','count':400,'fails':0,'last_status':'204'}, open('$pipe/status-push.state','w'))
 "
-  ( PIPE="$pipe" QUEUE="$pipe/queue" HOME="$home" PATH="$bindir:/usr/bin:/bin" "$RS_AC12/report-status.sh" event )
+  ( PIPE="$pipe" QUEUE="$pipe/queue" HOME="$home" PATH="$bindir:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" "$RS_AC12/report-status.sh" event )
   rc=$?
   calls=$(count_curl_calls "$bindir")
   cleanup_running; rm -rf "$pipe" "$home" "$bindir"
@@ -90,7 +90,7 @@ test_ac12_utc_day_rollover_resets_counter_and_pushes() {
 import json
 json.dump({'last_hash':'not-the-real-hash','last_push_epoch':0,'last_attempt_epoch':0,'day':'$yday','count':400,'fails':0,'last_status':'204'}, open('$pipe/status-push.state','w'))
 "
-  ( PIPE="$pipe" QUEUE="$pipe/queue" HOME="$home" PATH="$bindir:/usr/bin:/bin" "$RS_AC12/report-status.sh" event )
+  ( PIPE="$pipe" QUEUE="$pipe/queue" HOME="$home" PATH="$bindir:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" "$RS_AC12/report-status.sh" event )
   rc=$?
   calls=$(count_curl_calls "$bindir")
   cleanup_running; rm -rf "$pipe" "$home" "$bindir"
@@ -110,8 +110,8 @@ test_ac12_two_pushes_under_interval_apart_coalesce_to_one_curl() {
 import json
 json.dump({'last_hash':'not-the-real-hash','last_push_epoch':$t,'last_attempt_epoch':$t,'day':'$day','count':1,'fails':0,'last_status':'204'}, open('$pipe/status-push.state','w'))
 "
-  ( PIPE="$pipe" QUEUE="$pipe/queue" HOME="$home" PATH="$bindir:/usr/bin:/bin" "$RS_AC12/report-status.sh" event ); rc1=$?
-  ( PIPE="$pipe" QUEUE="$pipe/queue" HOME="$home" PATH="$bindir:/usr/bin:/bin" "$RS_AC12/report-status.sh" event ); rc2=$?
+  ( PIPE="$pipe" QUEUE="$pipe/queue" HOME="$home" PATH="$bindir:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" "$RS_AC12/report-status.sh" event ); rc1=$?
+  ( PIPE="$pipe" QUEUE="$pipe/queue" HOME="$home" PATH="$bindir:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" "$RS_AC12/report-status.sh" event ); rc2=$?
   calls=$(count_curl_calls "$bindir")
   cleanup_running; rm -rf "$pipe" "$home" "$bindir"
 
@@ -144,7 +144,7 @@ _ac12_run_with_attempt_age() {  # <age_secs> -> prints curl call count after one
 import json
 json.dump({'last_hash':'not-the-real-hash','last_push_epoch':$t,'last_attempt_epoch':$t-$age,'day':'$day','count':1,'fails':0,'last_status':'204'}, open('$pipe/status-push.state','w'))
 "
-  ( PIPE="$pipe" QUEUE="$pipe/queue" HOME="$home" PATH="$bindir:/usr/bin:/bin" "$RS_AC12/report-status.sh" event )
+  ( PIPE="$pipe" QUEUE="$pipe/queue" HOME="$home" PATH="$bindir:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" "$RS_AC12/report-status.sh" event )
   calls=$(count_curl_calls "$bindir")
   cleanup_running; rm -rf "$pipe" "$home" "$bindir"
   echo "$calls"
@@ -173,7 +173,7 @@ test_ac12_failed_push_is_logged() {
 import json
 json.dump({'last_hash':'x','last_push_epoch':0,'last_attempt_epoch':0,'day':'$day','count':1,'fails':0,'last_status':''}, open('$pipe/status-push.state','w'))
 "
-  ( PIPE="$pipe" QUEUE="$pipe/queue" HOME="$home" PATH="$bindir:/usr/bin:/bin" "$RS_AC12/report-status.sh" event )
+  ( PIPE="$pipe" QUEUE="$pipe/queue" HOME="$home" PATH="$bindir:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" "$RS_AC12/report-status.sh" event )
   calls=$(grep 'hooks.slack.test' "$bindir/calls" 2>/dev/null)
   cleanup_running; local leak; leak=$(grep -c "fake-token-for-test-only" <<<"$calls"); rm -rf "$pipe" "$home" "$bindir"
   assert_contains "$calls" "route=status-reporter/push" "#240: Slack alert carries the route tag" || return 1

@@ -140,7 +140,7 @@ ib_env() {
 ib_cleanup() { cleanup_running; rm -rf "$IB_PIPE" "$IB_HOME"; }
 
 ib_tick() {  # one run of supervisor.sh in the isolated env
-  HOME="$IB_HOME" PATH="$IB_GH:/usr/bin:/bin" PIPE="$IB_PIPE" QUEUE="$IB_PIPE/queue" LOGDIR="$IB_HOME/logs/pipeline" \
+  HOME="$IB_HOME" PATH="$IB_GH:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$IB_PIPE" QUEUE="$IB_PIPE/queue" LOGDIR="$IB_HOME/logs/pipeline" \
     SLACK_BOT_TOKEN="" SLACK_ENGINEERING_CHANNEL="" "$SUP_IB" >/dev/null 2>&1
 }
 

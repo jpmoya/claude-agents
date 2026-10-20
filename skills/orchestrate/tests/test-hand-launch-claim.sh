@@ -70,12 +70,12 @@ hc_cleanup() {
 
 hc_launch() {  # hc_launch <issue> [--force]
   local n=$1; shift
-  HOME="$HC_HOME" PATH="$HC_BIN:/usr/bin:/bin" PIPE="$HC_PIPE" QUEUE="$HC_PIPE/queue" LOGDIR="$HC_HOME/logs/pipeline" \
+  HOME="$HC_HOME" PATH="$HC_BIN:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$HC_PIPE" QUEUE="$HC_PIPE/queue" LOGDIR="$HC_HOME/logs/pipeline" \
     "$ORCH_HC" "$@" "$HC_REPO" "$n" 2>&1
 }
 
 hc_claim_winner() {  # hc_claim_winner <issue> -> stdout of claim_winner
-  ( export HOME="$HC_HOME" PATH="$HC_BIN:/usr/bin:/bin" PIPE="$HC_PIPE" QUEUE="$HC_PIPE/queue" LOGDIR="$HC_HOME/logs/pipeline"
+  ( export HOME="$HC_HOME" PATH="$HC_BIN:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$HC_PIPE" QUEUE="$HC_PIPE/queue" LOGDIR="$HC_HOME/logs/pipeline"
     . "$RS_HC/config.sh"; . "$RS_HC/pipeline-lib.sh"
     claim_winner "$HC_REPO" "$1" )
 }
@@ -234,7 +234,7 @@ GH_EOF
 }
 
 hc_sup_tick() {
-  HOME="$HC_HOME" PATH="$HC_BIN:/usr/bin:/bin" PIPE="$HC_PIPE" QUEUE="$HC_PIPE/queue" LOGDIR="$HC_HOME/logs/pipeline" \
+  HOME="$HC_HOME" PATH="$HC_BIN:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$HC_PIPE" QUEUE="$HC_PIPE/queue" LOGDIR="$HC_HOME/logs/pipeline" \
     SLACK_BOT_TOKEN="" SLACK_ENGINEERING_CHANNEL="" /bin/bash "$SUP_HC" >/dev/null 2>&1
   /bin/sleep 1.5
 }

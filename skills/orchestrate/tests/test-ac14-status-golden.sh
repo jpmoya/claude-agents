@@ -68,13 +68,13 @@ run_status_normalized() {
   # Guard against the real gh silently shadowing the fake one (e.g. if HOME/.local/bin ever
   # reappears on some future host) — a golden test that quietly hit the network would prove
   # nothing and could leak a real repo name (AC5/AC17).
-  resolved_gh=$(HOME="$fake_home" PATH="$FAKEBIN:/usr/bin:/bin" command -v gh)
+  resolved_gh=$(HOME="$fake_home" PATH="$FAKEBIN:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" command -v gh)
   if [ "$resolved_gh" != "$FAKEBIN/gh" ]; then
     echo "AC14 test infra broken: real gh ($resolved_gh) shadows the fake one ($FAKEBIN/gh)" >&2
     rm -rf "$fake_home"
     return 1
   fi
-  ( HOME="$fake_home" PATH="$FAKEBIN:/usr/bin:/bin" PIPE="$pipe" QUEUE="$pipe/queue" "$ORCH" status $issue ) 2>&1 \
+  ( HOME="$fake_home" PATH="$FAKEBIN:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$pipe" QUEUE="$pipe/queue" "$ORCH" status $issue ) 2>&1 \
     | sed -e "s#$pipe#@@PIPE@@#g" -e "s#$repo_a#@@REPOA@@#g" -e "s#$repo_b#@@REPOB@@#g" \
           -e "s/pid [0-9][0-9]*/pid @@PID@@/g"
   rm -rf "$fake_home"

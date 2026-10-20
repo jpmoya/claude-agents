@@ -67,7 +67,7 @@ rk_cleanup() {
 
 rk_orch() {  # rk_orch <args…> — shipped orchestrate.sh from the copied tree; stdout+stderr, rc in RK_RC
   RK_RC=0
-  ( cd "$RK_HOME" && env HOME="$RK_HOME" PATH="$RK_BIN:/usr/bin:/bin" PIPE="$RK_PIPE" QUEUE="$RK_PIPE/queue" LOGDIR="$RK_HOME/logs/pipeline" \
+  ( cd "$RK_HOME" && env HOME="$RK_HOME" PATH="$RK_BIN:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$RK_PIPE" QUEUE="$RK_PIPE/queue" LOGDIR="$RK_HOME/logs/pipeline" \
       PIPELINE_TEST_CLAIM_SETTLE_SECS=0 bash "$RK_TREE/skills/orchestrate/orchestrate.sh" "$@" ) 2>&1 || RK_RC=$?
 }
 # rk_orch_out <args…> — like rk_orch but sets RK_OUT and RK_RC in the CURRENT shell (no $(…) subshell, which would lose RK_RC).
@@ -77,7 +77,7 @@ rk_orch_out() {
 }
 rk_tick() {
   RK_RC=0
-  ( cd "$RK_HOME" && env HOME="$RK_HOME" PATH="$RK_BIN:/usr/bin:/bin" PIPE="$RK_PIPE" QUEUE="$RK_PIPE/queue" LOGDIR="$RK_HOME/logs/pipeline" \
+  ( cd "$RK_HOME" && env HOME="$RK_HOME" PATH="$RK_BIN:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$RK_PIPE" QUEUE="$RK_PIPE/queue" LOGDIR="$RK_HOME/logs/pipeline" \
       SLACK_BOT_TOKEN="xoxb-SENTINEL-TOKEN" SLACK_ENGINEERING_CHANNEL="" GH_TOKEN="ghp_SENTINEL" \
       bash "$RK_TREE/skills/orchestrate/supervisor.sh" >"$RK_HOME/tick.out" 2>&1 </dev/null ) || RK_RC=$?
   rk_settle
@@ -324,7 +324,7 @@ test_rk_status_payload_two_same_number_runs() {
   local out sa sb n
   # rk_tree_init stubs report-status.sh to a no-op; run the shipped script under a side name (same dir, same relative sourcing).
   cp "$RK_SKILL/report-status.sh" "$RK_TREE/skills/orchestrate/report-status-real.sh"
-  out=$( cd "$RK_HOME" && env HOME="$RK_HOME" PATH="$RK_BIN:/usr/bin:/bin" PIPE="$RK_PIPE" QUEUE="$RK_PIPE/queue" LOGDIR="$RK_HOME/logs/pipeline" \
+  out=$( cd "$RK_HOME" && env HOME="$RK_HOME" PATH="$RK_BIN:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$RK_PIPE" QUEUE="$RK_PIPE/queue" LOGDIR="$RK_HOME/logs/pipeline" \
       bash "$RK_TREE/skills/orchestrate/report-status-real.sh" --print 2>/dev/null )
   n=$(printf '%s' "$out" | jq '[.runs[] | select(.issue==100)] | length' 2>/dev/null)
   sa=$(printf '%s' "$out" | jq -r '[.runs[] | select(.issue==100 and .repo=="alias-a")][0].state' 2>/dev/null)
@@ -357,7 +357,7 @@ test_rk_full_cycle_creates_no_legacy_names() {
 test_rk_reconcile_reads_new_keys_per_repo() {
   rk_env; rk_launch2
   echo CLOSED > "$RK_BIN/gh-state-$(printf '%s' "$RK_A" | tr / _)"   # only A's #100 is closed on GitHub
-  ( cd "$RK_HOME" && env HOME="$RK_HOME" PATH="$RK_BIN:/usr/bin:/bin" PIPE="$RK_PIPE" QUEUE="$RK_PIPE/queue" LOGDIR="$RK_HOME/logs/pipeline" \
+  ( cd "$RK_HOME" && env HOME="$RK_HOME" PATH="$RK_BIN:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$RK_PIPE" QUEUE="$RK_PIPE/queue" LOGDIR="$RK_HOME/logs/pipeline" \
       bash "$RK_TREE/skills/orchestrate/reconcile-status.sh" --force ) >/dev/null 2>&1
   local ca=no cb=no legacy
   [ -e "$RK_PIPE/orch-$RK_KA-100.closed" ] && ca=yes; [ -e "$RK_PIPE/orch-$RK_KB-100.closed" ] && cb=yes

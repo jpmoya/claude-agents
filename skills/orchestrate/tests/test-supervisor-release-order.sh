@@ -52,7 +52,7 @@ WRAP
 # rq_tick — one tick with Slack configured against a stub curl that records the alert.
 rq_tick() {
   printf '#!/bin/bash\necho "$*" >> "%s/curl.log"\necho "{\\"ok\\":true}"\n' "$SI_D" > "$SI_D/curl"; chmod +x "$SI_D/curl"
-  HOME="$SI_HOME" PATH="$SI_D:/usr/bin:/bin" PIPE="$SI_PIPE" QUEUE="$SI_PIPE/queue" LOGDIR="$SI_HOME/logs/pipeline" \
+  HOME="$SI_HOME" PATH="$SI_D:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$SI_PIPE" QUEUE="$SI_PIPE/queue" LOGDIR="$SI_HOME/logs/pipeline" \
     SLACK_BOT_TOKEN="x" SLACK_ENGINEERING_CHANNEL="C1" /bin/bash "$SUP_SI" >/dev/null 2>&1; sleep 1.5
 }
 rq_bulk() {  # rq_bulk <count> <start> <milestone> [label...] — many issues in one jq pass

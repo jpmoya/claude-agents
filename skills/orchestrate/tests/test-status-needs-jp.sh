@@ -32,11 +32,11 @@ nj_c() { jq -nc --arg b "$1" --arg t "$2" '{body:$b, createdAt:$t, author:{login
 nj_held() { mk_held "$NJ_PIPE" "$1" "$NJ_REPO"; printf 'Title of %s\n' "$1" > "$(rkp "$NJ_PIPE/orch-$1.title")"; }
 
 nj_reconcile() {
-  HOME="$NJ_HOME" PATH="$NJ_BIN:/usr/bin:/bin" PIPE="$NJ_PIPE" QUEUE="$NJ_PIPE/queue" LOGDIR="$NJ_HOME/logs/pipeline" \
+  HOME="$NJ_HOME" PATH="$NJ_BIN:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$NJ_PIPE" QUEUE="$NJ_PIPE/queue" LOGDIR="$NJ_HOME/logs/pipeline" \
     "$RS_NJ/reconcile-status.sh" --force >/dev/null 2>&1
 }
 nj_print() {
-  HOME="$NJ_HOME" PATH="$NJ_BIN:/usr/bin:/bin" PIPE="$NJ_PIPE" QUEUE="$NJ_PIPE/queue" LOGDIR="$NJ_HOME/logs/pipeline" \
+  HOME="$NJ_HOME" PATH="$NJ_BIN:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$NJ_PIPE" QUEUE="$NJ_PIPE/queue" LOGDIR="$NJ_HOME/logs/pipeline" \
     "$RS_NJ/report-status.sh" --print 2>/dev/null
 }
 nj_file() { if [ -f "$1" ]; then head -n1 "$1"; else echo ABSENT; fi; }   # first line of a state file, or ABSENT
