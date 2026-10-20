@@ -250,6 +250,18 @@ claim_winner() {
   printf '%s\n' "$out" | awk '{print $4}'
 }
 
+# claim_winner_rest <owner/repo> <issue> — #438: claim_winner over REST (the supervisor's launch funnel must keep working while GraphQL
+# is exhausted, #387). Same comment shape, same CLAIM_WINDOW_SECS window, same fail-closed return 1 on an unreadable list.
+claim_winner_rest() {
+  local cutoff out
+  cutoff=$(python3 -c "import datetime,sys; print((datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(seconds=int(sys.argv[1]))).strftime('%Y-%m-%dT%H:%M:%SZ'))" "${CLAIM_WINDOW_SECS:-600}") \
+    || { pipeline_event claim_lookup_failed --argjson issue "${2:-0}" --arg stage cutoff; claim_alert "$2" cutoff; return 1; }
+  out=$(set -o pipefail; gh api "repos/$1/issues/$2/comments?per_page=100" --paginate 2>/dev/null | jq -rs --arg c "$cutoff" \
+    '[.[][] | select(.body | startswith("**[supervisor] NOTE** claim: ")) | select((.created_at // .createdAt) > $c)] | sort_by(.created_at // .createdAt) | first | .body // ""') \
+    || { pipeline_event claim_lookup_failed --argjson issue "${2:-0}" --arg stage gh; claim_alert "$2" gh; return 1; }
+  printf '%s\n' "$out" | awk '{print $4}'
+}
+
 # canonicalize_repo_lists — a repo renamed on GitHub keeps redirecting for `gh repo view` but `gh issue list -R <old>` returns []
 # (2026-10-19: quoting-tool -> sales-tool blinded the supervisor). For every DISPATCH_REPOS / SCAN_ONLY_REPOS entry, resolve the
 # canonical owner/name with `gh repo view` (cached 1h in $PIPE/repo-canon) and rewrite the entry in place; log a loud WARN on a

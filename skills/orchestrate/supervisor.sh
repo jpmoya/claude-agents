@@ -334,7 +334,22 @@ do_launch() {  # <repo> <issue> <extra> <restart_n> <reason> <queue_wait_s> <run
   [ -n "$rk" ] || rk=$(rk_of "$repo" "$issue")
   local owner_repo prompt title preamble=""
 
-  owner_repo=$(cd "$repo" && gh api repos/{owner}/{repo} --jq .full_name 2>/dev/null || echo "unknown")
+  # #438: the single launch funnel arbitrates the cross-host claim itself, so no path (queue, auto-restart, loop-cap
+  # resume) can start a ticket the other host already holds. Same comment shape and CLAIM_WINDOW_SECS expiry as dispatch.
+  # Returns 1 = lost to another host (caller drops the queue entry), 2 = claim could not be posted/read (fail closed, retry).
+  local claim_win
+  owner_repo=$(cd "$repo" && gh api repos/{owner}/{repo} --jq .full_name 2>/dev/null || true)
+  [ -n "$owner_repo" ] || owner_repo=$(git -C "$repo" remote get-url origin 2>/dev/null | sed -E 's#^.*github\.com[:/]##; s#\.git$##')
+  [ -n "$owner_repo" ] || owner_repo=unknown
+  gh api "repos/$owner_repo/issues/$issue/comments" -f body="**[supervisor] NOTE** claim: $HOST $(date -u +%FT%TZ)" >/dev/null 2>&1 \
+    || { slog "[launch] #$issue — claim comment failed; not launching (will retry)"; return 2; }
+  sleep "$CLAIM_SETTLE_SECS"
+  claim_win=$(claim_winner_rest "$owner_repo" "$issue") \
+    || { slog "[launch] #$issue — claim lookup failed; not launching (will retry)"; return 2; }
+  if [ -n "$claim_win" ] && [ "$claim_win" != "$HOST" ]; then
+    slog "[launch] #$issue — lost claim to $claim_win; not launching (running there)"
+    return 1
+  fi
 
   # Ticket title for the status board (#29): orchestrate.sh normally wrote it at launch and restarts reuse that
   # file; fetch only when it is missing. A failed or empty fetch leaves no file and never blocks the launch.
@@ -987,8 +1002,11 @@ except Exception:
     # #178: a cap exit is not counted, so count may be 0; the relaunch still needs its (cap) preamble
     [ "$q_reason" = "auto-restart" ] && [ "$restart_n" -eq 0 ] && [ -f "$PIPE/orch-$best_rk.cap-exit" ] && restart_n=1
     do_launch "$q_repo" "$best_issue" "$q_extra" "$restart_n" "$q_reason" "$q_wait" "$best_rk"
-    rm -f "$best_qf"
-    launched=1
+    case $? in
+      0) rm -f "$best_qf"; launched=1 ;;
+      1) rm -f "$best_qf" ;;   # #438: the other host holds the claim; drop our queue entry
+      *) : ;;                  # #438: claim unreadable; keep the entry for the next tick
+    esac
   fi
 fi
 
