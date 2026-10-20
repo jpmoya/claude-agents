@@ -830,6 +830,14 @@ goal_tick_one() {  # <id>
     if [ "$GOAL_SYNC_DUE" -eq 1 ]; then
       if goal_eval "$id" "$spec"; then
         if [ "$GE_TOTAL" -gt 0 ] && [ "$GE_DELIVERED" -eq "$GE_TOTAL" ]; then goal_deliver "$id" "$issue" "$spec"; return 0; fi
+        # #443: a held goal whose every open ticket waits on JP is "waiting on JP", not "no progress": it stops holding the queue line
+        if [ "$GE_TOTAL" -gt 0 ] && [ "$GE_ACTIVE" -eq 0 ] && [ "$GE_WAITING" -gt 0 ]; then
+          rm -f "$PIPE/goal-$id.held"; echo 0 > "$PIPE/goal-$id.np"
+          _goal_label_del "$issue" goal-held
+          slog "[goal] $id unheld — waiting on JP"
+          goal_mirror "$id" waiting_jp "$GE_TOTAL" "$GE_DELIVERED"
+          goal_waiting "$id" "$issue" "$spec"; return 0
+        fi
         new=$(printf '%s' "$GE_SNAP" | goal_snapshot); old=$(cat "$PIPE/goal-$id.snap" 2>/dev/null)
         if [ "$GE_TOTAL" -gt 0 ] && [ -n "$old" ] && [ "$new" != "$old" ]; then
           rm -f "$PIPE/goal-$id.held"; echo 0 > "$PIPE/goal-$id.np"
