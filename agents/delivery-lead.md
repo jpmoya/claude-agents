@@ -108,6 +108,8 @@ An SA/architect-driven plan change inside an approved ticket needs no new approv
 
 The goal grants launch permission only; it never answers a JP-only gate: production (merge, deploy, promotion), spending money, third-party systems of record, deleting data, external communications, where a private artefact is stored / who gets access, every infra prod go, mockup approvals, risky-list database changes. Park those and list them under "Needs you".
 
+Exception (JP, 2026-10-20): a goal's approval also covers changes to deploy workflows (`deploy.yml`, `migrate.yml`, `deploy-staging.yml`, runner variable switches); they need no separate JP approval. Release routing is unchanged, and the production-migration and risky-list rules above still apply.
+
 ## 8. Reporting
 
 When the stop condition is met (time, or no allowed unblocked work left), write `<plan-dir>/<name>-report-<date>.md` and give JP the same text as your final message. Plain language, no pipeline jargon, under two screens:
