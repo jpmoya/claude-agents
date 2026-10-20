@@ -37,7 +37,11 @@ if [ "$1" = pr ]; then
   mg=$(cat "$HERE/gh-pr-mergeable" 2>/dev/null || echo MERGEABLE)
   ck=$(cat "$HERE/gh-pr-checks" 2>/dev/null || echo pass)
   case "$2" in
-    list) emit "[{\"number\":7,\"state\":\"OPEN\",\"headRefName\":\"issue-42-x\",\"mergeable\":\"$mg\"}]" ;;
+    list)
+      case "$*" in
+        *"--state merged"*) [ -f "$HERE/gh-pr-merged" ] && emit "[{\"number\":7,\"headRefName\":\"issue-42-x\"}]" || emit "[]" ;;
+        *) [ -f "$HERE/gh-pr-none-open" ] && emit "[]" || emit "[{\"number\":7,\"state\":\"OPEN\",\"headRefName\":\"issue-42-x\",\"mergeable\":\"$mg\"}]" ;;
+      esac ;;
     view) emit "{\"number\":7,\"state\":\"OPEN\",\"mergeable\":\"$mg\",\"headRefName\":\"issue-42-x\"}" ;;
     checks)
       case "$ck" in pass) rc=0 ;; fail) rc=1 ;; *) rc=8 ;; esac
@@ -141,6 +145,34 @@ test_ar2_dependency_relaunches_when_all_depends_closed() {
 }
 
 # ---- cause not cleared -> held stays ----------------------------------------------------------------------------
+test_ar2_439_ci_pending_merged_pr_clears() {
+  ar2_fixture 'Blocked on: ci_pending — waiting for staging deploy'
+  : > "$SQ_GH/gh-pr-none-open"; : > "$SQ_GH/gh-pr-merged"
+  ar2_tick
+  local n calls; n=$(ar2_launches); calls=$(gh_calls "$SQ_GH")
+  sq_cleanup
+  assert_eq "$n" "1" "merged PR, no open PR -> relaunched" || return 1
+  assert_contains "$calls" "auto-retry 1/3: ci_pending cleared" "NOTE posted" || return 1
+}
+
+test_ar2_439_no_open_no_merged_not_cleared() {
+  ar2_fixture 'Blocked on: ci_pending — waiting for checks'
+  : > "$SQ_GH/gh-pr-none-open"
+  ar2_tick
+  local n; n=$(ar2_no_launch)
+  sq_cleanup
+  assert_eq "$n" "0" "no PR at all -> not cleared" || return 1
+}
+
+test_ar2_439_merge_conflict_merged_pr_unchanged() {
+  ar2_fixture 'Blocked on: merge_conflict — rebase needed'
+  : > "$SQ_GH/gh-pr-none-open"; : > "$SQ_GH/gh-pr-merged"
+  ar2_tick
+  local n; n=$(ar2_no_launch)
+  sq_cleanup
+  assert_eq "$n" "0" "merge_conflict ignores merged PRs" || return 1
+}
+
 test_ar2_ci_red_checks_still_failing_not_relaunched() {
   ar2_fixture 'Blocked on: ci_red — checks failing'
   echo fail > "$SQ_GH/gh-pr-checks"
@@ -293,6 +325,9 @@ run_test test_ar2_ci_pending_relaunches_when_checks_pass
 run_test test_ar2_merge_conflict_relaunches_when_mergeable
 run_test test_ar2_dependency_relaunches_when_all_depends_closed
 run_test test_ar2_ci_red_checks_still_failing_not_relaunched
+run_test test_ar2_439_ci_pending_merged_pr_clears
+run_test test_ar2_439_no_open_no_merged_not_cleared
+run_test test_ar2_439_merge_conflict_merged_pr_unchanged
 run_test test_ar2_ci_red_checks_pending_not_relaunched
 run_test test_ar2_merge_conflict_still_conflicting_not_relaunched
 run_test test_ar2_dependency_one_still_open_not_relaunched
