@@ -338,7 +338,9 @@ do_launch() {  # <repo> <issue> <extra> <restart_n> <reason> <queue_wait_s> <run
   # resume) can start a ticket the other host already holds. Same comment shape and CLAIM_WINDOW_SECS expiry as dispatch.
   # Returns 1 = lost to another host (caller drops the queue entry), 2 = claim could not be posted/read (fail closed, retry).
   local claim_win
-  owner_repo=$(cd "$repo" && gh api repos/{owner}/{repo} --jq .full_name 2>/dev/null || echo "unknown")
+  owner_repo=$(cd "$repo" && gh api repos/{owner}/{repo} --jq .full_name 2>/dev/null || true)
+  [ -n "$owner_repo" ] || owner_repo=$(git -C "$repo" remote get-url origin 2>/dev/null | sed -E 's#^.*github\.com[:/]##; s#\.git$##')
+  [ -n "$owner_repo" ] || owner_repo=unknown
   gh api "repos/$owner_repo/issues/$issue/comments" -f body="**[supervisor] NOTE** claim: $HOST $(date -u +%FT%TZ)" >/dev/null 2>&1 \
     || { slog "[launch] #$issue — claim comment failed; not launching (will retry)"; return 2; }
   sleep "$CLAIM_SETTLE_SECS"
