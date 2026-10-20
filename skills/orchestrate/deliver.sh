@@ -466,7 +466,8 @@ cmd_resume() {
     unreadable) die "cannot read the registry block of $id; fix or close its issue by hand" ;;
     queued|active|waiting_jp) echo "$id is already $st"; return 0 ;;
   esac
-  case "$spec" in label:*) die "$id is a label goal: its label was stripped at close; register a new goal instead" ;; esac
+  # #419: the label is stripped only when a goal closes, so only a stopped (closed) label goal is unresumable; a held one is open
+  case "$spec" in label:*) [ "$st" = stopped ] && die "$id is a label goal: its label was stripped at close; register a new goal instead" ;; esac
   check_overlap "$spec" "$id" "$issue"
   set_state "$issue" open
   del_label "$issue" goal-stopped; del_label "$issue" goal-held
