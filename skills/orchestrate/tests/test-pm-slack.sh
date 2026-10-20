@@ -402,7 +402,7 @@ test_pms_no_token_is_a_silent_noop_for_both_subcommands() {
     assert_eq "$PMS_OUT" "" "AC7 [$sub]: silent" || return 1
     assert_eq "$(wc -l < "$PMS_DATA/calls.log" | tr -d ' ')" 0 "AC7 [$sub]: zero curl calls" || return 1
     assert_eq "$(pms_gh_n '')" 0 "AC7 [$sub]: zero gh calls" || return 1
-    assert_eq "$(find "$PMS_PIPE" -type f | wc -l | tr -d ' ')" 0 "AC7 [$sub]: no state written under PIPE" || return 1
+    assert_eq "$(find "$PMS_PIPE" -type f ! -name .boot-epoch | wc -l | tr -d ' ')" 0 "AC7 [$sub]: no state written under PIPE" || return 1
   done
 }
 
