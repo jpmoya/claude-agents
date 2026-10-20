@@ -724,6 +724,32 @@ test_gs_427_held_goal_with_changed_snapshot_is_unheld() {   # AC3
   assert_eq "$st" "open" "427 AC3: registry issue stays open" || return 1
 }
 
+test_gs_443_held_goal_only_waiting_on_jp_moves_to_waiting() {
+  gs_held_seed stale
+  gs_comment 101 $'**[deployer] DEPLOYED TO STAGING**\nstaging up'
+  gs_tick; gs_settle
+  local held lab wlab np log c
+  [ -e "$GS_PIPE/goal-$GS_ID_MS12.held" ] && held=yes || held=no
+  gs_has_label 50 goal-held && lab=yes || lab=no
+  gs_has_label 50 goal-waiting-jp && wlab=yes || wlab=no
+  np=$(gs_file "$GS_ID_MS12" np); log=$(gs_log | grep -c "$GS_ID_MS12 unheld — waiting on JP"); c=$(gs_claude_count)
+  gs_cleanup
+  assert_eq "$held" "no" "443: .held removed" || return 1
+  assert_eq "$lab" "no" "443: goal-held label removed" || return 1
+  assert_eq "$wlab" "yes" "443: goal-waiting-jp label added" || return 1
+  assert_eq "$np" "0" "443: .np reset" || return 1
+  assert_eq "$log" "1" "443: line logged" || return 1
+  assert_eq "$c" "0" "443: nothing launched" || return 1
+}
+
+test_gs_443_held_goal_with_active_ticket_and_unchanged_scope_stays_held() {
+  gs_held_seed -
+  gs_tick; gs_settle
+  local held; [ -e "$GS_PIPE/goal-$GS_ID_MS12.held" ] && held=yes || held=no
+  gs_cleanup
+  assert_eq "$held" "yes" "443: not waiting on JP -> stays held" || return 1
+}
+
 test_gs_427_held_goal_with_unchanged_snapshot_stays_held_and_is_not_launched() {   # AC4
   gs_held_seed -
   gs_tick; gs_settle
@@ -1195,6 +1221,8 @@ run_test test_gs_428_unreadable_gate_is_neither_waiting_nor_delivered
 run_test test_gs_428_goal_with_start_gated_ticket_reaches_waiting_branch
 run_test test_gs_427_held_goal_with_all_tickets_closed_is_delivered
 run_test test_gs_427_held_goal_with_changed_snapshot_is_unheld
+run_test test_gs_443_held_goal_only_waiting_on_jp_moves_to_waiting
+run_test test_gs_443_held_goal_with_active_ticket_and_unchanged_scope_stays_held
 run_test test_gs_427_held_goal_with_unchanged_snapshot_stays_held_and_is_not_launched
 run_test test_gs_427_held_goal_costs_no_reads_between_syncs
 run_test test_gs_427_held_goal_with_unreadable_scope_stays_held
