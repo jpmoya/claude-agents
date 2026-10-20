@@ -738,6 +738,38 @@ test_dg_resume_held_goal_removes_held_label() {
   dg_teardown; return $rc
 }
 
+dg_label_repos() {  # dg_label_repos <n> — give the label goal's registry block its repos list
+  local f=$DG_ST/issues/$DG_REG/$1.json
+  jq --arg r "example-owner/project-a" '.body |= sub("\"instructions\""; "\"repos\":[\"" + $r + "\"],\"instructions\"")' "$f" > "$f.t" && mv "$f.t" "$f"
+}
+
+test_dg_419_resume_held_label_goal_clears_held() {
+  dg_setup
+  local f rc=0
+  DG_GOAL_ID=label-goal-x; dg_goal 501 "label:goal-x" host-b held
+  dg_label_repos 501
+  dg_touch_local "label-goal-x"
+  dg_run resume "label-goal-x"
+  assert_eq "$DG_RC" "0" "419: resume of a held label goal exits 0 (stderr: $DG_ERR)" || rc=1
+  f="$DG_ST/issues/$DG_REG/501.json"
+  dg_has_label "$f" goal-held && { fail "419: goal-held label must be removed"; rc=1; }
+  assert_eq "$(jq -r .state "$f")" "open" "419: stays open" || rc=1
+  dg_assert_cleared "label-goal-x" || rc=1
+  dg_teardown; return $rc
+}
+
+test_dg_419_resume_stopped_label_goal_still_refused() {
+  dg_setup
+  local rc=0
+  DG_GOAL_ID=label-goal-x; dg_goal 501 "label:goal-x" host-b stopped
+  dg_label_repos 501
+  dg_run resume "label-goal-x"
+  assert_eq "$DG_RC" "1" "419: stopped label goal exits 1" \
+    && assert_contains "$DG_ERR" "register a new goal instead" "419: existing message" \
+    && assert_eq "$(jq -r .state "$DG_ST/issues/$DG_REG/501.json")" "closed" "419: stays closed" || rc=1
+  dg_teardown; return $rc
+}
+
 test_dg_resume_pinned_elsewhere_without_here_does_not_launch() {
   dg_setup
   local f rc=0
@@ -956,7 +988,7 @@ for t in \
   test_dg_status_single_goal_and_no_goals \
   test_dg_stop_on_pinned_host_kills_tree_labels_and_closes test_dg_stop_is_idempotent \
   test_dg_stop_on_other_host_only_labels_and_closes test_dg_stop_unknown_goal_fails \
-  test_dg_resume_stopped_goal_pinned_here_reopens_and_launches test_dg_resume_held_goal_removes_held_label \
+  test_dg_resume_stopped_goal_pinned_here_reopens_and_launches test_dg_resume_held_goal_removes_held_label test_dg_419_resume_held_label_goal_clears_held test_dg_419_resume_stopped_label_goal_still_refused \
   test_dg_resume_pinned_elsewhere_without_here_does_not_launch test_dg_resume_here_repins_host_and_launches \
   test_dg_resume_delivered_goal_refused test_dg_resume_refused_when_tickets_now_overlap_a_live_goal \
   test_dg_goal_parse_valid_specs test_dg_goal_parse_malformed_exit_1 \
