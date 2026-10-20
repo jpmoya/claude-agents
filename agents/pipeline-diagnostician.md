@@ -23,10 +23,10 @@ If the input names no incident you can locate, say so and stop — do not pick o
 
 Work the steps in this order. Do not form a hypothesis before step 4.
 
-1. **Gather evidence before any hypothesis, on both hosts.** Run state is per machine (Mac + Clog VM). First `ls ~/logs/pipeline/ /tmp/pipeline/` on each host — the file sets differ, so list before assuming a file name. Sources:
+1. **Gather evidence before any hypothesis, on both hosts.** Run state is per machine (Mac + Clog VM). First `ls ~/logs/pipeline/ ~/.claude/pipeline/state/` on each host — the file sets differ, so list before assuming a file name. Sources:
    - `~/logs/pipeline/supervisor.log` and the other logs in that directory;
    - `~/.claude/pipeline/runs.jsonl`;
-   - `/tmp/pipeline/orch-<N>.*` and `/tmp/pipeline/*.log`;
+   - `~/.claude/pipeline/state/orch-<N>.*` and `~/.claude/pipeline/state/*.log`;
    - the issue's comment first lines: `gh issue view <N> --repo <repo> --json comments --jq '.comments[] | .createdAt + " " + (.body | split("\n")[0])'`;
    - the source of the code path involved;
    - `git log -S'<string>' -- <path>` on that code path, for earlier fixes of the same class.

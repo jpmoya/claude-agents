@@ -7,7 +7,7 @@
 # Bounded: after 2 refusals it lets the run stop so a truly stuck agent can't loop forever.
 [ -n "${PIPELINE_ISSUE:-}" ] && [ -n "${PIPELINE_AGENT:-}" ] && [ -n "${PIPELINE_REPO:-}" ] || exit 0
 INPUT=$(cat)
-PIPE="${PIPE:-/tmp/pipeline}"
+PIPE="${PIPE:-$HOME/.claude/pipeline/state}"
 # #318: stage files are keyed <owner>_<repo>-<N> (run_key in skills/orchestrate/pipeline-lib.sh; inlined, the hook is installed standalone)
 RUN_KEY="${PIPELINE_REPO//\//_}-$PIPELINE_ISSUE"
 BEFORE_FILE="$PIPE/$RUN_KEY-$PIPELINE_AGENT-before.txt"

@@ -26,7 +26,7 @@ for i in agents hooks skills CLAUDE.md settings.json; do
 done
 
 echo "2. per-machine config"
-mkdir -p "$PIPE_CFG" "$LOGS" /tmp/pipeline/queue
+mkdir -p "$PIPE_CFG" "$LOGS" "${PIPE:-$HOME/.claude/pipeline/state}/queue"
 if [ -f "$PIPE_CFG/config.local.sh" ]; then ok "config.local.sh exists (not touched)"
 else
   [ -n "$BASE" ] || { [ -d "$HOME/dev" ] && BASE="$HOME/dev" || BASE="$HOME"; }

@@ -2,7 +2,10 @@
 # Shared pipeline defaults, sourced by orchestrate.sh and supervisor.sh.
 # Per-machine overrides (DISPATCH_REPOS, caps) go in ~/.claude/pipeline/config.local.sh — untracked, no secrets here.
 
-PIPE="${PIPE:-/tmp/pipeline}"
+# Run state is durable (#332): /tmp is emptied by a reboot, which orphaned in-flight runs (2026-10-16). Same default in stage-run.sh,
+# hooks/require-handoff-marker.sh and install.sh. PIPE_DEFAULTED gates the one-time move below (an explicit PIPE is never moved).
+PIPE_DEFAULTED=0; [ -n "${PIPE:-}" ] || PIPE_DEFAULTED=1
+PIPE="${PIPE:-$HOME/.claude/pipeline/state}"
 QUEUE="${QUEUE:-$PIPE/queue}"
 LOGDIR="${LOGDIR:-$HOME/logs/pipeline}"
 
@@ -56,6 +59,35 @@ GOAL_SYNC_SECS=300          # registry sync + live-goal re-evaluation throttle, 
 GOAL_MAX_NO_PROGRESS=3      # relaunch decisions with an unchanged scope snapshot before a goal is parked
 
 [ -f "$HOME/.claude/pipeline/config.local.sh" ] && source "$HOME/.claude/pipeline/config.local.sh"
+
+# #332: one-time move of the old /tmp run state to the durable path (only when the new path is absent), leaving a symlink so
+# processes started before the move, and agent docs that still name /tmp/pipeline, keep writing to the same place.
+# PIPE_LEGACY is pinned away from the real /tmp/pipeline by tests/run-tests.sh (#341).
+if [ "$PIPE_DEFAULTED" = 1 ] && [ "$PIPE" = "$HOME/.claude/pipeline/state" ]; then
+  PIPE_LEGACY="${PIPE_LEGACY:-/tmp/pipeline}"
+  if [ ! -e "$PIPE" ] && [ -d "$PIPE_LEGACY" ] && [ ! -L "$PIPE_LEGACY" ]; then
+    mkdir -p "$(dirname "$PIPE")" && mv "$PIPE_LEGACY" "$PIPE" && ln -s "$PIPE" "$PIPE_LEGACY"
+  fi
+fi
+# #332: pids stored before the last reboot may now belong to unrelated processes, so the supervisor's `kill -0` alive test
+# could call a dead run alive forever. On the first config.sh load after a boot, overwrite every stored pid with one that
+# cannot exist; the existing dead-process restart path then relaunches the run (state itself survived).
+if [ -d "$PIPE" ]; then
+  _boot="${PIPELINE_BOOT_EPOCH:-}"
+  if [ -z "$_boot" ]; then
+    if [ -r /proc/stat ]; then _boot=$(awk '/^btime/ {print $2}' /proc/stat) || _boot=
+    else _boot=$( { /usr/sbin/sysctl -n kern.boottime || sysctl -n kern.boottime; } 2>/dev/null | sed -n 's/.*{ sec = \([0-9]*\).*/\1/p') || _boot=; fi
+  fi
+  case "$_boot" in ''|*[!0-9]*) ;; *)
+    _prev=$(cat "$PIPE/.boot-epoch" 2>/dev/null) || _prev=
+    if [ "$_prev" != "$_boot" ]; then
+      # no stamp yet = first deploy of this change: live runs are still alive, only record the boot
+      if [ -n "$_prev" ]; then for _pf in "$PIPE"/*.pid; do [ -f "$_pf" ] && echo 2147483646 > "$_pf"; done; fi
+      echo "$_boot" > "$PIPE/.boot-epoch"
+    fi ;;
+  esac
+  unset _boot _pf _prev
+fi
 
 # Prepend the tool dirs, but keep any that the caller already put on PATH where it put them: tests (and
 # operators) shadow claude/gh with stubs by putting a dir first, and an unconditional prepend let the real
