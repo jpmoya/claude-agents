@@ -237,6 +237,141 @@ cleanup_finished_worktree() {
   git -C "$repo" worktree prune 2>/dev/null || true
 }
 
+# _remote_owner_repo <local_path> — best-effort "owner/repo" from that checkout's `origin` remote URL (ssh or https),
+# not the DISPATCH_REPOS config slug, so a renamed/re-pointed remote is still resolved correctly. Empty on any failure.
+_remote_owner_repo() {
+  local url=$1
+  url=$(git -C "$1" remote get-url origin 2>/dev/null) || { printf ''; return 1; }
+  case "$url" in
+    git@github.com:*) url="${url#git@github.com:}" ;;
+    ssh://git@github.com/*) url="${url#ssh://git@github.com/}" ;;
+    https://github.com/*) url="${url#https://github.com/}" ;;
+    *) printf ''; return 1 ;;
+  esac
+  url="${url%.git}"
+  case "$url" in */*) printf '%s' "$url" ;; *) return 1 ;; esac
+}
+
+# sweep_stale_worktrees — cleanup_finished_worktree only removes issue-<N>-* worktrees on ticket-terminal events, so ad hoc
+# ones (release/promo/review) never get cleaned automatically; this sweeps DISPATCH_REPOS' .worktrees/ for any worktree whose
+# branch is merged into its integration branch and has no real uncommitted work, removing it (or just logging, under
+# WORKTREE_SWEEP_DRY_RUN=1). "Merged" is either a squash/rebase/merge PR found via `gh pr list --head` (asks GitHub
+# directly, so it recognises a squash merge, which leaves no shared ancestry with the integration branch) OR the branch
+# being merge-base --is-ancestor of the integration branch (direct-push / fast-forward, no PR). Logs every decision via
+# slog, same as cleanup_finished_worktree.
+sweep_stale_worktrees() {
+  type slog >/dev/null 2>&1 || slog() { echo "$*" >&2; }
+  [ "${#DISPATCH_REPOS[@]}" -gt 0 ] || return 0   # bash 3.2 (macOS) + `set -u` errors on an empty array's "${arr[@]}"
+  local entry owner_repo repo_name local_path integration_branch path branch detached wt_line remote_repo
+  local wt st line p first_bad ok tip fp_history pr_json merged_via_pr
+  for entry in "${DISPATCH_REPOS[@]}"; do
+    owner_repo="${entry%%:*}"; local_path="${entry#*:}"; local_path="${local_path/#\~/$HOME}"
+    [ -d "$local_path/.git" ] || continue
+    repo_name="${owner_repo##*/}"
+    case "$repo_name" in
+      # benjis-quoting-tool is the pre-rename name (#109, 2026-10-18 -> benjis-sales-tool); keep both so a host
+      # whose DISPATCH_REPOS/cache has not re-resolved yet still maps correctly.
+      scheduler|benjis-quoting-tool|benjis-sales-tool) integration_branch=staging ;;
+      *) integration_branch=main ;;
+    esac
+    # owner/repo for `gh pr list --repo` — from the checkout's own remote, not the (possibly stale) config slug.
+    # Falls back to the config slug when the remote URL can't be parsed (gh pr lookup then falls back too, below).
+    remote_repo=$(_remote_owner_repo "$local_path") || remote_repo="$owner_repo"
+    # The integration branch's own first-parent history (read once per repo): a worktree branch whose tip is ON
+    # this line has no commits of its own — either just cut from it, or already fast-forwarded in — and must
+    # never be swept. A read failure fails closed (never sweep this repo this tick).
+    fp_history=$(git -C "$local_path" rev-list --first-parent "origin/$integration_branch" 2>/dev/null) || fp_history=""
+    if [ -z "$fp_history" ]; then
+      slog "[worktree-sweep] skipped $owner_repo: cannot read origin/$integration_branch history"
+      continue
+    fi
+    path=""; branch=""; detached=0
+    while IFS= read -r wt_line || [ -n "$wt_line" ]; do
+      case "$wt_line" in
+        "worktree "*) path="${wt_line#worktree }"; branch=""; detached=0 ;;
+        "branch "*) branch="${wt_line#branch }"; branch="${branch#refs/heads/}" ;;
+        "detached") detached=1 ;;
+        "")
+          # blank line = end of this worktree's record; process it, then reset for the next one
+          case "$path" in
+            "$local_path/.worktrees/"*) ;;
+            *) path=""; continue ;;   # the main worktree itself (repo root) — never swept
+          esac
+          wt="$path"; path=""
+          if [ "$detached" = 1 ]; then
+            slog "[worktree-sweep] skipped $wt: detached HEAD (review/scratch, not swept)"
+            continue
+          fi
+          [ -n "$branch" ] || continue
+          # Merged? First ask GitHub directly: a merged PR for this head branch is a real signal that recognises
+          # squash and rebase merges (which share no ancestry with the integration branch, so merge-base
+          # --is-ancestor can never see them — confirmed 0/124 matches on real DISPATCH_REPOS worktrees before this
+          # fix, since this org merges by squash). On a `gh` error (network/rate-limit/auth), fall back to the
+          # ancestor check alone rather than erroring the whole sweep.
+          merged_via_pr=0
+          if pr_json=$(gh pr list --head "$branch" --state merged --json number,mergedAt --repo "$remote_repo" 2>/dev/null); then
+            case "$pr_json" in
+              ''|'[]') ;;   # no merged PR on GitHub for this head branch
+              *) merged_via_pr=1 ;;
+            esac
+          else
+            slog "[worktree-sweep] gh pr lookup failed for $wt ($branch, $remote_repo); falling back to ancestor check only"
+          fi
+          if [ "$merged_via_pr" = 1 ]; then
+            : # confirmed merged via a GitHub PR (squash/rebase/merge) — a real signal, the fresh/ff guard below is
+              # specifically about merge-base's false positives and does not apply here
+          else
+            if ! git -C "$local_path" merge-base --is-ancestor "$branch" "origin/$integration_branch" 2>/dev/null; then
+              slog "[worktree-sweep] skipped $wt: no merged PR found and not merged into origin/$integration_branch"
+              continue   # not merged (or a git error) — never remove
+            fi
+            # A branch just cut from origin/<integration_branch>, before its agent has committed anything, is
+            # trivially an "ancestor" of it too — merge-base --is-ancestor says yes for a fresh, still-in-use
+            # worktree. Skip (never sweep) a tip that sits ON the integration branch's own first-parent line: that
+            # is a fresh/never-diverged branch, or one fast-forwarded in with no side-branch commit of its own —
+            # either way, nothing distinguishes "safe to delete" from "just cut, may be in use", so leave it. Only a
+            # branch that was merged in as a real merge commit's side parent (not on the first-parent line) proceeds.
+            tip=$(git -C "$local_path" rev-parse "$branch" 2>/dev/null) || { slog "[worktree-sweep] skipped $wt: could not resolve $branch"; continue; }
+            # A here-string, not a pipe: under `set -o pipefail` (supervisor.sh), a `printf | grep -q` pipeline can
+            # SIGPIPE the writer once grep finds its match, which pipefail then reads as "no match" — silently
+            # defeating this guard on a large history. <<< has no pipe, so pipefail cannot touch it.
+            if grep -qxF "$tip" <<< "$fp_history"; then
+              slog "[worktree-sweep] skipped $wt: no commits of its own (fresh branch, may be in use)"
+              continue
+            fi
+          fi
+          st=$(git -C "$wt" status --porcelain 2>/dev/null) || { slog "[worktree-sweep] skipped $wt: git status failed"; continue; }
+          ok=1; first_bad=""
+          if [ -n "$st" ]; then
+            while IFS= read -r line; do
+              [ -n "$line" ] || continue
+              p="${line:3}"
+              case "$p" in
+                package-lock.json|pnpm-lock.yaml|yarn.lock|.DS_Store|*.xcodeproj/*|supabase/.temp/*) ;;
+                *) ok=0; first_bad="$p"; break ;;
+              esac
+            done <<< "$st"
+          fi
+          if [ "$ok" -ne 1 ]; then
+            slog "[worktree-sweep] skipped $wt: uncommitted work ($first_bad)"
+            continue
+          fi
+          if [ "${WORKTREE_SWEEP_DRY_RUN:-0}" = 1 ]; then
+            slog "[worktree-sweep] would-remove $owner_repo $wt ($branch)"
+            continue
+          fi
+          if git -C "$local_path" worktree remove --force "$wt" 2>>"${SLOG:-/dev/null}"; then
+            git -C "$local_path" branch -D "$branch" >/dev/null 2>&1 || true
+            slog "[worktree-sweep] removed $owner_repo $wt ($branch)"
+          else
+            slog "[worktree-sweep] failed to remove $wt ($branch); left in place"
+          fi
+          ;;
+      esac
+    done < <(git -C "$local_path" worktree list --porcelain 2>/dev/null; printf '\n')
+  done
+}
+
 # claim_winner <local_path> <issue> [owner/repo] — the optional repo reads a claim on an issue of a repo other than the
 # checkout's (the goal registry issue, #320); same comment shape, same window, same fail-closed behaviour.
 claim_winner() {
