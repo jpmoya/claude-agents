@@ -288,8 +288,10 @@ sweep_stale_worktrees() {
           fi
           # A branch just cut from origin/<integration_branch>, before its agent has committed anything, is
           # trivially an "ancestor" of it too — merge-base --is-ancestor says yes for a fresh, still-in-use
-          # worktree. Only sweep a branch whose tip is actually on the integration branch's own history (a true
-          # merge, ff or otherwise) — not a tip that merely happens to equal/precede it with no commits of its own.
+          # worktree. Skip (never sweep) a tip that sits ON the integration branch's own first-parent line: that
+          # is a fresh/never-diverged branch, or one fast-forwarded in with no side-branch commit of its own —
+          # either way, nothing distinguishes "safe to delete" from "just cut, may be in use", so leave it. Only a
+          # branch that was merged in as a real merge commit's side parent (not on the first-parent line) proceeds.
           tip=$(git -C "$local_path" rev-parse "$branch" 2>/dev/null) || { slog "[worktree-sweep] skipped $wt: could not resolve $branch"; continue; }
           # A here-string, not a pipe: under `set -o pipefail` (supervisor.sh), a `printf | grep -q` pipeline can
           # SIGPIPE the writer once grep finds its match, which pipefail then reads as "no match" — silently
