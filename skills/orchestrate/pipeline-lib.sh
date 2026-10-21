@@ -237,6 +237,99 @@ cleanup_finished_worktree() {
   git -C "$repo" worktree prune 2>/dev/null || true
 }
 
+# sweep_stale_worktrees — cleanup_finished_worktree only removes issue-<N>-* worktrees on ticket-terminal events, so ad hoc
+# ones (release/promo/review) never get cleaned automatically; this sweeps DISPATCH_REPOS' .worktrees/ for any worktree whose
+# branch is merged into its integration branch and has no real uncommitted work, removing it (or just logging, under
+# WORKTREE_SWEEP_DRY_RUN=1). Logs every decision via slog, same as cleanup_finished_worktree.
+sweep_stale_worktrees() {
+  type slog >/dev/null 2>&1 || slog() { echo "$*" >&2; }
+  [ "${#DISPATCH_REPOS[@]}" -gt 0 ] || return 0   # bash 3.2 (macOS) + `set -u` errors on an empty array's "${arr[@]}"
+  local entry owner_repo repo_name local_path integration_branch path branch detached wt_line
+  local wt st line p first_bad ok tip fp_history
+  for entry in "${DISPATCH_REPOS[@]}"; do
+    owner_repo="${entry%%:*}"; local_path="${entry#*:}"; local_path="${local_path/#\~/$HOME}"
+    [ -d "$local_path/.git" ] || continue
+    repo_name="${owner_repo##*/}"
+    case "$repo_name" in
+      # benjis-quoting-tool is the pre-rename name (#109, 2026-10-18 -> benjis-sales-tool); keep both so a host
+      # whose DISPATCH_REPOS/cache has not re-resolved yet still maps correctly.
+      scheduler|benjis-quoting-tool|benjis-sales-tool) integration_branch=staging ;;
+      *) integration_branch=main ;;
+    esac
+    # The integration branch's own first-parent history (read once per repo): a worktree branch whose tip is ON
+    # this line has no commits of its own — either just cut from it, or already fast-forwarded in — and must
+    # never be swept. A read failure fails closed (never sweep this repo this tick).
+    fp_history=$(git -C "$local_path" rev-list --first-parent "origin/$integration_branch" 2>/dev/null) || fp_history=""
+    if [ -z "$fp_history" ]; then
+      slog "[worktree-sweep] skipped $owner_repo: cannot read origin/$integration_branch history"
+      continue
+    fi
+    path=""; branch=""; detached=0
+    while IFS= read -r wt_line || [ -n "$wt_line" ]; do
+      case "$wt_line" in
+        "worktree "*) path="${wt_line#worktree }"; branch=""; detached=0 ;;
+        "branch "*) branch="${wt_line#branch }"; branch="${branch#refs/heads/}" ;;
+        "detached") detached=1 ;;
+        "")
+          # blank line = end of this worktree's record; process it, then reset for the next one
+          case "$path" in
+            "$local_path/.worktrees/"*) ;;
+            *) path=""; continue ;;   # the main worktree itself (repo root) — never swept
+          esac
+          wt="$path"; path=""
+          if [ "$detached" = 1 ]; then
+            slog "[worktree-sweep] skipped $wt: detached HEAD (review/scratch, not swept)"
+            continue
+          fi
+          [ -n "$branch" ] || continue
+          if ! git -C "$local_path" merge-base --is-ancestor "$branch" "origin/$integration_branch" 2>/dev/null; then
+            slog "[worktree-sweep] skipped $wt: not merged into origin/$integration_branch"
+            continue   # not merged (or a git error) — never remove
+          fi
+          # A branch just cut from origin/<integration_branch>, before its agent has committed anything, is
+          # trivially an "ancestor" of it too — merge-base --is-ancestor says yes for a fresh, still-in-use
+          # worktree. Only sweep a branch whose tip is actually on the integration branch's own history (a true
+          # merge, ff or otherwise) — not a tip that merely happens to equal/precede it with no commits of its own.
+          tip=$(git -C "$local_path" rev-parse "$branch" 2>/dev/null) || { slog "[worktree-sweep] skipped $wt: could not resolve $branch"; continue; }
+          # A here-string, not a pipe: under `set -o pipefail` (supervisor.sh), a `printf | grep -q` pipeline can
+          # SIGPIPE the writer once grep finds its match, which pipefail then reads as "no match" — silently
+          # defeating this guard on a large history. <<< has no pipe, so pipefail cannot touch it.
+          if grep -qxF "$tip" <<< "$fp_history"; then
+            slog "[worktree-sweep] skipped $wt: no commits of its own (fresh branch, may be in use)"
+            continue
+          fi
+          st=$(git -C "$wt" status --porcelain 2>/dev/null) || { slog "[worktree-sweep] skipped $wt: git status failed"; continue; }
+          ok=1; first_bad=""
+          if [ -n "$st" ]; then
+            while IFS= read -r line; do
+              [ -n "$line" ] || continue
+              p="${line:3}"
+              case "$p" in
+                package-lock.json|pnpm-lock.yaml|yarn.lock|.DS_Store|*.xcodeproj/*|supabase/.temp/*) ;;
+                *) ok=0; first_bad="$p"; break ;;
+              esac
+            done <<< "$st"
+          fi
+          if [ "$ok" -ne 1 ]; then
+            slog "[worktree-sweep] skipped $wt: uncommitted work ($first_bad)"
+            continue
+          fi
+          if [ "${WORKTREE_SWEEP_DRY_RUN:-0}" = 1 ]; then
+            slog "[worktree-sweep] would-remove $owner_repo $wt ($branch)"
+            continue
+          fi
+          if git -C "$local_path" worktree remove --force "$wt" 2>>"${SLOG:-/dev/null}"; then
+            git -C "$local_path" branch -D "$branch" >/dev/null 2>&1 || true
+            slog "[worktree-sweep] removed $owner_repo $wt ($branch)"
+          else
+            slog "[worktree-sweep] failed to remove $wt ($branch); left in place"
+          fi
+          ;;
+      esac
+    done < <(git -C "$local_path" worktree list --porcelain 2>/dev/null; printf '\n')
+  done
+}
+
 # claim_winner <local_path> <issue> [owner/repo] — the optional repo reads a claim on an issue of a repo other than the
 # checkout's (the goal registry issue, #320); same comment shape, same window, same fail-closed behaviour.
 claim_winner() {

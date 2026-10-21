@@ -1,5 +1,6 @@
 #!/bin/bash
 # Stateless supervisor tick — cron runs it every 2 min (VM even minutes, Mac odd minutes). One tick does, in order:
+#   0b. worktree sweep (time-gated to once per 30 min): remove merged, clean-enough ad hoc worktrees under DISPATCH_REPOS
 #   1. restart exited non-terminal local orchestrators with backoff
 #   2. drain the local launch queue
 #   3. label lifecycle: drop agent-in-progress on issues this machine finished, parked, or abandoned
@@ -497,6 +498,18 @@ launched=0
 
 # 0. One-time legacy migration (#318): orch-<N>.* sets whose .repo names a known checkout move to orch-<run_key>.*
 migrate_legacy_runs
+
+# 0b. Worktree sweep (every 30 min): cleanup_finished_worktree only clears issue-<N>-* worktrees on ticket-terminal
+# events, so ad hoc release/promo/review worktrees pile up — sweep DISPATCH_REPOS for merged, clean-enough ones.
+WORKTREE_SWEEP_INTERVAL_SECS=1800
+_wts_last="$PIPE/worktree-sweep.last"
+_wts_prev=$(cat "$_wts_last" 2>/dev/null) || _wts_prev=
+case "$_wts_prev" in ''|*[!0-9]*) _wts_prev=0 ;; esac   # missing/empty/corrupt stamp: treat as never run, don't let arithmetic choke on it
+if [ $(( $(date +%s) - _wts_prev )) -ge "$WORKTREE_SWEEP_INTERVAL_SECS" ]; then
+  sweep_stale_worktrees
+  date +%s > "$_wts_last"
+fi
+unset _wts_prev
 
 keep_awake   # Mac: hold the machine awake while runs exist (stall cause A)
 
