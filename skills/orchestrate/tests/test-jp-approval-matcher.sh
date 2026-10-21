@@ -231,5 +231,36 @@ run_test test_ja_ac4_a_matcher_function_exists_in_hooks
 run_test test_ja_ac4_word_set_defined_once_in_hooks
 run_test test_ja_ac4_orchestrator_has_no_second_word_list
 run_test test_ja_ac4_hooks_and_orchestrator_agree
+# ---------------------------------------------------------------------------------------- AC: engine portability (claude-agents#455)
+
+# jp_approval_re must contain no lookaround: gh's embedded --jq (gojq / Go RE2) cannot compile it,
+# and gojq compiles lazily, so a lookahead only errors once JP has actually commented — exactly
+# when the check matters (claude-agents#455).
+test_ja_no_lookaround_in_approval_regex() {
+  local re
+  re=$( . "$MARKERS_JA" && jp_approval_re )
+  case "$re" in
+    *'(?='*|*'(?!'*|*'(?<='*|*'(?<!'*) fail "AC: jp_approval_re must not contain lookaround syntax: [$re]"; return 1 ;;
+  esac
+}
+
+# Direct proof against gh's real engine (gojq), not the system-jq stub used by ja_jpgo/ja_re above —
+# the shipped matcher test never exercised it, which is exactly how claude-agents#455 slipped through.
+# Needs network+auth; skip (not fail) on anything except the specific "unsupported Perl syntax" defect,
+# so an offline/unauthenticated run doesn't spuriously fail this suite.
+test_ja_approval_regex_compiles_under_gh_jq_engine() {
+  command -v gh >/dev/null 2>&1 || { echo "SKIP: gh binary not available"; return 0; }
+  local re filt out
+  re=$( . "$MARKERS_JA" && jp_approval_re )
+  filt="\"approved\" | test($(printf '%s' "$re" | jq -Rs .))"
+  out=$(gh api user --jq "$filt" 2>&1)
+  case "$out" in
+    *"unsupported Perl syntax"*|*"invalid regexp"*) fail "AC: jp_approval_re does not compile under gh's --jq (gojq) engine: $out"; return 1 ;;
+  esac
+  [ "$out" = "true" ] || { echo "SKIP: gh api user unavailable (no network/auth): $out"; return 0; }
+}
+
 run_test test_ja_ac6_run_log_documents_refusal_validate_line
 run_test test_ja_ac6_refusal_line_logs_no_comment_body
+run_test test_ja_no_lookaround_in_approval_regex
+run_test test_ja_approval_regex_compiles_under_gh_jq_engine
