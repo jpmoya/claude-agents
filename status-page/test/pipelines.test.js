@@ -265,7 +265,7 @@ describe('public-page rules (leak, AC6, AC7)', () => {
 });
 
 describe('existing status view unchanged (AC3)', () => {
-  // Expected body: the `/` output after the web-2.0 restyle (2026-10-22), hand-embedded;
+  // Expected body: the `/` output after the modern-flat restyle (2026-10-22), hand-embedded;
   // the only permitted difference is the added nav (markup + its CSS rules).
   const BASE_HOME = `<!doctype html>
 <html lang="en">
@@ -275,51 +275,56 @@ describe('existing status view unchanged (AC3)', () => {
 <meta http-equiv="refresh" content="20">
 <title>Pipeline status</title>
 <style>
-  :root { color-scheme: light dark; }
-  body { font-family: "Segoe UI", system-ui, sans-serif; margin: 0; padding: 1rem;
-    background: linear-gradient(to bottom, #eef4fb, #d9e6f5); color: #1a1a1a; }
-  h1 { font-size: 1.4rem; margin: 0 0 1rem; padding: 0.6rem 1rem; border-radius: 0.6rem;
-    background: linear-gradient(to bottom, #5ba3e0, #2e6fb0); color: #ffffff;
-    text-shadow: 0 1px 1px rgba(0,0,0,0.35); box-shadow: 0 1px 0 rgba(255,255,255,0.4) inset, 0 2px 4px rgba(0,0,0,0.2); }
-  h2 { font-size: 1rem; margin-top: 0; color: #2e5f94; }
-  .badge { display: inline-block; padding: 0.2rem 0.65rem; border-radius: 999px; font-weight: 700;
-    font-size: 0.8em; text-shadow: 0 1px 1px rgba(0,0,0,0.25);
-    box-shadow: 0 1px 0 rgba(255,255,255,0.5) inset, 0 1px 2px rgba(0,0,0,0.25); }
-  .badge.live { background: linear-gradient(to bottom, #4fc06b, #1a7f37); color: #ffffff; }
-  .badge.stale { background: linear-gradient(to bottom, #e0a940, #9a6700); color: #ffffff; }
-  .badge.offline { background: linear-gradient(to bottom, #e05566, #a40e26); color: #ffffff; }
-  .badge.nodata { background: linear-gradient(to bottom, #93999f, #6e7781); color: #ffffff; }
-  .badge.goal-running { background: linear-gradient(to bottom, #4fc06b, #1a7f37); color: #ffffff; }
-  .badge.goal-waiting_jp { background: linear-gradient(to bottom, #e0a940, #9a6700); color: #ffffff; }
-  .badge.goal-held { background: linear-gradient(to bottom, #e05566, #a40e26); color: #ffffff; }
-  .badge.goal-between_cycles { background: linear-gradient(to bottom, #93999f, #6e7781); color: #ffffff; }
-  .badge.goal-delivered { background: linear-gradient(to bottom, #4fc06b, #1a7f37); color: #ffffff; }
-  .badge.goal-stopped { background: linear-gradient(to bottom, #93999f, #6e7781); color: #ffffff; }
-  .legend h3 { font-size: 0.95em; margin: 0.5em 0 0.3em; color: #2e5f94; }
-  .legend dt { font-weight: 700; margin-top: 0.4em; }
-  .legend dd { margin: 0 0 0 1rem; }
-  .goals-closed h3 { font-size: 0.95em; margin: 1em 0 0.3em; color: #2e5f94; }
-  .goals-closed ul { margin: 0; padding-left: 1.2em; }
-  table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 0.85rem;
-    border-radius: 0.5rem; overflow: hidden; }
-  th { text-align: left; padding: 0.45rem 0.5rem; background: linear-gradient(to bottom, #f3f8fd, #dbe8f7);
-    color: #2e5f94; border-bottom: 1px solid #a9c6e8; }
-  td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid rgba(127, 127, 127, 0.2); }
-  tbody tr:nth-child(even) { background: rgba(74, 144, 217, 0.07); }
-  tbody tr:hover { background: rgba(74, 144, 217, 0.16); }
-  section.host, section.group { margin-bottom: 1.25rem; padding: 0.85rem 1rem; border-radius: 0.6rem;
-    background: linear-gradient(to bottom, #ffffff, #f1f6fc); border: 1px solid #c7dbf0;
-    box-shadow: 0 1px 0 rgba(255,255,255,0.6) inset, 0 2px 4px rgba(0,0,0,0.08); }
-  @media (prefers-color-scheme: dark) {
-    body { background: linear-gradient(to bottom, #15181c, #0c0e11); color: #eeeeee; }
-    h1 { background: linear-gradient(to bottom, #3a6b9c, #1d3c5c); }
-    h2, .legend h3, .goals-closed h3 { color: #8fb8e6; }
-    th { background: linear-gradient(to bottom, #222a33, #1a2129); color: #8fb8e6; border-bottom-color: #37475a; }
-    td { border-bottom-color: rgba(255, 255, 255, 0.15); }
-    tbody tr:nth-child(even) { background: rgba(74, 144, 217, 0.1); }
-    tbody tr:hover { background: rgba(74, 144, 217, 0.2); }
-    section.host, section.group { background: linear-gradient(to bottom, #1c2229, #161b21); border-color: #2d3a48; }
+  :root {
+    color-scheme: light dark;
+    --bg: #f7f8fa; --surface: #ffffff; --border: #e5e7eb; --text: #16181d; --muted: #6b7280;
+    --accent: #4f46e5; --accent-soft: rgba(79, 70, 229, 0.1);
+    --green: #16a34a; --green-soft: rgba(22, 163, 74, 0.12);
+    --amber: #b45309; --amber-soft: rgba(217, 119, 6, 0.14);
+    --red: #dc2626; --red-soft: rgba(220, 38, 38, 0.12);
+    --gray: #6b7280; --gray-soft: rgba(107, 114, 128, 0.14);
   }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0b0d10; --surface: #15181c; --border: #262a30; --text: #e6e8eb; --muted: #9aa1ab;
+      --accent: #818cf8; --accent-soft: rgba(129, 140, 248, 0.16);
+      --green: #4ade80; --green-soft: rgba(74, 222, 128, 0.14);
+      --amber: #fbbf24; --amber-soft: rgba(251, 191, 36, 0.14);
+      --red: #f87171; --red-soft: rgba(248, 113, 113, 0.14);
+      --gray: #9aa1ab; --gray-soft: rgba(154, 161, 171, 0.14);
+    }
+  }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "Inter", "Segoe UI", system-ui, sans-serif; margin: 0; padding: 1.5rem;
+    max-width: 72rem; background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; }
+  h1 { font-size: 1.3rem; font-weight: 700; margin: 0 0 1.25rem; letter-spacing: -0.01em; }
+  h2 { font-size: 0.95rem; font-weight: 600; margin: 0 0 0.75rem; }
+  .badge { display: inline-flex; align-items: center; gap: 0.3em; padding: 0.15rem 0.6rem; border-radius: 0.375rem;
+    font-weight: 600; font-size: 0.75rem; line-height: 1.4; }
+  .badge.live { background: var(--green-soft); color: var(--green); }
+  .badge.stale { background: var(--amber-soft); color: var(--amber); }
+  .badge.offline { background: var(--red-soft); color: var(--red); }
+  .badge.nodata { background: var(--gray-soft); color: var(--gray); }
+  .badge.goal-running { background: var(--green-soft); color: var(--green); }
+  .badge.goal-waiting_jp { background: var(--amber-soft); color: var(--amber); }
+  .badge.goal-held { background: var(--red-soft); color: var(--red); }
+  .badge.goal-between_cycles { background: var(--gray-soft); color: var(--gray); }
+  .badge.goal-delivered { background: var(--green-soft); color: var(--green); }
+  .badge.goal-stopped { background: var(--gray-soft); color: var(--gray); }
+  .legend h3 { font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin: 1em 0 0.5em; }
+  .legend dt { font-weight: 600; margin-top: 0.6em; font-size: 0.85rem; }
+  .legend dd { margin: 0.1em 0 0 0; color: var(--muted); font-size: 0.85rem; }
+  .goals-closed h3 { font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin: 1.25em 0 0.5em; }
+  .goals-closed ul { margin: 0; padding-left: 1.1em; font-size: 0.85rem; color: var(--muted); }
+  a { color: var(--accent); }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  th { text-align: left; padding: 0.5rem 0.6rem; font-weight: 600; font-size: 0.75rem; text-transform: uppercase;
+    letter-spacing: 0.03em; color: var(--muted); border-bottom: 1px solid var(--border); }
+  td { text-align: left; padding: 0.55rem 0.6rem; border-bottom: 1px solid var(--border); }
+  tbody tr:hover { background: var(--accent-soft); }
+  tbody tr:last-child td { border-bottom: none; }
+  section.host, section.group { margin-bottom: 1.25rem; padding: 1.1rem 1.25rem; border-radius: 0.75rem;
+    background: var(--surface); border: 1px solid var(--border); }
 </style>
 </head>
 <body>
