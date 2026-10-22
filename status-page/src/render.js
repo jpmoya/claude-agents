@@ -7,7 +7,7 @@
 
 import { isIssueUrl } from './validate.js';
 import { groupTickets } from './group.js';
-import { PIPELINES, STAGE_INPUTS } from './pipelines.js';
+import { PIPELINES } from './pipelines.js';
 
 // Auto-refresh interval in seconds. Must stay <= 30 (AC15). Grepped directly by tests.
 export const PAGE_REFRESH_SECS = 20;
@@ -417,50 +417,39 @@ const PIPELINES_CSS = `${ROOT_VARS_CSS}
 ${NAV_CSS}
   section.group { margin-bottom: 1.25rem; padding: 1.1rem 1.25rem; border-radius: 0.75rem;
     background: var(--surface); border: 1px solid var(--border); }
-  ol.track { list-style: none; margin: 0; padding: 0; max-width: 100%; }
-  ol.track li { margin: 0; padding: 0; max-width: 100%; }
-  .chip { display: inline-block; max-width: 100%; margin: 0.25rem 0; padding: 0.2rem 0.6rem; border-radius: 0.375rem; font-size: 0.78rem; font-weight: 600;
-    background: var(--accent-soft); color: var(--accent); }
-  .chip[data-soon] { background: var(--amber-soft); color: var(--amber); }
   .uml { list-style: none; margin: 0; padding: 0; max-width: 100%; }
   .uml li { max-width: 100%; }
   .uml .node { border: 1px solid var(--border); border-radius: 0.5rem; max-width: 100%; box-sizing: border-box; overflow: hidden; }
   .uml .node b { display: block; padding: 0.4rem 0.7rem; font-size: 0.85rem; font-weight: 600;
     background: var(--bg); border-bottom: 1px solid var(--border); }
+  .uml .node .chip { display: inline-block; margin: 0.45rem 0.7rem 0; padding: 0.15rem 0.5rem; border-radius: 0.375rem;
+    font-size: 0.72rem; font-weight: 600; background: var(--accent-soft); color: var(--accent); }
+  .uml .node .chip[data-soon] { background: var(--amber-soft); color: var(--amber); }
   .uml .node ul { margin: 0; padding: 0.4rem 0.7rem 0.4rem 1.7rem; font-size: 0.8rem; color: var(--muted); }
-  .uml .link { display: block; margin: 0.1rem 0 0.1rem 1rem; color: var(--muted); }
-  .arrow { display: block; margin: 0.1rem 0 0.1rem 1rem; color: var(--muted); }
-  .box { display: block; max-width: 100%; box-sizing: border-box; padding: 0.5rem 0.75rem; border: 1px solid var(--border);
-    border-radius: 0.5rem; background: var(--surface); font-weight: 500; }`;
+  .uml .link { display: block; margin: 0.1rem 0 0.1rem 1rem; color: var(--muted); }`;
+
+/** UML-style box: stage name, the GitHub marker/label that routes into it (if any), and what it reads. */
+function renderNode(stage) {
+  const when = stage.when;
+  const chip = when
+    ? `<span class="chip"${when.coming ? ' data-soon="1"' : ''}>${esc(when.label)}${when.coming ? ' (coming)' : ''}</span>`
+    : '';
+  const inputs = (stage.inputs || []).map((x) => `<li>${esc(x)}</li>`).join('');
+  return `<div class="node"><b>${esc(stage.name)}</b>${chip}<ul>${inputs}</ul></div>`;
+}
 
 function renderTrack(track) {
   const items = track.stages
     .map((stage, i) => {
-      const when = stage.when;
-      const chip = when
-        ? `<span class="chip"${when.coming ? ' data-soon="1"' : ''}>${esc(when.label)}${when.coming ? ' (coming)' : ''}</span>`
-        : '<span class="chip" hidden></span>';
-      const arrow = i > 0 ? '<span class="arrow" aria-hidden="true">&darr;</span>' : '';
-      return `<li>${arrow}${chip}<span class="box">${esc(stage.name)}</span></li>`;
-    })
-    .join('');
-  return `<section class="group"><h2>${esc(track.title)}</h2><ol class="track">${items}</ol></section>`;
-}
-
-/** UML-style boxes: stage name on top, the inputs it takes in below, an arrow to the next stage. */
-function renderInputs(track) {
-  const items = track.stages
-    .map((stage, i) => {
       const link = i > 0 ? '<span class="link" aria-hidden="true">&darr;</span>' : '';
-      const inputs = stage.inputs.map((x) => `<li>${esc(x)}</li>`).join('');
-      return `<li>${link}<div class="node"><b>${esc(stage.name)}</b><ul>${inputs}</ul></div></li>`;
+      return `<li>${link}${renderNode(stage)}</li>`;
     })
     .join('');
-  return `<section class="group inputs"><h2>${esc(track.title)}</h2><ol class="uml">${items}</ol></section>`;
+  return `<section class="group"><h2>${esc(track.title)}</h2><ol class="uml">${items}</ol></section>`;
 }
 
 /**
- * Pipelines tab: server-rendered routing diagram, no JS.
+ * Pipelines tab: one UML-style diagram per lane (stage, routing marker/label, inputs), server-rendered, no JS.
  * @param {Array<object>} [data]
  * @returns {string} full HTML document
  */
@@ -479,8 +468,6 @@ ${PIPELINES_CSS}
 ${renderNav('pipelines')}
 <h1>How tickets are routed</h1>
 ${data.map(renderTrack).join('')}
-<h1>What each stage takes in</h1>
-${STAGE_INPUTS.map(renderInputs).join('')}
 </body>
 </html>`;
 }
