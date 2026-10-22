@@ -265,7 +265,7 @@ describe('public-page rules (leak, AC6, AC7)', () => {
 });
 
 describe('existing status view unchanged (AC3)', () => {
-  // Expected body: the `/` output of the base commit 3b3d07b with empty KV, hand-embedded;
+  // Expected body: the `/` output after the web-2.0 restyle (2026-10-22), hand-embedded;
   // the only permitted difference is the added nav (markup + its CSS rules).
   const BASE_HOME = `<!doctype html>
 <html lang="en">
@@ -276,31 +276,49 @@ describe('existing status view unchanged (AC3)', () => {
 <title>Pipeline status</title>
 <style>
   :root { color-scheme: light dark; }
-  body { font-family: system-ui, sans-serif; margin: 0; padding: 1rem; background: #ffffff; color: #111111; }
-  h1 { font-size: 1.1rem; }
-  h2 { font-size: 1rem; }
-  .badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 0.25rem; font-weight: 600; }
-  .badge.live { background: #1a7f37; color: #ffffff; }
-  .badge.stale { background: #9a6700; color: #ffffff; }
-  .badge.offline { background: #a40e26; color: #ffffff; }
-  .badge.nodata { background: #6e7781; color: #ffffff; }
-  .badge.goal-running { background: #1a7f37; color: #ffffff; }
-  .badge.goal-waiting_jp { background: #9a6700; color: #ffffff; }
-  .badge.goal-held { background: #a40e26; color: #ffffff; }
-  .badge.goal-between_cycles { background: #6e7781; color: #ffffff; }
-  .badge.goal-delivered { background: #1a7f37; color: #ffffff; }
-  .badge.goal-stopped { background: #6e7781; color: #ffffff; }
-  .legend h3 { font-size: 0.95em; margin: 0.5em 0 0.3em; }
-  .legend dt { font-weight: 600; margin-top: 0.4em; }
+  body { font-family: "Segoe UI", system-ui, sans-serif; margin: 0; padding: 1rem;
+    background: linear-gradient(to bottom, #eef4fb, #d9e6f5); color: #1a1a1a; }
+  h1 { font-size: 1.4rem; margin: 0 0 1rem; padding: 0.6rem 1rem; border-radius: 0.6rem;
+    background: linear-gradient(to bottom, #5ba3e0, #2e6fb0); color: #ffffff;
+    text-shadow: 0 1px 1px rgba(0,0,0,0.35); box-shadow: 0 1px 0 rgba(255,255,255,0.4) inset, 0 2px 4px rgba(0,0,0,0.2); }
+  h2 { font-size: 1rem; margin-top: 0; color: #2e5f94; }
+  .badge { display: inline-block; padding: 0.2rem 0.65rem; border-radius: 999px; font-weight: 700;
+    font-size: 0.8em; text-shadow: 0 1px 1px rgba(0,0,0,0.25);
+    box-shadow: 0 1px 0 rgba(255,255,255,0.5) inset, 0 1px 2px rgba(0,0,0,0.25); }
+  .badge.live { background: linear-gradient(to bottom, #4fc06b, #1a7f37); color: #ffffff; }
+  .badge.stale { background: linear-gradient(to bottom, #e0a940, #9a6700); color: #ffffff; }
+  .badge.offline { background: linear-gradient(to bottom, #e05566, #a40e26); color: #ffffff; }
+  .badge.nodata { background: linear-gradient(to bottom, #93999f, #6e7781); color: #ffffff; }
+  .badge.goal-running { background: linear-gradient(to bottom, #4fc06b, #1a7f37); color: #ffffff; }
+  .badge.goal-waiting_jp { background: linear-gradient(to bottom, #e0a940, #9a6700); color: #ffffff; }
+  .badge.goal-held { background: linear-gradient(to bottom, #e05566, #a40e26); color: #ffffff; }
+  .badge.goal-between_cycles { background: linear-gradient(to bottom, #93999f, #6e7781); color: #ffffff; }
+  .badge.goal-delivered { background: linear-gradient(to bottom, #4fc06b, #1a7f37); color: #ffffff; }
+  .badge.goal-stopped { background: linear-gradient(to bottom, #93999f, #6e7781); color: #ffffff; }
+  .legend h3 { font-size: 0.95em; margin: 0.5em 0 0.3em; color: #2e5f94; }
+  .legend dt { font-weight: 700; margin-top: 0.4em; }
   .legend dd { margin: 0 0 0 1rem; }
-  .goals-closed h3 { font-size: 0.95em; margin: 1em 0 0.3em; }
+  .goals-closed h3 { font-size: 0.95em; margin: 1em 0 0.3em; color: #2e5f94; }
   .goals-closed ul { margin: 0; padding-left: 1.2em; }
-  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
-  th, td { text-align: left; padding: 0.25rem; border-bottom: 1px solid rgba(127, 127, 127, 0.3); }
-  section.host, section.group { margin-bottom: 1.5rem; }
+  table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 0.85rem;
+    border-radius: 0.5rem; overflow: hidden; }
+  th { text-align: left; padding: 0.45rem 0.5rem; background: linear-gradient(to bottom, #f3f8fd, #dbe8f7);
+    color: #2e5f94; border-bottom: 1px solid #a9c6e8; }
+  td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid rgba(127, 127, 127, 0.2); }
+  tbody tr:nth-child(even) { background: rgba(74, 144, 217, 0.07); }
+  tbody tr:hover { background: rgba(74, 144, 217, 0.16); }
+  section.host, section.group { margin-bottom: 1.25rem; padding: 0.85rem 1rem; border-radius: 0.6rem;
+    background: linear-gradient(to bottom, #ffffff, #f1f6fc); border: 1px solid #c7dbf0;
+    box-shadow: 0 1px 0 rgba(255,255,255,0.6) inset, 0 2px 4px rgba(0,0,0,0.08); }
   @media (prefers-color-scheme: dark) {
-    body { background: #111111; color: #eeeeee; }
-    th, td { border-bottom-color: rgba(255, 255, 255, 0.2); }
+    body { background: linear-gradient(to bottom, #15181c, #0c0e11); color: #eeeeee; }
+    h1 { background: linear-gradient(to bottom, #3a6b9c, #1d3c5c); }
+    h2, .legend h3, .goals-closed h3 { color: #8fb8e6; }
+    th { background: linear-gradient(to bottom, #222a33, #1a2129); color: #8fb8e6; border-bottom-color: #37475a; }
+    td { border-bottom-color: rgba(255, 255, 255, 0.15); }
+    tbody tr:nth-child(even) { background: rgba(74, 144, 217, 0.1); }
+    tbody tr:hover { background: rgba(74, 144, 217, 0.2); }
+    section.host, section.group { background: linear-gradient(to bottom, #1c2229, #161b21); border-color: #2d3a48; }
   }
 </style>
 </head>
