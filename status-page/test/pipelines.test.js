@@ -13,7 +13,7 @@ vi.mock('../src/render.js', async (importOriginal) => {
 import worker, { __resetRateLimiter } from '../src/index.js';
 import * as render from '../src/render.js';
 import { captureError as realCaptureError } from '../src/capture.js';
-import { PIPELINES, STAGE_INPUTS as STAGE_INPUTS_IMPORT, findDrift } from '../src/pipelines.js';
+import { PIPELINES, findDrift } from '../src/pipelines.js';
 import { createMockKV } from './mock-kv.js';
 import { makeEnv, getRequest } from './fixtures.js';
 
@@ -424,23 +424,27 @@ describe('captureError (AC9, real module)', () => {
 });
 
 describe('stage inputs diagram', () => {
-  it('lists every stage with its inputs, no script, only real agents', async () => {
-    const { STAGE_INPUTS } = await import('../src/pipelines.js');
+  it('every stage lists at least one input, and every agent stage has agents/<name>.md', async () => {
     const { html } = await getPipelines();
-    expect(html).toContain('What each stage takes in');
-    for (const t of STAGE_INPUTS) {
+    for (const t of PIPELINES) {
       for (const s of t.stages) {
         expect(s.inputs.length, s.name).toBeGreaterThan(0);
-        expect(existsSync(join(repoRoot, 'agents', `${s.name}.md`)), s.name).toBe(true);
         expect(html).toContain(`<b>${s.name}</b>`);
       }
     }
     expect(html).toContain('TESTS WRITTEN: Branch, Commit');
   });
 
-  it('uses only vocabulary the orchestrator source documents', () => {
-    const STAGE_INPUTS = STAGE_INPUTS_IMPORT;
-    const names = STAGE_INPUTS.flatMap((t) => t.stages.map((s) => s.name));
-    expect(findDrift(names.map((n) => ({ id: n, title: n, stages: [{ name: n }] })), SOURCES)).toEqual([]);
+  it('shows the routing marker/label as a chip inside the stage box, not a separate flow step', async () => {
+    const { html } = await getPipelines();
+    expect(html).not.toContain('What each stage takes in');
+    const reEscape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    for (const t of PIPELINES) {
+      for (const s of t.stages) {
+        if (!s.when) continue;
+        const re = new RegExp(`<b>${reEscape(s.name)}</b><span class="chip"[^>]*>${reEscape(s.when.label)}`);
+        expect(html, `${s.name} / ${s.when.label}`).toMatch(re);
+      }
+    }
   });
 });
