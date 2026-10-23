@@ -287,7 +287,7 @@ goal_brief() {
   proj=$(printf '%s' "$g" | jq -r '.block.project? // empty | select(type == "object") | "\(.url) (owner \(.owner), number \(.number))"' 2>/dev/null)
   if [ -n "$proj" ]; then
     printf 'GitHub Project: %s\n' "$proj"
-    printf '  This goal is bound to that project: read its ticket list from the project items (the project item list of that number and owner), keep their Status current, and never work from or create another project.\n'
+    printf '  This goal is bound to that project: read its ticket list from the project items (the project item list of that number and owner), and never work from or create another project. The supervisor sync sets each item'"'"'s Status on its own schedule — never edit Status yourself (claude-agents#466: a lead that does fights the sync and the board flaps between the two).\n'
   fi
   printf 'Instructions: %s\n' "${instr:-(none)}"
   printf 'Your memory (read first, append to it): %s/goals/%s.md\n' "$LOGDIR" "$id"

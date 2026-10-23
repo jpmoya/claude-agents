@@ -20,9 +20,16 @@ goal_project_enabled() {
   local h s
   [ "${GOAL_PROJECTS:-1}" != 0 ] || return 1
   if [ -z "${_GP_SCOPE:-}" ]; then
-    h=$(gh api -i user 2>/dev/null | tr -d '\r' | grep -i '^x-oauth-scopes:' || true)
-    s=",$(printf '%s' "${h#*:}" | tr -d ' '),"
-    case "$s" in *,project,*) _GP_SCOPE=yes ;; *) _GP_SCOPE=no ;; esac
+    local raw rc
+    raw=$(gh api -i user 2>/dev/null); rc=$?
+    if [ "$rc" -ne 0 ]; then
+      _gp_log "scope check failed (gh api -i user exit $rc) — treating as no project scope this process, retrying next"
+      _GP_SCOPE=no
+    else
+      h=$(printf '%s' "$raw" | tr -d '\r' | grep -i '^x-oauth-scopes:' || true)
+      s=",$(printf '%s' "${h#*:}" | tr -d ' '),"
+      case "$s" in *,project,*) _GP_SCOPE=yes ;; *) _GP_SCOPE=no ;; esac
+    fi
   fi
   [ "$_GP_SCOPE" = yes ]
 }
