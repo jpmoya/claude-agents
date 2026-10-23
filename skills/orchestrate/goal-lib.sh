@@ -416,6 +416,41 @@ _goal_ticket_eval() {
         esac ;;
     esac
   fi
+  # #456 (goal-lib/gate-answer-unseen): two gaps in the classifier above, fixed together since the second undoes the first
+  # if applied alone. (a) a delivery-lead "Blocked on: needs_jp" BLOCKED is not a routing marker (markers_for
+  # delivery-lead only knows DECISION/JP CONFIRMED, hooks/pipeline-markers.sh) so latest_marker drops it; it never
+  # reaches $first/$mk above and the ticket keeps reading whatever it was before the lead got stuck, forever.
+  # (b) a gate (MOCKUPS PENDING, AWAITING GO, …) or the lead's needs_jp above never looks past itself for JP's answer:
+  # once JP posts a plain "approved" / "go" / revision feedback, the gate marker itself never changes (the orchestrator
+  # clears it by relaunching the pipeline, which only happens once the goal reads active), so without this check a
+  # goal can sit held, re-evaluate every sync, and never unhold even after JP answers (#390, 2026-10-23). One extra
+  # comments read, author-checked (an agent-tag comment, "**[...] ...**", never counts, so this cannot loop on the
+  # pipeline's own supervisor/claim notes — #427 AC4).
+  if [ "$cls" != delivered ]; then
+    local author gate_at lead_blocked_at jp_answer_at all_c newest
+    author=$(printf '%s' "$info" | jq -r '.user.login // empty')
+    all_c=$(_goal_get_all "repos/$repo/issues/$n/comments?per_page=100" 2>/dev/null) || all_c="[]"
+    gate_at=""
+    [ "$first" != none ] && [ -n "$first" ] && gate_at=$(printf '%s' "$all_c" \
+      | jq -r --arg f "$first" '[.[] | select((.body | split("\n")[0] | rtrimstr("\r")) == $f)] | last | .created_at // empty')
+    lead_blocked_at=$(printf '%s' "$all_c" \
+      | jq -r '[.[] | select((.body | split("\n")[0] | rtrimstr("\r")) == "**[delivery-lead] BLOCKED**")
+                     | select((.body | split("\n")[1] // "" | rtrimstr("\r")) == "Blocked on: needs_jp")]
+               | last | .created_at // empty')
+    jp_answer_at=""
+    [ -n "$author" ] && jp_answer_at=$(printf '%s' "$all_c" \
+      | jq -r --arg a "$author" '[.[] | select(.user.login == $a) | select((.body | startswith("**[")) | not)]
+               | last | .created_at // empty')
+    if [ -n "$lead_blocked_at" ] && { [ -z "$gate_at" ] || [[ "$lead_blocked_at" > "$gate_at" ]]; } \
+       && { [ -z "$jp_answer_at" ] || [[ "$lead_blocked_at" > "$jp_answer_at" ]]; }; then
+      cls=waiting_jp; why="blocked on a decision only you can make"
+    fi
+    if [ "$cls" = waiting_jp ] && [ -n "$jp_answer_at" ]; then
+      newest=$gate_at
+      [ -n "$lead_blocked_at" ] && { [ -z "$newest" ] || [[ "$lead_blocked_at" > "$newest" ]]; } && newest=$lead_blocked_at
+      if [ -z "$newest" ] || [[ "$jp_answer_at" > "$newest" ]]; then cls=active; why="you answered — the pipeline will re-check"; fi
+    fi
+  fi
   if [ "$cls" = active ]; then
     case " $labels " in
       *" agent-proposed "*)
@@ -450,7 +485,9 @@ goal_ticket_state() {
   printf '%s\n' "${r%%$'\t'*}"
 }
 
-# goal_snapshot — stdin: "<owner/repo#N>\t<issue state>\t<marker first line>" lines; prints the sha of the sorted lines
+# goal_snapshot — stdin: "<owner/repo#N>\t<issue state>\t<marker first line>\t<ticket class>" lines (#456: class included so a
+# gate-answered/lead-blocked flip from _goal_ticket_eval changes the hash even when the marker itself never moves); prints
+# the sha of the sorted lines
 goal_snapshot() {
   sort | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1
 }
@@ -741,7 +778,7 @@ goal_eval() {
       waiting_jp) GE_WAITING=$((GE_WAITING + 1)) ;;
       *) GE_ACTIVE=$((GE_ACTIVE + 1)) ;;
     esac
-    GE_SNAP="$GE_SNAP$ref	$istate	$marker
+    GE_SNAP="$GE_SNAP$ref	$istate	$marker	$cls
 "
     GE_REFS="$GE_REFS$ref	$cls	$why
 "
