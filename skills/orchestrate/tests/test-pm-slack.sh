@@ -189,6 +189,23 @@ test_pms_reminder_clock_starts_at_the_ask_not_at_the_last_call() {
   assert_eq "$(pms_n chat.postMessage)" 2 "AC2: 24h is measured from the ask (reminder due at 25h)" || return 1
 }
 
+# #464: an open ask whose text has gone stale (e.g. the blocker JP must answer changed) is edited
+# in place, not silently dropped — JP must never be left looking at outdated wording.
+test_pms_open_ask_text_change_edits_message_in_place() {
+  pms_setup
+  pms_ask "$PMS_REPO_A" 42 "Apply the migrations."
+  assert_eq "$(pms_n chat.postMessage)" 1 "first ask posted" || return 1
+  local orig_ts; orig_ts=$(awk -F'\t' -v r="$PMS_REPO_A" -v i=42 '$1==r && $2==i {print $4}' "$PMS_PIPE/pm-slack/asks.tsv")
+  assert_ne "$orig_ts" "" "captured the original message ts" || return 1
+  PMS_NOW=$((PMS_T0 + 3600))
+  pms_ask "$PMS_REPO_A" 42 "Approve the mockups instead."
+  assert_exit0 "$PMS_RC" "text-change ask exits 0 ($PMS_OUT)" || return 1
+  assert_eq "$(pms_n chat.postMessage)" 1 "no new top-level message for a text change" || return 1
+  assert_eq "$(pms_n chat.update)" 1 "exactly one chat.update for the text change" || return 1
+  assert_contains "$(pms_lines chat.update | tail -n 1)" "Approve the mockups instead." "chat.update carries the new text" || return 1
+  assert_contains "$(pms_lines chat.update | tail -n 1)" "$orig_ts" "chat.update targets the original message ts" || return 1
+}
+
 test_pms_new_ask_allowed_after_jp_answered() {
   pms_setup
   pms_ask "$PMS_REPO_A" 42
@@ -474,6 +491,7 @@ run_test test_pms_second_ask_while_open_is_a_noop
 run_test test_pms_ask_for_another_issue_is_independent
 run_test test_pms_one_reminder_after_24h_then_never
 run_test test_pms_reminder_clock_starts_at_the_ask_not_at_the_last_call
+run_test test_pms_open_ask_text_change_edits_message_in_place
 run_test test_pms_new_ask_allowed_after_jp_answered
 run_test test_pms_poll_ignores_bot_and_other_users
 run_test test_pms_poll_only_accepts_the_configured_user_id
