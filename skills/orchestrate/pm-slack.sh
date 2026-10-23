@@ -69,6 +69,10 @@ post() {  # post <channel> <text> — top-level message (never a thread); sets P
   POSTED_TS=$(printf '%s' "$RESP" | jq -r '.ts // empty')
 }
 
+update_msg() {  # update_msg <channel> <ts> <text> — edit an existing top-level message in place
+  slack chat.update "$(jq -nc --arg c "$1" --arg t "$2" --arg x "$3" '{channel:$c,ts:$t,text:$x}')"
+}
+
 cmd_ask() {
   [ $# -ge 3 ] || die "usage: pm-slack.sh ask <owner/repo> <issue> <text>"
   local repo=$1 issue=$2 text=$3 short=${1##*/} now cur status reminded asked_at ch msg
@@ -77,15 +81,21 @@ cmd_ask() {
   now=$(date +%s)
   cur=$([ -f "$ASKS" ] && awk -F'\t' -v r="$repo" -v i="$issue" '$1==r && $2==i' "$ASKS")
   if [ -n "$cur" ]; then
-    IFS="$TAB" read -r _ _ _ _ asked_at status reminded <<< "$cur"
+    IFS="$TAB" read -r _ _ ch_cur ts_cur asked_at status reminded <<< "$cur"
     if [ "$status" = open ]; then
-      # one open ask per issue; exactly one reminder after 24h, then never again for this ask
-      [ "$reminded" = 0 ] && [ $((now - asked_at)) -ge "$REMIND_AFTER_SECS" ] || exit 0
-      ch=$(open_dm) || exit 1
-      msg="#$issue · $short"$'\n'"Reminder: still waiting on your answer to the message above."$'\n\n'"Reply here with #$issue and your answer."
-      post "$ch" "$msg" || exit 1
-      IFS="$TAB" read -r _ _ _ ts _ <<< "$cur"
-      set_ask "$repo" "$issue" "$ch" "$ts" "$asked_at" open 1
+      # one open ask per issue; exactly one reminder (a new top-level message) after 24h, then never again
+      if [ "$reminded" = 0 ] && [ $((now - asked_at)) -ge "$REMIND_AFTER_SECS" ]; then
+        ch=$(open_dm) || exit 1
+        msg="#$issue · $short"$'\n'"Reminder: still waiting on your answer to the message above."$'\n\n'"Reply here with #$issue and your answer."
+        post "$ch" "$msg" || exit 1
+        set_ask "$repo" "$issue" "$ch" "$ts_cur" "$asked_at" open 1
+        exit 0
+      fi
+      # The caller's text can change before any reminder is due (e.g. "apply migrations" becomes stale
+      # once that's resolved and a different blocker remains): edit the original message in place rather
+      # than silently doing nothing, so JP is never looking at a stale ask (#464).
+      msg="#$issue · $short"$'\n'"$text"$'\n\n'"Reply here with #$issue and your answer."
+      update_msg "$ch_cur" "$ts_cur" "$msg" || exit 1
       exit 0
     fi
   fi
