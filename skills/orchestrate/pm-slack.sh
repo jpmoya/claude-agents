@@ -19,7 +19,7 @@ source "$HERE/../../hooks/pipeline-markers.sh" 2>/dev/null || source "$HOME/.cla
 JP_ID="${PM_SLACK_USER_ID:-U0A8FPA9V0E}"
 REMIND_AFTER_SECS=86400
 SD="$PIPE/pm-slack"
-ASKS="$SD/asks.tsv"      # repo \t issue \t channel \t ts \t asked_at \t status(open|answered) \t reminded(0|1)
+ASKS="$SD/asks.tsv"      # repo \t issue \t channel \t ts \t asked_at \t status(open|answered) \t reminded(0|1) \t kind(""|mockup-skip, #470)
 LASTREAD="$SD/last-read"
 CHANNEL_FILE="$SD/channel"
 LOCKDIR="$SD/lock"
@@ -151,18 +151,21 @@ cmd_poll() {
         IFS="$TAB" read -r repo issue mch _ _ _ _ kind <<< "$matches"
         gh issue comment "$issue" --repo "$repo" --body "**[project-manager] NOTE** jp-reply (slack): $mtext" >/dev/null \
           || { echo "pm-slack: comment on $repo#$issue failed" >&2; exit 1; }
-        IFS="$TAB" read -r _ _ _ ats aat _ rem _ <<< "$matches"
-        set_ask "$repo" "$issue" "$mch" "$ats" "$aat" answered "$rem" "$kind"
-        slack reactions.add "$(jq -nc --arg c "$ch" --arg t "$mts" '{channel:$c,timestamp:$t,name:"white_check_mark"}')" \
-          || echo "pm-slack: reaction failed (reply was recorded)" >&2
         # #470: a mockup-skip ask whose reply reads as JP choosing to skip is echoed onto the issue as the
         # canonical marker, verbatim — a deterministic bridge, never the PM's own judgment and never written
         # for any other kind of ask. gh runs as JP's own account (same as every other pipeline comment), so
         # this satisfies the marker's author/exact-line/JP-said checks the same way JP's own comment would.
+        # Posted BEFORE set_ask marks the record "answered" and hard-fails on error (like the NOTE above):
+        # a transient gh/network failure must not lose the skip — the record stays "open" and LASTREAD
+        # does not advance past this message, so the next poll retries it (a duplicate marker is harmless).
         if [ "$kind" = mockup-skip ] && is_jp_skip_mockups_reply "$mtext"; then
           gh issue comment "$issue" --repo "$repo" --body "$(skip_mockups_marker_body "$mtext")" >/dev/null \
-            || echo "pm-slack: SKIP MOCKUPS bridge comment on $repo#$issue failed (reply was recorded)" >&2
+            || { echo "pm-slack: SKIP MOCKUPS bridge comment on $repo#$issue failed" >&2; exit 1; }
         fi
+        IFS="$TAB" read -r _ _ _ ats aat _ rem _ <<< "$matches"
+        set_ask "$repo" "$issue" "$mch" "$ats" "$aat" answered "$rem" "$kind"
+        slack reactions.add "$(jq -nc --arg c "$ch" --arg t "$mts" '{channel:$c,timestamp:$t,name:"white_check_mark"}')" \
+          || echo "pm-slack: reaction failed (reply was recorded)" >&2
       else
         post "$ch" "Which issue is this about? Start your reply with #<issue> — pending: $(printf '%s\n' "$pend" | awk -F'\t' '{printf "#%s (%s) ", $2, $1}' | sed 's#[^ ]*/##g')" \
           || exit 1
