@@ -27,6 +27,12 @@ if ! type pms_setup >/dev/null 2>&1; then
     . "$MSA_HARNESS_TMP"
   rm -f "$MSA_HARNESS_TMP"
   type pms_setup >/dev/null 2>&1 || { echo "test-mockup-skip-ask.sh: failed to load the pm-slack test harness" >&2; exit 1; }
+  # The harness computes HERE_PMS/RS_PMS/ROOT_PMS from its OWN ${BASH_SOURCE[0]} — correct when
+  # test-pm-slack.sh sources itself, but wrong once its content is copied into a temp file and
+  # sourced from there (RS_PMS would then point at $TMPDIR/.., not skills/orchestrate). Re-point
+  # them at the real locations, known from THIS file's own (never-copied) BASH_SOURCE.
+  RS_PMS="$ROOT_MSA/skills/orchestrate"
+  ROOT_PMS="$ROOT_MSA"
 fi
 
 # msa_ask <repo> <issue> <text> <kind> — ask carrying a kind, via the shared pms_run harness
