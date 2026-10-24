@@ -6,8 +6,15 @@
 #
 # Reuses skills/orchestrate/tests/test-pm-slack.sh's black-box harness (pms_* helpers / PMS_* constants)
 # and test-mockup-gate-exact-marker.sh's doc-grep helpers (mg_has et al, sourced earlier by run-tests.sh's
-# alphabetical pass). When this file runs standalone, pull in the pm-slack harness minus its own run_test
-# calls (same trick test-mockup-skip-marker.sh uses for the goal-supervisor harness).
+# alphabetical pass — "test-mockup-gate-exact-marker.sh" < "test-mockup-skip-ask.sh"). pm-slack.sh's own
+# test file sorts AFTER this one ("test-pm-slack.sh" > "test-mockup-skip-ask.sh"), so unlike the
+# mg_has import, pms_setup is NEVER yet defined when run-tests.sh reaches this file for real — the
+# fallback below always runs, not just under a standalone invocation: pull in the pm-slack harness
+# minus its own run_test calls, via a plain temp file rather than process substitution (`<(...)`),
+# since by this point in a full run-tests.sh pass hundreds of prior tests may have left background
+# jobs/pipes open and a `<(...)` under fd pressure can silently fail, leaving pms_setup undefined and
+# crashing the rest of the suite under `set -u` (same trick test-mockup-skip-marker.sh uses for the
+# goal-supervisor harness, where the dependency sorts earlier and the fallback is the dead-code case).
 
 HERE_MSA=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT_MSA=$(cd "$HERE_MSA/../../.." && pwd)
@@ -15,7 +22,11 @@ PM_MSA="$ROOT_MSA/agents/product-manager.md"
 MARKERS_MSA="$ROOT_MSA/hooks/pipeline-markers.sh"
 
 if ! type pms_setup >/dev/null 2>&1; then
-  . <(sed '/^run_test /d' "$HERE_MSA/test-pm-slack.sh")
+  MSA_HARNESS_TMP=$(mktemp "${TMPDIR:-/tmp}/pms-harness.XXXXXX") && \
+    sed '/^run_test /d' "$HERE_MSA/test-pm-slack.sh" > "$MSA_HARNESS_TMP" && \
+    . "$MSA_HARNESS_TMP"
+  rm -f "$MSA_HARNESS_TMP"
+  type pms_setup >/dev/null 2>&1 || { echo "test-mockup-skip-ask.sh: failed to load the pm-slack test harness" >&2; exit 1; }
 fi
 
 # msa_ask <repo> <issue> <text> <kind> — ask carrying a kind, via the shared pms_run harness
