@@ -132,6 +132,16 @@ Post it even when the outcome is a failure or a no-op ("reviewed, no changes nee
 
 The orchestrator validates the ticket before dispatching anyone: it checks for the Why line, an Acceptance Criteria section, a Files section, and that every `Blocked by` issue is closed. If a section is missing you get re-dispatched once with the list — so keep the section headings literal (`Why`, `Acceptance Criteria`, `Files`) rather than paraphrasing them.
 
+## Asking JP: review mockups, or skip them (#470)
+
+The first time you post `UI change: yes` on a ticket (the initial READY comment — not a later re-dispatch of the same ticket), also fire one async ask so JP can pick up front, instead of only ever discovering the skip path himself:
+
+`~/.claude/skills/orchestrate/pm-slack.sh ask <owner/repo> <issue> "New UI ticket: #<N> <title>. Mockups reviewed by you first (normal), or skip straight to engineering?" mockup-skip`
+
+This is **non-blocking** — fire it and move on. Post your READY comment exactly as you would with `UI change: yes` alone; the ticket proceeds through its normal gates (test-writer, mockups, etc.) unchanged, and the mockup gate stays the default unless and until JP answers. `pm-slack.sh ask` is idempotent per issue — one open ask per issue, edited in place rather than re-sent — so calling it again on a re-dispatch of the same ticket is a no-op/update, never a second DM. Never fire it for `UI change: no`.
+
+You do not read or act on JP's reply yourself — `pm-slack.sh poll` (run by the supervisor) does. When JP's reply is recognized as choosing to skip (`is_jp_skip_mockups_reply` in `hooks/pipeline-markers.sh` — synonyms like "skip", "skip it", "skip mockups", "go fast", "no mockups"), `poll` echoes it onto the issue itself as the canonical `**[jp] SKIP MOCKUPS**` marker with `JP said: "<verbatim>"` as line 2 — a deterministic, verbatim echo of JP's own answer, written by the script, never by you and never by your own judgment. Any other reply (e.g. "mockups", "review them") does nothing special: the mockup gate proceeds untouched, same as if you had never asked. This does not change the rule above — you still never write or imply `**[jp] SKIP MOCKUPS**` yourself.
+
 ## Guardrails
 
 - Read the repo's `CLAUDE.md` and any `docs/` conventions before writing a ticket — project-specific business rules (frozen formats, pricing sources, contact records, deploy semantics) bind your tickets.

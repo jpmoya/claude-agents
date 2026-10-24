@@ -48,6 +48,23 @@ is_jp_approval() {  # is_jp_approval <body> → exit 0 when the body is an appro
   jq -ne --arg b "$1" --arg re "$(jp_approval_re)" '$b | test($re)' >/dev/null
 }
 
+jp_skip_mockups_words() { echo 'skip( it| mockups| the mockups| review)?|no mockups|go fast(er)?|faster route'; }   # JP's plain-language reply choosing to skip mockups — the one skip-synonym set (free-text DM replies only, not a GitHub comment marker)
+
+jp_skip_mockups_negation_re() { printf '%s' "(?i)\\b(?:don'?t|do\\s+not|dont|never|won'?t|wont|not)\\b.{0,15}?\\b(?:skip|go\\s+fast(?:er)?|faster\\s+route)"; }   # "don't skip" / "do not skip mockups" / "not skip" etc. — a skip word preceded by a negation within a few words is NOT a skip; the safe failure here is no marker (#470)
+
+is_jp_skip_mockups_reply() {  # is_jp_skip_mockups_reply <text> → exit 0 when text is a plain-language JP reply choosing to skip mockups. Used only against a JP Slack reply to pm-slack.sh's mockup-skip ask — never a general-purpose gate, and never a substitute for the `**[jp] SKIP MOCKUPS**` marker itself. Same anti-glue rule as jp_approval_re: "skip" glued to more letters (e.g. "skipped", "skipping") does not match. Rejects two ways a reply can look like a skip but not be one: (1) a negated skip ("don't skip", "do not skip mockups" — jp_skip_mockups_negation_re), and (2) a mixed/ambiguous reply that also talks about reviewing or the mockups outside the recognized skip phrase itself ("review mockups first, then skip to eng", "skip? no, review them") — strip every recognized skip phrase out of the text and if "review"/"mockup(s)" still remains, the reply is ambiguous, not a clear skip, and the safe failure is no marker.
+  jq -ne --arg b "$1" --arg w "$(jp_skip_mockups_words)" --arg neg "$(jp_skip_mockups_negation_re)" '
+    ($b | test("(?i)(?:^|[^a-z])(?:" + $w + ")(?:$|[^a-z])")) as $is_skip
+    | ($b | test($neg)) as $negated
+    | ($b | gsub("(?i)(?:" + $w + ")"; " ") | test("(?i)(?:^|[^a-z])(?:review|mockups?)(?:$|[^a-z])")) as $ambiguous
+    | $is_skip and ($negated | not) and ($ambiguous | not)' >/dev/null
+}
+
+skip_mockups_marker_body() {  # skip_mockups_marker_body <jp-reply-text> → the canonical two-line `**[jp] SKIP MOCKUPS**` body with JP's reply echoed verbatim on line 2 (#470). Collapses embedded CR/LF in the quoted text to a space first — the gate's `JP said: "<non-empty>"` check is single-line (marker_last_jq), so a multi-line Slack reply quoted as-is would land with no closing quote on line 2 and the gate would silently never see a valid skip. Single source of truth: pm-slack.sh posts this body, and the test that proves the real gate accepts it calls this same function, so the two can never drift apart.
+  local text; text=$(printf '%s' "$1" | tr '\r\n' '  ')
+  printf '%s\n%s' "**[jp] SKIP MOCKUPS**" "JP said: \"$text\""
+}
+
 marker_re() {  # marker_re [agent] → jq (oniguruma) regex for a valid first line; no agent = any agent, each with its own markers
   # jp's markers are gates: the first line must be the marker and nothing else (trailing whitespace/CR ok),
   # the same "exactly" rule the orchestrator applies (#202). Other agents keep the `**`/`:`/space/EOL suffix.
