@@ -88,6 +88,34 @@ test_msa_poll_negated_skip_reply_never_posts_marker() {
   done
 }
 
+test_msa_rededispatch_after_answered_never_reasks() {
+  # A UI ticket re-dispatched (e.g. a NEEDS PM REVISION loop) posts `UI change: yes` again, firing the
+  # same mockup-skip ask call again. If JP already answered it, that must be a pure no-op — never a
+  # second DM asking him something he already answered (JP's standing rule against being re-asked).
+  pms_setup
+  msa_ask "$PMS_REPO_A" 42 "question" mockup-skip
+  pms_history "1700000101.000100|$PMS_JP|#42 skip it"
+  pms_run poll
+  assert_eq "$(pms_n chat.postMessage)" 1 "one DM so far" || return 1
+  msa_ask "$PMS_REPO_A" 42 "question" mockup-skip   # re-dispatch, same kind, already answered
+  assert_eq "$(pms_n chat.postMessage)" 1 "no second DM for an already-answered mockup-skip ask" || return 1
+  assert_eq "$(pms_n chat.update)" 0 "no update either — a pure no-op" || return 1
+}
+run_test test_msa_rededispatch_after_answered_never_reasks
+
+test_msa_mockup_skip_ask_never_displaces_an_open_ordinary_ask() {
+  # An ordinary (non-mockup-skip) ask already open on this issue must never be overwritten/displaced by
+  # a later mockup-skip ask — JP would otherwise never see the real blocker question.
+  pms_setup
+  pms_ask "$PMS_REPO_A" 42 "Blocked: pick A or B."   # ordinary open ask, no kind
+  msa_ask "$PMS_REPO_A" 42 "Mockups reviewed by you first, or skip straight to engineering?" mockup-skip
+  assert_eq "$(pms_n chat.postMessage)" 1 "still just the one ordinary DM" || return 1
+  assert_eq "$(pms_n chat.update)" 0 "the ordinary ask's text/kind is left untouched" || return 1
+  local kind; kind=$(awk -F'\t' -v r="$PMS_REPO_A" -v i=42 '$1==r && $2==i {print $8}' "$PMS_PIPE/pm-slack/asks.tsv")
+  assert_eq "$kind" "" "stored kind stays empty (the ordinary ask), not overwritten with mockup-skip" || return 1
+}
+run_test test_msa_mockup_skip_ask_never_displaces_an_open_ordinary_ask
+
 test_msa_reask_with_new_kind_overwrites_stale_kind() {
   # A mockup-skip ask later re-asked (same open record, text changed, no reminder due yet) as an
   # ordinary blocker must drop the mockup-skip kind — otherwise a later "skip it" answers the NEW,

@@ -89,6 +89,13 @@ cmd_ask() {
   cur=$([ -f "$ASKS" ] && awk -F'\t' -v r="$repo" -v i="$issue" '$1==r && $2==i' "$ASKS")
   if [ -n "$cur" ]; then
     IFS="$TAB" read -r _ _ ch_cur ts_cur asked_at status reminded kind_cur <<< "$cur"
+    # A mockup-skip ask is a no-op once there is already any open ask on this issue (never displace an
+    # unrelated question's text — e.g. a real blocker — with the mockup-skip one) or once a mockup-skip
+    # ask on this issue has already been answered (never re-ask JP something he already answered, even
+    # across a later re-dispatch of the same ticket with `UI change: yes` again) (#470).
+    if [ "$kind" = mockup-skip ] && { [ "$status" = open ] || [ "$kind_cur" = mockup-skip ]; }; then
+      exit 0
+    fi
     if [ "$status" = open ]; then
       # one open ask per issue; exactly one reminder (a new top-level message) after 24h, then never again
       if [ "$reminded" = 0 ] && [ $((now - asked_at)) -ge "$REMIND_AFTER_SECS" ]; then
