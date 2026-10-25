@@ -52,3 +52,12 @@ run_test test_dcp_named_checks
 run_test test_dcp_absent_blocks_ci_pending
 run_test test_dcp_exception_scoped_to_job_names
 run_test test_dcp_pinned_wording_intact
+
+# #471: the post-merge 3-minute deploy-wait-cap stop is class ci_pending (auto-retried), not other / waiting on JP.
+test_dcp_postmerge_wait_cap_is_ci_pending() {
+  local body line; body=$(cat "$DEPLOYER_DCP")
+  line=$(grep -F 'at 3 minutes, stop waiting' "$DEPLOYER_DCP")
+  assert_contains "$line" 'Blocked on: ci_pending — merged; staging deploy' "wait-cap stop names the class" || return 1
+  assert_contains "$body" '3-minute post-merge wait cap → `ci_pending`' "class guide lists the wait-cap case" || return 1
+}
+run_test test_dcp_postmerge_wait_cap_is_ci_pending

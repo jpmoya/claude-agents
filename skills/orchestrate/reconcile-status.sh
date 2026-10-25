@@ -187,7 +187,14 @@ while IFS=$'\t' read -r issue repo state pid started last_activity restarts stag
     rm -f "$PIPE/orch-$rk.milestone"; changed=1
   fi
 
-  if [ "$gh_state" = "CLOSED" ] || { [ "$gh_state" = "OPEN" ] && [ -n "$release" ]; }; then
+  # #471: a release-bot milestone alone does not prove this ticket shipped (the bot can carry an open-PR ticket into
+  # a release). An OPEN issue counts as released only when the deployer also posted its DEPLOYED marker.
+  released=0
+  if [ "$gh_state" = "OPEN" ] && [ -n "$release" ] && printf '%s' "$info" | jq -e '[(.comments // [])[]
+      | select((.body // "" | split("\n")[0] | rtrimstr("\r")) == "**[deployer] DEPLOYED**")] | length > 0' >/dev/null 2>&1; then
+    released=1
+  fi
+  if [ "$gh_state" = "CLOSED" ] || [ "$released" -eq 1 ]; then
     closed_at=""
     [ "$gh_state" = "CLOSED" ] && closed_at=$(printf '%s' "$info" | jq -r '.closedAt // empty' 2>/dev/null)
     case "$closed_at" in
