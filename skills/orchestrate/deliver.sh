@@ -6,7 +6,7 @@
 #   deliver.sh <goal> [--now] [--host <hostname>] [--hosts both|mac|vm] [--priority <n>] [instructions...]
 #                                         --hosts (default both): both = the goal's tickets run on either machine (one lead only); mac|vm = whole goal on that machine
 #                                         register (state queued). <goal> = owner/repo:milestone:<number|exact title>
-#                                         | owner/repo:milestones:all | owner/repo#N
+#                                         | owner/repo:milestones:all | owner/repo:feedback | owner/repo#N
 #                                         --now: also launch one cycle here at once (hand use, skips the queue)
 #                                         --priority N / --after <goal> / --before <goal>: where it goes in the start order (default: last)
 #                                         --host: pin the goal to that host (advisory for single tickets, see delivery-lead.md)
@@ -207,7 +207,9 @@ cmd_register() {
     --argjson prio "$PRIORITY" --arg name "$(goal_name_for "$spec" 2>/dev/null)" \
     '{v:1,id:$id,spec:$spec,host:$host,host_pref:$pin,priority:$prio,created:$created,instructions:$ins} + (if $name != "" then {title:$name} else {} end)')
   # #410: registering the goal is JP's go. It is recorded in the block (go/granted/granted_at), which every body rewrite keeps.
-  if [ "$kind" = msall ] && [ "$approve_all" != 1 ]; then
+  if [ "$kind" = fb ]; then
+    echo "no go granted: $spec only clears technical blocks; feedback tickets keep their own intake/PM approval" >&2
+  elif [ "$kind" = msall ] && [ "$approve_all" != 1 ]; then
     echo "no go granted: $spec covers every open milestone; re-register with --approve-all to give agent-go to all of them" >&2
   else
     go=true; granted_at=$(date -u +%F)
