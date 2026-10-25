@@ -838,9 +838,56 @@ autoretry_cleared() {
         [ "$mergeable" != "CONFLICTING" ]; return $?
       fi
       (cd "$repo" && gh pr checks "$pr" >/dev/null 2>&1 </dev/null); rc=$?
-      case "$rc" in 0) return 0 ;; 1|8) return 1 ;; *) AR_ERR="pr checks rc=$rc"; return 2 ;; esac ;;
+      case "$rc" in
+        0) return 0 ;;
+        1) [ "$cls" = ci_red ] && ci_infra_gate "$repo" "$issue" "$pr" && return 0; return 1 ;;
+        8) return 1 ;;
+        *) AR_ERR="pr checks rc=$rc"; return 2 ;;
+      esac ;;
   esac
   return 1
+}
+
+# #473 CI infrastructure re-run. Failure classes (ci-classify.sh decides from the failed-step log):
+#   infrastructure: container start failure at "Initialize containers", exit 137 / OOM / Killed,
+#                   ENOSPC ("No space left on device"), runner lost, and the PR-description "User-facing change" format check
+#   real:           assertion errors, tsc errors, lint errors, unit-test failures, and any log it cannot read (never tolerated)
+# On a ci_red BLOCKED with a failing PR check: first time per PR head, re-run the failed jobs once (gh run rerun --failed)
+# and record the head in $PIPE/orch-<rk>.ci-rerun; later ticks classify each still-failing check from its log. Only if
+# EVERY failing check is infrastructure-class does it return 0 (relaunch) with AR_NOTE naming the tolerated checks, so
+# agents/deployer.md may merge to STAGING only. Any real failure, pending check or read error returns 1 (stay held).
+ci_infra_gate() {
+  local repo=$1 issue=$2 pr=$3 rk stf head checks rows name link run job runs log cls tol=""
+  AR_NOTE=""
+  rk=$(rk_of "$repo" "$issue"); stf="$PIPE/orch-$rk.ci-rerun"
+  head=$(cd "$repo" && gh pr view "$pr" --json headRefOid --jq .headRefOid 2>/dev/null </dev/null) || return 1
+  [ -n "$head" ] || return 1
+  checks=$(cd "$repo" && gh pr checks "$pr" --json name,bucket,link 2>/dev/null </dev/null)
+  [ -n "$checks" ] || return 1
+  printf '%s' "$checks" | jq -e 'any(.[]; .bucket == "pending")' >/dev/null 2>&1 && return 1   # still running: wait
+  rows=$(printf '%s' "$checks" | jq -r '.[] | select(.bucket == "fail") | [.name, (.link // "")] | @tsv' 2>/dev/null)
+  [ -n "$rows" ] || return 1
+  if [ "$(cat "$stf" 2>/dev/null)" != "$head" ]; then
+    runs=$(printf '%s\n' "$rows" | sed -nE 's#.*/actions/runs/([0-9]+).*#\1#p' | sort -u)
+    [ -n "$runs" ] || return 1
+    for run in $runs; do
+      (cd "$repo" && gh run rerun "$run" --failed >/dev/null 2>&1 </dev/null) \
+        || { slog "[ci-rerun] #$issue — rerun of run $run failed"; return 1; }
+    done
+    printf '%s\n' "$head" > "$stf"
+    slog "[ci-rerun] #$issue — re-ran failed jobs once on ${head:0:12} (run(s): $(echo $runs))"
+    return 1
+  fi
+  while IFS=$'\t' read -r name link; do
+    run=$(printf '%s' "$link" | sed -nE 's#.*/actions/runs/([0-9]+).*#\1#p')
+    job=$(printf '%s' "$link" | sed -nE 's#.*/job/([0-9]+).*#\1#p')
+    [ -n "$run" ] || return 1
+    log=$(cd "$repo" && { if [ -n "$job" ]; then gh run view "$run" --job "$job" --log-failed; else gh run view "$run" --log-failed; fi; } 2>/dev/null </dev/null) || return 1
+    cls=$(printf '%s\n' "$log" | "$HERE/ci-classify.sh" "$name") || return 1
+    tol="${tol:+$tol; }$name (${cls#infra:})"
+  done <<< "$rows"
+  AR_NOTE="only infrastructure-class checks fail after one re-run of ${head:0:12}: $tol"
+  return 0
 }
 
 # Loop-cap resume: a loop-cap stop is held "needs a relaunch after it is resolved", and nothing re-read it (#1141 sat 161 h).
@@ -916,6 +963,7 @@ PY
   cls=$(blocked_class_of "$info")
   case "|$(autoretry_classes)|" in *"|$cls|"*) ;; *) continue ;; esac
 
+  AR_NOTE=""
   autoretry_cleared "$repo" "$issue" "$cls" "$info"; rc=$?
   if [ "$rc" -eq 2 ]; then
     slog "[auto-retry] #$issue — $cls check failed: $AR_ERR"
@@ -926,7 +974,7 @@ PY
 
   n=$((n + 1))
   # NOTE first: the relaunched orchestrator resumes on it. If it cannot be posted, stay held for the next tick.
-  if ! (cd "$repo" && gh issue comment "$issue" --body "**[supervisor] NOTE** auto-retry $n/$AUTORETRY_MAX: $cls cleared" >/dev/null 2>&1 </dev/null); then
+  if ! (cd "$repo" && gh issue comment "$issue" --body "**[supervisor] NOTE** auto-retry $n/$AUTORETRY_MAX: $cls cleared${AR_NOTE:+ — $AR_NOTE}" >/dev/null 2>&1 </dev/null); then
     slog "[auto-retry] #$issue — NOTE post failed, staying held"
     autoretry_alert "$issue" "issue comment"
     continue
