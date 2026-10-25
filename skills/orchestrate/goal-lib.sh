@@ -32,7 +32,8 @@ goal_label_name() {
 _goal_uri() { jq -rn --arg s "$1" '$s | @uri'; }
 _goal_is_bi() { case "$1" in */Business-Intelligence) return 0 ;; esac; return 1; }
 
-# goal_parse <spec> -> "repo<TAB>kind<TAB>ref" (kind: ms | msall | t | label); exit 1 when malformed.
+# goal_parse <spec> -> "repo<TAB>kind<TAB>ref" (kind: ms | msall | t | fb | label); exit 1 when malformed.
+# owner/repo:feedback (kind fb) is the standing staff-feedback goal (#472): scope = the repo's user-feedback tickets that sit in no milestone.
 # label:<exact label name> is the cross-repo form (#319): repo is "-" (the repos live in the registry v2 block).
 goal_parse() {
   local spec="${1:-}" re='^([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)(.*)$' repo rest ref
@@ -42,7 +43,7 @@ goal_parse() {
       [ -n "$ref" ] || { echo "malformed goal '$spec': empty label name" >&2; return 1; }
       printf -- '-\tlabel\t%s\n' "$ref"; return 0 ;;
   esac
-  if ! [[ "$spec" =~ $re ]]; then echo "malformed goal '$spec' (want owner/repo:milestone:<n|title>, owner/repo:milestones:all or owner/repo#N)" >&2; return 1; fi
+  if ! [[ "$spec" =~ $re ]]; then echo "malformed goal '$spec' (want owner/repo:milestone:<n|title>, owner/repo:milestones:all, owner/repo:feedback or owner/repo#N)" >&2; return 1; fi
   repo="${BASH_REMATCH[1]}"; rest="${BASH_REMATCH[2]}"
   case "$rest" in
     '#'*)
@@ -50,6 +51,7 @@ goal_parse() {
       case "$ref" in ''|*[!0-9]*) echo "malformed goal '$spec': ticket number must be digits" >&2; return 1 ;; esac
       printf '%s\tt\t%s\n' "$repo" "$ref" ;;
     ':milestones:all') printf '%s\tmsall\tall\n' "$repo" ;;
+    ':feedback') printf '%s\tfb\tfeedback\n' "$repo" ;;
     ':milestone:'*)
       ref="${rest#:milestone:}"
       [ -n "$ref" ] || { echo "malformed goal '$spec': empty milestone" >&2; return 1; }
@@ -73,6 +75,7 @@ goal_name_for() {
         esac
         [ -n "$t" ] || return 1; printf '%s: %s\n' "$short" "$t" ;;
     msall) printf '%s: all milestones\n' "$short" ;;
+    fb) printf '%s: staff feedback\n' "$short" ;;
     *) return 1 ;;
   esac
 }
@@ -168,6 +171,10 @@ _goal_scope_rows() {
       esac
       [ -n "$n" ] || n=$(_goal_ms_number "$repo" "$ref") || return 1
       _goal_ms_rows "$repo" "$n" ;;
+    fb)
+      # #472: feedback tickets outside any milestone (a milestone goal owns the ones inside it); closed rows count as delivered
+      js=$(_goal_get_all "repos/$repo/issues?labels=$(_goal_uri "${LABEL_FEEDBACK:-user-feedback}")&milestone=none&state=all&per_page=100") || return 1
+      printf '%s' "$js" | jq -r --arg r "$repo" --argjson l "${GOAL_SCOPE_LABELS:-0}" '.[] | select(has("pull_request") | not) | "\($r)#\(.number)\t\(.state)" + (if $l == 1 then "\t" + ([.labels[].name] | join(",")) else "" end)' ;;
     msall)
       ms=$(_goal_get_all "repos/$repo/milestones?state=open&per_page=100") || return 1
       for n in $(printf '%s' "$ms" | jq -r '.[].number'); do _goal_ms_rows "$repo" "$n" || return 1; done ;;
@@ -283,6 +290,9 @@ goal_brief() {
   printf 'Checkout: %s\n' "$checkout"
   if [ "$(goal_parse "$spec" | cut -f2)" = label ]; then
     printf 'Cross-repo goal: tickets carry the label "%s" in %s\n' "$(printf '%s' "$g" | jq -r '.block.label')" "$(printf '%s' "$g" | jq -r '(.block.repos // []) | join(", ")')"
+  fi
+  if [ "$(goal_parse "$spec" | cut -f2)" = fb ]; then
+    printf 'Standing staff-feedback goal: scope is the open tickets of %s labelled %s that sit in no milestone (a milestone goal owns the others). Your job is to clear their TECHNICAL blocks yourself (full disk, failed or flaky CI, a merged change whose deploy is unconfirmed, a malformed or missing delegated decision: post a valid DECISION with its Resolves line, then relaunch) and to surface to JP only product/business calls and JP-only items. Never add agent-go or change the tickets'"'"' labels, milestones or routing: intake and the product-manager own those, and the supervisor already dispatches these tickets.\n' "$repo" "${LABEL_FEEDBACK:-user-feedback}"
   fi
   proj=$(printf '%s' "$g" | jq -r '.block.project? // empty | select(type == "object") | "\(.url) (owner \(.owner), number \(.number))"' 2>/dev/null)
   if [ -n "$proj" ]; then
