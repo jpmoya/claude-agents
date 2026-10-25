@@ -104,7 +104,26 @@ test_ms_building_payload_makes_no_gh_call() {
   assert_eq "$calls" "0" "builder stays network-free" || return 1
 }
 
+# #471: an OPEN issue with a bare vX.Y.Z milestone is completed only if it also carries a [deployer] DEPLOYED marker.
+test_ms_open_release_milestone_needs_deployed_marker() {
+  ms_env
+  mk_held "$MS_PIPE" 731 "$MS_REPO"; echo "v1.14.4" > "$MS_BIN/gh-issue-milestone-731"   # bot-carried, no DEPLOYED
+  jq -nc '[{body:"**[fullstack-developer] PR OPENED**\nPR #1", createdAt:"2026-10-19T10:00:00Z", author:{login:"x"}}]' > "$MS_BIN/gh-issue-comments-json-731"
+  mk_held "$MS_PIPE" 732 "$MS_REPO"; echo "v1.14.4" > "$MS_BIN/gh-issue-milestone-732"   # shipped, DEPLOYED present
+  jq -nc '[{body:"**[deployer] DEPLOYED**\nMerged", createdAt:"2026-10-19T10:00:00Z", author:{login:"x"}}]' > "$MS_BIN/gh-issue-comments-json-732"
+  ms_run "$RS_MS/reconcile-status.sh" --force
+  local d731 d732 h731
+  if [ -f "$(rkp "$MS_PIPE/orch-731.done")" ]; then d731=done; else d731=open; fi
+  if [ -f "$(rkp "$MS_PIPE/orch-732.done")" ]; then d732=done; else d732=open; fi
+  if [ -f "$(rkp "$MS_PIPE/orch-731.held")" ]; then h731=held; else h731=unheld; fi
+  ms_cleanup
+  assert_eq "$d731" "open" "release milestone without DEPLOYED is not completed" || return 1
+  assert_eq "$h731" "held" "ticket without DEPLOYED stays held" || return 1
+  assert_eq "$d732" "done" "release milestone with DEPLOYED is completed" || return 1
+}
+
 run_test test_ms_writes_milestone_file_and_payload_key
+run_test test_ms_open_release_milestone_needs_deployed_marker
 run_test test_ms_truncates_to_60_and_collapses_whitespace
 run_test test_ms_removes_stale_file_when_milestone_gone_or_version_only
 run_test test_ms_building_payload_makes_no_gh_call
