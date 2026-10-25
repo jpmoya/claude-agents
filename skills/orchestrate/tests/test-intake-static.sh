@@ -57,6 +57,29 @@ test_in_ac5_duplicate_handling_is_specified() {
   done
 }
 
+test_in_submitter_identity_rewrite_and_untrusted_rules() {
+  assert_file_exists "$AGENT_IN" "agents/intake.md" || return 1
+  local s
+  for s in "Submitted by:" "copied verbatim" "never taken from \`## Reporter's words\`" \
+           "Submitted by: unknown" "do not guess a name or email"; do
+    in_has "$AGENT_IN" "$s" || return 1
+  done
+  # the Context section in step 5 must list Submitted by alongside the existing fields
+  in_has "$AGENT_IN" '`Context` (tool, screen, version, role, `Reporters: 1`, `Submitted by: <value>`)' || return 1
+  # the duplicate +1 note keeps its required substring intact and appends the submitter
+  in_has "$AGENT_IN" '**[intake] NOTE** +1 from <role> (reporter count now N)' || return 1
+  in_has "$AGENT_IN" ', submitted by <value>' || return 1
+  # Sentry issues (no human reporter) never get a Submitted by line
+  in_has "$AGENT_IN" 'no `Submitted by:` line' || return 1
+}
+
+test_in_submitter_identity_docs() {
+  local f
+  for f in "$ROOT_IN/README.md" "$ROOT_IN/agents/README.md"; do
+    in_has "$f" "Submitted by" || return 1
+  done
+}
+
 test_in_ac4_markers_registered() {
   . "$ROOT_IN/hooks/pipeline-markers.sh"
   assert_eq "$(markers_for intake)" "TRIAGED BUG|TRIAGED IDEA|DUPLICATE|NEEDS INFO|NOISE|BLOCKED" "AC4: markers_for intake" || return 1
@@ -140,6 +163,8 @@ run_test test_in_ac1_untrusted_data_rule
 run_test test_in_ac1_forbidden_list_and_label_allow_list
 run_test test_in_ac1_rewrite_and_log_rules
 run_test test_in_ac5_duplicate_handling_is_specified
+run_test test_in_submitter_identity_rewrite_and_untrusted_rules
+run_test test_in_submitter_identity_docs
 run_test test_in_ac4_markers_registered
 run_test test_in_ac4_vocabulary_accepts_and_rejects
 run_test test_in_forgery_quoted_marker_is_not_a_first_line_marker
