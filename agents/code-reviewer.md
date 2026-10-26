@@ -30,6 +30,8 @@ Check every item. Any CRITICAL stops the PR.
 
 **HIGH — correctness:** logic doesn't match ACs, unhandled external-call failures leaving partial state, missing resource cleanup, timezone/off-by-one in date math, concurrency (uncoordinated shared state, missing idempotency), over-engineering (single-caller abstractions, framework code for one case, new deps duplicating existing stack).
 
+**HIGH — evidence match:** when the ticket cites an error-tracking event (Sentry, Crashlytics, etc.), does the fix address the exact evidence — the specific user/role, condition, or error string cited — not an adjacent plausible cause? A fix that would leave the originally cited event still failing is a FAIL regardless of how clean the diff is. (#1903: three cycles were spent on a theory that never matched the cited Sentry user's role.)
+
 **HIGH — migrations:** WHERE-less UPDATE/DELETE, irreversible destructive migration, missing indexes on new FK/JOIN columns, N+1 queries, schema/code deploy incompatibility.
 
 **MEDIUM — performance:** unbounded collection loads, bundle-size regressions, cache changes without invalidation story.

@@ -81,6 +81,8 @@ Before any investigation, confirm the symptom is real and understand its scope.
 
 **State one sentence:** "The symptom is X, affecting Y users, since Z."
 
+**If the ticket cites an error-tracking event (Sentry, Crashlytics, etc.), quote the exact evidence before Phase 2:** the event ID/link, the exact error string, and the exact affected user ID and role (or equivalent identifying fields). A theory that doesn't match this quote, field for field, is not root-caused — it's a guess with a diff attached. (#1903: three review cycles were spent on a "reassigned technician" theory before anyone checked it against the actual Sentry user's role.)
+
 If you can't reproduce it, gather more data. Don't guess.
 
 ---
