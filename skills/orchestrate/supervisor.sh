@@ -197,6 +197,16 @@ blocked_class_of() {
       else (($g.body | split("\n")[1] // "") | capture("^Blocked on: (?<w>[a-z_]+)( |$)") | .w) // empty end' 2>/dev/null
 }
 
+# blocked_marker_of <issue json with .comments> → first line of the latest BLOCKED routing marker, or empty.
+# #484: lets the 1b auto-retry loop write the same "waiting on JP — <marker>; relaunch..." alert text as the #271
+# gate branch, for a ci_pending/ci_red hold that ci_infra_gate classifies as a real (never-clearing) failure.
+blocked_marker_of() {
+  printf '%s' "$1" | jq -r --arg re "$(marker_re)" '
+    ([(.comments // [])[] | select(.body | split("\n")[0] | test($re))] | last) as $g
+    | if $g == null or ($g.body | split("\n")[0] | test("\\] BLOCKED(\\*\\*|:| |$)") | not) then empty
+      else ($g.body | split("\n")[0]) end' 2>/dev/null
+}
+
 issue_is_closed() {
   local repo=$1 issue=$2
   local state
@@ -808,7 +818,8 @@ AUTORETRY_THROTTLE_SECS=1800
 
 
 
-# autoretry_cleared <repo> <issue> <class> <issue json> — 0 cleared, 1 not cleared, 2 error (reason in AR_ERR)
+# autoretry_cleared <repo> <issue> <class> <issue json> — 0 cleared, 1 not cleared, 2 error (reason in AR_ERR),
+# 3 never clearing: ci_infra_gate classified a real (non-infra) failure (#484) — the caller hands off to "waiting on JP".
 autoretry_cleared() {
   local repo=$1 issue=$2 cls=$3 info=$4 prs pr mergeable dep rc deps
   AR_ERR=""
@@ -840,7 +851,19 @@ autoretry_cleared() {
       (cd "$repo" && gh pr checks "$pr" >/dev/null 2>&1 </dev/null); rc=$?
       case "$rc" in
         0) return 0 ;;
-        1) [ "$cls" = ci_red ] && ci_infra_gate "$repo" "$issue" "$pr" && return 0; return 1 ;;
+        1)
+          # #484: ci_pending goes through the same #473 re-run/classify gate as ci_red — a ci_pending hold whose
+          # checks finish red needs the same treatment, not "not cleared" forever. ci_infra_gate sets AR_FINAL=1
+          # only when it has actually classified a real (non-infra) failure, as opposed to still pending, a
+          # just-issued re-run, or a read error — those stay "not cleared" (rc 1) so the hold just stays parked.
+          case "$cls" in
+            ci_red|ci_pending)
+              AR_FINAL=""
+              ci_infra_gate "$repo" "$issue" "$pr" && return 0
+              [ "$AR_FINAL" = 1 ] && return 3
+              return 1 ;;
+            *) return 1 ;;
+          esac ;;
         8) return 1 ;;
         *) AR_ERR="pr checks rc=$rc"; return 2 ;;
       esac ;;
@@ -852,13 +875,17 @@ autoretry_cleared() {
 #   infrastructure: container start failure at "Initialize containers", exit 137 / OOM / Killed,
 #                   ENOSPC ("No space left on device"), runner lost, and the PR-description "User-facing change" format check
 #   real:           assertion errors, tsc errors, lint errors, unit-test failures, and any log it cannot read (never tolerated)
-# On a ci_red BLOCKED with a failing PR check: first time per PR head, re-run the failed jobs once (gh run rerun --failed)
-# and record the head in $PIPE/orch-<rk>.ci-rerun; later ticks classify each still-failing check from its log. Only if
+# On a ci_red or ci_pending (#484) BLOCKED with a failing PR check: first time per PR head, re-run the failed jobs
+# once (gh run rerun --failed) and record the head in $PIPE/orch-<rk>.ci-rerun; later ticks classify each
+# still-failing check from its log. Only if
 # EVERY failing check is infrastructure-class does it return 0 (relaunch) with AR_NOTE naming the tolerated checks, so
 # agents/deployer.md may merge to STAGING only. Any real failure, pending check or read error returns 1 (stay held).
+# #484: on a real (non-infra) classified failure — the only "stay held" outcome that will never clear on its own,
+# as opposed to still-pending checks, a just-issued re-run, or a read error — also sets AR_FINAL=1 so the caller
+# (autoretry_cleared) can tell the two apart and hand the hold off to "waiting on JP" instead of parking it forever.
 ci_infra_gate() {
-  local repo=$1 issue=$2 pr=$3 rk stf head checks rows name link run job runs log cls tol=""
-  AR_NOTE=""
+  local repo=$1 issue=$2 pr=$3 rk stf head checks rows name link run job runs log cls ccrc tol=""
+  AR_NOTE=""; AR_FINAL=""
   rk=$(rk_of "$repo" "$issue"); stf="$PIPE/orch-$rk.ci-rerun"
   head=$(cd "$repo" && gh pr view "$pr" --json headRefOid --jq .headRefOid 2>/dev/null </dev/null) || return 1
   [ -n "$head" ] || return 1
@@ -883,7 +910,11 @@ ci_infra_gate() {
     job=$(printf '%s' "$link" | sed -nE 's#.*/job/([0-9]+).*#\1#p')
     [ -n "$run" ] || return 1
     log=$(cd "$repo" && { if [ -n "$job" ]; then gh run view "$run" --job "$job" --log-failed; else gh run view "$run" --log-failed; fi; } 2>/dev/null </dev/null) || return 1
-    cls=$(printf '%s\n' "$log" | "$HERE/ci-classify.sh" "$name") || return 1
+    # #484: an empty log is a read error (truncated/slow write), not a classified failure — ci-classify.sh would
+    # call it "real" too, but that is not final: stay held and let a later tick read the log once it is there.
+    [ -n "$(printf '%s' "$log" | tr -d '[:space:]')" ] || return 1
+    cls=$(printf '%s\n' "$log" | "$HERE/ci-classify.sh" "$name"); ccrc=$?
+    if [ "$ccrc" -ne 0 ]; then AR_FINAL=1; return 1; fi   # #484: a real failure was actually classified from a readable log — final
     tol="${tol:+$tol; }$name (${cls#infra:})"
   done <<< "$rows"
   AR_NOTE="only infrastructure-class checks fail after one re-run of ${head:0:12}: $tol"
@@ -930,6 +961,10 @@ for f in "$PIPE"/orch-*.held; do
   ar_ec=""; [ -f "$PIPE/orch-$rk.exit-class" ] && ar_ec=$(tr -s ' \t' ' ' < "$PIPE/orch-$rk.exit-class" | head -1)
   [ "$ar_ec" = "rate_limited monthly_spend" ] && continue
   if [ -s "$PIPE/orch-$rk.alert" ] && ! grep -q 'BLOCKED' "$PIPE/orch-$rk.alert" 2>/dev/null; then continue; fi
+  # #484: already handed off to "waiting on JP" on an earlier tick (real CI failure, never clearing) — once per
+  # hold, not every tick. No new state: the hand-off is visible in the alert text itself (the generic #271
+  # "waiting on JP" gate alert for an unrelated reason does not carry this phrase, so it is still retried below).
+  if [ -s "$PIPE/orch-$rk.alert" ] && grep -q 'finished red (real failure)' "$PIPE/orch-$rk.alert" 2>/dev/null; then continue; fi
 
   info=$(issue_info_rest "$repo" "$issue") \
     || { slog "[auto-retry] #$issue — issue read failed: ${info:-no error text}"; autoretry_alert "$issue" "issue read"; continue; }
@@ -968,6 +1003,19 @@ PY
   if [ "$rc" -eq 2 ]; then
     slog "[auto-retry] #$issue — $cls check failed: $AR_ERR"
     autoretry_alert "$issue" "$AR_ERR"
+    continue
+  fi
+  if [ "$rc" -eq 3 ]; then
+    # #484: ci_infra_gate classified a real (non-infra) failure — this hold will never clear on its own. Hand it
+    # off to the existing #271 "waiting on JP" alert (same text/Slack-notify shape), once per hold: the "finished
+    # red (real failure)" phrase it carries is what the early check above recognizes on later ticks, so this
+    # branch does not re-fire every tick. Counter untouched (it is not a clear-and-relaunch).
+    blk_marker=$(blocked_marker_of "$info"); [ -n "$blk_marker" ] || blk_marker="Blocked on: $cls"
+    slog "[auto-retry] #$issue — $cls finished red (real failure), waiting on JP"
+    printf '%s Pipeline #%s waiting on JP — %s — finished red (real failure); relaunch (or re-add %s) after acting\n' "$(date -u +%FT%TZ)" "$issue" "$blk_marker" "$LABEL_GO" > "$PIPE/orch-$rk.alert"
+    report_status_async "held"
+    gate_reason=$(printf '%s' "$blk_marker" | sed 's/\*\*\[[^]]*\]\*\* *//; s/^ *//; s/ *$//'); [ -n "$gate_reason" ] || gate_reason="$blk_marker"
+    notify_engineering "$issue" ":hand:" "Waiting on you — $gate_reason (finished red, real failure)" "$(cd "$repo" && gh api repos/{owner}/{repo} --jq .full_name 2>/dev/null || echo "unknown")"
     continue
   fi
   [ "$rc" -eq 0 ] || continue
