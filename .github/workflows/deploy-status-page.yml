@@ -45,4 +45,7 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           workingDirectory: status-page
+          # Pinned: wrangler-action's own default (3.90.0) predates wrangler.jsonc support,
+          # which fails with "Missing entry-point" even though main is set correctly (2026-10-27).
+          wranglerVersion: "4"
           command: deploy
