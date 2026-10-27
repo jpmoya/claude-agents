@@ -4,6 +4,21 @@ Agent-readable session log. Newest first. Terse by design — see the `living` s
 
 ---
 
+## 2026-10-27 — release-watch-spam-fix
+
+SHIP: benjis-ops-tool#1925 (scripts/auto-release.sh `note_on_pr()` de-dups PR/Slack notices; scripts/release-watch-rolling.sh `find_issue()` stops discarding gh's stderr) — merged to staging, then cherry-picked via promotion PR benjis-ops-tool#1933 (branch release/auto-1921-promo, commit a711882, version bump to v1.19.0 via scripts/bump-version.sh) into main — prod deploy green.
+SHIP: claude-agents#486 (closes #485) — infra/ci-runners/setup.sh `dockerfile_text()` installs gh CLI (cli.github.com apt repo) in the gha-runner image. Rolled out by hand to both self-hosted hosts: CI host 178.156.204.167 (slots=3) and Clog VM 178.156.187.130 (slots=1, slot-gb=6) — `gh --version` confirmed, `setup.sh --check` rc=0 clean on both.
+DEC: JP told the session to bypass the pipeline for benjis-ops-tool#1921/#1922 ("gets done directly by a subagent, no pipeline required") — killed the live stage-run/orchestrator processes that had already claimed both issues (PID 55899 etc.), stripped `agent-in-progress`, tombstoned via `orchestrate.sh stop`, then dispatched fullstack-developer subagents directly. Narrower exception than the claude-agents-repo one in CLAUDE.md — this was JP overriding the app-repo pipeline-only rule for one task, not a standing rule change.
+FIND: #release-watch-engineering Slack channel was spammed for 36h (2026-10-24T22:00Z–2026-10-26T19:20Z) — 181 duplicate "needs promotion" Slack+PR-comment posts across ~10 stuck PRs (#1804 ×16, #1763 ×30, #1744 ×25, #1793 ×22) because `fallback()` posted unconditionally on every auto-release run and the blocking reason (cherry-pick conflict, stale e2e-gate, etc.) never changes per commit. Separately, `release-watch-rolling.sh`'s rolling-issue-closer silently failed 22 times (once per decided staging deploy) because commit 647fb7fd (PR #1590) moved the `regression-watch` job onto self-hosted `benjis-ci` runners whose Docker image never had `gh` installed, and `2>/dev/null` masked the real error as a generic "could not be closed" warning.
+FIND: on the self-hosted runner hosts, root has no docker daemon of its own — `docker` commands must `export DOCKER_HOST=unix:///run/user/$(id -u gha)/docker.sock` first (same as setup.sh's own `gha_docker_env()`), otherwise `docker tag`/`inspect` fail with "no such file or directory" even though rootless docker for gha is running fine.
+FIND: Clog VM runs slot-gb=6 (not the setup.sh default of 4) — `setup.sh --check` without `--slot-gb 6` falsely reports memory-limits and rootless-docker drift unrelated to the real change; the planner's own safety gate ("anything about slots/memory/units means the flags are wrong -> STOP") caught this and the session paused, diagnosed the flag mismatch, then proceeded once confirmed harmless.
+FIND: benjis-ops-tool's auto-release router sends any change under `scripts/*release*` to the staging route unconditionally (self-protection deny-glob) — a fix to the auto-release machinery itself can never auto-promote, even though it's not database-destructive and not otherwise "risky." Required the staging→main promotion-PR exception path.
+FILES:
+- scripts/auto-release.sh (benjis-ops-tool) — `note_on_pr()` reads existing PR comments, skips repost of identical unresolved note; `NOTE_POSTED` gates the Slack call.
+- scripts/release-watch-rolling.sh (benjis-ops-tool) — `find_issue()` keeps gh's stderr; `fail()` reports the real cause.
+- infra/ci-runners/setup.sh, infra/ci-runners/README.md (claude-agents) — gh CLI install layer in `dockerfile_text()`.
+LESSON: when a session runs an infra-planner runbook by hand after JP's go, re-derive the exact env (DOCKER_HOST, slot-gb) from the script's own source rather than trusting the plan's literal commands — infra-reviewer had already failed this specific plan on 3 procedural findings (ambiguous daemon, incomplete Step 2, non-exact rollback) and the live host surfaced a 4th (slot-gb) the review never caught either.
+
 ## 2026-10-27 — direct-report-label-fix
 
 SHIP: PR #503 (issue #501) — merged, squash. Briefs for a JP-reported bug now must carry a `Reported by: JP (directly)` line so product-manager's existing direct-report rule (added by #498) can fire and add `user-feedback`.
