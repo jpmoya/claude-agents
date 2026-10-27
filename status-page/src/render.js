@@ -534,6 +534,15 @@ ${NAV_CSS}
   .intake-docs p { margin: 0 0 0.5rem; font-size: 0.85rem; color: var(--text); line-height: 1.5; }
   .intake-docs ul { margin: 0 0 0.5rem; padding-left: 1.3rem; font-size: 0.85rem; color: var(--text); line-height: 1.5; }
   .intake-docs code { background: var(--bg); border: 1px solid var(--border); border-radius: 0.25rem; padding: 0.05rem 0.3rem; font-size: 0.82em; }
+  .intake-docs li strong { color: var(--accent); }
+  .story p { margin: 0 0 0.6rem; font-size: 0.88rem; color: var(--text); line-height: 1.55; }
+  .story ol { margin: 0 0 0.5rem; padding-left: 1.4rem; font-size: 0.85rem; color: var(--text); line-height: 1.6; }
+  .story li { margin-bottom: 0.3rem; }
+  .category { margin: 1.75rem 0 0.75rem; }
+  .category:first-of-type { margin-top: 1.25rem; }
+  .category-title { font-size: 1.05rem; font-weight: 700; margin: 0 0 0.2rem; letter-spacing: -0.01em; }
+  .category-note { font-size: 0.85rem; color: var(--muted); margin: 0 0 0.9rem; line-height: 1.5; }
+  .track-summary { font-size: 0.82rem; color: var(--muted); margin: -0.35rem 0 0.75rem; line-height: 1.45; }
   .uml-scroll { overflow-x: auto; max-width: 100%; padding-bottom: 0.3rem; }
   .uml { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: row; align-items: stretch; gap: 0; width: max-content; }
   .uml li { max-width: 18rem; display: flex; align-items: center; }
@@ -571,27 +580,86 @@ function renderTrack(track) {
       return `<li>${link}${renderNode(stage)}</li>`;
     })
     .join("");
-  return `<section class="group"><h2>${esc(track.title)}</h2><div class="uml-scroll"><ol class="uml">${items}</ol></div></section>`;
+  const summary = track.summary
+    ? `<p class="track-summary">${esc(track.summary)}</p>`
+    : "";
+  const id = track.id ? ` id="track-${esc(track.id)}"` : "";
+  return `<section class="group"${id}><h2>${esc(track.title)}</h2>${summary}<div class="uml-scroll"><ol class="uml">${items}</ol></div></section>`;
 }
 
-/** Static documentation: how a ticket gets auto-dispatched without a goal, and how goals work. Not drift-checked — these mechanisms live in supervisor.sh/agents, not in a PIPELINES stage list. */
+/** Plain-language top-to-bottom narration: where a ticket starts, how it gets classified, which lane
+ * that puts it in, and how it ships. Not drift-checked — scene-setting prose, not a stage list. */
+function renderStory() {
+  return `<section class="group story">
+    <h2>The story: how a ticket gets from "reported" to "shipped"</h2>
+    <p>Every ticket starts at one of five places, gets classified by either the <code>intake</code> agent or <code>product-manager</code>, lands in one of the lanes further down this page, and ships through the same release step at the end. In plain terms, step by step:</p>
+    <ol>
+      <li><strong>It starts somewhere.</strong> JP tells a session about a bug or idea directly; staff submit it through the in-app feedback form; Sentry's poller files it from a production error; the hourly backlog scan notices an issue nobody filed through those first two; or <code>pipeline-adjudicator</code> files its own self-heal fix ticket after a confirmed pipeline incident.</li>
+      <li><strong>Someone classifies it.</strong> The feedback-form and Sentry paths go through the <code>intake</code> agent first, which reads it, decides bug vs. idea vs. duplicate vs. noise, and applies labels. Every other path — JP direct, the backlog scan, the adjudicator's own ticket — skips intake entirely and goes straight to <code>product-manager</code>, which classifies and labels it the same way intake would have.</li>
+      <li><strong>Labels decide the lane.</strong> See "What intake decides, and where it lands" just below for the exact mapping. In short: a clear bug usually ends up in the Fast lane; anything bigger, unclear, or needing a spec goes through product-manager's own full review before a lane is picked.</li>
+      <li><strong>The lane does the work.</strong> The full lane adds design and architecture gates where a ticket needs them, then locks in tests before the developer builds; the fast lane skips those gates and the developer writes one regression test instead. Both end in a code review.</li>
+      <li><strong>It ships.</strong> Every lane finishes at the same release step: the deployer merges once both reviewers pass, and a risky-list change (a destructive database change, for instance) still waits on JP's own go-ahead — everything else goes out on its own.</li>
+    </ol>
+  </section>`;
+}
+
+/** Static documentation: how intake and product-manager classify a ticket, what each outcome is
+ * called, and which track below it lands in. Not drift-checked — these mechanisms live in
+ * supervisor.sh/agents, not in a PIPELINES stage list. */
 function renderIntakeDocs() {
   return `<section class="group intake-docs">
     <h2>How tickets get picked up</h2>
-    <h3>Without a goal, a ticket only auto-starts if it is labelled <code>user-feedback</code></h3>
-    <p>The supervisor's dispatch loop normally only starts a ticket's own goal. <code>user-feedback</code> is the one exception: a ticket carrying that label is auto-dispatched even with no goal covering it. Everything else with just <code>agent-go</code> and no goal sits unclaimed until someone registers a goal for it.</p>
-    <h3>Where <code>user-feedback</code> comes from</h3>
+    <h3><code>intake</code> is a classifier, not a lane — it runs before a ticket ever reaches one</h3>
+    <p>The <code>intake</code> agent only ever triages one kind of raw input: a staff-feedback-form submission, or a Sentry-filed issue. It never appears as a stage in any track below — its whole job is to read that raw report, decide bug vs. idea vs. duplicate vs. noise, and attach the labels that route the ticket into <code>product-manager</code> and from there into a lane. A ticket JP reports directly, or that the backlog scan surfaces, never passes through intake at all: <code>product-manager</code> classifies and labels those itself.</p>
+    <h3>What intake decides, and where it lands</h3>
     <ul>
-      <li>The in-app staff feedback form &rarr; the <code>intake</code> agent labels it.</li>
-      <li>A Sentry-sourced issue &rarr; the <code>intake</code> agent labels it.</li>
-      <li>JP reports a bug or request directly to a session, not through the form or Sentry &rarr; <code>product-manager</code> labels it, the same way, when it files or refines that ticket.</li>
-      <li>A self-healing fix ticket <code>pipeline-adjudicator</code> files for a confirmed pipeline incident &rarr; the adjudicator labels it itself, so its own fixes never wait on a goal either.</li>
+      <li><strong>Feedback-form bug</strong> &rarr; intake labels it <code>bug</code> + <code>fast-lane</code> (a hint, not a guarantee) + <code>user-feedback</code>. <code>product-manager</code> then usually honours that hint and sends it into the <a href="#track-fast">Fast lane</a> — unless the fix needs a schema change or a new endpoint, which forces the <a href="#track-lane-rule">Lane rule</a> to pick the full lane instead.</li>
+      <li><strong>Feedback-form idea, unclear report, or one missing required info</strong> &rarr; intake labels it <code>user-feedback-needs-spec</code>. A product-manager-only run writes the spec; it is not in any lane yet — it only enters one once that spec is approved and labelled into a lane.</li>
+      <li><strong>Sentry-filed bug</strong> &rarr; intake labels it <code>bug</code> + <code>user-feedback</code>, never <code>fast-lane</code>. It waits for JP's go-ahead (or an auto-go setting), then <code>product-manager</code> picks the <a href="#track-code">full</a> or <a href="#track-fast">fast</a> lane itself, the same way it would for any other ticket.</li>
+      <li><strong>Sentry noise, or a duplicate intake matches to an existing ticket</strong> &rarr; closed immediately by intake. It never reaches a lane.</li>
+      <li><strong>JP reports a bug or idea directly to a session, or the hourly backlog scan surfaces one</strong> &rarr; no <code>intake</code> agent involved at all. <code>product-manager</code> classifies and labels it the same way, then routes it into a lane exactly as above.</li>
+      <li><strong>A self-heal fix ticket from <code>pipeline-adjudicator</code></strong> &rarr; the adjudicator labels and queues its own ticket, bypassing intake (and the usual goal wait) the same way a direct JP report does.</li>
     </ul>
+    <h3>Where the <code>user-feedback</code> label matters</h3>
+    <p>The supervisor's dispatch loop normally only starts a ticket's own goal. <code>user-feedback</code> is the one exception: a ticket carrying that label is auto-dispatched even with no goal covering it. Everything else with just <code>agent-go</code> and no goal sits unclaimed until someone registers a goal for it.</p>
     <h3>What a "goal" is</h3>
     <p>A goal only exists if someone explicitly registers one with <code>deliver.sh</code> (a milestone, a single issue, "all milestones", or the standing staff-feedback goal). Goals are never created automatically.</p>
     <h3>How a ticket joins a goal</h3>
     <p>Automatically, once a goal that covers it has been registered: a milestone goal covers every ticket in that milestone, a single-issue goal covers just that issue, and the standing feedback goal covers every open <code>user-feedback</code> ticket with no milestone. A ticket in an unregistered milestone is covered by nothing.</p>
   </section>`;
+}
+
+/** Plain-language heading + one-line note shown above each group of tracks (render-only; a track
+ * with no `group`, or an unrecognised one, is rendered after these with no heading of its own). */
+const TRACK_GROUPS = [
+  {
+    key: "main",
+    heading: "The normal path for most tickets",
+    note: "Every ordinary ticket moves through one of these — a fuller build with review gates, or a quick fix that skips them — and the rule below decides which.",
+  },
+  {
+    key: "special",
+    heading: "Special cases — only some tickets hit these",
+    note: "Infrastructure changes, pipeline incidents, an unattended multi-ticket lead, and the shared release step every lane ends at.",
+  },
+];
+
+/** Groups tracks by `group` (preserving each group's relative order), then renders a heading +
+ * note per known group, falling back to an unheaded run for anything ungrouped. */
+function renderGroupedTracks(data) {
+  const byGroup = new Map(TRACK_GROUPS.map((g) => [g.key, []]));
+  const rest = [];
+  for (const track of data) {
+    const bucket = byGroup.get(track.group);
+    if (bucket) bucket.push(track);
+    else rest.push(track);
+  }
+  const groups = TRACK_GROUPS.map((g) => {
+    const tracks = byGroup.get(g.key);
+    if (tracks.length === 0) return "";
+    return `<div class="category"><h2 class="category-title">${esc(g.heading)}</h2><p class="category-note">${esc(g.note)}</p>${tracks.map(renderTrack).join("")}</div>`;
+  }).join("");
+  return `${groups}${rest.map(renderTrack).join("")}`;
 }
 
 /**
@@ -613,8 +681,9 @@ ${PIPELINES_CSS}
 <body>
 ${renderNav("pipelines")}
 <h1>How tickets are routed</h1>
+${renderStory()}
 ${renderIntakeDocs()}
-${data.map(renderTrack).join("")}
+${renderGroupedTracks(data)}
 </body>
 </html>`;
 }
