@@ -134,6 +134,11 @@ const LAYOUTS = {
 };
 const RUN_LAYOUT = { columns: RUN_COLUMNS, cells: runCells };
 
+/** Zips column headers onto cell values as `<td data-label="...">` — the label a narrow-screen row stacks on. */
+function tdsFor(columns, values) {
+  return values.map((c, i) => `<td data-label="${esc(columns[i] ?? '')}">${c}</td>`).join('');
+}
+
 function renderGroupSection(group) {
   const { columns, cells } = LAYOUTS[group.heading] || RUN_LAYOUT;
   const byMilestone = group.heading === 'Needs JP';
@@ -142,15 +147,15 @@ function renderGroupSection(group) {
   const headerFor = (row, i) => {
     if (!byMilestone || (i > 0 && sameGroup(group.rows[i - 1], row))) return '';
     const n = group.rows.filter((r) => sameGroup(r, row)).length;
-    return `<tr><td colspan="${columns.length}">${esc(`${label(row)} (${row.repo}) — ${n} waiting`)}</td></tr>`;
+    return `<tr class="subhead"><td colspan="${columns.length}">${esc(`${label(row)} (${row.repo}) — ${n} waiting`)}</td></tr>`;
   };
   const rows = group.rows.length
-    ? group.rows.map((row, i) => `${headerFor(row, i)}<tr>${cells(row).map((c) => `<td>${c}</td>`).join('')}</tr>`).join('')
+    ? group.rows.map((row, i) => `${headerFor(row, i)}<tr>${tdsFor(columns, cells(row))}</tr>`).join('')
     : `<tr><td colspan="${columns.length}">none</td></tr>`;
   return `<section class="group">
     <h2>${esc(group.heading)} (${group.rows.length})</h2>
     <div class="table-scroll"><table>
-      <tr>${columns.map((c) => `<th>${esc(c)}</th>`).join('')}</tr>
+      <tr class="cols">${columns.map((c) => `<th>${esc(c)}</th>`).join('')}</tr>
       <tbody>${rows}</tbody>
     </table></div>
   </section>`;
@@ -277,12 +282,12 @@ function renderGoalsSection(hosts) {
     esc(delivered(g)),
     esc(formatCet(g.last_cycle_at) || '–'),
   ];
-  const rows = goals.map((g, i) => `<tr>${cells(g, i).map((c) => `<td>${c}</td>`).join('')}</tr>`).join('');
+  const rows = goals.map((g, i) => `<tr>${tdsFor(GOAL_COLUMNS, cells(g, i))}</tr>`).join('');
   const table =
     goals.length === 0
       ? ''
       : `<div class="table-scroll"><table>
-      <tr>${GOAL_COLUMNS.map((c) => `<th>${esc(c)}</th>`).join('')}</tr>
+      <tr class="cols">${GOAL_COLUMNS.map((c) => `<th>${esc(c)}</th>`).join('')}</tr>
       <tbody>${rows}</tbody>
     </table></div>`;
   return `<section class="group">
@@ -399,6 +404,21 @@ ${ROOT_VARS_CSS}
   section.host, section.group { margin-bottom: 1.25rem; padding: 1.1rem 1.25rem; border-radius: 0.75rem;
     background: var(--surface); border: 1px solid var(--border); }
 ${NAV_CSS}
+  @media (max-width: 640px) {
+    body { padding: 1rem; }
+    section.host, section.group { padding: 0.9rem; }
+    .table-scroll { overflow-x: visible; }
+    table, tbody { display: block; width: 100%; }
+    tr.cols { display: none; }
+    tbody tr { display: block; border: 1px solid var(--border); border-radius: 0.5rem; margin-bottom: 0.6rem; overflow: hidden; }
+    tbody tr:last-child { margin-bottom: 0; }
+    tbody tr.subhead { border: none; border-radius: 0; margin: 0 0 0.4rem; }
+    td { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; text-align: right; border-bottom: 1px solid var(--border); }
+    tbody tr td:last-child { border-bottom: none; }
+    td[data-label]::before { content: attr(data-label); font-weight: 600; font-size: 0.7rem; text-transform: uppercase;
+      letter-spacing: 0.03em; color: var(--muted); text-align: left; flex-shrink: 0; }
+    td[colspan] { display: block; text-align: left; font-weight: 600; border-bottom: none; padding: 0.3rem 0.1rem; }
+  }
 </style>
 </head>
 <body>

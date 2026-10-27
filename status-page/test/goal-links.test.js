@@ -75,7 +75,7 @@ describe('goal priority', () => {
   });
   it('numbers goals by their place in the start order, from 1', () => {
     const html = goalsHtml(render(rec([running({ id: 'a', title: 'Alpha', priority: 9 }), running({ id: 'b', title: 'Bravo', priority: 4 })])));
-    const rows = [...html.matchAll(/<tr><td>(\d+)<\/td><td>([\s\S]*?)<\/td>/g)].map((m) => [m[1], text(m[2])]);
+    const rows = [...html.matchAll(/<tr><td[^>]*>(\d+)<\/td><td[^>]*>([\s\S]*?)<\/td>/g)].map((m) => [m[1], text(m[2])]);
     expect(rows.map((r) => r[0])).toEqual(['1', '2']);
     expect(rows[0][1]).toContain('Bravo');
   });
