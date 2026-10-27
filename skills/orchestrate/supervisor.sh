@@ -11,6 +11,8 @@
 #   3d. goal step (#195): keep-alive, pacing, parking, completion of goal-bound delivery leads pinned to this host
 #   7. status reconcile: refresh listed tickets from GitHub (backgrounded, throttled to once per 600 s; issue #51)
 #   8. PM Slack DM poll: record JP's replies to project-manager asks (backgrounded, no-op without PM_SLACK_BOT_TOKEN; issue #117)
+#   9. stale-work digest: log (never act on) stale agent-go, stuck ci_red/ci_pending/merge_conflict holds, disk
+#      pressure >= 85% (throttled to once per 600 s; issue #491)
 # One launch per tick max. All state is local (~/.claude/pipeline/state); the only shared state is the issue's markers and labels.
 set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -212,6 +214,193 @@ issue_is_closed() {
   local state
   state=$(cd "$repo" 2>/dev/null && gh issue view "$issue" --json state --jq .state 2>/dev/null) || return 1
   [ "$state" = "CLOSED" ]
+}
+
+# --- Stale-work digest (#491) -------------------------------------------------------------------
+# Pure observability: never mutates GitHub or local state. Logged via slog (route=supervisor-tick)
+# and, on an error while computing a finding, one Slack alert per digest run reusing the existing
+# webhook. Throttled like reconcile-status.sh's own throttle (a stamp file + the same _rs_mtime
+# helper), so it runs at most once per STALE_DIGEST_INTERVAL_SECS, not on every 2-minute tick.
+STALE_DIGEST_INTERVAL_SECS=600
+
+# sw_alert <what> — at most one Slack alert per digest run, however many lookups fail ($SW_ALERTED
+# gates it); same tags-only shape as autoretry_alert (release = commit SHA, environment = host).
+SW_ALERTED=0
+sw_alert() {
+  [ "$SW_ALERTED" -eq 0 ] || return 0
+  SW_ALERTED=1
+  [ -n "${SLACK_WEBHOOK_URL:-}" ] || return 0
+  local rel msg
+  rel=$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo unknown)
+  msg="stale-work digest error: $1: release=$rel environment=$(hostname -s 2>/dev/null || echo unknown) route=supervisor-tick"
+  curl -s --max-time 10 -X POST -H 'Content-type: application/json' \
+    --data "$(jq -nc --arg t "$msg" '{text:$t}')" "$SLACK_WEBHOOK_URL" >/dev/null 2>&1 || true
+}
+
+# sw_marker_ts <owner/repo> <issue> → epoch of the newest routing-marker comment, or empty (read failure
+# or none found). Same raw-fetch + jq -s normalize shape as latest_marker() above, read-only.
+sw_marker_ts() {
+  local owner_repo=$1 issue=$2 raw ts
+  raw=$(gh api "repos/$owner_repo/issues/$issue/comments?per_page=100" --paginate 2>/dev/null </dev/null) || return 1
+  ts=$(printf '%s' "$raw" | jq -s '{comments: (map(if type == "array" then .[] else . end))}' 2>/dev/null \
+    | jq -r --arg re "$(marker_re)" '[.comments[] | select(.body | split("\n")[0] | test($re))] | last.created_at // empty' 2>/dev/null) || return 1
+  [ -n "$ts" ] || return 1
+  printf '%s\n' "$ts"
+}
+
+# sw_registry_cache / sw_load_registry — the goal registry (_goal_registry_json) read at most once per digest run.
+SW_REGISTRY_LOADED=0
+SW_REGISTRY_JSON=""
+sw_load_registry() {
+  [ "$SW_REGISTRY_LOADED" -eq 1 ] && return 0
+  SW_REGISTRY_LOADED=1
+  SW_REGISTRY_JSON=$(_goal_registry_json 2>/dev/null) || SW_REGISTRY_JSON=""
+}
+
+# sw_covered <owner/repo> <milestone number, or empty> <labels as a JSON array> → 0 covered by an approved
+# (go:true) goal, 1 not covered, 2 unknown (a read failed; the caller must not report the ticket as stale).
+# Milestone goals: goal_milestone_approved (deliver.sh's registered scope). Label goals: the registry's
+# open go:true label-goal entries (goal-lib's "label:<name>" spec) matched against the ticket's own labels
+# ("goal-label matching" — never this host's live/queued state, which only knows about goals running here).
+sw_covered() {
+  local owner_repo=$1 ms=$2 labels=$3 rc
+  if [ -n "$ms" ] && [ "$ms" != null ]; then
+    goal_milestone_approved "$owner_repo" "$ms" >/dev/null 2>&1; rc=$?
+    [ "$rc" -eq 0 ] && return 0
+    [ "$rc" -eq 2 ] && return 2
+  fi
+  sw_load_registry
+  [ -n "$SW_REGISTRY_JSON" ] || return 2
+  printf '%s' "$SW_REGISTRY_JSON" | jq -e --argjson labels "${labels:-[]}" \
+    '.[] | select(.state == "open") | select((.block.go // false) == true) | select((.block.label // "") != "") | select($labels | index(.block.label))' \
+    >/dev/null 2>&1 && return 0
+  return 1
+}
+
+# sw_repo_list — DISPATCH_REPOS ∪ SCAN_ONLY_REPOS, one "owner/repo" per line, deduped (same set reconcile-status.sh scans).
+sw_repo_list() {
+  local e r seen=" "
+  for e in ${DISPATCH_REPOS[@]+"${DISPATCH_REPOS[@]}"} ${SCAN_ONLY_REPOS[@]+"${SCAN_ONLY_REPOS[@]}"}; do
+    r="${e%%:*}"
+    [ -n "$r" ] || continue
+    case "$seen" in *" $r "*) continue ;; esac
+    seen="$seen$r "
+    printf '%s\n' "$r"
+  done
+}
+
+# sw_stale_agent_go <hours> <threshold_secs> — AC3(a): log one line per open agent-go ticket, in a scanned
+# repo, idle longer than the threshold and not covered by an approved goal. Lazy: coverage/marker lookups
+# only run once a ticket's updatedAt alone already clears the threshold.
+sw_stale_agent_go() {
+  local threshold=$1 repo list rc
+  while IFS= read -r repo; do
+    [ -n "$repo" ] || continue
+    list=$(gh issue list --repo "$repo" --state open --label "$LABEL_GO" --json number,updatedAt,milestone,labels 2>/dev/null </dev/null); rc=$?
+    if [ "$rc" -ne 0 ]; then
+      slog "[stale-digest] $repo — agent-go list read failed"
+      sw_alert "agent-go list ($repo)"
+      continue
+    fi
+    [ -n "$list" ] || continue
+    while IFS=$'\t' read -r num upd ms labels_json; do
+      [ -n "$num" ] || continue
+      local upd_ep age_s mts mts_ep cov_rc
+      upd_ep=$(to_epoch "$upd")
+      age_s=$(( $(date +%s) - upd_ep ))
+      [ "$age_s" -ge "$threshold" ] || continue   # fresh enough by updatedAt alone — never fetch comments
+      mts=$(sw_marker_ts "$repo" "$num") && [ -n "$mts" ] && { mts_ep=$(to_epoch "$mts"); [ "$mts_ep" -gt "$upd_ep" ] && age_s=$(( $(date +%s) - mts_ep )); }
+      [ "$age_s" -ge "$threshold" ] || continue
+      sw_covered "$repo" "$ms" "$labels_json"; cov_rc=$?
+      [ "$cov_rc" -eq 0 ] && continue   # covered by an approved goal
+      if [ "$cov_rc" -eq 2 ]; then
+        slog "[stale-digest] $repo#$num — goal coverage check failed, skipping"
+        sw_alert "goal coverage check ($repo#$num)"
+        continue
+      fi
+      slog "[stale-digest] $repo#$num — agent-go idle $((age_s / 3600))h, no approved goal covers it"
+    done <<SWLIST
+$(printf '%s' "$list" | jq -r '.[] | [.number, (.updatedAt // ""), ((.milestone.number // "") | tostring), ([.labels[].name] | tojson)] | @tsv')
+SWLIST
+  done <<SWREPOS
+$(sw_repo_list)
+SWREPOS
+}
+
+# sw_hold_class <run_key> <repo dir> <issue> → ci_red|ci_pending|merge_conflict|<other>|empty, local state
+# first (the .alert text written when the hold was parked), falling back to one issue read + blocked_class_of
+# only when the alert text does not carry the class (e.g. the retry-cap-spent or #484 "waiting on JP" hand-off).
+sw_hold_class() {
+  local rk=$1 repo=$2 issue=$3 cls="" info
+  if [ -s "$PIPE/orch-$rk.alert" ]; then
+    cls=$(sed -nE 's/.*auto-retry \((ci_red|ci_pending|merge_conflict)\).*/\1/p' "$PIPE/orch-$rk.alert" 2>/dev/null | head -1)
+  fi
+  [ -n "$cls" ] && { printf '%s\n' "$cls"; return 0; }
+  info=$(issue_info_rest "$repo" "$issue") || { echo "ERR"; return 1; }
+  cls=$(blocked_class_of "$info")
+  printf '%s\n' "$cls"
+}
+
+# sw_stuck_holds <threshold_secs> — AC3(b): log one line per open issue sitting in a ci_red/ci_pending/
+# merge_conflict hold (orch-<rk>.held) longer than the threshold. Local state only, except the one-issue-read
+# fallback in sw_hold_class above.
+sw_stuck_holds() {
+  local threshold=$1 f rk issue repo held_at held_age cls owner_repo
+  for f in "$PIPE"/orch-*.held; do
+    [ -e "$f" ] || break
+    rk=$(basename "$f" .held); rk=${rk#orch-}; issue=${rk##*-}
+    repo=$(cat "$PIPE/orch-$rk.repo" 2>/dev/null || echo "")
+    [ -n "$repo" ] || continue
+    held_at=$(_rs_mtime "$f")
+    [ -n "$held_at" ] || continue
+    held_age=$(( $(date +%s) - held_at ))
+    [ "$held_age" -ge "$threshold" ] || continue
+    cls=$(sw_hold_class "$rk" "$repo" "$issue")
+    if [ "$cls" = ERR ]; then
+      owner_repo=$(cd "$repo" 2>/dev/null && gh api repos/{owner}/{repo} --jq .full_name 2>/dev/null </dev/null) || owner_repo="$repo"
+      slog "[stale-digest] ${owner_repo:-$repo}#$issue — hold-class read failed"
+      sw_alert "hold read (${owner_repo:-$repo}#$issue)"
+      continue
+    fi
+    case "$cls" in
+      ci_red|ci_pending|merge_conflict)
+        owner_repo=$(cd "$repo" 2>/dev/null && gh api repos/{owner}/{repo} --jq .full_name 2>/dev/null </dev/null) || owner_repo="$repo"
+        slog "[stale-digest] ${owner_repo:-$repo}#$issue — stuck in $cls hold for $((held_age / 3600))h" ;;
+    esac
+  done
+}
+
+# sw_disk_pressure — AC3(c): one WARN slog line when the filesystem holding ~/.claude/pipeline is >= 85% full.
+sw_disk_pressure() {
+  local target="$HOME/.claude/pipeline" out pct
+  [ -d "$target" ] || target="$HOME"
+  out=$(df -P "$target" 2>/dev/null | awk 'NR==2 {print $5}' | tr -d '%')
+  case "$out" in
+    ''|*[!0-9]*)
+      slog "[stale-digest] disk usage check failed (df unreadable)"
+      sw_alert "disk usage check" ;;
+    *)
+      [ "$out" -ge 85 ] && slog "[stale-digest] WARN disk usage ${out}% on the filesystem holding $target" ;;
+  esac
+}
+
+# stale_work_digest — the whole step (AC1/AC2): throttled to once per STALE_DIGEST_INTERVAL_SECS, read-only,
+# never blocks or delays the dispatch steps that already ran earlier in this tick (AC8). Never fails the tick.
+stale_work_digest() {
+  local stamp="$PIPE/stale-work-digest.stamp" last hours threshold
+  last=$(_rs_mtime "$stamp")
+  if [ -n "$last" ] && [ $(( $(date +%s) - last )) -lt "$STALE_DIGEST_INTERVAL_SECS" ]; then return 0; fi
+  touch "$stamp" 2>/dev/null || true   # throttle a failing pass too, like reconcile-status.sh
+
+  hours="${STALE_WORK_HOURS:-4}"
+  case "$hours" in ''|*[!0-9]*) hours=4 ;; esac
+  threshold=$((hours * 3600))
+
+  SW_ALERTED=0; SW_REGISTRY_LOADED=0; SW_REGISTRY_JSON=""
+  sw_stale_agent_go "$threshold"
+  sw_stuck_holds "$threshold"
+  sw_disk_pressure
+  return 0
 }
 
 # #115 begin
@@ -1468,5 +1657,10 @@ fi
 # 8. PM Slack DM poll (issue #117) — copy JP's DM replies onto the tickets the project-manager asked about.
 #    No-op unless PM_SLACK_BOT_TOKEN is set on this host; backgrounded with fd 9 closed so it never delays or fails the tick.
 ( "$HERE/pm-slack.sh" poll >/dev/null 2>&1 & ) 9>&- || true
+
+# 9. Stale-work digest (#491) — stale agent-go, stuck ci_red/ci_pending/merge_conflict holds, disk pressure.
+#    Read-only observability, logged (never acted on); throttled internally to once per 600 s. Runs last, after
+#    dispatch, so it never delays or blocks a launch decision made earlier in this tick.
+stale_work_digest || true
 
 exec 9>&- 2>/dev/null
