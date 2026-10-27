@@ -32,7 +32,7 @@ aliases_raw, runs_jsonl = sys.argv[1], sys.argv[2]
 pipe_dir = sys.argv[3] if len(sys.argv) > 3 else ""
 mode = sys.argv[4] if len(sys.argv) > 4 else ""
 completed_mode = mode == "completed"
-LIST_CAPS = {"staging": 60, "approved": 20}
+LIST_CAPS = {"staging": 60, "approved": None}  # approved is never truncated (jpmoya/claude-agents#386, #460)
 RELEASE_RE = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$")
 
 TITLE_MAX_CHARS = 140
@@ -167,7 +167,8 @@ def build_list(kind):
             "updated_at": str(d.get("updated_at") or ""),
         })
     items.sort(key=lambda i: i["updated_at"], reverse=True)
-    return items[:LIST_CAPS[kind]]
+    cap = LIST_CAPS[kind]
+    return items if cap is None else items[:cap]
 
 
 # #272: a ticket whose mockups JP skipped (SKIP MOCKUPS marker) shows "mockups skipped by JP", never "Approve mockups"

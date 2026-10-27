@@ -262,24 +262,24 @@ EOF
   assert_eq "$(printf '%s' "$out" | jq '.v')" "1" "AC3: v stays 1" || return 1
 }
 
-test_sg_ac3_caps_60_staging_20_approved_newest_kept() {
+test_sg_ac3_staging_capped_60_approved_never_truncated() {
   sg_env
   sg_gen_list_file "$SG_PIPE/status-staging.json" "$SG_A" 70
-  sg_gen_list_file "$SG_PIPE/status-approved.json" "$SG_A" 25
+  sg_gen_list_file "$SG_PIPE/status-approved.json" "$SG_A" 70
   local out; out=$(sg_print)
   sg_cleanup
-  # hand arithmetic: 70 issues, #70 newest -> keep #70..#11 (60); 25 issues -> keep #25..#6 (20)
+  # hand arithmetic: 70 issues, #70 newest -> keep #70..#11 (60); approved keeps all 70, #70..#1, newest first
   assert_eq "$(printf '%s' "$out" | jq -r '[.staging[].issue]|"\(length) \(first) \(last)"')" "60 70 11" "AC3: staging capped at 60 newest" || return 1
-  assert_eq "$(printf '%s' "$out" | jq -r '[.approved[].issue]|"\(length) \(first) \(last)"')" "20 25 6" "AC3: approved capped at 20 newest" || return 1
+  assert_eq "$(printf '%s' "$out" | jq -r '[.approved[].issue]|"\(length) \(first) \(last)"')" "70 70 1" "AC3: approved never truncated, newest first (jpmoya/claude-agents#386, #460)" || return 1
 }
 
-test_sg_ac3_cap_boundaries_60_and_20_are_not_cut() {
+test_sg_ac3_staging_cap_boundary_60_is_not_cut() {
   sg_env
   sg_gen_list_file "$SG_PIPE/status-staging.json" "$SG_A" 60
   sg_gen_list_file "$SG_PIPE/status-approved.json" "$SG_A" 20
   local out; out=$(sg_print)
   sg_cleanup
-  assert_eq "$(printf '%s' "$out" | jq -r '"\(.staging|length) \(.approved|length)"')" "60 20" "AC3: exactly at the caps nothing is dropped" || return 1
+  assert_eq "$(printf '%s' "$out" | jq -r '"\(.staging|length) \(.approved|length)"')" "60 20" "AC3: exactly at the staging cap nothing is dropped" || return 1
 }
 
 test_sg_ac3_title_capped_at_140_chars() {
@@ -576,8 +576,8 @@ run_test test_sg_ac2_exactly_two_list_calls_per_repo_with_the_specified_flags
 run_test test_sg_ac2_repo_in_both_config_lists_is_queried_once
 run_test test_sg_ac2_list_change_reports_once_and_no_change_does_not
 run_test test_sg_ac3_payload_items_shape_order_and_alias
-run_test test_sg_ac3_caps_60_staging_20_approved_newest_kept
-run_test test_sg_ac3_cap_boundaries_60_and_20_are_not_cut
+run_test test_sg_ac3_staging_capped_60_approved_never_truncated
+run_test test_sg_ac3_staging_cap_boundary_60_is_not_cut
 run_test test_sg_ac3_title_capped_at_140_chars
 run_test test_sg_ac3_missing_or_invalid_files_give_empty_arrays
 run_test test_sg_ac4_failed_list_call_keeps_that_repos_previous_entries
