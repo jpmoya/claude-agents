@@ -370,8 +370,8 @@ describe("public-page rules (leak, AC6, AC7)", () => {
   });
 });
 
-describe("existing status view unchanged (AC3)", () => {
-  // Expected body: the `/` output after the modern-flat restyle (2026-10-22), hand-embedded;
+describe('existing status view unchanged (AC3)', () => {
+  // Expected body: the `/` output after the mobile-responsive-tables change (2026-10-27), hand-embedded;
   // the only permitted difference is the added nav (markup + its CSS rules).
   const BASE_HOME = `<!doctype html>
 <html lang="en">
@@ -432,6 +432,21 @@ describe("existing status view unchanged (AC3)", () => {
   tbody tr:last-child td { border-bottom: none; }
   section.host, section.group { margin-bottom: 1.25rem; padding: 1.1rem 1.25rem; border-radius: 0.75rem;
     background: var(--surface); border: 1px solid var(--border); }
+  @media (max-width: 640px) {
+    body { padding: 1rem; }
+    section.host, section.group { padding: 0.9rem; }
+    .table-scroll { overflow-x: visible; }
+    table, tbody { display: block; width: 100%; }
+    tr.cols { display: none; }
+    tbody tr { display: block; border: 1px solid var(--border); border-radius: 0.5rem; margin-bottom: 0.6rem; overflow: hidden; }
+    tbody tr:last-child { margin-bottom: 0; }
+    tbody tr.subhead { border: none; border-radius: 0; margin: 0 0 0.4rem; }
+    td { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; text-align: right; border-bottom: 1px solid var(--border); }
+    tbody tr td:last-child { border-bottom: none; }
+    td[data-label]::before { content: attr(data-label); font-weight: 600; font-size: 0.7rem; text-transform: uppercase;
+      letter-spacing: 0.03em; color: var(--muted); text-align: left; flex-shrink: 0; }
+    td[colspan] { display: block; text-align: left; font-weight: 600; border-bottom: none; padding: 0.3rem 0.1rem; }
+  }
 </style>
 </head>
 <body>
