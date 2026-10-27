@@ -220,8 +220,8 @@ _goal_registry_json() {
   open=$(_goal_get_all "repos/$GOAL_REGISTRY_REPO/issues?labels=delivery-goal&state=open&per_page=100") || return 1
   if [ "${1:-}" = all ]; then cut="0000"; else since="&since=$cut"; fi
   closed=$(_goal_get_all "repos/$GOAL_REGISTRY_REPO/issues?labels=delivery-goal&state=closed&per_page=100$since") || return 1
-  jq -nc --argjson a "$open" --argjson b "$closed" --arg cut "$cut" "$_GOAL_ISSUE_JQ"'
-    ($a + $b)
+  printf '%s\n%s\n' "$open" "$closed" | jq -sc --arg cut "$cut" "$_GOAL_ISSUE_JQ"'
+    (.[0] + .[1])
     | map(select(has("pull_request") | not)
           | select(any(.labels[]; .name == "delivery-goal"))
           | select(.state == "open" or (.closed_at != null and .closed_at >= $cut)))
