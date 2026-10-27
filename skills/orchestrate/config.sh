@@ -58,6 +58,9 @@ GOAL_CYCLE_SECS=1200        # a cleanly ended cycle is relaunched only this long
 GOAL_SYNC_SECS=300          # registry sync + live-goal re-evaluation throttle, per host
 GOAL_MAX_NO_PROGRESS=3      # relaunch decisions with an unchanged scope snapshot before a goal is parked
 
+# Supervisor stale-work digest (#491): pure observability, logged/alerted, never acted on automatically.
+STALE_WORK_HOURS=4
+
 [ -f "$HOME/.claude/pipeline/config.local.sh" ] && source "$HOME/.claude/pipeline/config.local.sh"
 
 # #332: one-time move of the old /tmp run state to the durable path (only when the new path is absent), leaving a symlink so
