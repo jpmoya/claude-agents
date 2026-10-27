@@ -317,6 +317,7 @@ describe('existing status view unchanged (AC3)', () => {
   .goals-closed h3 { font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin: 1.25em 0 0.5em; }
   .goals-closed ul { margin: 0; padding-left: 1.1em; font-size: 0.85rem; color: var(--muted); }
   a { color: var(--accent); }
+  .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
   table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
   th { text-align: left; padding: 0.5rem 0.6rem; font-weight: 600; font-size: 0.75rem; text-transform: uppercase;
     letter-spacing: 0.03em; color: var(--muted); border-bottom: 1px solid var(--border); }

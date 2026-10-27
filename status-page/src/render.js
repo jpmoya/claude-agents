@@ -149,10 +149,10 @@ function renderGroupSection(group) {
     : `<tr><td colspan="${columns.length}">none</td></tr>`;
   return `<section class="group">
     <h2>${esc(group.heading)} (${group.rows.length})</h2>
-    <table>
+    <div class="table-scroll"><table>
       <tr>${columns.map((c) => `<th>${esc(c)}</th>`).join('')}</tr>
       <tbody>${rows}</tbody>
-    </table>
+    </table></div>
   </section>`;
 }
 
@@ -281,10 +281,10 @@ function renderGoalsSection(hosts) {
   const table =
     goals.length === 0
       ? ''
-      : `<table>
+      : `<div class="table-scroll"><table>
       <tr>${GOAL_COLUMNS.map((c) => `<th>${esc(c)}</th>`).join('')}</tr>
       <tbody>${rows}</tbody>
-    </table>`;
+    </table></div>`;
   return `<section class="group">
     <h2>Goals</h2>
     ${table}${renderClosedGoals(closed)}
@@ -389,6 +389,7 @@ ${ROOT_VARS_CSS}
   .goals-closed h3 { font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin: 1.25em 0 0.5em; }
   .goals-closed ul { margin: 0; padding-left: 1.1em; font-size: 0.85rem; color: var(--muted); }
   a { color: var(--accent); }
+  .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
   table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
   th { text-align: left; padding: 0.5rem 0.6rem; font-weight: 600; font-size: 0.75rem; text-transform: uppercase;
     letter-spacing: 0.03em; color: var(--muted); border-bottom: 1px solid var(--border); }
