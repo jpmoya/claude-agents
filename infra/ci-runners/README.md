@@ -1,7 +1,8 @@
 # CI runners (self-hosted, label `benjis-ci`)
 
 `setup.sh` turns a fresh VM into N ephemeral GitHub Actions runner slots (rootless Docker, user `gha`,
-cgroup-limited). Design: #205. It is idempotent: a second run prints `no change`.
+cgroup-limited). Design: #205. It is idempotent: a second run prints `no change`. The runner image (`gha-runner`,
+built by `step_image`/`dockerfile_text`) includes the `gh` CLI.
 
 ## Where CI runs (read this first)
 - Workflows pick their runner with `runs-on: ${{ fromJSON(vars.CI_RUNNER_JSON || '"ubuntu-latest"') }}`. The org variable

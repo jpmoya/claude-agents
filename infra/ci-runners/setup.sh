@@ -261,6 +261,12 @@ ARG RUNNER_VERSION=@VERSION@
 ENV RUNNER_ALLOW_RUNASROOT=1 DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates git jq sudo \
     && rm -rf /var/lib/apt/lists/*
+RUN set -eux; mkdir -p -m 755 /etc/apt/keyrings \
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update && apt-get install -y --no-install-recommends gh \
+    && rm -rf /var/lib/apt/lists/*
 RUN set -eux; a=$(dpkg --print-architecture); case "$a" in amd64) a=x64;; arm64) a=arm64;; *) exit 1;; esac; \
     mkdir -p /home/runner && cd /home/runner \
     && curl -fsSL -o r.tgz "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-${a}-${RUNNER_VERSION}.tar.gz" \
