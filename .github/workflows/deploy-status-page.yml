@@ -1,0 +1,43 @@
+name: Deploy status page
+
+# JP, 2026-10-27: deploying the status page used to be a manual `wrangler deploy` step that
+# nobody remembered to run — a merged change (PR #498) sat unreleased for hours. This makes
+# every push to main that touches status-page/ deploy itself automatically.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "status-page/**"
+      - ".github/workflows/deploy-status-page.yml"
+  workflow_dispatch: {}
+
+concurrency:
+  group: deploy-status-page
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: status-page
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run tests
+        run: npm test
+
+      - name: Deploy to Cloudflare Workers
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          workingDirectory: status-page
+          command: deploy
