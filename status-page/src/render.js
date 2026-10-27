@@ -5,30 +5,30 @@
 // passes through esc() even though the payload is already enum-validated (defence in depth,
 // tested directly per skills/quality-gate/SKILL.md).
 
-import { isIssueUrl } from './validate.js';
-import { groupTickets } from './group.js';
-import { PIPELINES } from './pipelines.js';
+import { isIssueUrl } from "./validate.js";
+import { groupTickets } from "./group.js";
+import { PIPELINES } from "./pipelines.js";
 
 // Auto-refresh interval in seconds. Must stay <= 30 (AC15). Grepped directly by tests.
 export const PAGE_REFRESH_SECS = 20;
 
-const HOST_LABELS = { mac: 'Mac', vm: 'VM' };
+const HOST_LABELS = { mac: "Mac", vm: "VM" };
 
 /** @param {unknown} value */
 export function esc(value) {
-  if (value === null || value === undefined) return '';
+  if (value === null || value === undefined) return "";
   return String(value).replace(/[&<>"']/g, (ch) => {
     switch (ch) {
-      case '&':
-        return '&amp;';
-      case '<':
-        return '&lt;';
-      case '>':
-        return '&gt;';
+      case "&":
+        return "&amp;";
+      case "<":
+        return "&lt;";
+      case ">":
+        return "&gt;";
       case '"':
-        return '&quot;';
+        return "&quot;";
       case "'":
-        return '&#39;';
+        return "&#39;";
       default:
         return ch;
     }
@@ -37,14 +37,14 @@ export function esc(value) {
 
 // en-US + formatToParts, never .format() or en-GB: en-GB renders September as "Sept" and
 // .format() punctuation varies with the ICU version (issue #29).
-const CET_FORMAT = new Intl.DateTimeFormat('en-US', {
-  timeZone: 'Europe/Madrid',
-  weekday: 'short',
-  day: 'numeric',
-  month: 'short',
-  hour: '2-digit',
-  minute: '2-digit',
-  hourCycle: 'h23',
+const CET_FORMAT = new Intl.DateTimeFormat("en-US", {
+  timeZone: "Europe/Madrid",
+  weekday: "short",
+  day: "numeric",
+  month: "short",
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
 });
 
 /**
@@ -53,22 +53,24 @@ const CET_FORMAT = new Intl.DateTimeFormat('en-US', {
  * @param {unknown} iso
  */
 export function formatCet(iso) {
-  if (typeof iso !== 'string') return '';
+  if (typeof iso !== "string") return "";
   const ms = Date.parse(iso);
-  if (Number.isNaN(ms)) return '';
+  if (Number.isNaN(ms)) return "";
   const parts = {};
-  for (const part of CET_FORMAT.formatToParts(new Date(ms))) parts[part.type] = part.value;
+  for (const part of CET_FORMAT.formatToParts(new Date(ms)))
+    parts[part.type] = part.value;
   return `${parts.weekday} ${parts.day} ${parts.month}, ${parts.hour}:${parts.minute}`;
 }
 
 /** Derives the live/stale/offline badge from `received_at` only (never `sent_at`). */
 function computeBadge(receivedAt, thresholds, nowEpochSecs) {
-  const receivedAtMs = typeof receivedAt === 'string' ? Date.parse(receivedAt) : NaN;
-  if (Number.isNaN(receivedAtMs)) return 'offline';
+  const receivedAtMs =
+    typeof receivedAt === "string" ? Date.parse(receivedAt) : NaN;
+  if (Number.isNaN(receivedAtMs)) return "offline";
   const ageSecs = nowEpochSecs - Math.floor(receivedAtMs / 1000);
-  if (ageSecs >= thresholds.offlineSecs) return 'offline';
-  if (ageSecs >= thresholds.staleSecs) return 'stale';
-  return 'live';
+  if (ageSecs >= thresholds.offlineSecs) return "offline";
+  if (ageSecs >= thresholds.staleSecs) return "stale";
+  return "live";
 }
 
 /**
@@ -76,15 +78,34 @@ function computeBadge(receivedAt, thresholds, nowEpochSecs) {
  * trust that the stored value was validated), plain-text title otherwise, empty without a title.
  */
 function renderTicketCell(run) {
-  if (typeof run.title !== 'string' || run.title === '') return '';
+  if (typeof run.title !== "string" || run.title === "") return "";
   if (!isIssueUrl(run.url)) return esc(run.title);
   return `<a href="${esc(run.url)}" target="_blank" rel="noopener noreferrer">${esc(run.title)}</a>`;
 }
 
-const RUN_COLUMNS = ['Issue', 'Ticket', 'Host', 'State', 'Stage', 'Marker', 'Last activity', 'Restarts'];
-const NEEDS_COLUMNS = ['Issue', 'Ticket', 'Needs', 'Host', 'State', 'Stage', 'Marker', 'Last activity', 'Restarts'];
-const LIST_COLUMNS = ['Issue', 'Ticket', 'Updated'];
-const DONE_COLUMNS = ['Issue', 'Ticket', 'Closed', 'Release', 'Final marker'];
+const RUN_COLUMNS = [
+  "Issue",
+  "Ticket",
+  "Host",
+  "State",
+  "Stage",
+  "Marker",
+  "Last activity",
+  "Restarts",
+];
+const NEEDS_COLUMNS = [
+  "Issue",
+  "Ticket",
+  "Needs",
+  "Host",
+  "State",
+  "Stage",
+  "Marker",
+  "Last activity",
+  "Restarts",
+];
+const LIST_COLUMNS = ["Issue", "Ticket", "Updated"];
+const DONE_COLUMNS = ["Issue", "Ticket", "Closed", "Release", "Final marker"];
 
 const runCells = (run) => [
   `#${esc(run.issue)}`,
@@ -102,12 +123,12 @@ const needsCells = (run) => {
   return cells;
 };
 const BLOCK_LABELS = {
-  ci_pending: 'CI/billing',
-  ci_red: 'CI/billing',
-  merge_conflict: 'merge conflict',
-  dependency: 'waiting on dependency',
-  unsupported_project: 'other',
-  other: 'other',
+  ci_pending: "CI/billing",
+  ci_red: "CI/billing",
+  merge_conflict: "merge conflict",
+  dependency: "waiting on dependency",
+  unsupported_project: "other",
+  other: "other",
 };
 const parkedCells = (run) => {
   const cells = runCells(run);
@@ -115,7 +136,11 @@ const parkedCells = (run) => {
   if (label) cells[5] = `${esc(run.marker)} — ${esc(label)}`; // fixed reason in the existing Marker cell
   return cells;
 };
-const listCells = (item) => [`#${esc(item.issue)}`, renderTicketCell(item), esc(formatCet(item.updated_at))];
+const listCells = (item) => [
+  `#${esc(item.issue)}`,
+  renderTicketCell(item),
+  esc(formatCet(item.updated_at)),
+];
 const doneCells = (item) => [
   `#${esc(item.issue)}`,
   renderTicketCell(item),
@@ -126,54 +151,99 @@ const doneCells = (item) => [
 
 // Group heading -> table layout. Headings come from group.js; anything unlisted gets the run layout.
 const LAYOUTS = {
-  'Needs JP': { columns: NEEDS_COLUMNS, cells: needsCells },
+  "Needs JP": { columns: NEEDS_COLUMNS, cells: needsCells },
   Parked: { columns: RUN_COLUMNS, cells: parkedCells },
-  'Approved, waiting for a slot': { columns: LIST_COLUMNS, cells: listCells },
-  'On staging (awaiting production)': { columns: LIST_COLUMNS, cells: listCells },
+  "Approved, waiting for a slot": { columns: LIST_COLUMNS, cells: listCells },
+  "On staging (awaiting production)": {
+    columns: LIST_COLUMNS,
+    cells: listCells,
+  },
   Done: { columns: DONE_COLUMNS, cells: doneCells },
 };
 const RUN_LAYOUT = { columns: RUN_COLUMNS, cells: runCells };
 
 function renderGroupSection(group) {
   const { columns, cells } = LAYOUTS[group.heading] || RUN_LAYOUT;
-  const byMilestone = group.heading === 'Needs JP';
-  const label = (row) => (typeof row.milestone === 'string' && row.milestone ? row.milestone : 'no release');
+  const byMilestone = group.heading === "Needs JP";
+  const label = (row) =>
+    typeof row.milestone === "string" && row.milestone
+      ? row.milestone
+      : "no release";
   const sameGroup = (a, b) => label(a) === label(b) && a.repo === b.repo;
   const headerFor = (row, i) => {
-    if (!byMilestone || (i > 0 && sameGroup(group.rows[i - 1], row))) return '';
+    if (!byMilestone || (i > 0 && sameGroup(group.rows[i - 1], row))) return "";
     const n = group.rows.filter((r) => sameGroup(r, row)).length;
     return `<tr><td colspan="${columns.length}">${esc(`${label(row)} (${row.repo}) — ${n} waiting`)}</td></tr>`;
   };
   const rows = group.rows.length
-    ? group.rows.map((row, i) => `${headerFor(row, i)}<tr>${cells(row).map((c) => `<td>${c}</td>`).join('')}</tr>`).join('')
+    ? group.rows
+        .map(
+          (row, i) =>
+            `${headerFor(row, i)}<tr>${cells(row)
+              .map((c) => `<td>${c}</td>`)
+              .join("")}</tr>`,
+        )
+        .join("")
     : `<tr><td colspan="${columns.length}">none</td></tr>`;
   return `<section class="group">
     <h2>${esc(group.heading)} (${group.rows.length})</h2>
     <div class="table-scroll"><table>
-      <tr>${columns.map((c) => `<th>${esc(c)}</th>`).join('')}</tr>
+      <tr>${columns.map((c) => `<th>${esc(c)}</th>`).join("")}</tr>
       <tbody>${rows}</tbody>
     </table></div>
   </section>`;
 }
 
-const GOAL_STATE_LABELS = { waiting_jp: 'waiting on JP', held: 'held', running: 'running', between_cycles: 'between cycles', queued: 'queued' };
-const GOAL_STATE_ORDER = ['waiting_jp', 'held', 'running', 'between_cycles', 'queued'];
-const GOAL_CLOSED_LABELS = { delivered: 'delivered', stopped: 'stopped' };
+const GOAL_STATE_LABELS = {
+  waiting_jp: "waiting on JP",
+  held: "held",
+  running: "running",
+  between_cycles: "between cycles",
+  queued: "queued",
+};
+const GOAL_STATE_ORDER = [
+  "waiting_jp",
+  "held",
+  "running",
+  "between_cycles",
+  "queued",
+];
+const GOAL_CLOSED_LABELS = { delivered: "delivered", stopped: "stopped" };
 const GOALS_CLOSED_SHOWN = 5;
 
 /** Plain-language meaning of each goal state, from goal-lib.sh / build-runs-json.py (the order shown in the Legend). */
 export const GOAL_LEGEND = [
-  ['running', 'The delivery lead is working on the goal right now (its process is alive).'],
-  ['between cycles', 'Started and not stuck, but no process is running at this moment; the next cycle picks it up.'],
-  ['waiting on JP', 'No ticket can move on its own: the open ones wait on a decision or promotion only JP can give (mockup approval, go, or a promotion). Shown from the tickets themselves, even when no delivery lead is running.'],
-  ['held', 'Stopped by itself after several cycles without progress; it needs a look before it resumes.'],
-  ['queued', 'Registered but not started yet; the number is its place in the start order (1 = next). A GitHub project with no running goal yet also shows here, linked to the project.'],
-  ['delivered', 'Finished: every ticket in the goal has shipped.'],
-  ['stopped', 'Cancelled by hand with the stop command; it does not run again unless resumed.'],
+  [
+    "running",
+    "The delivery lead is working on the goal right now (its process is alive).",
+  ],
+  [
+    "between cycles",
+    "Started and not stuck, but no process is running at this moment; the next cycle picks it up.",
+  ],
+  [
+    "waiting on JP",
+    "No ticket can move on its own: the open ones wait on a decision or promotion only JP can give (mockup approval, go, or a promotion). Shown from the tickets themselves, even when no delivery lead is running.",
+  ],
+  [
+    "held",
+    "Stopped by itself after several cycles without progress; it needs a look before it resumes.",
+  ],
+  [
+    "queued",
+    "Registered but not started yet; the number is its place in the start order (1 = next). A GitHub project with no running goal yet also shows here, linked to the project.",
+  ],
+  ["delivered", "Finished: every ticket in the goal has shipped."],
+  [
+    "stopped",
+    "Cancelled by hand with the stop command; it does not run again unless resumed.",
+  ],
 ];
 
 function renderLegend() {
-  const items = GOAL_LEGEND.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('');
+  const items = GOAL_LEGEND.map(
+    ([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`,
+  ).join("");
   return `<section class="group legend">
     <h2>Legend</h2>
     <h3>Goal states</h3>
@@ -184,11 +254,18 @@ function renderLegend() {
 /** A goal's name, linked to its ticket search / milestone / issue (already validated by validate.js as a github.com URL). */
 function goalName(g, text) {
   const name = esc(text);
-  return typeof g.url === 'string' && g.url.startsWith('https://github.com/')
+  return typeof g.url === "string" && g.url.startsWith("https://github.com/")
     ? `<a href="${esc(g.url)}" target="_blank" rel="noopener">${name}</a>`
     : name;
 }
-const GOAL_COLUMNS = ['Priority', 'Goal', 'Host', 'State', 'Delivered', 'Last cycle'];
+const GOAL_COLUMNS = [
+  "Priority",
+  "Goal",
+  "Host",
+  "State",
+  "Delivered",
+  "Last cycle",
+];
 
 /**
  * True when report `a` of a goal beats report `b`: a started goal beats a queued one (a stale queue view), then the goal's
@@ -196,7 +273,7 @@ const GOAL_COLUMNS = ['Priority', 'Goal', 'Host', 'State', 'Delivered', 'Last cy
  * then the newer received_at.
  */
 function beats(a, b) {
-  const started = (c) => (c.goal.state === 'queued' ? 0 : 1);
+  const started = (c) => (c.goal.state === "queued" ? 0 : 1);
   if (started(a) !== started(b)) return started(a) > started(b);
   if (a.own !== b.own) return a.own;
   const paused = (c) => (c.goal.paused ? 1 : 0);
@@ -207,13 +284,13 @@ function beats(a, b) {
 /** Merges both hosts' goals: one entry per id — see beats(). */
 function mergeGoals(hosts) {
   const winners = new Map();
-  for (const hostKey of ['mac', 'vm']) {
+  for (const hostKey of ["mac", "vm"]) {
     const rec = hosts[hostKey];
     if (!rec || !Array.isArray(rec.goals)) continue;
     const at = Date.parse(rec.received_at);
     const receivedMs = Number.isNaN(at) ? 0 : at;
     for (const g of rec.goals) {
-      if (!g || typeof g !== 'object' || typeof g.id !== 'string') continue;
+      if (!g || typeof g !== "object" || typeof g.id !== "string") continue;
       const cand = { goal: g, own: g.host === hostKey, receivedMs };
       const cur = winners.get(g.id);
       if (!cur || beats(cand, cur)) winners.set(g.id, cand);
@@ -227,9 +304,12 @@ function mergeGoals(hosts) {
     .map((w) => w.goal)
     .sort(
       (a, b) =>
-        (Number.isInteger(a.priority) ? a.priority : 1e9) - (Number.isInteger(b.priority) ? b.priority : 1e9) ||
+        (Number.isInteger(a.priority) ? a.priority : 1e9) -
+          (Number.isInteger(b.priority) ? b.priority : 1e9) ||
         rank(a) - rank(b) ||
-        (a.state === 'queued' && b.state === 'queued' ? (a.queue_pos || 0) - (b.queue_pos || 0) : 0) ||
+        (a.state === "queued" && b.state === "queued"
+          ? (a.queue_pos || 0) - (b.queue_pos || 0)
+          : 0) ||
         (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
     );
 }
@@ -237,22 +317,28 @@ function mergeGoals(hosts) {
 /** "queued #2" for a queued goal (position in the queue, 1 = next), else the plain state label. */
 function goalStateText(g) {
   const label = GOAL_STATE_LABELS[g.state] || g.state;
-  return g.state === 'queued' && Number.isInteger(g.queue_pos) ? `${label} #${g.queue_pos}` : label;
+  return g.state === "queued" && Number.isInteger(g.queue_pos)
+    ? `${label} #${g.queue_pos}`
+    : label;
 }
 
 /** Compact list of the most recent closed goals: "Title (repos) — delivered, 20 Sep". */
 function renderClosedGoals(closed) {
-  if (closed.length === 0) return '';
+  if (closed.length === 0) return "";
   const recent = [...closed]
-    .sort((a, b) => (b.closed_at || '').localeCompare(a.closed_at || '') || (a.id < b.id ? -1 : 1))
+    .sort(
+      (a, b) =>
+        (b.closed_at || "").localeCompare(a.closed_at || "") ||
+        (a.id < b.id ? -1 : 1),
+    )
     .slice(0, GOALS_CLOSED_SHOWN);
   const items = recent
     .map((g) => {
       const name = goalName(g, g.title || g.spec);
-      const when = g.closed_at ? `, ${esc(formatCet(g.closed_at))}` : '';
+      const when = g.closed_at ? `, ${esc(formatCet(g.closed_at))}` : "";
       return `<li>${name} — <span class="badge goal-${esc(g.state)}">${esc(GOAL_CLOSED_LABELS[g.state])}</span>${when}</li>`;
     })
-    .join('');
+    .join("");
   return `<div class="goals-closed"><h3>Recently closed</h3><ul>${items}</ul></div>`;
 }
 
@@ -260,29 +346,38 @@ function renderGoalsSection(hosts) {
   const all = mergeGoals(hosts);
   const closed = all.filter((g) => g.state in GOAL_CLOSED_LABELS);
   const goals = all.filter((g) => !(g.state in GOAL_CLOSED_LABELS));
-  if (all.length === 0) return '';
+  if (all.length === 0) return "";
   const delivered = (g) =>
-    Number.isInteger(g.scope_delivered) && Number.isInteger(g.scope_total) ? `${g.scope_delivered}/${g.scope_total}` : '–';
+    Number.isInteger(g.scope_delivered) && Number.isInteger(g.scope_total)
+      ? `${g.scope_delivered}/${g.scope_total}`
+      : "–";
   // a cross-repo label goal (#319) shows its title, repos and order; a v1 goal its spec
   const goalCell = (g) =>
     g.title
-      ? `<strong>${goalName(g, g.title)}</strong><br><small>${esc((g.repos || []).join(', '))}${Number.isInteger(g.order) ? ` · order ${esc(String(g.order))}` : ''}</small>`
+      ? `<strong>${goalName(g, g.title)}</strong><br><small>${esc((g.repos || []).join(", "))}${Number.isInteger(g.order) ? ` · order ${esc(String(g.order))}` : ""}</small>`
       : goalName(g, g.spec);
   // the number shown is the goal's place in the start order (1 = next); it renumbers by itself as goals finish
   const cells = (g, i) => [
     esc(String(i + 1)),
     goalCell(g),
-    esc(HOST_LABELS[g.host] || g.host || '–'),
-    `<span class="badge goal-${esc(g.state)}${g.state === 'queued' ? ' goal-between_cycles' : ''}">${esc(goalStateText(g))}</span>${g.paused ? `<br><small>paused: ${esc(g.paused)}</small>` : ''}`,
+    esc(HOST_LABELS[g.host] || g.host || "–"),
+    `<span class="badge goal-${esc(g.state)}${g.state === "queued" ? " goal-between_cycles" : ""}">${esc(goalStateText(g))}</span>${g.paused ? `<br><small>paused: ${esc(g.paused)}</small>` : ""}`,
     esc(delivered(g)),
-    esc(formatCet(g.last_cycle_at) || '–'),
+    esc(formatCet(g.last_cycle_at) || "–"),
   ];
-  const rows = goals.map((g, i) => `<tr>${cells(g, i).map((c) => `<td>${c}</td>`).join('')}</tr>`).join('');
+  const rows = goals
+    .map(
+      (g, i) =>
+        `<tr>${cells(g, i)
+          .map((c) => `<td>${c}</td>`)
+          .join("")}</tr>`,
+    )
+    .join("");
   const table =
     goals.length === 0
-      ? ''
+      ? ""
       : `<div class="table-scroll"><table>
-      <tr>${GOAL_COLUMNS.map((c) => `<th>${esc(c)}</th>`).join('')}</tr>
+      <tr>${GOAL_COLUMNS.map((c) => `<th>${esc(c)}</th>`).join("")}</tr>
       <tbody>${rows}</tbody>
     </table></div>`;
   return `<section class="group">
@@ -303,7 +398,8 @@ function renderHostSection(key, host, thresholds, nowEpochSecs) {
   }
 
   const badge = computeBadge(host.received_at, thresholds, nowEpochSecs);
-  const capacity = host.capacity && typeof host.capacity === 'object' ? host.capacity : {};
+  const capacity =
+    host.capacity && typeof host.capacity === "object" ? host.capacity : {};
 
   return `<section class="host">
     <h2>${esc(label)} <span class="badge ${esc(badge)}">${esc(badge)}</span></h2>
@@ -315,8 +411,8 @@ function renderHostSection(key, host, thresholds, nowEpochSecs) {
 /** Two-link nav ("Status" | "Pipelines"); the current page gets aria-current. */
 function renderNav(current) {
   const link = (href, label, key) =>
-    `<a href="${href}"${current === key ? ' aria-current="page"' : ''}>${label}</a>`;
-  return `<nav>${link('/', 'Status', 'status')} ${link('/pipelines', 'Pipelines', 'pipelines')}</nav>`;
+    `<a href="${href}"${current === key ? ' aria-current="page"' : ""}>${label}</a>`;
+  return `<nav>${link("/", "Status", "status")} ${link("/pipelines", "Pipelines", "pipelines")}</nav>`;
 }
 
 const ROOT_VARS_CSS = `  :root {
@@ -356,7 +452,7 @@ export function renderPage(hosts, thresholds, nowEpochSecs) {
 
   const body = bothEmpty
     ? '<p class="empty">no data from either host yet</p>'
-    : `${renderHostSection('mac', hosts.mac, thresholds, nowEpochSecs)}${renderHostSection('vm', hosts.vm, thresholds, nowEpochSecs)}${renderGoalsSection(hosts)}${renderLegend()}${groupTickets(hosts, nowEpochSecs).map(renderGroupSection).join('')}`;
+    : `${renderHostSection("mac", hosts.mac, thresholds, nowEpochSecs)}${renderHostSection("vm", hosts.vm, thresholds, nowEpochSecs)}${renderGoalsSection(hosts)}${renderLegend()}${groupTickets(hosts, nowEpochSecs).map(renderGroupSection).join("")}`;
 
   return `<!doctype html>
 <html lang="en">
@@ -402,7 +498,7 @@ ${NAV_CSS}
 </style>
 </head>
 <body>
-${renderNav('status')}
+${renderNav("status")}
 <h1>Pipeline status</h1>
 ${body}
 </body>
@@ -418,35 +514,69 @@ const PIPELINES_CSS = `${ROOT_VARS_CSS}
 ${NAV_CSS}
   section.group { margin-bottom: 1.25rem; padding: 1.1rem 1.25rem; border-radius: 0.75rem;
     background: var(--surface); border: 1px solid var(--border); }
-  .uml { list-style: none; margin: 0; padding: 0; max-width: 100%; }
-  .uml li { max-width: 100%; }
-  .uml .node { border: 1px solid var(--border); border-radius: 0.5rem; max-width: 100%; box-sizing: border-box; overflow: hidden; }
+  .intake-docs h3 { font-size: 0.85rem; font-weight: 600; margin: 0.9rem 0 0.35rem; }
+  .intake-docs h3:first-child { margin-top: 0; }
+  .intake-docs p { margin: 0 0 0.5rem; font-size: 0.85rem; color: var(--text); line-height: 1.5; }
+  .intake-docs ul { margin: 0 0 0.5rem; padding-left: 1.3rem; font-size: 0.85rem; color: var(--text); line-height: 1.5; }
+  .intake-docs code { background: var(--bg); border: 1px solid var(--border); border-radius: 0.25rem; padding: 0.05rem 0.3rem; font-size: 0.82em; }
+  .uml-scroll { overflow-x: auto; max-width: 100%; padding-bottom: 0.3rem; }
+  .uml { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: row; align-items: stretch; gap: 0; width: max-content; }
+  .uml li { max-width: 18rem; display: flex; align-items: center; }
+  .uml .link { display: flex; align-items: center; justify-content: center; width: 1.8rem; flex: 0 0 auto;
+    color: var(--muted); font-size: 1.1rem; align-self: center; }
+  .uml .node { border: 1px solid var(--border); border-radius: 0.5rem; max-width: 18rem; box-sizing: border-box; overflow: hidden; }
   .uml .node b { display: block; padding: 0.4rem 0.7rem; font-size: 0.85rem; font-weight: 600;
     background: var(--bg); border-bottom: 1px solid var(--border); }
   .uml .node .chip { display: inline-block; margin: 0.45rem 0.7rem 0; padding: 0.15rem 0.5rem; border-radius: 0.375rem;
     font-size: 0.72rem; font-weight: 600; background: var(--accent-soft); color: var(--accent); }
   .uml .node .chip[data-soon] { background: var(--amber-soft); color: var(--amber); }
   .uml .node ul { margin: 0; padding: 0.4rem 0.7rem 0.4rem 1.7rem; font-size: 0.8rem; color: var(--muted); }
-  .uml .link { display: block; margin: 0.1rem 0 0.1rem 1rem; color: var(--muted); }`;
+  @media (max-width: 640px) {
+    .uml { flex-direction: column; width: 100%; }
+    .uml li { max-width: 100%; }
+    .uml .node { max-width: 100%; }
+    .uml .link { width: auto; height: 1.4rem; transform: rotate(90deg); }
+  }`;
 
 /** UML-style box: stage name, the GitHub marker/label that routes into it (if any), and what it reads. */
 function renderNode(stage) {
   const when = stage.when;
   const chip = when
-    ? `<span class="chip"${when.coming ? ' data-soon="1"' : ''}>${esc(when.label)}${when.coming ? ' (coming)' : ''}</span>`
-    : '';
-  const inputs = (stage.inputs || []).map((x) => `<li>${esc(x)}</li>`).join('');
+    ? `<span class="chip"${when.coming ? ' data-soon="1"' : ""}>${esc(when.label)}${when.coming ? " (coming)" : ""}</span>`
+    : "";
+  const inputs = (stage.inputs || []).map((x) => `<li>${esc(x)}</li>`).join("");
   return `<div class="node"><b>${esc(stage.name)}</b>${chip}<ul>${inputs}</ul></div>`;
 }
 
 function renderTrack(track) {
   const items = track.stages
     .map((stage, i) => {
-      const link = i > 0 ? '<span class="link" aria-hidden="true">&darr;</span>' : '';
+      const link =
+        i > 0 ? '<span class="link" aria-hidden="true">&rarr;</span>' : "";
       return `<li>${link}${renderNode(stage)}</li>`;
     })
-    .join('');
-  return `<section class="group"><h2>${esc(track.title)}</h2><ol class="uml">${items}</ol></section>`;
+    .join("");
+  return `<section class="group"><h2>${esc(track.title)}</h2><div class="uml-scroll"><ol class="uml">${items}</ol></div></section>`;
+}
+
+/** Static documentation: how a ticket gets auto-dispatched without a goal, and how goals work. Not drift-checked — these mechanisms live in supervisor.sh/agents, not in a PIPELINES stage list. */
+function renderIntakeDocs() {
+  return `<section class="group intake-docs">
+    <h2>How tickets get picked up</h2>
+    <h3>Without a goal, a ticket only auto-starts if it is labelled <code>user-feedback</code></h3>
+    <p>The supervisor's dispatch loop normally only starts a ticket's own goal. <code>user-feedback</code> is the one exception: a ticket carrying that label is auto-dispatched even with no goal covering it. Everything else with just <code>agent-go</code> and no goal sits unclaimed until someone registers a goal for it.</p>
+    <h3>Where <code>user-feedback</code> comes from</h3>
+    <ul>
+      <li>The in-app staff feedback form &rarr; the <code>intake</code> agent labels it.</li>
+      <li>A Sentry-sourced issue &rarr; the <code>intake</code> agent labels it.</li>
+      <li>JP reports a bug or request directly to a session, not through the form or Sentry &rarr; <code>product-manager</code> labels it, the same way, when it files or refines that ticket.</li>
+      <li>A self-healing fix ticket <code>pipeline-adjudicator</code> files for a confirmed pipeline incident &rarr; the adjudicator labels it itself, so its own fixes never wait on a goal either.</li>
+    </ul>
+    <h3>What a "goal" is</h3>
+    <p>A goal only exists if someone explicitly registers one with <code>deliver.sh</code> (a milestone, a single issue, "all milestones", or the standing staff-feedback goal). Goals are never created automatically.</p>
+    <h3>How a ticket joins a goal</h3>
+    <p>Automatically, once a goal that covers it has been registered: a milestone goal covers every ticket in that milestone, a single-issue goal covers just that issue, and the standing feedback goal covers every open <code>user-feedback</code> ticket with no milestone. A ticket in an unregistered milestone is covered by nothing.</p>
+  </section>`;
 }
 
 /**
@@ -466,9 +596,10 @@ ${PIPELINES_CSS}
 </style>
 </head>
 <body>
-${renderNav('pipelines')}
+${renderNav("pipelines")}
 <h1>How tickets are routed</h1>
-${data.map(renderTrack).join('')}
+${renderIntakeDocs()}
+${data.map(renderTrack).join("")}
 </body>
 </html>`;
 }

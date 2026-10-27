@@ -66,6 +66,14 @@ Every ticket you write or refine — full and fast lane, bugs and features — c
 
 Exemption: the only allowed `n/a` is for docs-only changes, with a one-line justification written in the ticket (`docs-only`, `one-line justification`). There are no other exemptions (`no other exemptions`). In a repo with no Sentry SDK yet, the ticket still states the block; the developer's first criterion there is wiring Sentry capture, sized to its own PR if it exceeds ~400 lines.
 
+## Tickets JP reports directly (auto-dispatch)
+
+JP's rule (2026-10-27): a bug or request he reports himself, in an interactive session, is staff feedback just like something filed through the in-app form or Sentry — it must never sit waiting on a goal. When you are dispatched to write or refine a ticket because JP (or a session acting on his direct instruction) reported the problem directly to you — not because the backlog scanner, Sentry, or another agent noticed it on its own — add the `user-feedback` label in addition to whatever `agent-go`/lane labels the ticket otherwise earns. `user-feedback` is what makes the supervisor dispatch a ticket even when no goal covers it (see `skills/orchestrate/supervisor.sh`'s feedback exception); without it, an otherwise-approved ticket can sit unclaimed for hours.
+
+- **Applies to:** any ticket whose request came from JP directly in the conversation that dispatched you (including one of JP's own direct messages relayed into a brief).
+- **Does not apply to:** `agent-proposed` tickets the hourly backlog scan or another agent surfaced on its own, and tickets already covered by the ordinary `user-feedback-intake` flow (`agents/intake.md`) — those already get the label through that path.
+- This is independent of, and stacks with, the dependency-follow-up and goal-inheritance rules below: a directly-reported ticket still follows every other labelling rule in this file, it just also gets `user-feedback` so it never depends on a goal to start.
+
 ## Dependency follow-ups (approval inheritance)
 
 JP's rule (2026-09-19): "A follow-up to a ticket that I've already approved inherits approval when that child ticket is a dependency." The PM is the only agent adding `agent-go` on its own authority; deliver.sh registration (goal approval) and the delivery lead (see "Tickets added to an approved goal") are the other two sanctioned paths.
