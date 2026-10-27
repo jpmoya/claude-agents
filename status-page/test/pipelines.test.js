@@ -370,7 +370,7 @@ describe("public-page rules (leak, AC6, AC7)", () => {
   });
 });
 
-describe('existing status view unchanged (AC3)', () => {
+describe("existing status view unchanged (AC3)", () => {
   // Expected body: the `/` output after the mobile-responsive-tables change (2026-10-27), hand-embedded;
   // the only permitted difference is the added nav (markup + its CSS rules).
   const BASE_HOME = `<!doctype html>

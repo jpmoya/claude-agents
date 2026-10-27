@@ -164,7 +164,9 @@ const RUN_LAYOUT = { columns: RUN_COLUMNS, cells: runCells };
 
 /** Zips column headers onto cell values as `<td data-label="...">` — the label a narrow-screen row stacks on. */
 function tdsFor(columns, values) {
-  return values.map((c, i) => `<td data-label="${esc(columns[i] ?? '')}">${c}</td>`).join('');
+  return values
+    .map((c, i) => `<td data-label="${esc(columns[i] ?? "")}">${c}</td>`)
+    .join("");
 }
 
 function renderGroupSection(group) {
@@ -181,12 +183,17 @@ function renderGroupSection(group) {
     return `<tr class="subhead"><td colspan="${columns.length}">${esc(`${label(row)} (${row.repo}) — ${n} waiting`)}</td></tr>`;
   };
   const rows = group.rows.length
-    ? group.rows.map((row, i) => `${headerFor(row, i)}<tr>${tdsFor(columns, cells(row))}</tr>`).join('')
+    ? group.rows
+        .map(
+          (row, i) =>
+            `${headerFor(row, i)}<tr>${tdsFor(columns, cells(row))}</tr>`,
+        )
+        .join("")
     : `<tr><td colspan="${columns.length}">none</td></tr>`;
   return `<section class="group">
     <h2>${esc(group.heading)} (${group.rows.length})</h2>
     <div class="table-scroll"><table>
-      <tr class="cols">${columns.map((c) => `<th>${esc(c)}</th>`).join('')}</tr>
+      <tr class="cols">${columns.map((c) => `<th>${esc(c)}</th>`).join("")}</tr>
       <tbody>${rows}</tbody>
     </table></div>
   </section>`;
@@ -363,12 +370,14 @@ function renderGoalsSection(hosts) {
     esc(delivered(g)),
     esc(formatCet(g.last_cycle_at) || "–"),
   ];
-  const rows = goals.map((g, i) => `<tr>${tdsFor(GOAL_COLUMNS, cells(g, i))}</tr>`).join('');
+  const rows = goals
+    .map((g, i) => `<tr>${tdsFor(GOAL_COLUMNS, cells(g, i))}</tr>`)
+    .join("");
   const table =
     goals.length === 0
       ? ""
       : `<div class="table-scroll"><table>
-      <tr class="cols">${GOAL_COLUMNS.map((c) => `<th>${esc(c)}</th>`).join('')}</tr>
+      <tr class="cols">${GOAL_COLUMNS.map((c) => `<th>${esc(c)}</th>`).join("")}</tr>
       <tbody>${rows}</tbody>
     </table></div>`;
   return `<section class="group">
