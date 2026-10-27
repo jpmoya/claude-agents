@@ -408,6 +408,49 @@ test_rl_ac14_plain_run_never_touches_dead_files_and_archive_dead_never_rotates()
   rl_dead_teardown; return $r
 }
 
+# ------------------------------------------------------------------------------------------ #492 scope regression
+
+# Issue #492's safety requirement: rotate-logs.sh must never rotate/move a path tied to a specific ticket or a
+# worktree — only the three aggregate logs (supervisor.log, report-status.log, runs.jsonl, plus their numbered
+# rotations). A per-ticket stage log or a worktree file could belong to a still-OPEN issue; rotating it away would
+# defeat the issue-open guard added to sweep_stale_worktrees for the exact same reason. This locks that in as a
+# regression test rather than new cleanup logic, since the script is already safe by design (it only ever opens
+# the three aggregate paths by name — never globs a directory or reads an "issue-" / worktree path at all).
+# rl_snapshot <home> — "<path> <cksum>" for every file under <home>, one per line, sorted, excluding stderr.txt
+# (rl_run's own capture file, not something the script under test could ever touch).
+rl_snapshot() {
+  ( cd "$1" && find . -type f | sort | while read -r f; do printf '%s %s\n' "$f" "$(cksum < "$f")"; done ) | grep -v '^\./stderr.txt '
+}
+
+# AC6: rotate-logs.sh must touch ONLY the three aggregate logs (and their numbered rotations) — never a path tied
+# to a specific ticket or a worktree, which could belong to a still-OPEN issue (the exact reason sweep_stale_worktrees
+# needed its own issue-open guard in this same ticket). Proven here by a whole-$RL_HOME before/after snapshot, not
+# by spot-checking a couple of sample paths: every changed path, whatever it is, must match one of the three
+# aggregate basenames. The script is already safe by design (it only ever opens those three paths by name — never
+# globs a directory or reads an "issue-" / worktree path at all); this locks that in as a regression test.
+test_rl_issue492_rotate_logs_touches_only_the_three_aggregate_logs() {
+  rl_setup 100 12 14
+  local ticket_log="$RL_LOG/issue-492-fullstack-developer.log" wt_file="$RL_HOME/dev/repo/.worktrees/issue-492-fix/notes.log"
+  mkdir -p "$(dirname "$wt_file")"
+  rl_bytes "$ticket_log" 5000 T          # well over the 100-byte threshold, were it ever eligible
+  rl_bytes "$wt_file" 5000 W
+  rl_bytes "$RL_LOG/supervisor.log" 2000 S   # over the threshold too, so a plain run really does change something
+  local before after changed r=0
+  before=$(rl_snapshot "$RL_HOME")
+  rl_run
+  after=$(rl_snapshot "$RL_HOME")
+  changed=$(comm -3 <(printf '%s\n' "$before") <(printf '%s\n' "$after") | awk '{print $1}' | sed 's#^\./##' | sort -u)
+  assert_ne "$changed" "" "#492: a plain run with a real aggregate log over threshold must change SOMETHING (not vacuous)" || r=1
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    case "$p" in
+      logs/pipeline/supervisor.log|logs/pipeline/supervisor.log.[0-9]*|logs/pipeline/report-status.log|logs/pipeline/report-status.log.[0-9]*|.claude/pipeline/runs.jsonl|.claude/pipeline/runs.jsonl.[0-9]*) ;;
+      *) fail "#492: rotate-logs.sh touched a non-aggregate path: $p"; r=1 ;;
+    esac
+  done <<< "$changed"
+  rl_teardown; return $r
+}
+
 for t in test_rl_config_sh_carries_the_four_settings \
   test_rl_default_threshold_is_1mb \
   test_rl_ac14_supervisor_log_rotates_and_shifts_keeping_two \
@@ -425,6 +468,7 @@ for t in test_rl_config_sh_carries_the_four_settings \
   test_rl_ac14_archive_dead_moves_exactly_the_seven_and_keeps_live_files \
   test_rl_ac14_archive_dead_with_none_present_exits_0_and_creates_nothing \
   test_rl_ac14_archive_dead_second_run_same_day_moves_nothing_and_overwrites_nothing \
-  test_rl_ac14_plain_run_never_touches_dead_files_and_archive_dead_never_rotates; do
+  test_rl_ac14_plain_run_never_touches_dead_files_and_archive_dead_never_rotates \
+  test_rl_issue492_rotate_logs_touches_only_the_three_aggregate_logs; do
   run_test "$t"
 done
