@@ -21,7 +21,6 @@ const MAX_TITLE_CODE_POINTS = 140;
 const MAX_RUNS = 20;
 const MAX_COMPLETED = 10;
 const MAX_STAGING = 60;
-const MAX_APPROVED = 20;
 const MILESTONE = /^[\w .,()&/+:-]{1,60}$/;
 const RELEASE = /^v\d+\.\d+\.\d+$/;
 const MAX_GOALS = 50;
@@ -219,7 +218,7 @@ function sanitiseGoal(raw) {
   return goal;
 }
 
-function sanitiseList(raw, max) {
+function sanitiseList(raw, max = Infinity) {
   return Array.isArray(raw) ? raw.map(sanitiseListItem).filter((item) => item !== null).slice(0, max) : [];
 }
 
@@ -267,7 +266,7 @@ export function validateBeatPayload(parsedBody) {
 
   // Optional (issue #62): absent or non-array -> []; never a rejection.
   value.staging = sanitiseList(parsedBody.staging, MAX_STAGING);
-  value.approved = sanitiseList(parsedBody.approved, MAX_APPROVED);
+  value.approved = sanitiseList(parsedBody.approved); // never truncated (jpmoya/claude-agents#386, #460)
 
   // Optional (issue #197): absent or non-array -> no key. First 50 entries, then filtered.
   if (Array.isArray(parsedBody.goals)) {

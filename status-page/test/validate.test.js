@@ -667,11 +667,11 @@ describe('validateBeatPayload — staging[] / approved[] (#62 AC1)', () => {
     expect(items('staging', Array.from({ length: 60 }, (_v, i) => validStagingItem({ issue: i + 1 })))).toHaveLength(60);
   });
 
-  it('approved: 21 valid items -> the first 20 kept', () => {
-    const list = Array.from({ length: 21 }, (_v, i) => validApprovedItem({ issue: i + 1 }));
+  it('approved: never truncated — 100 valid items all kept (jpmoya/claude-agents#386, #460)', () => {
+    const list = Array.from({ length: 100 }, (_v, i) => validApprovedItem({ issue: i + 1 }));
     const out = items('approved', list);
-    expect(out).toHaveLength(20);
-    expect(out[19].issue).toBe(20);
+    expect(out).toHaveLength(100);
+    expect(out[99].issue).toBe(100);
   });
 
   it('cap counts VALID items: 5 invalid then 60 valid staging items -> 60 kept', () => {
