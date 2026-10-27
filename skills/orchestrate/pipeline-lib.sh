@@ -252,6 +252,21 @@ _remote_owner_repo() {
   case "$url" in */*) printf '%s' "$url" ;; *) return 1 ;; esac
 }
 
+# _issue_num_from <string> — the digits of an `issue-<N>` segment in <string>, matching `issue-<N>`, `issue-<N>-*`,
+# and a prefixed form `<anything>/issue-<N>[-*]` (so a branch like `fix/issue-492-retry` resolves too, not only a
+# bare `issue-492-retry`). Empty when no such segment is present, or when the captured run of characters up to the
+# next `-` is not purely digits (e.g. `issue-492b-x` resolves to nothing, not the wrong number).
+_issue_num_from() {
+  local s=${1:-} seg n
+  case "$s" in
+    */issue-*) seg="${s##*/issue-}" ;;
+    issue-*) seg="${s#issue-}" ;;
+    *) return 0 ;;
+  esac
+  n="${seg%%-*}"
+  case "$n" in ''|*[!0-9]*) ;; *) printf '%s' "$n" ;; esac
+}
+
 # sweep_stale_worktrees — cleanup_finished_worktree only removes issue-<N>-* worktrees on ticket-terminal events, so ad hoc
 # ones (release/promo/review) never get cleaned automatically; this sweeps DISPATCH_REPOS' .worktrees/ for any worktree whose
 # branch is merged into its integration branch and has no real uncommitted work, removing it (or just logging, under
@@ -259,11 +274,30 @@ _remote_owner_repo() {
 # directly, so it recognises a squash merge, which leaves no shared ancestry with the integration branch) OR the branch
 # being merge-base --is-ancestor of the integration branch (direct-push / fast-forward, no PR). Logs every decision via
 # slog, same as cleanup_finished_worktree.
+#
+# #492 issue-open guard: on top of the merge check above, a worktree/branch that maps to a GitHub issue number is
+# never removed while that issue is still OPEN — even when its PR has merged (a multi-PR ticket, or one back in a
+# fix cycle after its first PR merged, must survive a sweep). The number is resolved from EITHER the worktree
+# directory's own name (the `issue-<N>-*` / `issue-<N>` convention cleanup_finished_worktree also matches on) OR
+# the branch name (which may differ from the directory — deployer.md: "directories are issue-N-slug, branches may
+# differ" — and may itself carry a prefix, e.g. `fix/issue-492-retry`), via _issue_num_from. Checking both, not
+# just one, means a naming mismatch can only ever cause an EXTRA (harmless) gh lookup, never a missed guard. A
+# worktree/branch that maps to no issue number at all (release/promo/review/etc.) is unaffected: the merge/
+# ancestor check alone still governs it, exactly as before. The issue's state must come back an explicit
+# CLOSED/MERGED to proceed; OPEN skips, and anything else at all — a `gh` failure, empty output, "null", an
+# unrecognised state string — fails closed (never removed), same defensive stance as the rest of this function.
+# Repeated fail-closed skips in the same tick (more than one) post a single throttled Slack alert via
+# worktree_sweep_alert, so a rate-limit blip on one worktree does not page anyone but a real pattern still
+# surfaces. Every decision below is tagged release=<HEAD sha> environment=<host> route=worktree-sweep, same
+# substitute-for-Sentry observability pattern as the rest of skills/orchestrate/*.sh (migrate_legacy_runs above).
 sweep_stale_worktrees() {
   type slog >/dev/null 2>&1 || slog() { echo "$*" >&2; }
   [ "${#DISPATCH_REPOS[@]}" -gt 0 ] || return 0   # bash 3.2 (macOS) + `set -u` errors on an empty array's "${arr[@]}"
   local entry owner_repo repo_name local_path integration_branch path branch detached wt_line remote_repo
   local wt st line p first_bad ok tip fp_history pr_json merged_via_pr
+  local issue_num issue_state rel tags skip_word fail_closed_count=0
+  rel=$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse HEAD 2>/dev/null || echo unknown)
+  tags="release=$rel environment=$(pipeline_host) route=worktree-sweep"
   for entry in "${DISPATCH_REPOS[@]}"; do
     owner_repo="${entry%%:*}"; local_path="${entry#*:}"; local_path="${local_path/#\~/$HOME}"
     [ -d "$local_path/.git" ] || continue
@@ -282,7 +316,7 @@ sweep_stale_worktrees() {
     # never be swept. A read failure fails closed (never sweep this repo this tick).
     fp_history=$(git -C "$local_path" rev-list --first-parent "origin/$integration_branch" 2>/dev/null) || fp_history=""
     if [ -z "$fp_history" ]; then
-      slog "[worktree-sweep] skipped $owner_repo: cannot read origin/$integration_branch history"
+      slog "[worktree-sweep] skipped $owner_repo: cannot read origin/$integration_branch history ($tags)"
       continue
     fi
     path=""; branch=""; detached=0
@@ -298,8 +332,9 @@ sweep_stale_worktrees() {
             *) path=""; continue ;;   # the main worktree itself (repo root) — never swept
           esac
           wt="$path"; path=""
+          skip_word="skipped"; [ "${WORKTREE_SWEEP_DRY_RUN:-0}" = 1 ] && skip_word="would-skip"
           if [ "$detached" = 1 ]; then
-            slog "[worktree-sweep] skipped $wt: detached HEAD (review/scratch, not swept)"
+            slog "[worktree-sweep] skipped $wt: detached HEAD (review/scratch, not swept) ($tags)"
             continue
           fi
           [ -n "$branch" ] || continue
@@ -315,14 +350,14 @@ sweep_stale_worktrees() {
               *) merged_via_pr=1 ;;
             esac
           else
-            slog "[worktree-sweep] gh pr lookup failed for $wt ($branch, $remote_repo); falling back to ancestor check only"
+            slog "[worktree-sweep] gh pr lookup failed for $wt ($branch, $remote_repo); falling back to ancestor check only ($tags)"
           fi
           if [ "$merged_via_pr" = 1 ]; then
             : # confirmed merged via a GitHub PR (squash/rebase/merge) — a real signal, the fresh/ff guard below is
               # specifically about merge-base's false positives and does not apply here
           else
             if ! git -C "$local_path" merge-base --is-ancestor "$branch" "origin/$integration_branch" 2>/dev/null; then
-              slog "[worktree-sweep] skipped $wt: no merged PR found and not merged into origin/$integration_branch"
+              slog "[worktree-sweep] skipped $wt: no merged PR found and not merged into origin/$integration_branch ($tags)"
               continue   # not merged (or a git error) — never remove
             fi
             # A branch just cut from origin/<integration_branch>, before its agent has committed anything, is
@@ -331,16 +366,43 @@ sweep_stale_worktrees() {
             # is a fresh/never-diverged branch, or one fast-forwarded in with no side-branch commit of its own —
             # either way, nothing distinguishes "safe to delete" from "just cut, may be in use", so leave it. Only a
             # branch that was merged in as a real merge commit's side parent (not on the first-parent line) proceeds.
-            tip=$(git -C "$local_path" rev-parse "$branch" 2>/dev/null) || { slog "[worktree-sweep] skipped $wt: could not resolve $branch"; continue; }
+            tip=$(git -C "$local_path" rev-parse "$branch" 2>/dev/null) || { slog "[worktree-sweep] skipped $wt: could not resolve $branch ($tags)"; continue; }
             # A here-string, not a pipe: under `set -o pipefail` (supervisor.sh), a `printf | grep -q` pipeline can
             # SIGPIPE the writer once grep finds its match, which pipefail then reads as "no match" — silently
             # defeating this guard on a large history. <<< has no pipe, so pipefail cannot touch it.
             if grep -qxF "$tip" <<< "$fp_history"; then
-              slog "[worktree-sweep] skipped $wt: no commits of its own (fresh branch, may be in use)"
+              slog "[worktree-sweep] skipped $wt: no commits of its own (fresh branch, may be in use) ($tags)"
               continue
             fi
           fi
-          st=$(git -C "$wt" status --porcelain 2>/dev/null) || { slog "[worktree-sweep] skipped $wt: git status failed"; continue; }
+          # Issue-open guard (#492): resolve an issue number from EITHER the worktree directory's own name or the
+          # branch name (checking both only ever adds a skip, never a removal — see the function header comment);
+          # a worktree/branch mapping to no issue number at all (release/promo/review/etc.) skips this guard
+          # entirely and keeps the merge/ancestor-only behavior above, unchanged.
+          issue_num=$(_issue_num_from "${wt##*/}")
+          [ -n "$issue_num" ] || issue_num=$(_issue_num_from "$branch")
+          if [ -n "$issue_num" ]; then
+            issue_state=$(gh issue view "$issue_num" --json state --jq .state --repo "$remote_repo" 2>/dev/null)
+            case "$issue_state" in
+              [Cc][Ll][Oo][Ss][Ee][Dd]|[Mm][Ee][Rr][Gg][Ee][Dd])
+                : # confirmed closed — proceed to the uncommitted-work check below, same as any other merged branch
+                ;;
+              [Oo][Pp][Ee][Nn])
+                slog "[worktree-sweep] $skip_word $wt: issue #$issue_num is OPEN (branch $branch, $tags)"
+                continue
+                ;;
+              *)
+                # Anything else — a `gh` failure (non-zero exit), empty output, "null", or an unrecognised state
+                # string — fails closed: never remove without an explicit, confirmed-closed issue.
+                fail_closed_count=$((fail_closed_count + 1))
+                slog "[worktree-sweep] $skip_word $wt: gh issue view #$issue_num did not confirm closed (state='$issue_state'); fail-closed (branch $branch, $tags)"
+                pipeline_event worktree_sweep_gh_fail --arg level warn --arg route worktree-sweep --arg release "$rel" \
+                  --arg repo "$owner_repo" --arg branch "$branch" --argjson issue "$issue_num" 2>/dev/null || true
+                continue
+                ;;
+            esac
+          fi
+          st=$(git -C "$wt" status --porcelain 2>/dev/null) || { slog "[worktree-sweep] skipped $wt: git status failed ($tags)"; continue; }
           ok=1; first_bad=""
           if [ -n "$st" ]; then
             while IFS= read -r line; do
@@ -353,23 +415,40 @@ sweep_stale_worktrees() {
             done <<< "$st"
           fi
           if [ "$ok" -ne 1 ]; then
-            slog "[worktree-sweep] skipped $wt: uncommitted work ($first_bad)"
+            slog "[worktree-sweep] skipped $wt: uncommitted work ($first_bad) ($tags)"
             continue
           fi
           if [ "${WORKTREE_SWEEP_DRY_RUN:-0}" = 1 ]; then
-            slog "[worktree-sweep] would-remove $owner_repo $wt ($branch)"
+            slog "[worktree-sweep] would-remove $owner_repo $wt ($branch) ($tags)"
             continue
           fi
           if git -C "$local_path" worktree remove --force "$wt" 2>>"${SLOG:-/dev/null}"; then
             git -C "$local_path" branch -D "$branch" >/dev/null 2>&1 || true
-            slog "[worktree-sweep] removed $owner_repo $wt ($branch)"
+            slog "[worktree-sweep] removed $owner_repo $wt ($branch) ($tags)"
           else
-            slog "[worktree-sweep] failed to remove $wt ($branch); left in place"
+            slog "[worktree-sweep] failed to remove $wt ($branch); left in place ($tags)"
           fi
           ;;
       esac
     done < <(git -C "$local_path" worktree list --porcelain 2>/dev/null; printf '\n')
   done
+  # More than one fail-closed skip in the same tick is a real pattern (not a single rate-limit blip) — alert once.
+  if [ "$fail_closed_count" -gt 1 ]; then worktree_sweep_alert "$fail_closed_count"; fi
+  return 0   # explicit: a sweep tick with 0 or 1 fail-closed skips would otherwise leave the `if` above's own
+             # (false, non-zero) test result as this function's exit status — harmless under supervisor.sh's
+             # `set -uo pipefail` (no `-e`, and the caller doesn't branch on this call's exit), but a function
+             # whose normal, no-op outcome reads as failure is a foot-gun for the next caller that does check it.
+}
+
+# worktree_sweep_alert <count> — best-effort Slack alert (existing SLACK_WEBHOOK_URL) for #492's fail-closed path:
+# a `gh issue view` lookup failure during sweep_stale_worktrees that recurred for more than one worktree in the
+# same tick. Host and count only — no repo, branch, or issue text — avoiding alert spam on a single blip while
+# still surfacing a real pattern. Silent when no webhook is configured. Never fails the caller.
+worktree_sweep_alert() {
+  [ -n "${SLACK_WEBHOOK_URL:-}" ] || return 0
+  curl -s --max-time 10 -X POST -H 'Content-Type: application/json' \
+    --data "{\"text\":\"worktree-sweep: gh issue-open check failed (fail-closed) for ${1:-0} worktrees this tick, host $(hostname -s)\"}" \
+    "$SLACK_WEBHOOK_URL" >/dev/null 2>&1 </dev/null || true
 }
 
 # claim_winner <local_path> <issue> [owner/repo] — the optional repo reads a claim on an issue of a repo other than the
