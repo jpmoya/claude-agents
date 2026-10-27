@@ -640,3 +640,81 @@ describe("intake & auto-dispatch docs (JP 2026-10-27)", () => {
     expect(html).toContain("&rarr;");
   });
 });
+
+describe("information architecture rework (JP 2026-10-27: 'messy', needs to read for laymen)", () => {
+  it("intake is never a stage name in any track — it is a pre-stage classifier only", () => {
+    const names = PIPELINES.flatMap((t) => t.stages.map((s) => s.name));
+    expect(names).not.toContain("intake");
+  });
+
+  it("tells the top-to-bottom story: source -> classifier -> lane -> ship, naming all five sources", async () => {
+    const { html } = await getPipelines();
+    const text = textNodes(html).join(" ");
+    expect(html).toContain("The story: how a ticket gets from");
+    // the five origins named in the ticket
+    for (const needle of [
+      "staff submit it through the in-app feedback form",
+      "Sentry",
+      "backlog scan",
+      "pipeline-adjudicator",
+      "JP tells a session",
+    ]) {
+      expect(text, needle).toContain(needle);
+    }
+    // the classifier step names both agents that can do it
+    expect(text).toMatch(/intake.*product-manager|product-manager.*intake/s);
+  });
+
+  it("groups tracks under a 'normal path' heading and a 'special case' heading, normal path first", async () => {
+    const { html } = await getPipelines();
+    const normalAt = html.indexOf("The normal path for most tickets");
+    const specialAt = html.indexOf("Special cases");
+    expect(normalAt).toBeGreaterThan(-1);
+    expect(specialAt).toBeGreaterThan(-1);
+    expect(normalAt).toBeLessThan(specialAt);
+    // every track in PIPELINES renders after its own group's heading and before the next group's
+    const mainTracks = PIPELINES.filter((t) => t.group === "main");
+    const specialTracks = PIPELINES.filter((t) => t.group === "special");
+    expect(mainTracks.length).toBeGreaterThan(0);
+    expect(specialTracks.length).toBeGreaterThan(0);
+    for (const t of mainTracks) {
+      const at = html.indexOf(`id="track-${t.id}"`);
+      expect(at, t.id).toBeGreaterThan(normalAt);
+      expect(at, t.id).toBeLessThan(specialAt);
+    }
+    for (const t of specialTracks) {
+      const at = html.indexOf(`id="track-${t.id}"`);
+      expect(at, t.id).toBeGreaterThan(specialAt);
+    }
+  });
+
+  it("every track carries a one-line plain-language summary under its heading", () => {
+    for (const t of PIPELINES) {
+      expect(typeof t.summary, t.id).toBe("string");
+      expect(t.summary.length, t.id).toBeGreaterThan(10);
+    }
+  });
+
+  it("explicitly routes each intake outcome to its lane (or says it isn't in one yet)", async () => {
+    const { html } = await getPipelines();
+    const text = textNodes(html).join(" ");
+    expect(html).toContain("What intake decides, and where it lands");
+    // fast-lane-labelled form bug -> the Fast lane track, linked
+    expect(html).toContain('href="#track-fast"');
+    expect(text).toMatch(/Feedback-form bug.*Fast lane/s);
+    // needs-spec idea -> not a lane yet
+    expect(text).toMatch(/needs-spec.*not in any lane yet/s);
+    // Sentry bug never gets fast-lane and product-manager decides the lane itself
+    expect(text).toMatch(/Sentry-filed bug.*never.*fast-lane/s);
+    expect(html).toContain('href="#track-lane-rule"');
+    // a non-feedback bug (JP direct or backlog scan) never touches intake
+    expect(text).toMatch(/backlog scan.*no.*intake.*agent involved/s);
+  });
+
+  it("keeps every track's stage-diagram section intact and findable by id (release test still isolates its own section)", async () => {
+    const { html } = await getPipelines();
+    for (const t of PIPELINES) {
+      expect(html, t.id).toContain(`id="track-${t.id}"`);
+    }
+  });
+});
