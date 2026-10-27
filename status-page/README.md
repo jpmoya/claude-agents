@@ -117,7 +117,12 @@ Completed-ticket source (issue #51):
    `id`.
 2. `wrangler secret put TOKEN_MAC` and `wrangler secret put TOKEN_VM` — one bearer token per
    host. Never pass these as CLI arguments or echo them; use the interactive prompt.
-3. `wrangler deploy` to the free `*.workers.dev` subdomain (no custom domain, no paid plan).
+3. `wrangler deploy` to the free `*.workers.dev` subdomain (no custom domain, no paid plan) — a
+   one-time manual deploy to get the Worker to exist. After that, `.github/workflows/deploy-status-page.yml`
+   redeploys automatically on every push to `main` that touches `status-page/`, using a
+   `CLOUDFLARE_API_TOKEN` repo secret scoped to Account → Workers Scripts:Edit and Workers KV
+   Storage:Edit only (JP, 2026-10-27 — a merged change had sat undeployed for hours because nobody
+   remembered the manual step).
 4. Put the deployed URL in each host's `config.local.sh` as `STATUS_PUSH_URL`, and the matching
    token as `STATUS_PUSH_TOKEN` (host-side reporter, issue #10).
 
