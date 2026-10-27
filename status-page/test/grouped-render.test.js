@@ -140,7 +140,7 @@ describe('AC7 — caps and ageing in the HTML', () => {
     const html = render(mac, vm);
     expect(Number(h2('Running').exec(html)[1])).toBe(25);
     expect(count(section(html, 'Running'), /<tbody>[\s\S]*?<\/tbody>/g)).toBe(1);
-    expect(count(section(html, 'Running'), /<td>#\d+<\/td>/g)).toBe(25);
+    expect(count(section(html, 'Running'), /<td[^>]*>#\d+<\/td>/g)).toBe(25);
   });
 
 
