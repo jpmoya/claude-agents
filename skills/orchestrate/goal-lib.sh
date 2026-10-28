@@ -754,7 +754,16 @@ goal_sync() {  # registry -> local: rebuild missing caches, propagate stop/close
           jq -c --argjson p "$(printf '%s' "$block" | jq -c '.project // null')" '. + {project: $p}' "$f" > "$f.tmp" 2>/dev/null && mv "$f.tmp" "$f"
           rm -f "$f.tmp"
         fi
-        if [ "$st" = held ]; then touch "$PIPE/goal-$id.held"; else
+        # .held holds "registry" once the registry confirmed the park (goal_park after its label write, or this sync)
+        if [ "$st" = held ]; then echo registry > "$PIPE/goal-$id.held"; else
+          if [ "$(cat "$PIPE/goal-$id.held" 2>/dev/null)" = registry ]; then
+            # #514: confirmed held, no longer held in the registry = resumed, possibly by `deliver.sh resume` on the other
+            # host, which only edits the registry. Clear here what a local resume clears, or the stale streaks and the last
+            # attempt's fast .exit re-park the goal at its first decision. A park whose label write failed was never
+            # confirmed: it is lifted as before, streaks kept.
+            _goal_reset_streaks "$id" resume
+            slog "[goal] $id resumed in the registry — launch-failure and no-progress streaks cleared"
+          fi
           rm -f "$PIPE/goal-$id.held"
           # lift .stopped only when the registry itself confirmed that stop (resumed elsewhere); an unconfirmed local stop
           # whose registry write failed stays in force
@@ -855,11 +864,24 @@ $(goal_cards waiting_jp)"
   slog "[goal] $id waiting on JP ($GE_WAITING ticket(s))"
 }
 
+# _goal_reset_streaks <id> [resume] (#514) — an unheld or resumed goal starts a fresh launch-failure streak: .launchfails 0,
+# no .launch-failed, and a non-zero .exit is dropped because that attempt was judged already (left behind, the next decision
+# would count it again and the goal would get one try fewer). A clean .exit stays: it carries no failure and paces the cycle.
+# `resume` also drops what `deliver.sh resume` drops locally (.restarts .np .snap).
+_goal_reset_streaks() {
+  local p="$PIPE/goal-$1"
+  echo 0 > "$p.launchfails"; rm -f "$p.launch-failed"
+  if [ -f "$p.exit" ] && [ "$(tr -dc '0-9' < "$p.exit")" != 0 ]; then rm -f "$p.exit"; fi
+  [ "${2:-}" != resume ] || rm -f "$p.restarts" "$p.np" "$p.snap"
+  return 0
+}
+
 goal_park() {  # <id> <issue> [launch] — `launch` (#514): parked by GOAL_MAX_LAUNCH_FAILS, not by GOAL_MAX_NO_PROGRESS
   local id=$1 issue=$2 why="no progress in $GOAL_MAX_NO_PROGRESS cycles"
   [ "${3:-}" = launch ] && why="could not launch in $GOAL_MAX_LAUNCH_FAILS consecutive attempts"
   touch "$PIPE/goal-$id.held"
-  _goal_label_add "$issue" goal-held || goal_err "cannot label the registry issue of $id held"
+  if _goal_label_add "$issue" goal-held; then echo registry > "$PIPE/goal-$id.held"   # confirmed: goal_sync reads its lifting as a resume
+  else goal_err "cannot label the registry issue of $id held"; fi
   _goal_note "$issue" "**[deliver] NOTE** held: $why" || goal_err "cannot post the held note of $id"
   goal_mirror "$id" held
   if [ "${3:-}" = launch ]; then   # the launch mechanism failing is an engineering alert, not a goal that stalled
@@ -886,7 +908,7 @@ goal_tick_one() {  # <id>
         if [ "$GE_TOTAL" -gt 0 ] && [ "$GE_DELIVERED" -eq "$GE_TOTAL" ]; then goal_deliver "$id" "$issue" "$spec"; return 0; fi
         # #443: a held goal whose every open ticket waits on JP is "waiting on JP", not "no progress": it stops holding the queue line
         if [ "$GE_TOTAL" -gt 0 ] && [ "$GE_ACTIVE" -eq 0 ] && [ "$GE_WAITING" -gt 0 ]; then
-          rm -f "$PIPE/goal-$id.held" "$PIPE/goal-$id.launch-failed"; echo 0 > "$PIPE/goal-$id.np"; echo 0 > "$PIPE/goal-$id.launchfails"
+          rm -f "$PIPE/goal-$id.held"; echo 0 > "$PIPE/goal-$id.np"; _goal_reset_streaks "$id"
           _goal_label_del "$issue" goal-held
           slog "[goal] $id unheld — waiting on JP"
           goal_mirror "$id" waiting_jp "$GE_TOTAL" "$GE_DELIVERED"
@@ -894,7 +916,7 @@ goal_tick_one() {  # <id>
         fi
         new=$(printf '%s' "$GE_SNAP" | goal_snapshot); old=$(cat "$PIPE/goal-$id.snap" 2>/dev/null)
         if [ "$GE_TOTAL" -gt 0 ] && [ -n "$old" ] && [ "$new" != "$old" ]; then
-          rm -f "$PIPE/goal-$id.held" "$PIPE/goal-$id.launch-failed"; echo 0 > "$PIPE/goal-$id.np"; echo 0 > "$PIPE/goal-$id.launchfails"
+          rm -f "$PIPE/goal-$id.held"; echo 0 > "$PIPE/goal-$id.np"; _goal_reset_streaks "$id"
           _goal_label_del "$issue" goal-held
           slog "[goal] $id unheld — scope changed"
           goal_mirror "$id" active "$GE_TOTAL" "$GE_DELIVERED"; return 0
@@ -940,6 +962,15 @@ goal_tick_one() {  # <id>
       wait_secs=${BACKOFF[$idx]}
     fi
   fi
+  lf=$(cat "$PIPE/goal-$id.launchfails" 2>/dev/null); case "$lf" in ''|*[!0-9]*) lf=0 ;; esac
+  if [ -f "$PIPE/goal-$id.launch-failed" ]; then
+    # #514: goal_launch itself failed (nothing ran, .launched-at is the older attempt's): back off from that failure,
+    # TRANSIENT_BACKOFF[streak], so a short GitHub blip is ridden out instead of parking the goal within three ticks
+    idx=$lf; [ "$idx" -ge "${#TRANSIENT_BACKOFF[@]}" ] && idx=$(( ${#TRANSIENT_BACKOFF[@]} - 1 ))
+    wait_secs=${TRANSIENT_BACKOFF[$idx]}
+    em=$(file_mtime "$PIPE/goal-$id.launch-failed")
+    if [ -n "$em" ] && [ "$em" -le "$now" ]; then age=$((now - em)); fi
+  fi
   # a usage-limit exit (last launch segment only) is not a crash: wait RATE_LIMIT_BACKOFF_SECS and never count it (#417)
   seg=$(mktemp "${TMPDIR:-/tmp}/goal-exit.XXXXXX" 2>/dev/null) || seg=""
   if [ -n "$seg" ]; then
@@ -958,6 +989,8 @@ goal_tick_one() {  # <id>
     goal_deliver "$id" "$issue" "$spec"; return 0
   fi
   if [ "$GE_TOTAL" -gt 0 ] && [ "$GE_ACTIVE" -eq 0 ] && [ "$GE_WAITING" -gt 0 ]; then
+    # #514: waiting on JP is not a launch failure: the streak ends here, as on the #443 unhold path
+    rm -f "$PIPE/goal-$id.launchfails" "$PIPE/goal-$id.launch-failed"
     goal_mirror "$id" waiting_jp "$GE_TOTAL" "$GE_DELIVERED"
     goal_waiting "$id" "$issue" "$spec"; return 0
   fi
@@ -972,7 +1005,6 @@ goal_tick_one() {  # <id>
   new=$(printf '%s' "$GE_SNAP" | goal_snapshot)
   old=$(cat "$PIPE/goal-$id.snap" 2>/dev/null)
   np=$(cat "$PIPE/goal-$id.np" 2>/dev/null); case "$np" in ''|*[!0-9]*) np=0 ;; esac
-  lf=$(cat "$PIPE/goal-$id.launchfails" 2>/dev/null); case "$lf" in ''|*[!0-9]*) lf=0 ;; esac
   if [ -n "$lk" ]; then   # usage-limit exit: np and snap stay as they were (launchfails too)
     slog "[goal] $id rate-limited limit=$lk backoff=${RATE_LIMIT_BACKOFF_SECS}s"
   elif [ -f "$PIPE/goal-$id.launch-failed" ] || [ "$fast" -eq 1 ]; then

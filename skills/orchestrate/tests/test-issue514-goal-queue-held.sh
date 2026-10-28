@@ -5,6 +5,9 @@
 #   AC5 a stalled cycle that ran >= MIN_RUN_SECS still parks via the np path ("no progress")
 #   AC6 an attempt that ran resets .launchfails to 0                AC7 an unreadable registry goal still holds the line
 #   Observability: the launch-failure park logs release / host / route=goal-queue and posts one #engineering alert.
+#   Review fixes (PR #526): a resume run on the other host clears the owner's streaks at its next sync; an unconfirmed
+#   local park is lifted without clearing them; an unhold does not re-judge the parked attempt; waiting on JP ends the
+#   streak; a failed goal_launch backs off TRANSIENT_BACKOFF[streak] (in the AC4 launch-error test).
 # Note on AC3 wording: "holds the line exactly as today" — today delivered / stopped / waiting_jp are EXCLUDED from the
 # head-of-line check (a goal behind them can start, see test_zq_waiting_jp_releases_the_next_goal_only). The tests pin that
 # unchanged exclusion; active and unreadable are the states that hold the line, before and after this change.
@@ -201,20 +204,26 @@ EOF
 
 # goal_launch itself fails (it cannot load the goal from the registry: it returns non-zero before any process starts).
 # Hand arithmetic: launched 3600 s ago, clean exit 1300 s ago -> past GOAL_CYCLE_SECS 1200 -> decision 1 (a cycle that ran:
-# np path, no .snap yet -> np 0). Its launch fails; nothing new is written (.exit, .launched-at stay), so every later tick
-# is a decision again (clean exit 1300 s after a launch 3600 s ago). Decisions 2 and 3 count launch failures 1 and 2
-# (np stays 0) and their launches fail again; decision 4 counts the third and parks. Before #514 these decisions gave
-# np 1, 2, 3 and parked with the "no progress" note.
+# np path, no .snap yet -> np 0). Its launch fails and leaves .launch-failed (.exit, .launched-at stay). Review fix: the
+# next decision waits TRANSIENT_BACKOFF[streak] from that marker — streak 0, 1, 2 -> 300, 600, 1200 s — so a tick right
+# after a failure (marker ~1 s old) is no decision, and with the marker aged 1300 s (>= 100 s past every wait) it is.
+# Decisions 2 and 3 count launch failures 1 and 2 (np stays 0) and their launches fail again; decision 4 counts the third
+# and parks. Before #514 these decisions gave np 1, 2, 3 and parked with the "no progress" note.
 test_t514_ac4_goal_launch_errors_park_as_could_not_launch() {
   gs_env
   gs_own "$GS_ID_MS12" 50 "$GS_SPEC_MS12" 3600 0 1300
   t514_fail_goal_find
-  local k lf np held=absent
+  local k lf np held=absent was
   gs_tick; gs_settle
   np=$(gs_file "$GS_ID_MS12" np); lf=$(gs_file "$GS_ID_MS12" launchfails)
   assert_eq "$np" "0" "AC4 launch error: decision 1 is a cycle that ran (np path)" || { gs_cleanup; return 1; }
   assert_eq "$lf" "MISSING" "AC4 launch error: decision 1 counts no launch failure yet" || { gs_cleanup; return 1; }
   for k in 1 2; do
+    was=$lf
+    gs_tick; gs_settle   # inside the backoff: no decision
+    lf=$(gs_file "$GS_ID_MS12" launchfails)
+    assert_eq "$lf" "$was" "AC4 launch error: no decision within TRANSIENT_BACKOFF of failed launch $k" || { gs_cleanup; return 1; }
+    gs_touch_ago "$GS_PIPE/goal-$GS_ID_MS12.launch-failed" 1300
     gs_tick; gs_settle
     np=$(gs_file "$GS_ID_MS12" np); lf=$(gs_file "$GS_ID_MS12" launchfails)
     [ -e "$GS_PIPE/goal-$GS_ID_MS12.held" ] && held=present
@@ -222,6 +231,7 @@ test_t514_ac4_goal_launch_errors_park_as_could_not_launch() {
     assert_eq "$np" "0" "AC4 launch error: np unchanged after failed launch $k" || { gs_cleanup; return 1; }
     assert_eq "$held" "absent" "AC4 launch error: not parked after failure $k" || { gs_cleanup; return 1; }
   done
+  gs_touch_ago "$GS_PIPE/goal-$GS_ID_MS12.launch-failed" 1300
   gs_tick; gs_settle
   [ -e "$GS_PIPE/goal-$GS_ID_MS12.held" ] && held=present
   local c cl np_notes
@@ -296,6 +306,138 @@ test_t514_ac6_an_attempt_that_ran_resets_launchfails() {
   assert_eq "$c" "3" "AC6: every decision relaunched (nothing parked)" || return 1
 }
 
+# ---------------------------------------------------------------- review fixes (PR #526) -------------------------
+
+# t514_resume_on_host_b — run the real `deliver.sh resume <ms-12>` as the OTHER host: hostname Host-B, its own PIPE / LOGDIR,
+# the same fake GitHub (the gh fake keeps its store next to itself in $GS_BIN). The goal is pinned to host-a, so host B
+# only edits the registry (reopen, drop goal-held / goal-stopped) and prints "pinned to". Prints deliver.sh's output.
+t514_resume_on_host_b() {
+  local b="$GS_HOME/host-b-bin"
+  mkdir -p "$b" "$GS_HOME/host-b-pipe"
+  printf '#!/bin/bash\necho Host-B\n' > "$b/hostname"; chmod +x "$b/hostname"
+  ( cd "$GS_HOME" && env HOME="$GS_HOME" PATH="$b:$GS_BIN:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" \
+      PIPE="$GS_HOME/host-b-pipe" QUEUE="$GS_HOME/host-b-pipe/queue" LOGDIR="$GS_HOME/logs/host-b" \
+      bash "$GS_TREE/skills/orchestrate/deliver.sh" resume "$GS_ID_MS12" 2>&1 </dev/null )
+}
+
+# HIGH: a goal pinned to host-a (this host) is parked for launch failures, then resumed from host B. Host A must clear its
+# own streaks at its next sync, not re-park the goal on its stale .launchfails and the last attempt's fast .exit.
+# Hand arithmetic: three fast exits (launched 2050 s ago, exited 2000 s ago, run 50 s < 180) park it exactly as in AC4:
+# 2 launches, .launchfails 3, one held note, one alert; the third fast .exit stays behind. After the resume, host A's tick:
+# with the streaks cleared there is no .exit and no .restarts, so the wait is BACKOFF[0] 120 s from a launch 2050 s ago ->
+# a decision that is not a launch failure -> launchfails 0 and the 3rd launch. Before this fix the same tick saw run 50 s
+# (fast), counted launch failure 4 and parked again: a second held note, a second alert and no launch.
+test_t514_review_resume_from_the_other_host_clears_the_owner_streaks() {
+  gs_env; t514_slack
+  gs_own "$GS_ID_MS12" 50 "$GS_SPEC_MS12" 2050 1 2000
+  local k
+  for k in 1 2 3; do
+    [ "$k" -gt 1 ] && gs_launch_state "$GS_ID_MS12" 2050 1 2000
+    gs_tick; gs_settle
+  done
+  local held0=absent lf0 c0 alerts0 lab0=no
+  [ -e "$GS_PIPE/goal-$GS_ID_MS12.held" ] && held0=present
+  lf0=$(gs_file "$GS_ID_MS12" launchfails); c0=$(gs_claude_count)
+  alerts0=$(grep -c 'chat.postMessage' "$GS_BIN/curl-calls.log" 2>/dev/null || echo 0)
+  gs_has_label 50 goal-held && lab0=yes
+  local out
+  out=$(t514_resume_on_host_b)
+  local lab_b=no st_b
+  gs_has_label 50 goal-held && lab_b=yes; st_b=$(gs_reg_state 50)
+  gs_tick; gs_wait_claude 3; gs_settle
+  local held1=absent lf1 c1 alerts1 cl1 log b_launches
+  [ -e "$GS_PIPE/goal-$GS_ID_MS12.held" ] && held1=present
+  lf1=$(gs_file "$GS_ID_MS12" launchfails); c1=$(gs_claude_count)
+  alerts1=$(grep -c 'chat.postMessage' "$GS_BIN/curl-calls.log" 2>/dev/null || echo 0)
+  cl1=$(gs_reg_comment_count 50 'held: could not launch')
+  log=$(gs_log)
+  b_launches=$(ls "$GS_HOME/host-b-pipe"/goal-*.pid 2>/dev/null | wc -l | tr -d ' ')
+  gs_cleanup
+  # the park this test starts from
+  assert_eq "$held0" "present" "review HIGH setup: parked on host A" || return 1
+  assert_eq "$lf0" "3" "review HIGH setup: .launchfails 3 on host A" || return 1
+  assert_eq "$lab0" "yes" "review HIGH setup: goal-held on the registry issue" || return 1
+  assert_eq "$c0" "2" "review HIGH setup: 2 launches before the park" || return 1
+  assert_eq "$alerts0" "1" "review HIGH setup: one alert for the streak" || return 1
+  # the resume ran on host B and only touched the registry
+  assert_contains "$out" "pinned to host-a" "review HIGH: host B does not run a goal pinned to host-a" || return 1
+  assert_eq "$lab_b" "no" "review HIGH: host B's resume dropped goal-held" || return 1
+  assert_eq "$st_b" "open" "review HIGH: registry issue open" || return 1
+  assert_eq "$b_launches" "0" "review HIGH: nothing launched on host B" || return 1
+  # host A, the owner, picks the resume up at its next sync
+  assert_eq "$held1" "absent" "review HIGH: host A unheld the goal" || return 1
+  assert_eq "$lf1" "0" "review HIGH: host A's launch-failure streak cleared" || return 1
+  assert_eq "$c1" "3" "review HIGH: host A relaunched the resumed goal on its first decision" || return 1
+  assert_eq "$cl1" "1" "review HIGH: no second 'could not launch' park" || return 1
+  assert_eq "$alerts1" "1" "review HIGH: no second #engineering alert" || return 1
+  printf '%s\n' "$log" | grep -qF "[goal] $GS_ID_MS12 resumed in the registry" \
+    || { fail "review HIGH: no 'resumed in the registry' slog line on host A in:
+$log"; return 1; }
+}
+
+# A local park whose label write never reached the registry is not a resume: the sync lifts .held as it always did, but the
+# streaks stay (so the goal re-parks at its next decision instead of getting fresh tries). Hand arithmetic: launched 100 s
+# ago, exited 50 s ago (fast) -> TRANSIENT_BACKOFF[0] 300 s not reached -> no decision this tick.
+test_t514_review_unconfirmed_park_is_lifted_without_clearing_streaks() {
+  gs_env
+  gs_own "$GS_ID_MS12" 50 "$GS_SPEC_MS12" 100 1 50
+  touch "$GS_PIPE/goal-$GS_ID_MS12.held"; echo 2 > "$GS_PIPE/goal-$GS_ID_MS12.launchfails"
+  gs_tick; gs_settle
+  local held=absent lf c log
+  [ -e "$GS_PIPE/goal-$GS_ID_MS12.held" ] && held=present
+  lf=$(gs_file "$GS_ID_MS12" launchfails); c=$(gs_claude_count); log=$(gs_log)
+  gs_cleanup
+  assert_eq "$held" "absent" "review: an unconfirmed local park is lifted by the sync (unchanged)" || return 1
+  assert_eq "$lf" "2" "review: and its launch-failure streak is kept" || return 1
+  assert_eq "$c" "0" "review: no decision inside the backoff" || return 1
+  printf '%s\n' "$log" | grep -qF "resumed in the registry" && { fail "review: an unconfirmed park was read as a resume"; return 1; }
+  return 0
+}
+
+# The local "scope changed" unhold: the goal gets its full GOAL_MAX_LAUNCH_FAILS tries, so the last attempt's fast .exit
+# (already judged when it was parked) must not count again. Hand arithmetic: parked with .launchfails 3 and a fast .exit
+# (launched 2050 s ago, exited 2000 s ago). Tick 1: the stored snapshot differs from the live scope -> unheld. Tick 2: no
+# non-zero .exit left -> BACKOFF[0] 120 s from the launch 2050 s ago -> a decision that is no launch failure -> launchfails 0
+# and a launch. Before this fix tick 2 counted the old fast exit again (launchfails 1).
+test_t514_review_scope_unhold_does_not_rejudge_the_parked_attempt() {
+  gs_env
+  gs_own "$GS_ID_MS12" 50 "$GS_SPEC_MS12" 2050 1 2000
+  gs_reg 50 "$GS_SPEC_MS12" "$GS_ID_MS12" host-a held
+  echo registry > "$GS_PIPE/goal-$GS_ID_MS12.held"; echo 3 > "$GS_PIPE/goal-$GS_ID_MS12.launchfails"
+  echo "stale snapshot" > "$GS_PIPE/goal-$GS_ID_MS12.snap"
+  gs_tick; gs_settle
+  local held=absent lf1 c1
+  [ -e "$GS_PIPE/goal-$GS_ID_MS12.held" ] && held=present
+  lf1=$(gs_file "$GS_ID_MS12" launchfails); c1=$(gs_claude_count)
+  gs_tick; gs_wait_claude 1; gs_settle
+  local lf2 c2
+  lf2=$(gs_file "$GS_ID_MS12" launchfails); c2=$(gs_claude_count)
+  gs_cleanup
+  assert_eq "$held" "absent" "review: scope change unholds the goal" || return 1
+  assert_eq "$lf1" "0" "review: the unhold resets the launch-failure streak" || return 1
+  assert_eq "$c1" "0" "review: the unholding tick does not launch" || return 1
+  assert_eq "$lf2" "0" "review: the parked attempt's fast exit is not counted a second time" || return 1
+  assert_eq "$c2" "1" "review: the next decision launches" || return 1
+}
+
+# MEDIUM: a decision that ends waiting on JP ends the launch-failure streak. Hand arithmetic: 101 carries DEPLOYED TO
+# STAGING (waiting on JP), 102 is closed, 103 is a PR -> 0 active, 1 waiting. Launched 2050 s ago, fast exit 2000 s ago ->
+# TRANSIENT_BACKOFF[0] 300 s passed -> a decision, which takes the waiting-on-JP branch. Before this fix .launchfails kept 2.
+test_t514_review_waiting_on_jp_ends_the_launch_failure_streak() {
+  gs_env
+  gs_comment 101 $'**[deployer] DEPLOYED TO STAGING**\nstaging up'
+  gs_own "$GS_ID_MS12" 50 "$GS_SPEC_MS12" 2050 1 2000
+  echo 2 > "$GS_PIPE/goal-$GS_ID_MS12.launchfails"
+  gs_tick; gs_settle
+  local lab=no lf c
+  gs_has_label 50 goal-waiting-jp && lab=yes
+  lf=$(gs_file "$GS_ID_MS12" launchfails); c=$(gs_claude_count)
+  gs_cleanup
+  assert_eq "$lab" "yes" "review MEDIUM: the decision ended waiting on JP" || return 1
+  assert_eq "$c" "0" "review MEDIUM: nothing launched while waiting on JP" || return 1
+  case "$lf" in 0|MISSING) ;; *) fail "review MEDIUM: .launchfails is $lf after a waiting-on-JP decision (want 0 or none)"; return 1 ;; esac
+}
+
 echo "-- goal queue held / launch failures (#514)"
 run_test test_t514_ac1_held_goal_does_not_hold_the_line
 run_test test_t514_ac2_two_held_goals_do_not_hold_the_line
@@ -306,4 +448,8 @@ run_test test_t514_ac4_fast_exits_park_as_could_not_launch
 run_test test_t514_ac4_goal_launch_errors_park_as_could_not_launch
 run_test test_t514_ac5_stalled_cycles_still_park_via_np
 run_test test_t514_ac6_an_attempt_that_ran_resets_launchfails
+run_test test_t514_review_resume_from_the_other_host_clears_the_owner_streaks
+run_test test_t514_review_unconfirmed_park_is_lifted_without_clearing_streaks
+run_test test_t514_review_scope_unhold_does_not_rejudge_the_parked_attempt
+run_test test_t514_review_waiting_on_jp_ends_the_launch_failure_streak
 gs_tree_cleanup
