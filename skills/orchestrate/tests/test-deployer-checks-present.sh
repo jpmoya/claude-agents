@@ -82,6 +82,9 @@ test_dcp_unconditional_skipped_is_ci_red() {
   assert_contains "$gate" "\`scripts/ci-changes.sh\`" "editing the path classifier voids the skip licence" || return 1
   assert_contains "$gate" "\`ci_red\` with \`<check> skipped; success required\`" "unlicensed skip is ci_red" || return 1
   assert_contains "$gate" "\`if: false\` on a gate must never read as a pass" "if:false case named" || return 1
+  # Only checks a PR's workflow YAML can disable lose skipped-as-pass; a non-Actions app check keeps it.
+  assert_contains "$gate" "a GitHub Actions check that maps to nothing" "unmapped Actions check skip is ci_red" || return 1
+  assert_contains "$gate" "A check from a non-Actions app" "non-Actions app checks keep skipped-as-pass" || return 1
   floor=$(dcp_gate | grep -F 'Present floor')
   assert_contains "$floor" "\`unit-tests\`, \`gitleaks\`, \`Vitest\` and \`Quality\` must be \`success\`" "unconditional floor jobs need success" || return 1
 }
