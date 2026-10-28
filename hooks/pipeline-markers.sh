@@ -93,8 +93,30 @@ autoretry_note_re() {  # regex (jq oniguruma + gh --jq RE2) for the first line o
 }
 
 # decision_resolves_id <comment-body> → prints the numeric issuecomment id named by the body's single `Resolves:` target, exit 0;
-# prints nothing and exits 1 when none / ambiguous / quoted-only (claude-agents#523). STUB: the developer replaces this.
+# prints nothing and exits 1 when none / ambiguous / malformed / quoted-only (claude-agents#523). Position-independent: any line
+# after line 1, CRLF-safe, `>`-quoted lines ignored; /pull/N#issuecomment-X and /issues/N#issuecomment-X name the same target.
+# Ambiguous or malformed targets are logged via slog (release sha, host, route, comment ids — never body text) when slog exists.
 decision_resolves_id() {
-  echo "NotImplemented: decision_resolves_id" >&2
-  return 2
+  local body=$1 line n=0 t id ids="" bad=0 sha host root
+  while IFS= read -r line || [ -n "$line" ]; do
+    n=$((n+1)); line=${line%$'\r'}
+    [ "$n" -gt 1 ] || continue
+    [[ "$line" =~ ^[[:space:]]*\> ]] && continue
+    [[ "$line" =~ ^Resolves:[[:space:]]*([^[:space:]]+) ]] || continue
+    t=${BASH_REMATCH[1]}
+    if [[ "$t" =~ issuecomment-([0-9]+) ]]; then
+      id=${BASH_REMATCH[1]}
+      case " $ids " in *" $id "*) ;; *) ids="${ids:+$ids }$id" ;; esac
+    else bad=$((bad+1)); fi
+  done <<< "$body"
+  set -- $ids
+  if [ "$#" -eq 1 ] && [ "$bad" -eq 0 ]; then printf '%s\n' "$1"; return 0; fi
+  if [ "$#" -gt 1 ] || [ "$bad" -gt 0 ]; then
+    if declare -F slog >/dev/null 2>&1; then
+      root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+      sha=$(git -C "$root" rev-parse --short=7 HEAD 2>/dev/null); host=$(hostname -s 2>/dev/null)
+      slog "orchestrator-decision release=${sha:-unknown} host=${host:-unknown} ambiguous/malformed Resolves: ids=[${ids// /,}] malformed=$bad"
+    fi
+  fi
+  return 1
 }

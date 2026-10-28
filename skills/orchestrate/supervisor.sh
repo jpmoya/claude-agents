@@ -478,13 +478,13 @@ terminal_kind() {
 # delegated decision, 1 otherwise (claude-agents#89). All must hold: the BLOCKED is an infra-planner/operator one (not
 # "Held: blocked by", not JP-only: prod/spend/secret/external comms); the issue body has a line exactly
 # `Scope: staging-only`; the latest PLAN READY has no prod target step; a later `[delivery-lead]` (or legacy `[project-manager]`) `DECISION`/`JP CONFIRMED`
-# has line 2 `Resolves: <that url>`.
+# has a `Resolves:` line (any position, see decision_resolves_id) naming that comment.
 infra_staging_only() {
-  local owner_repo=$1 issue=$2 url=$3 json
+  local owner_repo=$1 issue=$2 url=$3 json want cand
+  want=${url##*issuecomment-}; [[ "$want" =~ ^[0-9]+$ ]] || return 1
   json=$(gh issue view "$issue" --repo "$owner_repo" --json body,comments 2>/dev/null) || return 1
   printf '%s' "$json" | jq -e --arg url "$url" '
     def l1: (.body | split("\n")[0] | rtrimstr("\r"));
-    def l2: (.body | split("\n")[1] // "" | rtrimstr("\r"));
     ([.body | split("\n")[] | rtrimstr("\r") | select(. == "Scope: staging-only")] | length > 0) as $scoped
     | (.comments | map(select(.url == $url)) | first) as $b
     | if ($scoped | not) or $b == null then false else
@@ -492,10 +492,17 @@ infra_staging_only() {
       | ($b.body | test("held: blocked by|\\bprod(uction)?\\b|\\bspend|\\bsecret|who gets access|external communication"; "i") | not) as $safe
       | ([.comments[] | select(l1 | test("\\[infra-planner\\] PLAN READY"))] | last) as $plan
       | (($plan == null) or ($plan.body | test("(target|environment|env)\\s*:\\s*prod|prod step"; "i") | not)) as $planok
-      | ([.comments[] | select((l1 == "**[delivery-lead] DECISION**" or l1 == "**[delivery-lead] JP CONFIRMED**"
-               or l1 == "**[project-manager] DECISION**" or l1 == "**[project-manager] JP CONFIRMED**")   # legacy spelling
-            and l2 == ("Resolves: " + $url) and .createdAt > $b.createdAt)] | length > 0) as $dec
-      | $kind and $safe and $planok and $dec end' >/dev/null 2>&1
+      | $kind and $safe and $planok end' >/dev/null 2>&1 || return 1
+  # a later delegated decision whose Resolves: target (position-independent, shared helper) is this BLOCKED
+  while IFS= read -r cand; do
+    [ "$(decision_resolves_id "$(printf '%s' "$cand" | base64 -d)")" = "$want" ] && return 0
+  done < <(printf '%s' "$json" | jq -r --arg url "$url" '
+    def l1: (.body | split("\n")[0] | rtrimstr("\r"));
+    (.comments | map(select(.url == $url)) | first) as $b
+    | .comments[] | select((l1 == "**[delivery-lead] DECISION**" or l1 == "**[delivery-lead] JP CONFIRMED**"
+        or l1 == "**[project-manager] DECISION**" or l1 == "**[project-manager] JP CONFIRMED**")   # legacy spelling
+        and .createdAt > $b.createdAt) | .body | @base64' 2>/dev/null)
+  return 1
 }
 
 slack_thread_for() {  # <owner/repo> <issue> → "<channel> <ts>" from the last "**[pipeline-bridge] NOTE** slack-thread: <channel>:<ts>" comment, only if <channel> is $SLACK_ENGINEERING_CHANNEL; else nothing
