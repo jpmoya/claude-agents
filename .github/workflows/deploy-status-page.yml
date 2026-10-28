@@ -43,7 +43,11 @@ jobs:
       - name: Deploy to Cloudflare Workers
         uses: cloudflare/wrangler-action@v3
         with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          # Scoped API tokens kept failing wrangler's /memberships auth check even with
+          # Memberships:Read + User Details:Read added (2026-10-28). Global API Key has
+          # blanket account access and needs no permission-group configuration at all.
+          apiKey: ${{ secrets.CLOUDFLARE_API_KEY }}
+          email: ${{ secrets.CLOUDFLARE_EMAIL }}
           workingDirectory: status-page
           # Pinned: wrangler-action's own default (3.90.0) predates wrangler.jsonc support,
           # which fails with "Missing entry-point" even though main is set correctly (2026-10-27).
