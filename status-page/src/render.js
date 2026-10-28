@@ -625,7 +625,7 @@ function renderIntakeDocs() {
     <h3>What a "goal" is</h3>
     <p>A goal only exists if someone explicitly registers one with <code>deliver.sh</code> (a milestone, a single issue, "all milestones", or the standing staff-feedback goal). Goals are never created automatically.</p>
     <h3>How a ticket joins a goal</h3>
-    <p>Automatically, once a goal that covers it has been registered: a milestone goal covers every ticket in that milestone, a single-issue goal covers just that issue, and the standing feedback goal covers every open <code>user-feedback</code> ticket that no other goal covers. A ticket in an unregistered milestone is covered by nothing.</p>
+    <p>Automatically, once a goal that covers it has been registered: a milestone goal covers every ticket in that milestone, a single-issue goal covers just that issue, and the standing feedback goal covers every open <code>user-feedback</code> ticket that no other goal covers. Stopping a goal does not hand its tickets to the feedback goal: they wait until JP releases them (<code>deliver.sh release</code>). A ticket in an unregistered milestone is covered by nothing.</p>
   </section>`;
 }
 
