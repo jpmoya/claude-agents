@@ -89,7 +89,7 @@ check_overlap() {
 }
 
 clear_stale_goal_state() {  # <id>: drop local stop/held/retry state left by an earlier goal of the same id (#224)
-  rm -f "$PIPE/goal-$1".stopped "$PIPE/goal-$1".held "$PIPE/goal-$1".restarts "$PIPE/goal-$1".np "$PIPE/goal-$1".snap
+  rm -f "$PIPE/goal-$1".stopped "$PIPE/goal-$1".held "$PIPE/goal-$1".restarts "$PIPE/goal-$1".np "$PIPE/goal-$1".snap "$PIPE/goal-$1".launchfails "$PIPE/goal-$1".launch-failed
 }
 
 write_cache() {  # <id> <block json> <issue number>
@@ -473,7 +473,7 @@ cmd_resume() {
   check_overlap "$spec" "$id" "$issue"
   set_state "$issue" open
   del_label "$issue" goal-stopped; del_label "$issue" goal-held
-  rm -f "$PIPE/goal-$id".stopped "$PIPE/goal-$id".held "$PIPE/goal-$id".restarts "$PIPE/goal-$id".np "$PIPE/goal-$id".snap
+  rm -f "$PIPE/goal-$id".stopped "$PIPE/goal-$id".held "$PIPE/goal-$id".restarts "$PIPE/goal-$id".np "$PIPE/goal-$id".snap "$PIPE/goal-$id".launchfails "$PIPE/goal-$id".launch-failed
   if [ -z "$host" ] && [ "$here" != 1 ]; then   # stopped while still queued (#320): back in the queue, no host yet
     add_label "$issue" goal-queued
     echo "resumed $id (issue #$issue); queued again"
