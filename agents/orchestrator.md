@@ -373,7 +373,7 @@ for i in $(seq 1 36); do
 done
 ```
 
-**Stage caps** (process alive, no marker): reviewers, infra-reviewer **10 min**; deployer **45 min** (above its 30 min pending-checks wait cap); product-manager, ux-flow-designer, infra-planner **15 min**; test-writer, fullstack-developer (and fix cycles), ui-ux-designer, infra-operator **30 min**.
+**Stage caps** (process alive, no marker): reviewers, infra-reviewer **10 min**; deployer **45 min** (its 30 min pending-checks wait + ~10 min post-wait work + 5 min slack; raise only with `agents/deployer.md`'s wait cap); product-manager, ux-flow-designer, infra-planner **15 min**; test-writer, fullstack-developer (and fix cycles), ui-ux-designer, infra-operator **30 min**.
 
 When the wait ends without a marker:
 

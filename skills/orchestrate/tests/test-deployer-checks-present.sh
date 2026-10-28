@@ -1,6 +1,7 @@
 # Issue #156 regression guard: an absent floor check (never ran, queued) is not "not failing" — the floor must be
-# PRESENT and passing on the PR head. Fix4: which checks block is read from the repo's workflow files (a job-level
-# `continue-on-error: true` on base AND head = advisory) and from GitHub's required checks, not from a hand list.
+# PRESENT and passing on the PR head. Fix4: which checks block is read from the repo's workflow files, anchored on
+# the BASE copy (only a job already `continue-on-error: true` on the base is advisory; only a job with a base `if:`
+# may pass as `skipped`) and from GitHub's required checks, not from a hand list.
 # Reads agents/deployer.md (and orchestrator.md's stage cap line) only; no network.
 
 HERE_DCP=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -36,21 +37,50 @@ test_dcp_floor_excludes_advisory_legacy_readers() {
 test_dcp_advisory_rule_reads_workflow_at_head() {
   local gate; gate=$(dcp_gate)
   assert_contains "$gate" "\`continue-on-error: true\`" "advisory rule" || return 1
-  assert_contains "$gate" "**both on the base branch and at the PR head**" "advisory needs the flag on base and head" || return 1
-  # a pull_request run uses the PR's own workflow copy: reading the head alone would let a PR exempt its own red gate
+  # a pull_request run uses the PR's own workflow copy: the exemption is anchored on the base copy, never the head's
+  assert_contains "$gate" "anchored on the **base branch's copy**" "every rule is anchored on the base copy" || return 1
+  assert_contains "$gate" "**already advisory on the base before this PR**" "only a job advisory on the base can be advisory" || return 1
   assert_contains "$gate" "contents/<path>?ref=<base>" "advisory rule reads the base copy" || return 1
-  assert_contains "$gate" "?ref=<headRefOid>" "advisory rule reads the head copy" || return 1
-  assert_contains "$gate" "never for the base read" "run-success fallback cannot replace the base read" || return 1
+  assert_contains "$gate" "?ref=<headRefOid>" "a PR that changed the workflow file has its head copy compared" || return 1
+  assert_contains "$gate" "never evidence on its own" "failed-job/successful-run pattern is not evidence (the run used the PR's YAML)" || return 1
+  assert_not_contains "$gate" "may stand in for" "no run-level fallback in place of a YAML read" || return 1
   assert_contains "$gate" "never waited on, never blocking" "advisory checks are excluded from waiting too" || return 1
   assert_contains "$gate" "never a check GitHub requires" "advisory never overrides a GitHub-required check" || return 1
   assert_contains "$gate" "A check you cannot prove advisory is a gate" "unknown is never tolerated" || return 1
+}
+
+# Review finding (#520): matching by check name alone let a PR rename its own gate (`name:` or key) to an advisory
+# job's name and exempt itself. Identity is the base job key: exactly one job in each copy, same key, and a job the
+# PR removes or renames is a BLOCK (its check would just vanish from the head, invisible to the catch-all).
+test_dcp_advisory_rename_is_not_advisory() {
+  local gate; gate=$(dcp_gate)
+  assert_contains "$gate" "**Map each check to its base job**" "checks are mapped to a base job, not matched by name" || return 1
+  assert_contains "$gate" "exactly one job of the base copy has that check name" "unique base match" || return 1
+  assert_contains "$gate" "exactly one head job with that check name, under the same key" "head job must keep the base key" || return 1
+  assert_contains "$gate" "renames a gate (key or \`name:\`) to an advisory job's name, does not exempt its own red check" "rename case" || return 1
+  assert_contains "$gate" "removed or renamed by this PR" "a vanished gate job blocks" || return 1
+  assert_contains "$gate" "**When \`gh pr diff <N> --name-only\` lists that workflow file**" "head copy read when the PR changed the file" || return 1
 }
 
 test_dcp_required_and_skipped() {
   local gate; gate=$(dcp_gate)
   assert_contains "$gate" "branches/<base>/protection" "required checks read from branch protection" || return 1
   assert_contains "$gate" "rules/branches/<base>" "required checks read from rulesets" || return 1
-  assert_contains "$gate" "\`success\` or \`skipped\`" "path-gated floor jobs that skip are not a block" || return 1
+  assert_contains "$gate" "**\`skipped\` passes only for a job that is conditional by design.**" "skip rule" || return 1
+  assert_contains "$gate" "or \`skipped\` only where the skip rule above allows it" "floor accepts skipped only via the skip rule" || return 1
+  assert_not_contains "$gate" "completed \`success\`, \`skipped\` or \`neutral\`" "catch-all no longer accepts any skipped" || return 1
+}
+
+# Review finding (#520): `if: false` added to `unit-tests` reports `skipped`; that must never pass the gate.
+test_dcp_unconditional_skipped_is_ci_red() {
+  local gate floor; gate=$(dcp_gate)
+  assert_contains "$gate" "maps to a base job with a job-level \`if:\`" "skip licence comes from the base copy" || return 1
+  assert_contains "$gate" "\`if:\` and \`needs:\` are text-identical to the base's" "a PR cannot rewrite a gate's condition" || return 1
+  assert_contains "$gate" "\`scripts/ci-changes.sh\`" "editing the path classifier voids the skip licence" || return 1
+  assert_contains "$gate" "\`ci_red\` with \`<check> skipped; success required\`" "unlicensed skip is ci_red" || return 1
+  assert_contains "$gate" "\`if: false\` on a gate must never read as a pass" "if:false case named" || return 1
+  floor=$(dcp_gate | grep -F 'Present floor')
+  assert_contains "$floor" "\`unit-tests\`, \`gitleaks\`, \`Vitest\` and \`Quality\` must be \`success\`" "unconditional floor jobs need success" || return 1
 }
 
 test_dcp_wait_cap_fits_stage_cap() {
@@ -59,15 +89,17 @@ test_dcp_wait_cap_fits_stage_cap() {
   [ -n "$wait" ] || { fail "deployer.md: no 'Wait at most **N min** from this run's start' in the Checks gate"; return 1; }
   assert_contains "$gate" "45-min stage cap" "wait cap tied to the orchestrator stage cap" || return 1
   assert_contains "$gate" "Raise this cap only together with that stage cap" "caps move together" || return 1
-  assert_not_contains "$gate" "30 min from" "old fixed 30 min cap is gone" || return 1
-  # The wait plus the post-wait work (3-min post-merge deploy wait + ~7 min migrations/merge/report) must fit the
-  # orchestrator's deployer stage cap, or the orchestrator kills the deployer — possibly after the merge.
+  # Review finding (#520): the cap was checked only between polls of up to 9 min, so a wait could overrun it by 9 min.
+  assert_contains "$gate" "**each poll loop runs for at most min(9 min, the time left to the ${wait}-min mark)**" "each poll is bounded by the time left to the wait cap" || return 1
+  # The wait + post-wait work (3-min post-merge deploy wait + ~7 min migrations/merge/report) + 5 min slack must fit
+  # the orchestrator's deployer stage cap: at the cap the orchestrator stops waiting while the deployer may be mid-merge.
   orch="$HERE_DCP/../../../agents/orchestrator.md"
   cap=$(grep -F '**Stage caps**' "$orch" | sed -nE 's/.*deployer \*\*([0-9]+) min\*\*.*/\1/p')
   [ -n "$cap" ] || { fail "orchestrator.md: no deployer stage cap in the Stage caps line"; return 1; }
-  if [ "$cap" -lt $((wait + 10)) ]; then
-    fail "orchestrator deployer stage cap ($cap min) < deployer wait cap ($wait min) + 10 min post-wait budget"; return 1
+  if [ "$cap" -lt $((wait + 15)) ]; then
+    fail "orchestrator deployer stage cap ($cap min) < deployer wait cap ($wait min) + 10 min post-wait + 5 min slack"; return 1
   fi
+  assert_contains "$(grep -F '**Stage caps**' "$orch")" "its ${wait} min pending-checks wait" "orchestrator line names the current wait cap" || return 1
   assert_eq 0 0 "wait bound ok"
 }
 
@@ -100,7 +132,9 @@ run_test test_dcp_command_reads_check_runs
 run_test test_dcp_named_checks
 run_test test_dcp_floor_excludes_advisory_legacy_readers
 run_test test_dcp_advisory_rule_reads_workflow_at_head
+run_test test_dcp_advisory_rename_is_not_advisory
 run_test test_dcp_required_and_skipped
+run_test test_dcp_unconditional_skipped_is_ci_red
 run_test test_dcp_wait_cap_fits_stage_cap
 run_test test_dcp_absent_blocks_ci_pending
 run_test test_dcp_exception_scoped_to_job_names
