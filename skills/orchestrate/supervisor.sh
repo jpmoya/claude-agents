@@ -57,13 +57,31 @@ fi
 
 # Code sync (docs/host-sync.md), inside the lock: refuse to launch on code that cannot be brought current; otherwise
 # the EXIT trap fast-forwards main after this script has finished reading itself (the next tick runs the new code).
+# A refusal is never silent (16 h VM outage, 472 unseen refusals): every stale tick and every failed fast-forward
+# raises code_sync_alert ($PIPE/code-sync.alert, shown by `orchestrate.sh status`, + throttled Slack); the guard
+# reopening clears it.
 CS_STATE=fresh
 if [ "${CODE_SYNC_ENABLED:-1}" = 1 ]; then
   source "$HERE/code-sync.sh"
   CS_STATE=$(code_sync_state 2>>"$SLOG")
-  _cs_exit() { [ -n "${LOCKDIR:-}" ] && rmdir "$LOCKDIR" 2>/dev/null; [ "$CS_STATE" = fixable ] && code_sync_apply 2>>"$SLOG" && slog "[code-sync] fast-forwarded to $(git -C "$HERE" rev-parse --short HEAD)"; }
+  _cs_exit() {
+    [ -n "${LOCKDIR:-}" ] && rmdir "$LOCKDIR" 2>/dev/null
+    [ "$CS_STATE" = fixable ] || return 0
+    if code_sync_apply 2>>"$SLOG"; then
+      slog "[code-sync] fast-forwarded to $(git -C "$HERE" rev-parse --short HEAD)"; code_sync_clear_alert
+    else
+      slog "[code-sync] APPLY FAILED: could not fast-forward to origin/main (git's reason is the line above); this host keeps running old code until it is fixed"
+      code_sync_alert apply_failed "fast-forward to origin/main failed, host still on $(git -C "$HERE" rev-parse --short HEAD 2>/dev/null)"
+    fi
+  }
   trap _cs_exit EXIT
-  if [ "$CS_STATE" = stale ]; then slog "[code-sync] STALE: checkout is behind origin/main or off main and cannot be fixed safely (uncommitted tracked edits or unpushed commits); refusing to launch this tick"; exit 0; fi
+  if [ "$CS_STATE" = stale ]; then
+    CS_WHY=$(code_sync_why 2>/dev/null); CS_TAB=$(printf '\t')
+    slog "[code-sync] STALE: checkout is behind origin/main or off main and cannot be fixed safely; refusing to launch this tick. Reason: ${CS_WHY#*$CS_TAB}"
+    code_sync_alert "${CS_WHY%%$CS_TAB*}" "${CS_WHY#*$CS_TAB}"
+    exit 0
+  fi
+  [ "$CS_STATE" = fresh ] && code_sync_clear_alert
 fi
 
 to_epoch() {  # ISO-8601 UTC → epoch; portable (macOS date has no -d)

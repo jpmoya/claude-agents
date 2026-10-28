@@ -121,6 +121,9 @@ except Exception: print('?')
         echo "!! status push failing: HTTP $code since $ts"
       fi
     fi
+    # Host-level: the supervisor's code-sync guard is refusing every tick (no run starts on this host until fixed).
+    # Absent file -> no output, so the AC14 golden stays byte-identical.
+    [ -s "$PIPE/code-sync.alert" ] && echo "!! CODE SYNC: $(cat "$PIPE/code-sync.alert")"
     # Surface any unresolved alerts
     for af in "$PIPE"/orch-*.alert; do
       [ -e "$af" ] || break
