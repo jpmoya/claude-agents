@@ -702,10 +702,10 @@ test_dg_stop_unknown_goal_fails() {
 # ---------------------------------------------------------------- AC8: resume --------------------------------
 
 dg_touch_local() {  # dg_touch_local <id> — every local state file resume must clear
-  local s; for s in stopped held restarts np snap; do echo 1 > "$DG_PIPE/goal-$1.$s"; done
+  local s; for s in stopped held restarts np snap launchfails launch-failed; do echo 1 > "$DG_PIPE/goal-$1.$s"; done
 }
 dg_assert_cleared() {
-  local s; for s in stopped held restarts np snap; do assert_file_absent "$DG_PIPE/goal-$1.$s" "AC8: .$s cleared" || return 1; done
+  local s; for s in stopped held restarts np snap launchfails launch-failed; do assert_file_absent "$DG_PIPE/goal-$1.$s" "AC8: .$s cleared" || return 1; done
 }
 
 test_dg_resume_stopped_goal_pinned_here_reopens_and_launches() {

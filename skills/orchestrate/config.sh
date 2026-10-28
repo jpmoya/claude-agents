@@ -57,6 +57,7 @@ MAX_GOALS=2                 # goal (delivery-lead) pids alive at once on this ho
 GOAL_CYCLE_SECS=1200        # a cleanly ended cycle is relaunched only this long after its launch
 GOAL_SYNC_SECS=300          # registry sync + live-goal re-evaluation throttle, per host
 GOAL_MAX_NO_PROGRESS=3      # relaunch decisions with an unchanged scope snapshot before a goal is parked
+GOAL_MAX_LAUNCH_FAILS=3     # consecutive attempts that never got to work (launch error / exit < MIN_RUN_SECS) before a goal is parked (#514)
 
 # Supervisor stale-work digest (#491): pure observability, logged/alerted, never acted on automatically.
 STALE_WORK_HOURS=4
