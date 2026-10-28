@@ -107,68 +107,117 @@ test_dcp_skip_needs_trusted_evidence() {
   assert_contains "$(cat "$DEPLOYER_DCP")" "A \`skipped\` check the skip rule rejects is never infrastructure class" "rejected skip is never tolerated" || return 1
 }
 
-dcp_classifier_cmd() {  # the doc's fenced recompute command, placeholders filled, one shell string
-  awk '/^ *```/ { if (on) { if (blk ~ /ci-changes\.sh\?ref=<base>/) { printf "%s", blk; exit } on=0; blk=""; next } on=1; next }
-       on { sub(/^ +/, ""); blk = blk $0 "\n" }' "$DEPLOYER_DCP" \
-    | sed -e 's#<owner>/<repo>#o/r#g' -e 's#<N>#7#g' -e 's#<base>#staging#g'
+# Review finding (#520, round 3): the skip licence was a deny list (the base classifier's mapping, a list of linter
+# inputs) and every round found a path it missed: benjis_payroll/config/ (payroll tests), supabase/cutover/
+# (rehearsal), .npmrc (linter's npm ci). It is now an allowlist the doc ships as an executable function; these tests
+# run that function, extracted from deployer.md, on real-shaped file lists.
+dcp_skip_fn() {  # the doc's skip_licence() definition, indentation stripped
+  awk '/^ *skip_licence\(\) \{/ { on=1 } on { sub(/^ +/, ""); print } on && /^\}$/ { exit }' "$DEPLOYER_DCP"
 }
-
-# The exact bypass, run end to end: the doc's own recompute command against a stub `gh` that serves the real base
-# classifier at ref=staging and a tampered, all-false classifier at any other ref (the PR's copy).
-test_dcp_edited_classifier_bypass_is_not_exempt() {
-  local gate cmd dir out; gate=$(dcp_gate)
-  assert_contains "$gate" "the file list holds neither the workflow file that defines the job (\`.github/workflows/ci.yml\`) nor any file the base \`changes\` job runs" "editing ci.yml or the classifier voids the licence" || return 1
-  assert_contains "$gate" "the **base copy** of the classifier, run by you on the file list, prints \`<key>=false\`" "licence only from the base classifier's false" || return 1
-  assert_contains "$gate" "\`<key>=true\`, no \`<key>=\` line, or a classifier that cannot be read or run → \`ci_red\`" "true/missing/unreadable fail closed" || return 1
-  assert_contains "$gate" "A PR that changes \`ci.yml\` or the classifier gets no skip licence at all" "no licence for a classifier-editing PR" || return 1
-  assert_contains "$gate" "\`<check> skipped while this PR changes its classifier; success required\`" "classifier-edit skip is ci_red" || return 1
-  cmd=$(dcp_classifier_cmd)
-  assert_contains "$cmd" "contents/scripts/ci-changes.sh?ref=staging" "recompute reads the classifier at the base ref" || return 1
-  dir=$(mktemp -d "${TMPDIR:-/tmp}/dcp-skip.XXXXXX")
-  mkdir -p "$dir/bin"
-  cat > "$dir/bin/gh" <<'STUB'
-#!/bin/bash
-[ "$1" = api ] || { echo "stub gh: only api is served" >&2; exit 9; }
-shift; path=""; filter="."
-while [ $# -gt 0 ]; do case "$1" in --paginate) shift ;; --jq) filter=$2; shift 2 ;; *) path=$1; shift ;; esac; done
-case "$path" in
-  "repos/o/r/pulls/7/files?per_page=100") jq -r "$filter" "$DCP_DIR/files.json" ;;
-  "repos/o/r/contents/scripts/ci-changes.sh?ref=staging") jq -r "$filter" "$DCP_DIR/base.json" ;;
-  "repos/o/r/contents/scripts/ci-changes.sh?ref="*) jq -r "$filter" "$DCP_DIR/head.json" ;;
-  *) echo "stub gh: unexpected path $path" >&2; exit 9 ;;
-esac
-STUB
-  chmod +x "$dir/bin/gh"
-  # GitHub returns content base64-wrapped at 60 columns.
-  printf '{"content":"%s"}\n' "$(base64 < "$HERE_DCP/fixtures/deployer-skip/ci-changes.base.sh" | tr -d '\n' | fold -w 60 | awk '{printf "%s\\n", $0}')" > "$dir/base.json"
-  printf '{"content":"%s"}\n' "$(printf 'echo payroll-sync=false\necho payroll-scrape=false\necho migration-rehearsal=false\n' | base64 | tr -d '\n')" > "$dir/head.json"
-  dcp_run() { printf '%s\n' "$1" > "$dir/files.json"; DCP_DIR="$dir" PATH="$dir/bin:$PATH" bash -c "$cmd" 2>&1; }
-  # 1. The reviewer's case: ci.yml's classify step rewritten to emit nothing, payroll sync code edited.
-  out=$(dcp_run '[{"filename":".github/workflows/ci.yml"},{"filename":"benjis_payroll/sync/timesheet-sync.mjs"}]')
-  assert_contains "$out" "payroll-sync=true" "edited changes job + payroll code: base classifier requires payroll-sync-tests" || { rm -rf "$dir"; return 1; }
-  # 2. Only scripts/ci-changes.sh rewritten (ci.yml untouched), payroll scrape code edited.
-  out=$(dcp_run '[{"filename":"scripts/ci-changes.sh"},{"filename":"benjis_payroll/scrape/qbo-payroll-scraper.mjs"}]')
-  assert_contains "$out" "payroll-scrape=true" "edited classifier script + payroll code: base classifier requires payroll-scrape-tests" || { rm -rf "$dir"; return 1; }
-  # 3. Payroll code moved out of its gated path: the old path still counts.
-  out=$(dcp_run '[{"filename":"src/lib/sync.mjs","previous_filename":"benjis_payroll/sync/sync.mjs"}]')
-  assert_contains "$out" "payroll-sync=true" "a rename out of benjis_payroll/sync/ still requires the job" || { rm -rf "$dir"; return 1; }
-  # 4. Control: an ordinary app-only PR keeps its legitimate skip (no false ci_red).
-  out=$(dcp_run '[{"filename":"src/app/page.tsx"}]')
-  assert_contains "$out" "payroll-sync=false" "app-only PR: payroll-sync skip stays licensed" || { rm -rf "$dir"; return 1; }
-  assert_contains "$out" "migration-rehearsal=false" "app-only PR: migration-rehearsal skip stays licensed" || { rm -rf "$dir"; return 1; }
-  rm -rf "$dir"
+# dcp_lic <job> <path>... → the function's output for that file list (one path per argument)
+dcp_lic() { local job=$1; shift; printf '%s\n' "$@" | bash -c "$(dcp_skip_fn)"$'\n''skip_licence "$1"' _ "$job" 2>&1; }
+dcp_denies() {  # <job> <label> <path>... — the skip must NOT be licensed
+  local job=$1 label=$2 out; shift 2; out=$(dcp_lic "$job" "$@")
+  case "$out" in "not licensed: "*) return 0 ;; esac
+  fail "$job must not be licensed ($label): got '$out' for: $*"; return 1
 }
+dcp_allows() {  # <job> <label> <path>... — the skip must be licensed
+  local job=$1 label=$2 out; shift 2; out=$(dcp_lic "$job" "$@")
+  [ "$out" = licensed ] && return 0
+  fail "$job must be licensed ($label): got '$out' for: $*"; return 1
+}
+DCP_MIG=supabase/migrations/20261028_add_x.sql
 
-# Same bypass on JP's destructive-DDL approval: migration-lint (scripts/lint-migrations.ts + scripts/lib/, npm deps)
-# runs from the PR head and its `destructive` output decides whether destructive-migration-approval runs.
-test_dcp_destructive_approval_skip_needs_untouched_linter() {
-  local gate; gate=$(dcp_gate)
-  assert_contains "$gate" "**Gated by \`migration-lint\`'s \`destructive\` output**" "destructive approval has its own trusted rule" || return 1
-  assert_contains "$gate" "The skip passes when the file list holds no path under \`supabase/migrations/\`" "no migrations: nothing to approve" || return 1
-  assert_contains "$gate" "none of the linter's inputs: the workflow file, \`scripts/lint-migrations.ts\`, anything under \`scripts/lib/\`" "migrations + edited linter: no licence" || return 1
-  assert_contains "$gate" "\`package.json\`, \`package-lock.json\` or \`tsconfig*.json\`" "linter dependencies are inputs too" || return 1
-  assert_contains "$gate" "\`Blocked on: needs_jp — destructive-migration-approval skipped while this PR changes both migrations and the migration linter\`" "bypassed JP approval goes to JP" || return 1
+test_dcp_skip_allowlist_is_shipped_and_deny_list_gone() {
+  local gate fn; gate=$(dcp_gate); fn=$(dcp_skip_fn)
+  assert_contains "$gate" "an allowlist, never a deny list" "skip licence is an allowlist" || return 1
+  assert_contains "$fn" "skip_licence() {" "doc ships the function" || return 1
+  assert_contains "$fn" 'echo "not licensed: no allowlist for $job"' "a job without a list is never licensed" || return 1
+  assert_contains "$gate" "--jq '.[] | .filename, (.previous_filename // empty)' | skip_licence <job key>" "the doc pipes the GitHub file list, old paths included, into it" || return 1
+  assert_contains "$gate" "A missing entry can only block a PR, never wave one through" "fail-closed property stated" || return 1
+  # The deny-list forms of rounds 2-3 are gone: no classifier recompute, no hand list of linter inputs.
+  assert_not_contains "$gate" "bash <(gh api" "base classifier recompute removed" || return 1
+  assert_not_contains "$gate" "anything under \`scripts/lib/\` (its imports live there)" "linter deny list removed" || return 1
+  assert_contains "$gate" "\`Blocked on: needs_jp — destructive-migration-approval skipped while this PR changes migrations plus <path>" "unlicensed destructive skip goes to JP" || return 1
+  assert_contains "$gate" "\`<check> skipped, but this PR changes <path>, which is not on its skip allowlist; the job must run\`" "unlicensed path-gated skip is ci_red" || return 1
   assert_contains "$gate" "A job gated on another job's output gets a skip licence only from a base-only rule named here" "future output-gated jobs get no free licence" || return 1
+}
+
+# The three round-3 vectors: each touches only a file the job reads that the old deny lists did not name.
+test_dcp_skip_allowlist_denies_round3_vectors() {
+  dcp_denies payroll-sync-tests "payroll config fixture" benjis_payroll/config/stat_pay_fixtures.json || return 1
+  dcp_denies payroll-scrape-tests "payroll config fixture" benjis_payroll/config/stat_pay_fixtures.json || return 1
+  dcp_denies migration-rehearsal "cutover SQL the rehearsal runs" supabase/cutover/reconcile.sql || return 1
+  dcp_denies destructive-migration-approval "migration + .npmrc" "$DCP_MIG" .npmrc || return 1
+}
+
+# Rounds 1-2 vectors, now caught by the same allowlist (no classifier involved).
+test_dcp_skip_allowlist_denies_round2_vectors() {
+  dcp_denies payroll-sync-tests "edited changes job + payroll code" .github/workflows/ci.yml benjis_payroll/sync/timesheet-sync.mjs || return 1
+  dcp_denies payroll-scrape-tests "edited classifier + payroll code" scripts/ci-changes.sh benjis_payroll/scrape/qbo-payroll-scraper.mjs || return 1
+  dcp_denies payroll-sync-tests "rename out of the payroll tree (old path)" src/lib/sync.mjs benjis_payroll/sync/sync.mjs || return 1
+  dcp_denies migration-rehearsal "ci.yml alone" .github/workflows/ci.yml || return 1
+  # ci.yml defines the payroll jobs' steps and is read by benjis_payroll/scrape/repo-guards.test.mjs.
+  dcp_denies payroll-sync-tests "ci.yml alone" .github/workflows/ci.yml || return 1
+  dcp_denies payroll-scrape-tests "ci.yml alone" .github/workflows/ci.yml || return 1
+  dcp_denies migration-rehearsal "the rehearsal's own entry script" scripts/rehearse-migrations.sh || return 1
+  dcp_denies destructive-migration-approval "migration + linter CLI" "$DCP_MIG" scripts/lint-migrations.ts || return 1
+  dcp_denies destructive-migration-approval "migration + linter lib" "$DCP_MIG" scripts/lib/migration-lint-core.ts || return 1
+  dcp_denies destructive-migration-approval "migration + a test file inside scripts/lib/" "$DCP_MIG" scripts/lib/migration-lint-core.test.ts || return 1
+  dcp_denies destructive-migration-approval "migration + ci.yml" "$DCP_MIG" .github/workflows/ci.yml || return 1
+  # A migration renamed out of supabase/migrations/ still counts through its old path, so the linter edit is caught.
+  dcp_denies destructive-migration-approval "migration renamed away + linter edit" docs/x.sql "$DCP_MIG" scripts/lint-migrations.ts || return 1
+}
+
+# Paths that look unrelated but are not provably outside the job's reads: root configs, lockfiles, dotfiles, a new
+# top-level folder, a .md inside the job's own tree. None is on any list, so none licenses a skip.
+test_dcp_skip_allowlist_denies_unlisted_lookalikes() {
+  local job p
+  for job in payroll-sync-tests payroll-scrape-tests migration-rehearsal; do
+    for p in .nvmrc .npmrc package.json package-lock.json tsconfig.json playwright.config.ts .gitattributes newtool/run.ts; do
+      dcp_denies "$job" "unlisted $p" src/app/page.tsx "$p" || return 1
+    done
+    dcp_denies "$job" "empty file list" || return 1
+  done
+  for p in .nvmrc package.json package-lock.json tsconfig.json tsconfig.scripts.json .github/workflows/other.yml scripts/run.ts newtool/run.ts; do
+    dcp_denies destructive-migration-approval "migration + $p" "$DCP_MIG" "$p" || return 1
+  done
+  dcp_denies payroll-sync-tests "a .md inside the payroll tree" benjis_payroll/MIGRATION.md || return 1
+  dcp_denies migration-rehearsal "a .md inside supabase/" supabase/rehearsal/assertions/README.md || return 1
+  dcp_denies destructive-migration-approval "empty file list" || return 1
+  dcp_denies unit-tests "a job with no allowlist" src/app/page.tsx || return 1
+  # Real PR (scheduler #1992, merged 2026-10-28 with payroll-scrape-tests skipped): payroll config + app code.
+  dcp_denies payroll-scrape-tests "scheduler #1992's file list" benjis_payroll/config/cutoff_fixtures.json \
+    benjis_payroll/sync/cutoff.mjs docs/user-guide/analytics.md src/lib/services/payrollCutoff.ts || return 1
+}
+
+# Controls: the lists must keep the skips ordinary PRs rely on (measured on 100 merged scheduler PRs: 1-2 blocks per job).
+test_dcp_skip_allowlist_keeps_safe_skips() {
+  local job
+  for job in payroll-sync-tests payroll-scrape-tests migration-rehearsal; do
+    dcp_allows "$job" "app-only PR" src/app/page.tsx src/components/x.tsx || return 1
+    dcp_allows "$job" "docs-only PR" docs/user-guide/analytics.md README.md CLAUDE.md || return 1
+    dcp_allows "$job" "e2e + unit test + other workflow" e2e/ops/x.spec.ts scripts/foo.test.ts .github/workflows/mobile-auto-release.yml || return 1
+  done
+  dcp_allows payroll-sync-tests "migration PR" "$DCP_MIG" scripts/rehearse-migrations.test.ts src/types/database.ts || return 1
+  dcp_allows payroll-scrape-tests "classifier edit only (payroll never reads it)" scripts/ci-changes.sh || return 1
+  dcp_allows migration-rehearsal "payroll-only PR" benjis_payroll/sync/timesheet-sync.mjs benjis_payroll/config/x.json || return 1
+  dcp_allows destructive-migration-approval "no migration, linter edited: nothing to approve" scripts/lint-migrations.ts package.json .npmrc || return 1
+  dcp_allows destructive-migration-approval "typical migration PR" "$DCP_MIG" scripts/rehearse-migrations.test.ts \
+    supabase/rehearsal/production-order.txt src/types/database.ts e2e/ops/x-rls.spec.ts docs/user-guide/x.md || return 1
+  dcp_allows destructive-migration-approval "migration + nested scripts test" "$DCP_MIG" scripts/migration-rehearsal/migrations.test.ts || return 1
+}
+
+# Review finding (#520, round 3, MEDIUM): a PR can add a workflow file with a job named like a gate; a same-named
+# passing run must never stand in for the real one. Re-run attempts collapse under filter=latest (verified).
+test_dcp_duplicate_check_names_each_must_pass() {
+  local gate body; gate=$(dcp_gate); body=$(cat "$DEPLOYER_DCP")
+  assert_contains "$body" "check-runs?filter=latest&per_page=100" "step-2 read pins filter=latest" || return 1
+  assert_contains "$gate" "**Several check runs with one name: every one must pass.**" "duplicate-name rule" || return 1
+  assert_contains "$gate" "never once per name" "each run judged on its own" || return 1
+  assert_contains "$gate" "a re-run attempt replaces its earlier attempts in the same workflow run" "retries are not duplicates" || return 1
+  assert_contains "$gate" "A passing run never stands in for a failing, skipped, queued or running one of the same name" "no stand-in" || return 1
+  assert_contains "$(dcp_gate | grep -F 'Present floor')" "a same-named run from another workflow file never fills the floor" "floor needs the mapped run" || return 1
 }
 
 test_dcp_wait_cap_fits_stage_cap() {
@@ -243,8 +292,12 @@ run_test test_dcp_advisory_rename_is_not_advisory
 run_test test_dcp_required_and_skipped
 run_test test_dcp_unconditional_skipped_is_ci_red
 run_test test_dcp_skip_needs_trusted_evidence
-run_test test_dcp_edited_classifier_bypass_is_not_exempt
-run_test test_dcp_destructive_approval_skip_needs_untouched_linter
+run_test test_dcp_skip_allowlist_is_shipped_and_deny_list_gone
+run_test test_dcp_skip_allowlist_denies_round3_vectors
+run_test test_dcp_skip_allowlist_denies_round2_vectors
+run_test test_dcp_skip_allowlist_denies_unlisted_lookalikes
+run_test test_dcp_skip_allowlist_keeps_safe_skips
+run_test test_dcp_duplicate_check_names_each_must_pass
 run_test test_dcp_wait_cap_fits_stage_cap
 run_test test_dcp_wait_cap_named_consistently
 run_test test_dcp_absent_blocks_ci_pending
