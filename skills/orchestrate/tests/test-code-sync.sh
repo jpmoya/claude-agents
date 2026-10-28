@@ -130,6 +130,12 @@ test_code_sync_alert_file_written_on_refusal_and_slack_throttled() {
   assert_contains "$c" "reason=dirty" "Slack carries the reason class" || return 1
   assert_not_contains "$c" "hooks/x.sh" "Slack never carries file names"
 }
+test_code_sync_alert_three_consecutive_refusals_post_once() {
+  cs_alert_env
+  cs_alert_call 'code_sync_alert dirty d'; cs_alert_call 'code_sync_alert dirty d'; cs_alert_call 'code_sync_alert dirty d'
+  assert_eq "$(cs_curl_count)" 1 "#515 AC2: a refusal persisting over 3 ticks posts once, not every tick" || return 1
+  assert_contains "$(cat "$CSA_PIPE/code-sync.alert")" "(3 ticks)" "the alert file still tracks every refused tick"
+}
 test_code_sync_alert_reposts_after_the_repeat_window() {
   cs_alert_env
   cs_alert_call 'code_sync_alert dirty d'
@@ -239,6 +245,7 @@ run_test test_code_sync_settings_drift_plus_real_file_is_stale
 run_test test_code_sync_nested_settings_json_still_counts_as_dirty
 run_test test_code_sync_why_names_the_dirty_file
 run_test test_code_sync_alert_file_written_on_refusal_and_slack_throttled
+run_test test_code_sync_alert_three_consecutive_refusals_post_once
 run_test test_code_sync_alert_reposts_after_the_repeat_window
 run_test test_code_sync_clear_alert_removes_file_and_posts_recovery_once
 run_test test_code_sync_alert_file_written_without_a_webhook
