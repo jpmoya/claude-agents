@@ -33,7 +33,8 @@ _goal_uri() { jq -rn --arg s "$1" '$s | @uri'; }
 _goal_is_bi() { case "$1" in */Business-Intelligence) return 0 ;; esac; return 1; }
 
 # goal_parse <spec> -> "repo<TAB>kind<TAB>ref" (kind: ms | msall | t | fb | label); exit 1 when malformed.
-# owner/repo:feedback (kind fb) is the standing staff-feedback goal (#472): scope = the repo's user-feedback tickets that sit in no milestone.
+# owner/repo:feedback (kind fb) is the standing staff-feedback goal (#472): scope = the repo's user-feedback tickets that are
+# not in the scope of another live goal (#517: not "in no milestone" — the product-manager gives every ticket a milestone).
 # label:<exact label name> is the cross-repo form (#319): repo is "-" (the repos live in the registry v2 block).
 goal_parse() {
   local spec="${1:-}" re='^([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)(.*)$' repo rest ref
@@ -150,11 +151,79 @@ _goal_ms_rows() {  # <repo> <milestone number> -> owner/repo#N<TAB>state, issues
   printf '%s' "$all" | jq -r --arg r "$1" --argjson l "${GOAL_SCOPE_LABELS:-0}" '.[] | select(has("pull_request") | not) | "\($r)#\(.number)\t\(.state)" + (if $l == 1 then "\t" + ([.labels[].name] | join(",")) else "" end)'
 }
 
+# _goal_fb_err <repo> <what> — a failed feedback-scope read (#517), logged with release, host and route; the caller then
+# fails closed (the scope is unreadable, never empty). Repo slugs, goal ids and issue numbers only: no tokens, no ticket text.
+_goal_fb_err() {
+  local m
+  m="[goal] error: cannot read the feedback scope of $1: $2 (release=$(goal_release) host=${HOST:-$(pipeline_host 2>/dev/null)} route=goal-fb-scope)"
+  if type slog >/dev/null 2>&1; then slog "$m"; else echo "$m" >&2; fi
+}
+
+# _goal_same_repo <a> <b> -> exit 0 same repo, 1 different, 2 cannot tell. A goal registered before a GitHub rename still
+# names the old slug (Benjis-Plants/scheduler is Benjis-Plants/benjis-ops-tool), so different slugs go through repo_canon.
+_goal_same_repo() {
+  local ca cb
+  [ "$1" = "$2" ] && return 0
+  ca=$(repo_canon "$1" 2>/dev/null); cb=$(repo_canon "$2" 2>/dev/null)
+  { [ -n "$ca" ] && [ -n "$cb" ]; } || return 2
+  [ "$ca" = "$cb" ] && return 0
+  return 1
+}
+
+# _goal_fb_covered <repo> -> the numbers (one per line) of <repo>'s issues inside the scope of another live goal (#517).
+# Live = registry state queued, active, held or waiting_jp: the set deliver.sh's check_overlap treats as live. Feedback
+# goals are skipped: they yield to every other goal (and reading one from another would recurse). Exit 1, logged, on an
+# unreadable registry, registry entry, stored spec, repo name or scope: the feedback scope is unreadable, never wider.
+_goal_fb_covered() {
+  local repo=$1 reg o_issue o_id o_spec o_st o_repos o_repo o_kind r rc keep rows row
+  reg=$(_goal_registry_json) || { _goal_fb_err "$repo" "the goal registry $GOAL_REGISTRY_REPO is unreadable"; return 1; }
+  while IFS=$'\t' read -r o_issue o_id o_spec o_st o_repos; do
+    [ -n "$o_issue" ] || continue
+    case "$o_st" in
+      queued|active|held|waiting_jp) ;;
+      delivered|stopped) continue ;;
+      *) _goal_fb_err "$repo" "registry entry #$o_issue ($o_id) is $o_st"; return 1 ;;
+    esac
+    o_repo=""; o_kind=""
+    IFS=$'\t' read -r o_repo o_kind _ <<< "$(goal_parse "$o_spec" 2>/dev/null || true)"
+    [ -n "$o_kind" ] || { _goal_fb_err "$repo" "the stored spec of live goal $o_id (#$o_issue) does not parse"; return 1; }
+    [ "$o_kind" != fb ] || continue
+    keep=""
+    if [ "$o_kind" = label ]; then
+      [ "$o_repos" != "-" ] || { _goal_fb_err "$repo" "live label goal $o_id (#$o_issue) names no repos"; return 1; }
+      for r in $(printf '%s' "$o_repos" | tr ',' ' '); do
+        rc=0; _goal_same_repo "$r" "$repo" || rc=$?
+        case "$rc" in
+          0) keep="${keep:+$keep,}$r" ;;
+          1) ;;
+          *) _goal_fb_err "$repo" "cannot resolve the repo name $r of live goal $o_id"; return 1 ;;
+        esac
+      done
+      [ -n "$keep" ] || continue
+      rows=$(_goal_scope_rows "$o_spec" "$o_id" "$keep") || { _goal_fb_err "$repo" "the scope of live goal $o_id is unreadable"; return 1; }
+    else
+      rc=0; _goal_same_repo "$o_repo" "$repo" || rc=$?
+      case "$rc" in
+        0) ;;
+        1) continue ;;
+        *) _goal_fb_err "$repo" "cannot resolve the repo name $o_repo of live goal $o_id"; return 1 ;;
+      esac
+      rows=$(_goal_scope_rows "$o_spec" "$o_id") || { _goal_fb_err "$repo" "the scope of live goal $o_id is unreadable"; return 1; }
+    fi
+    while IFS=$'\t' read -r row _; do
+      [ -n "$row" ] || continue
+      printf '%s\n' "${row##*#}"
+    done <<< "$rows"
+  done <<< "$(printf '%s' "$reg" | jq -r 'def f: if . == null or . == "" then "-" else tostring end;
+    .[] | "\(.issue | f)\t\(.id | f)\t\(.spec | f)\t\(.st | f)\t\((.block.repos? // []) | join(",") | f)"')"
+  return 0
+}
+
 # _goal_scope_rows <spec> [id] [repos csv] -> owner/repo#N<TAB>open|closed, one set of live REST calls.
 # With the id of an already-registered milestone goal, scope by the number in the id (ms-<n>): the title is only
 # resolved at register time, so a milestone renamed at ship does not break resume, brief or the overlap guard.
 _goal_scope_rows() {
-  local line repo kind ref n ms one repos r js
+  local line repo kind ref n ms one repos r js covered
   line=$(goal_parse "$1") || return 1
   IFS=$'\t' read -r repo kind ref <<< "$line"
   case "$kind" in
@@ -172,9 +241,15 @@ _goal_scope_rows() {
       [ -n "$n" ] || n=$(_goal_ms_number "$repo" "$ref") || return 1
       _goal_ms_rows "$repo" "$n" ;;
     fb)
-      # #472: feedback tickets outside any milestone (a milestone goal owns the ones inside it); closed rows count as delivered
-      js=$(_goal_get_all "repos/$repo/issues?labels=$(_goal_uri "${LABEL_FEEDBACK:-user-feedback}")&milestone=none&state=all&per_page=100") || return 1
-      printf '%s' "$js" | jq -r --arg r "$repo" --argjson l "${GOAL_SCOPE_LABELS:-0}" '.[] | select(has("pull_request") | not) | "\($r)#\(.number)\t\(.state)" + (if $l == 1 then "\t" + ([.labels[].name] | join(",")) else "" end)' ;;
+      # #472/#517: the repo's user-feedback tickets that no other live goal covers (any milestone: the product-manager gives
+      # every ticket one, so the old milestone=none filter matched nothing); closed rows count as delivered
+      covered=$(_goal_fb_covered "$repo") || return 1
+      js=$(_goal_get_all "repos/$repo/issues?labels=$(_goal_uri "${LABEL_FEEDBACK:-user-feedback}")&state=all&per_page=100") \
+        || { _goal_fb_err "$repo" "the ${LABEL_FEEDBACK:-user-feedback} tickets are unreadable"; return 1; }
+      printf '%s' "$js" | jq -r --arg r "$repo" --argjson l "${GOAL_SCOPE_LABELS:-0}" \
+        --argjson cov "$(printf '%s\n' "$covered" | jq -Rsc 'split("\n") | map(select(. != "") | tonumber)')" \
+        '.[] | select(has("pull_request") | not) | select(.number as $n | any($cov[]; . == $n) | not)
+         | "\($r)#\(.number)\t\(.state)" + (if $l == 1 then "\t" + ([.labels[].name] | join(",")) else "" end)' ;;
     msall)
       ms=$(_goal_get_all "repos/$repo/milestones?state=open&per_page=100") || return 1
       for n in $(printf '%s' "$ms" | jq -r '.[].number'); do _goal_ms_rows "$repo" "$n" || return 1; done ;;
@@ -292,7 +367,7 @@ goal_brief() {
     printf 'Cross-repo goal: tickets carry the label "%s" in %s\n' "$(printf '%s' "$g" | jq -r '.block.label')" "$(printf '%s' "$g" | jq -r '(.block.repos // []) | join(", ")')"
   fi
   if [ "$(goal_parse "$spec" | cut -f2)" = fb ]; then
-    printf 'Standing staff-feedback goal: scope is the open tickets of %s labelled %s that sit in no milestone (a milestone goal owns the others). Your job is to clear their TECHNICAL blocks yourself (full disk, failed or flaky CI, a merged change whose deploy is unconfirmed, a malformed or missing delegated decision: post a valid DECISION with its Resolves line, then relaunch) and to surface to JP only product/business calls and JP-only items. Never add agent-go or change the tickets'"'"' labels, milestones or routing: intake and the product-manager own those, and the supervisor already dispatches these tickets.\n' "$repo" "${LABEL_FEEDBACK:-user-feedback}"
+    printf 'Standing staff-feedback goal: scope is the open tickets of %s labelled %s that no other live goal covers (that goal'"'"'s lead owns the others). Your job is to clear their TECHNICAL blocks yourself (full disk, failed or flaky CI, a merged change whose deploy is unconfirmed, a malformed or missing delegated decision: post a valid DECISION with its Resolves line, then relaunch) and to surface to JP only product/business calls and JP-only items. Never add agent-go or change the tickets'"'"' labels, milestones or routing: intake and the product-manager own those, and the supervisor already dispatches these tickets.\n' "$repo" "${LABEL_FEEDBACK:-user-feedback}"
   fi
   proj=$(printf '%s' "$g" | jq -r '.block.project? // empty | select(type == "object") | "\(.url) (owner \(.owner), number \(.number))"' 2>/dev/null)
   if [ -n "$proj" ]; then
