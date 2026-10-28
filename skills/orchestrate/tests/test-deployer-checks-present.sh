@@ -215,6 +215,8 @@ test_dcp_duplicate_check_names_each_must_pass() {
   assert_contains "$body" "check-runs?filter=latest&per_page=100" "step-2 read pins filter=latest" || return 1
   assert_contains "$gate" "**Several check runs with one name: every one must pass.**" "duplicate-name rule" || return 1
   assert_contains "$gate" "never once per name" "each run judged on its own" || return 1
+  assert_contains "$body" "suite:.check_suite.id,url:.details_url" "step-2 read carries each run's suite and link" || return 1
+  assert_contains "$gate" "never by joining a check run to a \`gh pr checks\` row by name" "run id from the run's own link, not a name join" || return 1
   assert_contains "$gate" "a re-run attempt replaces its earlier attempts in the same workflow run" "retries are not duplicates" || return 1
   assert_contains "$gate" "A passing run never stands in for a failing, skipped, queued or running one of the same name" "no stand-in" || return 1
   assert_contains "$(dcp_gate | grep -F 'Present floor')" "a same-named run from another workflow file never fills the floor" "floor needs the mapped run" || return 1
