@@ -99,7 +99,12 @@ test_dcp_skip_needs_trusted_evidence() {
   assert_contains "$gate" "the classify step of the scheduler's \`changes\` job in \`ci.yml\`" "the edited-changes-job vector is named" || return 1
   assert_contains "$gate" "pulls/<N>/files?per_page=100\" --jq '.[] | .filename, (.previous_filename // empty)'" "file list from GitHub, renames' old paths included" || return 1
   assert_contains "$gate" "\`gh pr view <N> --json changedFiles --jq .changedFiles\`" "file list completeness checked" || return 1
-  assert_contains "$gate" "a read that fails or comes up short is evidence for no skip" "short file list fails closed" || return 1
+  assert_contains "$gate" "A read that fails or comes up short is evidence for no skip" "short file list fails closed" || return 1
+  # A rename prints two lines (new + old path): counting the recompute list against changedFiles would deny every
+  # skip on a rename PR. Completeness is counted on .filename alone.
+  assert_contains "$gate" "--jq '.[].filename' | grep -c .\` must equal \`gh pr view <N> --json changedFiles" "completeness counts new paths only" || return 1
+  # #473's staging tolerance must not wave a rejected skip through as infrastructure.
+  assert_contains "$(cat "$DEPLOYER_DCP")" "A \`skipped\` check the skip rule rejects is never infrastructure class" "rejected skip is never tolerated" || return 1
 }
 
 dcp_classifier_cmd() {  # the doc's fenced recompute command, placeholders filled, one shell string
