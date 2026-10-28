@@ -59,6 +59,9 @@ test_dcp_advisory_rename_is_not_advisory() {
   assert_contains "$gate" "exactly one head job with that check name, under the same key" "head job must keep the base key" || return 1
   assert_contains "$gate" "renames a gate (key or \`name:\`) to an advisory job's name, does not exempt its own red check" "rename case" || return 1
   assert_contains "$gate" "removed or renamed by this PR" "a vanished gate job blocks" || return 1
+  # The PR's own changes are head vs merge-base: a job the base gained after the PR branched is not "removed by this PR".
+  assert_contains "$gate" ".merge_base_commit.sha" "merge-base copy is read" || return 1
+  assert_contains "$gate" "head vs **merge-base**, never head vs the base tip" "PR changes are measured against the merge base" || return 1
   assert_contains "$gate" "**When \`gh pr diff <N> --name-only\` lists that workflow file**" "head copy read when the PR changed the file" || return 1
 }
 
@@ -75,7 +78,7 @@ test_dcp_required_and_skipped() {
 test_dcp_unconditional_skipped_is_ci_red() {
   local gate floor; gate=$(dcp_gate)
   assert_contains "$gate" "maps to a base job with a job-level \`if:\`" "skip licence comes from the base copy" || return 1
-  assert_contains "$gate" "\`if:\` and \`needs:\` are text-identical to the base's" "a PR cannot rewrite a gate's condition" || return 1
+  assert_contains "$gate" "\`if:\` and \`needs:\` are text-identical to the merge-base copy's" "a PR cannot rewrite a gate's condition" || return 1
   assert_contains "$gate" "\`scripts/ci-changes.sh\`" "editing the path classifier voids the skip licence" || return 1
   assert_contains "$gate" "\`ci_red\` with \`<check> skipped; success required\`" "unlicensed skip is ci_red" || return 1
   assert_contains "$gate" "\`if: false\` on a gate must never read as a pass" "if:false case named" || return 1
