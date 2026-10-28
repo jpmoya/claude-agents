@@ -33,7 +33,8 @@ _goal_uri() { jq -rn --arg s "$1" '$s | @uri'; }
 _goal_is_bi() { case "$1" in */Business-Intelligence) return 0 ;; esac; return 1; }
 
 # goal_parse <spec> -> "repo<TAB>kind<TAB>ref" (kind: ms | msall | t | fb | label); exit 1 when malformed.
-# owner/repo:feedback (kind fb) is the standing staff-feedback goal (#472): scope = the repo's user-feedback tickets that sit in no milestone.
+# owner/repo:feedback (kind fb) is the standing staff-feedback goal (#472): scope = the repo's user-feedback tickets that are
+# not in the scope of another live goal (#517: not "in no milestone" — the product-manager gives every ticket a milestone).
 # label:<exact label name> is the cross-repo form (#319): repo is "-" (the repos live in the registry v2 block).
 goal_parse() {
   local spec="${1:-}" re='^([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)(.*)$' repo rest ref
@@ -150,11 +151,123 @@ _goal_ms_rows() {  # <repo> <milestone number> -> owner/repo#N<TAB>state, issues
   printf '%s' "$all" | jq -r --arg r "$1" --argjson l "${GOAL_SCOPE_LABELS:-0}" '.[] | select(has("pull_request") | not) | "\($r)#\(.number)\t\(.state)" + (if $l == 1 then "\t" + ([.labels[].name] | join(",")) else "" end)'
 }
 
+# _goal_fb_err <repo> <what> — a failed feedback-scope read (#517), logged with release, host and route; the caller then
+# fails closed (the scope is unreadable, never empty). Repo slugs, goal ids and issue numbers only: no tokens, no ticket text.
+_goal_fb_err() {
+  local m
+  m="[goal] error: cannot read the feedback scope of $1: $2 (release=$(goal_release) host=${HOST:-$(pipeline_host 2>/dev/null)} route=goal-fb-scope)"
+  if type slog >/dev/null 2>&1; then slog "$m"; else echo "$m" >&2; fi
+}
+
+# _goal_same_repo <a> <b> -> exit 0 same repo, 1 different, 2 cannot tell. A goal registered before a GitHub rename still
+# names the old slug (Benjis-Plants/scheduler is Benjis-Plants/benjis-ops-tool), so different slugs go through repo_canon.
+_goal_same_repo() {
+  local ca cb
+  [ "$1" = "$2" ] && return 0
+  ca=$(repo_canon "$1" 2>/dev/null); cb=$(repo_canon "$2" 2>/dev/null)
+  { [ -n "$ca" ] && [ -n "$cb" ]; } || return 2
+  [ "$ca" = "$cb" ] && return 0
+  return 1
+}
+
+# _goal_fb_covered <repo> -> the numbers (one per line) of <repo>'s issues inside the scope of another live goal (#517),
+# or held by a stopped one. Live = registry state queued, active, held or waiting_jp: the set deliver.sh's check_overlap
+# treats as live. Stopped (#527): a stop never hands tickets back by itself; `deliver.sh stop` records the goal's open
+# tickets in the block (`stopped_open`) and they stay out of the feedback scope until `deliver.sh release` (or a resume,
+# or a new goal over them). A stop written before #527 has no `stopped_open` and holds nothing. Feedback goals are
+# skipped: they yield to every other goal (and reading one from another would recurse). Exit 1, logged, on an unreadable
+# registry, registry entry (any malformed field of a live or holding entry, #527), stored spec, repo name, hold or scope:
+# the feedback scope is unreadable, never wider. The registry is read in full (`all`): a hold outlives GOAL_RECENT_DAYS.
+_goal_fb_covered() {
+  local repo=$1 reg regrows o_issue o_id o_spec o_st o_repos o_hold o_repo o_kind r rc keep rows row ref
+  reg=$(_goal_registry_json all) || { _goal_fb_err "$repo" "the goal registry $GOAL_REGISTRY_REPO is unreadable"; return 1; }
+  # #527: parse first and fail on a jq error. Fed straight into the loop (done <<< "$(jq …)") a malformed field, e.g. a
+  # string block.repos, made jq exit non-zero with no rows: zero iterations, return 0, nothing covered — the fail-open.
+  # Only live and holding entries are parsed field by field, so a malformed delivered goal cannot wedge the feedback goal.
+  regrows=$(printf '%s' "$reg" | jq -r 'def f: if . == null or . == "" then "-" else tostring end;
+    def live: (.st == "queued" or .st == "active" or .st == "held" or .st == "waiting_jp");
+    def hold: if .st != "stopped" then "-"
+              else (.block.stopped_open? // null)
+                   | if . == null then "-"
+                     elif type == "array" then (if length == 0 then "none" else (map(if type == "string" then . else error("hold entry") end) | join(",")) end)
+                     elif . == "unreadable" then "unreadable"
+                     else error("stopped_open") end end;
+    .[] | (hold) as $h
+    | "\(.issue | f)\t\(.id | f)\t\(.spec | f)\t\(.st | f)\t\(if live or ($h != "-" and $h != "none") then ((.block.repos? // []) | join(",") | f) else "-" end)\t\($h)"') \
+    || { _goal_fb_err "$repo" "a registry entry of $GOAL_REGISTRY_REPO does not parse (malformed block field)"; return 1; }
+  while IFS=$'\t' read -r o_issue o_id o_spec o_st o_repos o_hold; do
+    [ -n "$o_issue" ] || continue
+    case "$o_st" in
+      queued|active|held|waiting_jp) ;;
+      delivered) continue ;;
+      stopped)
+        case "$o_hold" in
+          -|none) continue ;;   # stopped before #527, released, or nothing was open at the stop
+          unreadable)
+            # the stop could not read the goal's tickets: hold the goal's whole repo(s), never guess
+            o_repo=""; o_kind=""; IFS=$'\t' read -r o_repo o_kind _ <<< "$(goal_parse "$o_spec" 2>/dev/null || true)"
+            if [ "$o_kind" = label ]; then keep=$o_repos; else keep=$o_repo; fi
+            case "$keep" in ''|-) _goal_fb_err "$repo" "stopped goal $o_id (#$o_issue) holds unlisted tickets in unknown repos"; return 1 ;; esac
+            for r in $(printf '%s' "$keep" | tr ',' ' '); do
+              rc=0; _goal_same_repo "$r" "$repo" || rc=$?
+              if [ "$rc" != 1 ]; then
+                _goal_fb_err "$repo" "stopped goal $o_id (#$o_issue) holds tickets the stop could not list; run deliver.sh release $o_id once they may go back"
+                return 1
+              fi
+            done
+            continue ;;
+        esac
+        for ref in $(printf '%s' "$o_hold" | tr ',' ' '); do
+          case "$ref" in */*#[0-9]*) ;; *) _goal_fb_err "$repo" "stopped goal $o_id (#$o_issue) holds a malformed ticket ref"; return 1 ;; esac
+          rc=0; _goal_same_repo "${ref%%#*}" "$repo" || rc=$?
+          case "$rc" in
+            0) printf '%s\n' "${ref##*#}" ;;
+            1) ;;
+            *) _goal_fb_err "$repo" "cannot resolve the repo name ${ref%%#*} held by stopped goal $o_id"; return 1 ;;
+          esac
+        done
+        continue ;;
+      *) _goal_fb_err "$repo" "registry entry #$o_issue ($o_id) is $o_st"; return 1 ;;
+    esac
+    o_repo=""; o_kind=""
+    IFS=$'\t' read -r o_repo o_kind _ <<< "$(goal_parse "$o_spec" 2>/dev/null || true)"
+    [ -n "$o_kind" ] || { _goal_fb_err "$repo" "the stored spec of live goal $o_id (#$o_issue) does not parse"; return 1; }
+    [ "$o_kind" != fb ] || continue
+    keep=""
+    if [ "$o_kind" = label ]; then
+      [ "$o_repos" != "-" ] || { _goal_fb_err "$repo" "live label goal $o_id (#$o_issue) names no repos"; return 1; }
+      for r in $(printf '%s' "$o_repos" | tr ',' ' '); do
+        rc=0; _goal_same_repo "$r" "$repo" || rc=$?
+        case "$rc" in
+          0) keep="${keep:+$keep,}$r" ;;
+          1) ;;
+          *) _goal_fb_err "$repo" "cannot resolve the repo name $r of live goal $o_id"; return 1 ;;
+        esac
+      done
+      [ -n "$keep" ] || continue
+      rows=$(_goal_scope_rows "$o_spec" "$o_id" "$keep") || { _goal_fb_err "$repo" "the scope of live goal $o_id is unreadable"; return 1; }
+    else
+      rc=0; _goal_same_repo "$o_repo" "$repo" || rc=$?
+      case "$rc" in
+        0) ;;
+        1) continue ;;
+        *) _goal_fb_err "$repo" "cannot resolve the repo name $o_repo of live goal $o_id"; return 1 ;;
+      esac
+      rows=$(_goal_scope_rows "$o_spec" "$o_id") || { _goal_fb_err "$repo" "the scope of live goal $o_id is unreadable"; return 1; }
+    fi
+    while IFS=$'\t' read -r row _; do
+      [ -n "$row" ] || continue
+      printf '%s\n' "${row##*#}"
+    done <<< "$rows"
+  done <<< "$regrows"
+  return 0
+}
+
 # _goal_scope_rows <spec> [id] [repos csv] -> owner/repo#N<TAB>open|closed, one set of live REST calls.
 # With the id of an already-registered milestone goal, scope by the number in the id (ms-<n>): the title is only
 # resolved at register time, so a milestone renamed at ship does not break resume, brief or the overlap guard.
 _goal_scope_rows() {
-  local line repo kind ref n ms one repos r js
+  local line repo kind ref n ms one repos r js covered
   line=$(goal_parse "$1") || return 1
   IFS=$'\t' read -r repo kind ref <<< "$line"
   case "$kind" in
@@ -172,9 +285,15 @@ _goal_scope_rows() {
       [ -n "$n" ] || n=$(_goal_ms_number "$repo" "$ref") || return 1
       _goal_ms_rows "$repo" "$n" ;;
     fb)
-      # #472: feedback tickets outside any milestone (a milestone goal owns the ones inside it); closed rows count as delivered
-      js=$(_goal_get_all "repos/$repo/issues?labels=$(_goal_uri "${LABEL_FEEDBACK:-user-feedback}")&milestone=none&state=all&per_page=100") || return 1
-      printf '%s' "$js" | jq -r --arg r "$repo" --argjson l "${GOAL_SCOPE_LABELS:-0}" '.[] | select(has("pull_request") | not) | "\($r)#\(.number)\t\(.state)" + (if $l == 1 then "\t" + ([.labels[].name] | join(",")) else "" end)' ;;
+      # #472/#517: the repo's user-feedback tickets that no other live goal covers (any milestone: the product-manager gives
+      # every ticket one, so the old milestone=none filter matched nothing); closed rows count as delivered
+      covered=$(_goal_fb_covered "$repo") || return 1
+      js=$(_goal_get_all "repos/$repo/issues?labels=$(_goal_uri "${LABEL_FEEDBACK:-user-feedback}")&state=all&per_page=100") \
+        || { _goal_fb_err "$repo" "the ${LABEL_FEEDBACK:-user-feedback} tickets are unreadable"; return 1; }
+      printf '%s' "$js" | jq -r --arg r "$repo" --argjson l "${GOAL_SCOPE_LABELS:-0}" \
+        --argjson cov "$(printf '%s\n' "$covered" | jq -Rsc 'split("\n") | map(select(. != "") | tonumber)')" \
+        '.[] | select(has("pull_request") | not) | select(.number as $n | any($cov[]; . == $n) | not)
+         | "\($r)#\(.number)\t\(.state)" + (if $l == 1 then "\t" + ([.labels[].name] | join(",")) else "" end)' ;;
     msall)
       ms=$(_goal_get_all "repos/$repo/milestones?state=open&per_page=100") || return 1
       for n in $(printf '%s' "$ms" | jq -r '.[].number'); do _goal_ms_rows "$repo" "$n" || return 1; done ;;
@@ -276,7 +395,8 @@ _goal_primary_repo() {
   else printf '%s' "$line" | cut -f1; fi
 }
 
-# goal_brief <id> [goal-json] -> the delivery-lead launch prompt, generated from live registry + ticket state (never the cache)
+# goal_brief <id> [goal-json] [scope file] -> the delivery-lead launch prompt, generated from live registry + ticket state
+# (never the cache). With a scope file, the open refs the brief hands the lead are written there, one per line (#527).
 goal_brief() {
   local id="$1" g spec instr repo checkout rows row ref st n owner_repo cm last proj ia
   if [ $# -ge 2 ] && [ -n "$2" ]; then g=$2; else g=$(_goal_find "$id") || { echo "goal $id not found in the registry" >&2; return 1; }; fi
@@ -284,6 +404,7 @@ goal_brief() {
   repo=$(_goal_primary_repo "$g")
   checkout=$(_goal_checkout "$repo") || checkout="(not in DISPATCH_REPOS)"
   rows=$(_goal_scope_rows "$spec" "$id") || { echo "cannot read the scope of $spec" >&2; return 1; }
+  if [ -n "${3:-}" ]; then printf '%s\n' "$rows" | awk -F'\t' '$2 == "open" { print $1 }' > "$3" || return 1; fi
   _goal_have_marker_re
   printf 'You are the delivery lead for goal %s.\n' "$id"
   printf 'Goal: %s\nGoal id: %s\n' "$spec" "$id"
@@ -292,12 +413,16 @@ goal_brief() {
     printf 'Cross-repo goal: tickets carry the label "%s" in %s\n' "$(printf '%s' "$g" | jq -r '.block.label')" "$(printf '%s' "$g" | jq -r '(.block.repos // []) | join(", ")')"
   fi
   if [ "$(goal_parse "$spec" | cut -f2)" = fb ]; then
-    printf 'Standing staff-feedback goal: scope is the open tickets of %s labelled %s that sit in no milestone (a milestone goal owns the others). Your job is to clear their TECHNICAL blocks yourself (full disk, failed or flaky CI, a merged change whose deploy is unconfirmed, a malformed or missing delegated decision: post a valid DECISION with its Resolves line, then relaunch) and to surface to JP only product/business calls and JP-only items. Never add agent-go or change the tickets'"'"' labels, milestones or routing: intake and the product-manager own those, and the supervisor already dispatches these tickets.\n' "$repo" "${LABEL_FEEDBACK:-user-feedback}"
+    printf 'Standing staff-feedback goal: scope is the open tickets of %s labelled %s that no other live goal covers (that goal'"'"'s lead owns the others) and no stopped goal holds (JP stopped that work: leave those tickets alone until he releases them). The scope is re-read while you run: if another goal takes a ticket over, the supervisor ends this cycle and the next brief leaves it out. Your job is to clear their TECHNICAL blocks yourself (full disk, failed or flaky CI, a merged change whose deploy is unconfirmed, a malformed or missing delegated decision: post a valid DECISION with its Resolves line, then relaunch) and to surface to JP only product/business calls and JP-only items. Never add agent-go or change the tickets'"'"' labels, milestones or routing: intake and the product-manager own those, and the supervisor already dispatches these tickets.\n' "$repo" "${LABEL_FEEDBACK:-user-feedback}"
   fi
   proj=$(printf '%s' "$g" | jq -r '.block.project? // empty | select(type == "object") | "\(.url) (owner \(.owner), number \(.number))"' 2>/dev/null)
   if [ -n "$proj" ]; then
     printf 'GitHub Project: %s\n' "$proj"
     printf '  This goal is bound to that project: read its ticket list from the project items (the project item list of that number and owner), and never work from or create another project. The supervisor sync sets each item'"'"'s Status on its own schedule — never edit Status yourself (claude-agents#466: a lead that does fights the sync and the board flaps between the two).\n'
+    if [ "$(goal_parse "$spec" | cut -f2)" = fb ]; then
+      # #527: the project sync only ever adds items, so a ticket another goal took over (or a stopped goal holds) stays on the board
+      printf '  Staff-feedback goal: the Scope list below, not the project, is your ticket list. A project item missing from that list belongs to another goal or to a goal JP stopped: leave it alone.\n'
+    fi
   fi
   printf 'Instructions: %s\n' "${instr:-(none)}"
   printf 'Your memory (read first, append to it): %s/goals/%s.md\n' "$LOGDIR" "$id"
@@ -341,8 +466,14 @@ goal_launch() {
   [ -n "$g" ] || g=$(_goal_find "$id") || { echo "goal $id not found in the registry" >&2; return 1; }
   repo=$(_goal_primary_repo "$g")
   checkout=$(_goal_checkout "$repo") || { echo "$repo is not in DISPATCH_REPOS" >&2; return 1; }
-  brief=$(goal_brief "$id" "$g") || return 1
   mkdir -p "$PIPE" "$LOGDIR/goals"
+  rm -f "$PIPE/goal-$id.launch-scope" "$PIPE/goal-$id.yielded"
+  # #527: a feedback lead's launch scope is kept so goal_fb_yield can end the cycle when another goal takes a ticket over
+  if [ "$(goal_parse "$(printf '%s' "$g" | jq -r .spec)" 2>/dev/null | cut -f2)" = fb ]; then
+    brief=$(goal_brief "$id" "$g" "$PIPE/goal-$id.launch-scope") || return 1
+  else
+    brief=$(goal_brief "$id" "$g") || return 1
+  fi
   rm -f "$PIPE/goal-$id.exit"
   printf '\n===== [%s] LAUNCH goal=%s =====\n' "$(date -u +%FT%TZ)" "$id" >> "$PIPE/goal-$id.log"
   (
@@ -354,6 +485,44 @@ goal_launch() {
     echo $! > "$PIPE/goal-$id.pid"
   ) || return 1
   date -u +%FT%TZ > "$PIPE/goal-$id.start"; date -u +%FT%TZ > "$PIPE/goal-$id.launched-at"
+}
+
+# goal_stop_hold <spec> <id> (#527) -> the JSON `deliver.sh stop` records as the block's `stopped_open`: the goal's open
+# tickets (["owner/repo#N", ...]), or "unreadable" when its scope cannot be read (the feedback goal on that repo then
+# fails closed until `deliver.sh release`): a stop is never blocked by a failed read, and never hands tickets back.
+goal_stop_hold() {
+  local rows
+  # one retry: an "unreadable" hold wedges the feedback goal on that repo until a release, so a transient error must not cause it
+  if rows=$(_goal_scope_rows "$1" "$2" 2>/dev/null) || { sleep "${GOAL_STOP_HOLD_RETRY_SECS:-3}"; rows=$(_goal_scope_rows "$1" "$2" 2>/dev/null); }; then
+    printf '%s\n' "$rows" | awk -F'\t' '$2 == "open" { print $1 }' | jq -Rsc 'split("\n") | map(select(. != ""))'
+  else
+    printf '"unreadable"\n'
+  fi
+}
+
+# goal_fb_yield <id> [scope refs, one per line] (#527) — a running feedback lead whose cycle was launched with an open
+# ticket that has since left the feedback scope (another goal registered or resumed over it) is ended now: a .yielded
+# marker, then goal_kill. goal_tick_one relaunches it at once with a fresh brief and counts neither a crash nor a launch
+# failure. Without refs the scope is read here. Exit 1 only when that read fails (the caller logs; the next sync retries).
+goal_fb_yield() {
+  local id=$1 refs="${2:-}" spec pid cur left
+  [ -s "$PIPE/goal-$id.launch-scope" ] || return 0   # only a feedback lead's launch records one
+  pid=$(cat "$PIPE/goal-$id.pid" 2>/dev/null)
+  { [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; } || return 0
+  if [ $# -lt 2 ]; then
+    spec=$(jq -r '.spec // empty' "$PIPE/goal-$id.json" 2>/dev/null)
+    refs=$(_goal_scope_rows "$spec" "$id") || return 1
+  fi
+  cur=$(mktemp "${TMPDIR:-/tmp}/goal-fbscope.XXXXXX") || return 1
+  printf '%s\n' "$refs" | cut -f1 | sed '/^$/d' > "$cur"
+  left=$(grep -vxF -f "$cur" "$PIPE/goal-$id.launch-scope" 2>/dev/null; true)
+  [ -s "$cur" ] || left=$(cat "$PIPE/goal-$id.launch-scope")   # an empty pattern file matches nothing on some greps
+  rm -f "$cur"
+  [ -n "$left" ] || return 0
+  printf '%s\n' "$left" > "$PIPE/goal-$id.yielded"
+  goal_kill "$id"
+  slog "[goal] $id yielded $(printf '%s' "$left" | tr '\n' ' ')to another goal: cycle ended, relaunching with a fresh brief"
+  return 0
 }
 
 # goal_milestone_approved <owner/repo> <milestone number> (#314) — is this milestone the scope of a registered, live goal
@@ -932,6 +1101,8 @@ goal_tick_one() {  # <id>
         if [ "$GE_TOTAL" -gt 0 ] && [ "$GE_ACTIVE" -eq 0 ] && [ "$GE_WAITING" -gt 0 ]; then
           goal_mirror "$id" waiting_jp "$GE_TOTAL" "$GE_DELIVERED"
         else goal_mirror "$id" active "$GE_TOTAL" "$GE_DELIVERED"; fi
+        # #527: a feedback lead launched over a ticket another goal has since taken ends now (cross-host bound: one sync)
+        goal_fb_yield "$id" "$GE_SNAP"
       else goal_err "goal $id evaluation failed (see the preceding error for the ticket and step)"; fi
     fi
     return 0
@@ -945,7 +1116,11 @@ goal_tick_one() {  # <id>
   if [ -f "$PIPE/goal-$id.exit" ]; then
     ec=$(tr -dc '0-9' < "$PIPE/goal-$id.exit"); [ "$ec" = 0 ] && clean=1
   fi
-  if [ "$clean" -eq 1 ]; then
+  if [ -f "$PIPE/goal-$id.yielded" ]; then
+    # #527: ended by goal_fb_yield (another goal took a ticket over), not a crash or a launch failure: relaunch at once
+    # with a fresh brief; the exit code the kill left is ignored and no backoff, restart or launch-failure is counted
+    clean=1; restarts=0; wait_secs=0
+  elif [ "$clean" -eq 1 ]; then
     restarts=0; wait_secs=$GOAL_CYCLE_SECS
   else
     run=$age

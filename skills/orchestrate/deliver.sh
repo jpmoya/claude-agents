@@ -15,7 +15,9 @@
 #                                         deliver.sh "label:<exact label>" --repos a/b,c/d ... to bind an existing label
 #   deliver.sh status [goal|id]           one line per registry goal (open, plus closed within 7 days)
 #   deliver.sh project <goal|id|all>      bind/sync the goal's existing GitHub Project (--create: make one if none binds; Mac / a host whose gh token has the project scope; register and the supervisor sync do it too)
-#   deliver.sh stop <goal|id>             label goal-stopped, close the registry issue, kill the local cycle (idempotent)
+#   deliver.sh stop <goal|id>             label goal-stopped, close the registry issue, kill the local cycle (idempotent);
+#                                         its open tickets stay out of the feedback goal until `release` (#527)
+#   deliver.sh release <goal|id>          hand a stopped goal's held tickets back to the feedback goal (#527)
 #   deliver.sh resume <goal|id> [--here]  reopen a stopped/held goal; --here re-pins it to this host
 #   deliver.sh priority <goal|id> <n> | --after <goal> | --before <goal>   move a goal in the start order
 set -euo pipefail
@@ -48,14 +50,22 @@ body_for() { printf 'Goal: %s\n\n```json\n%s\n```\n' "$1" "$2"; }
 
 # check_overlap <spec> <id> [exclude registry issue number] [repos csv, label goals] [extra ticket refs, one per line]
 # dies naming the live goal that conflicts. Live = open registry goal (active, held or waiting on JP); judged from the
-# registry, never the local cache. Label goals (#319): overlap = the same label name, or a shared ticket.
+# registry, never the local cache. Label goals (#319): overlap = the same label name, or a shared ticket. A feedback goal
+# (#517) only conflicts with itself: its scope yields every ticket another live goal covers. Repos are compared through
+# _goal_same_repo (#527): a goal stored under a pre-rename slug (Benjis-Plants/scheduler) is the same repo as one under the
+# new slug, for the repo test, the milestones:all test and the shared-ticket test; a name that cannot be resolved refuses.
 check_overlap() {
-  local spec="$1" id="$2" skip="${3:-}" repos="${4:-}" extra="${5:-}" reg new_repo new_kind new_rows other row o_issue o_id o_spec o_st o_repo o_kind
+  local spec="$1" id="$2" skip="${3:-}" repos="${4:-}" extra="${5:-}" reg regrows new_repo new_kind new_rows other row o_issue o_id o_spec o_st o_repo o_kind
+  local rc r hit cand
   reg=$(_goal_registry_json) || die "cannot read the goal registry ($GOAL_REGISTRY_REPO); refusing to go on blind"
   IFS=$'\t' read -r new_repo new_kind _ <<< "$(goal_parse "$spec")"
   new_rows=$(goal_scope "$spec" "$id" "$repos") || die "cannot read the scope of $spec"
   [ -z "$extra" ] || new_rows=$(printf '%s\n%s' "$new_rows" "$extra")
+  # #527: parse first; a jq error fed straight into the loop meant zero iterations, i.e. no overlap found (fail open)
+  regrows=$(printf '%s' "$reg" | jq -r 'def f: if . == null or . == "" then "-" else tostring end; .[] | "\(.issue | f)\t\(.id | f)\t\(.spec | f)\t\(.st | f)"') \
+    || die "cannot parse the goal registry ($GOAL_REGISTRY_REPO); refusing to go on blind"
   while IFS=$'\t' read -r o_issue o_id o_spec o_st; do
+    [ -n "$o_issue" ] || continue
     [ "$o_issue" = "$skip" ] && continue
     # empty fields arrive as "-" (a tab split would collapse them); an unreadable id/state/issue fails closed
     if [ "$o_issue" = "-" ] || [ "$o_id" = "-" ] || [ "$o_st" = "-" ] || [ -z "$o_st" ]; then
@@ -70,26 +80,54 @@ check_overlap() {
     o_repo=""; o_kind=""
     IFS=$'\t' read -r o_repo o_kind _ <<< "$(goal_parse "$o_spec" 2>/dev/null || true)"
     [ -n "$o_repo" ] || die "cannot read the stored spec of live goal $o_id; refusing to go on blind"
+    # #517: a feedback goal's scope leaves out every ticket another live goal covers, so it never overlaps one: a live
+    # feedback goal yields to the goal being registered, and a new one already excludes every live goal's tickets
+    if [ "$new_kind" = fb ] || [ "$o_kind" = fb ]; then continue; fi
     if [ "$new_kind" = label ] && [ "$o_kind" = label ] && [ "$o_spec" = "$spec" ]; then
       die "overlaps live goal $o_id (same goal label)"
     fi
     if [ "$new_kind" != label ] && [ "$o_kind" != label ]; then
-      [ "$o_repo" = "$new_repo" ] || continue
+      rc=0; _goal_same_repo "$o_repo" "$new_repo" || rc=$?
+      case "$rc" in
+        0) ;;
+        1) continue ;;
+        *) die "cannot tell whether live goal $o_id ($o_repo) is on $new_repo (repo name unresolvable); refusing to go on blind" ;;
+      esac
       if [ "$new_kind" = msall ] || [ "$o_kind" = msall ]; then die "overlaps live goal $o_id (milestones:all on $new_repo)"; fi
     elif [ "$new_kind" = label ] && [ "$o_kind" != label ]; then
-      case ",$repos," in *",$o_repo,"*) ;; *) continue ;; esac
+      hit=0
+      for r in $(printf '%s' "$repos" | tr ',' ' '); do
+        rc=0; _goal_same_repo "$r" "$o_repo" || rc=$?
+        case "$rc" in
+          0) hit=1; break ;;
+          1) ;;
+          *) die "cannot tell whether live goal $o_id ($o_repo) is on $r (repo name unresolvable); refusing to go on blind" ;;
+        esac
+      done
+      [ "$hit" = 1 ] || continue
       if [ "$o_kind" = msall ]; then die "overlaps live goal $o_id (milestones:all on $o_repo)"; fi
     fi
     other=$(goal_scope "$o_spec" "$o_id" 2>/dev/null) || die "cannot read the scope of $o_id; refusing to go on blind"
+    # shared ticket = same number in the same repo, the repo compared through _goal_same_repo (old vs renamed slug)
     while IFS= read -r row; do
       [ -n "$row" ] || continue
       if printf '%s\n' "$new_rows" | grep -qxF -- "$row"; then die "overlaps live goal $o_id (shares $row)"; fi
+      while IFS= read -r cand; do
+        [ -n "$cand" ] || continue
+        rc=0; _goal_same_repo "${row%%#*}" "${cand%%#*}" || rc=$?
+        case "$rc" in
+          0) die "overlaps live goal $o_id (shares $cand, stored as $row)" ;;
+          1) ;;
+          *) die "cannot tell whether $row of live goal $o_id is $cand (repo name unresolvable); refusing to go on blind" ;;
+        esac
+      done <<< "$(printf '%s\n' "$new_rows" | grep -E -- "#${row##*#}\$" || true)"
     done <<< "$other"
-  done <<< "$(printf '%s' "$reg" | jq -r 'def f: if . == null or . == "" then "-" else tostring end; .[] | "\(.issue | f)\t\(.id | f)\t\(.spec | f)\t\(.st | f)"')"
+  done <<< "$regrows"
 }
 
 clear_stale_goal_state() {  # <id>: drop local stop/held/retry state left by an earlier goal of the same id (#224)
-  rm -f "$PIPE/goal-$1".stopped "$PIPE/goal-$1".held "$PIPE/goal-$1".restarts "$PIPE/goal-$1".np "$PIPE/goal-$1".snap "$PIPE/goal-$1".launchfails "$PIPE/goal-$1".launch-failed
+  rm -f "$PIPE/goal-$1".stopped "$PIPE/goal-$1".held "$PIPE/goal-$1".restarts "$PIPE/goal-$1".np "$PIPE/goal-$1".snap "$PIPE/goal-$1".launchfails "$PIPE/goal-$1".launch-failed \
+    "$PIPE/goal-$1".yielded "$PIPE/goal-$1".launch-scope
 }
 
 write_cache() {  # <id> <block json> <issue number>
@@ -235,6 +273,7 @@ cmd_register() {
       || goal_err "could not record the granted tickets of $id; the next goal sync reconciles them"
   fi
   clear_stale_goal_state "$id"   # #224: a re-registered goal keeps its id, so it must not inherit the old goal's stop/held files
+  [ "$kind" = fb ] || fb_yield_here   # #527: the new goal is live: a feedback lead running here over its tickets ends now
   if [ "$now" != 1 ]; then register_project "$resp"; echo "queued $id (issue #$n)"; return 0; fi
   mkdir -p "$LOGDIR/goals"
   write_cache "$id" "$block" "$n"
@@ -345,6 +384,7 @@ cmd_register_label() {
     '. + {order:$n, go:$go, granted:$g} + (if $d != "" then {granted_at:$d} else {} end)')
   resp=$(api_json PATCH "repos/$GOAL_REGISTRY_REPO/issues/$n" \
     "$(jq -nc --arg b "$(goal_body_v2 "$block" "$granted_at")" '{body:$b}')") || register_rollback "$n" "could not write the registry block"
+  fb_yield_here   # #527: the new goal is live: a feedback lead running here over its tickets ends now
   if [ "$go" = true ]; then
     post_note "$n" "**[supervisor] NOTE** go granted: label \`$label\` on the requirements ticket, agent-go on $(printf '%s' "$granted" | jq 'length') open ticket(s) in $kept" || true
 
@@ -431,11 +471,11 @@ cmd_priority() {
 }
 
 cmd_stop() {
-  local id g issue st host istate
+  local id g issue st host istate spec hold n_held
   id=$(_goal_resolve "${1:?goal or id required}") || die "goal not found: $1"
   g=$(_goal_find "$id") || die "goal not found: $id"
   issue=$(printf '%s' "$g" | jq -r .issue); st=$(printf '%s' "$g" | jq -r .st); host=$(printf '%s' "$g" | jq -r .host)
-  istate=$(printf '%s' "$g" | jq -r .state)
+  istate=$(printf '%s' "$g" | jq -r .state); spec=$(printf '%s' "$g" | jq -r .spec)
   # kill locally first: the kill switch must work even when a GitHub write fails
   if [ "$st" != delivered ] && [ "$host" = "$THIS_HOST" ]; then
     goal_kill "$id"
@@ -443,6 +483,22 @@ cmd_stop() {
   fi
   # gate the writes on the registry issue's own state: it is closed last, so open means the stop is not finished
   if [ "$istate" = open ]; then
+    # #527: a stop never hands the goal's open tickets back to a feedback goal on its own. Record them in the block as a
+    # hold BEFORE the stop lands: until the issue closes the goal is still live and covers them, so a failed write here
+    # leaves nothing uncovered (re-run stop). `deliver.sh release` hands them back; a resume or a new goal covers them.
+    if [ "$st" != unreadable ] && [ "$(goal_parse "$spec" 2>/dev/null | cut -f2)" != fb ]; then
+      hold=$(goal_stop_hold "$spec" "$id")
+      api_json PATCH "repos/$GOAL_REGISTRY_REPO/issues/$issue" \
+        "$(jq -nc --arg b "$(_goal_queue_body "$(printf '%s' "$g" | jq -c --argjson h "$hold" --arg at "$(now_utc)" \
+            '.block = ((.block | del(.released_at)) + {stopped_open: $h, stopped_at: $at})')")" '{body:$b}')" >/dev/null \
+        || die "could not record the held tickets of $id; it is still live (registry issue #$issue open): re-run 'deliver.sh stop $id'"
+      if [ "$hold" = '"unreadable"' ]; then
+        echo "could not list the open tickets of $id: the feedback goal on its repo stays unreadable until 'deliver.sh release $id'" >&2
+      else
+        n_held=$(printf '%s' "$hold" | jq 'length')
+        [ "$n_held" -eq 0 ] || echo "$n_held open ticket(s) of $id stay out of the feedback goal; 'deliver.sh release $id' hands them back" >&2
+      fi
+    fi
     ensure_label goal-stopped
     add_label "$issue" goal-stopped
     post_note "$issue" "**[deliver] NOTE** stopped by $THIS_HOST"
@@ -453,6 +509,41 @@ cmd_stop() {
   else
     echo "$id is already $st"
   fi
+}
+
+# cmd_release <goal|id> (#527) — JP's explicit hand-back: the open tickets a stopped goal holds (block `stopped_open`) may
+# go back to the feedback goal. Every stopped registry entry of that id that still holds tickets is released.
+cmd_release() {
+  local id reg rows issue g n=0
+  id=$(_goal_resolve "${1:?goal or id required}") || die "goal not found: $1"
+  reg=$(_goal_registry_json all) || die "cannot read the goal registry ($GOAL_REGISTRY_REPO)"
+  rows=$(printf '%s' "$reg" | jq -c --arg id "$id" '.[] | select(.id == $id and .st == "stopped" and ((.block.stopped_open? // null) != null))') \
+    || die "cannot parse the goal registry ($GOAL_REGISTRY_REPO)"
+  while IFS= read -r g; do
+    [ -n "$g" ] || continue
+    issue=$(printf '%s' "$g" | jq -r .issue)
+    api_json PATCH "repos/$GOAL_REGISTRY_REPO/issues/$issue" \
+      "$(jq -nc --arg b "$(_goal_queue_body "$(printf '%s' "$g" | jq -c --arg at "$(now_utc)" '.block = ((.block | del(.stopped_open)) + {released_at: $at})')")" '{body:$b}')" >/dev/null \
+      || die "could not release the tickets held by $id (registry issue #$issue)"
+    post_note "$issue" "**[deliver] NOTE** held tickets released to the feedback goal by $THIS_HOST" || true
+    echo "released the tickets held by $id (issue #$issue)"
+    n=$((n + 1))
+  done <<< "$rows"
+  [ "$n" -gt 0 ] || echo "$id holds no tickets (not stopped, stopped before #527, or already released)"
+}
+
+# fb_yield_here (#527) — a goal was just registered or resumed: a feedback lead running on this host whose cycle was
+# launched with one of that goal's tickets ends now (goal_fb_yield), instead of at the next goal sync. Best effort.
+fb_yield_here() {
+  local f id h
+  for f in "$PIPE"/goal-*.json; do
+    [ -e "$f" ] || break
+    id=$(basename "$f" .json); id=${id#goal-}
+    h=$(jq -r '(.host // "") | ascii_downcase' "$f" 2>/dev/null)
+    [ "$h" = "$(printf '%s' "$THIS_HOST" | tr '[:upper:]' '[:lower:]')" ] || continue
+    goal_fb_yield "$id" || echo "could not re-read the feedback scope of $id; the next goal sync re-checks it" >&2
+  done
+  return 0
 }
 
 cmd_resume() {
@@ -473,7 +564,9 @@ cmd_resume() {
   check_overlap "$spec" "$id" "$issue"
   set_state "$issue" open
   del_label "$issue" goal-stopped; del_label "$issue" goal-held
-  rm -f "$PIPE/goal-$id".stopped "$PIPE/goal-$id".held "$PIPE/goal-$id".restarts "$PIPE/goal-$id".np "$PIPE/goal-$id".snap "$PIPE/goal-$id".launchfails "$PIPE/goal-$id".launch-failed
+  rm -f "$PIPE/goal-$id".stopped "$PIPE/goal-$id".held "$PIPE/goal-$id".restarts "$PIPE/goal-$id".np "$PIPE/goal-$id".snap "$PIPE/goal-$id".launchfails "$PIPE/goal-$id".launch-failed \
+    "$PIPE/goal-$id".yielded "$PIPE/goal-$id".launch-scope
+  [ "$(goal_parse "$spec" 2>/dev/null | cut -f2)" = fb ] || fb_yield_here   # #527: live again, the feedback goal yields now
   if [ -z "$host" ] && [ "$here" != 1 ]; then   # stopped while still queued (#320): back in the queue, no host yet
     add_label "$issue" goal-queued
     echo "resumed $id (issue #$issue); queued again"
@@ -507,7 +600,8 @@ case "${1:-}" in
   priority) shift; cmd_priority "$@" ;;
   project) shift; cmd_project "$@" ;;
   stop) shift; cmd_stop "$@" ;;
+  release) shift; cmd_release "$@" ;;
   resume) shift; cmd_resume "$@" ;;
-  ''|-h|--help) sed -n '2,21p' "$0"; exit 2 ;;
+  ''|-h|--help) sed -n '2,22p' "$0"; exit 2 ;;
   *) cmd_register_args "$@" ;;
 esac
