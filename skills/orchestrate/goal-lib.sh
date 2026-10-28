@@ -855,18 +855,25 @@ $(goal_cards waiting_jp)"
   slog "[goal] $id waiting on JP ($GE_WAITING ticket(s))"
 }
 
-goal_park() {  # <id> <issue>
-  local id=$1 issue=$2
+goal_park() {  # <id> <issue> [launch] — `launch` (#514): parked by GOAL_MAX_LAUNCH_FAILS, not by GOAL_MAX_NO_PROGRESS
+  local id=$1 issue=$2 why="no progress in $GOAL_MAX_NO_PROGRESS cycles"
+  [ "${3:-}" = launch ] && why="could not launch in $GOAL_MAX_LAUNCH_FAILS consecutive attempts"
   touch "$PIPE/goal-$id.held"
   _goal_label_add "$issue" goal-held || goal_err "cannot label the registry issue of $id held"
-  _goal_note "$issue" "**[deliver] NOTE** held: no progress in $GOAL_MAX_NO_PROGRESS cycles" || goal_err "cannot post the held note of $id"
+  _goal_note "$issue" "**[deliver] NOTE** held: $why" || goal_err "cannot post the held note of $id"
   goal_mirror "$id" held
-  slog "[goal] $id held — no progress in $GOAL_MAX_NO_PROGRESS cycles"
+  if [ "${3:-}" = launch ]; then   # the launch mechanism failing is an engineering alert, not a goal that stalled
+    slog "[goal] $id held — $why (release=$(goal_release) host=$HOST route=goal-queue)"
+    command -v notify_engineering >/dev/null 2>&1 \
+      && notify_engineering "$issue" ":warning:" "Goal $id held: $why (release $(goal_release), host $HOST)" "$GOAL_REGISTRY_REPO" || true
+  else
+    slog "[goal] $id held — $why"
+  fi
   report_status_async "held"
 }
 
 goal_tick_one() {  # <id>
-  local id=$1 cache="$PIPE/goal-$1.json" spec issue pid alive=0 now la age restarts ec clean=0 run em idx wait_secs new old np seg lk=""
+  local id=$1 cache="$PIPE/goal-$1.json" spec issue pid alive=0 now la age restarts ec clean=0 run em idx wait_secs new old np seg lk="" fast=0 lf
   spec=$(jq -r '.spec // empty' "$cache" 2>/dev/null); issue=$(jq -r '.issue // empty' "$cache" 2>/dev/null)
   [ -n "$spec" ] && [ -n "$issue" ] || return 0
   pid=$(cat "$PIPE/goal-$id.pid" 2>/dev/null)
@@ -879,7 +886,7 @@ goal_tick_one() {  # <id>
         if [ "$GE_TOTAL" -gt 0 ] && [ "$GE_DELIVERED" -eq "$GE_TOTAL" ]; then goal_deliver "$id" "$issue" "$spec"; return 0; fi
         # #443: a held goal whose every open ticket waits on JP is "waiting on JP", not "no progress": it stops holding the queue line
         if [ "$GE_TOTAL" -gt 0 ] && [ "$GE_ACTIVE" -eq 0 ] && [ "$GE_WAITING" -gt 0 ]; then
-          rm -f "$PIPE/goal-$id.held"; echo 0 > "$PIPE/goal-$id.np"
+          rm -f "$PIPE/goal-$id.held" "$PIPE/goal-$id.launch-failed"; echo 0 > "$PIPE/goal-$id.np"; echo 0 > "$PIPE/goal-$id.launchfails"
           _goal_label_del "$issue" goal-held
           slog "[goal] $id unheld — waiting on JP"
           goal_mirror "$id" waiting_jp "$GE_TOTAL" "$GE_DELIVERED"
@@ -887,7 +894,7 @@ goal_tick_one() {  # <id>
         fi
         new=$(printf '%s' "$GE_SNAP" | goal_snapshot); old=$(cat "$PIPE/goal-$id.snap" 2>/dev/null)
         if [ "$GE_TOTAL" -gt 0 ] && [ -n "$old" ] && [ "$new" != "$old" ]; then
-          rm -f "$PIPE/goal-$id.held"; echo 0 > "$PIPE/goal-$id.np"
+          rm -f "$PIPE/goal-$id.held" "$PIPE/goal-$id.launch-failed"; echo 0 > "$PIPE/goal-$id.np"; echo 0 > "$PIPE/goal-$id.launchfails"
           _goal_label_del "$issue" goal-held
           slog "[goal] $id unheld — scope changed"
           goal_mirror "$id" active "$GE_TOTAL" "$GE_DELIVERED"; return 0
@@ -925,6 +932,7 @@ goal_tick_one() {  # <id>
       if [ -n "$em" ]; then run=$((em - la)); [ "$em" -le "$now" ] && age=$((now - em)); fi   # backoff counts from the crash
     fi
     if [ "$run" -lt "$MIN_RUN_SECS" ]; then   # transient (rate limit, OOM, API error): the longer backoff
+      fast=1   # #514: the lead died before doing any work — a launch failure, not a cycle with no progress
       idx=$restarts; [ "$idx" -ge "${#TRANSIENT_BACKOFF[@]}" ] && idx=$(( ${#TRANSIENT_BACKOFF[@]} - 1 ))
       wait_secs=${TRANSIENT_BACKOFF[$idx]}
     else
@@ -964,9 +972,18 @@ goal_tick_one() {  # <id>
   new=$(printf '%s' "$GE_SNAP" | goal_snapshot)
   old=$(cat "$PIPE/goal-$id.snap" 2>/dev/null)
   np=$(cat "$PIPE/goal-$id.np" 2>/dev/null); case "$np" in ''|*[!0-9]*) np=0 ;; esac
-  if [ -n "$lk" ]; then   # usage-limit exit: np and snap stay as they were
+  lf=$(cat "$PIPE/goal-$id.launchfails" 2>/dev/null); case "$lf" in ''|*[!0-9]*) lf=0 ;; esac
+  if [ -n "$lk" ]; then   # usage-limit exit: np and snap stay as they were (launchfails too)
     slog "[goal] $id rate-limited limit=$lk backoff=${RATE_LIMIT_BACKOFF_SECS}s"
+  elif [ -f "$PIPE/goal-$id.launch-failed" ] || [ "$fast" -eq 1 ]; then
+    # #514: the last attempt never got to work (goal_launch failed, or the lead exited non-zero in < MIN_RUN_SECS, e.g. an
+    # auth error). That says nothing about the scope: np and snap stay as they were and the attempt counts toward
+    # GOAL_MAX_LAUNCH_FAILS instead, which parks with its own note.
+    lf=$((lf + 1)); echo "$lf" > "$PIPE/goal-$id.launchfails"; rm -f "$PIPE/goal-$id.launch-failed"
+    slog "[goal] $id launch failure $lf/$GOAL_MAX_LAUNCH_FAILS"
+    if [ "$lf" -ge "$GOAL_MAX_LAUNCH_FAILS" ]; then goal_park "$id" "$issue" launch; return 0; fi
   else
+    [ "$lf" -eq 0 ] || echo 0 > "$PIPE/goal-$id.launchfails"   # the last attempt ran: the launch-failure streak is over
     if [ "$GE_TOTAL" -eq 0 ] || { [ -n "$old" ] && [ "$new" = "$old" ]; }; then np=$((np + 1)); else np=0; fi
     echo "$np" > "$PIPE/goal-$id.np"; echo "$new" > "$PIPE/goal-$id.snap"
     if [ "$np" -ge "$GOAL_MAX_NO_PROGRESS" ]; then goal_park "$id" "$issue"; return 0; fi
@@ -978,6 +995,7 @@ goal_tick_one() {  # <id>
     slog "[goal] $id launched pid=$(cat "$PIPE/goal-$id.pid" 2>/dev/null) restarts=$(cat "$PIPE/goal-$id.restarts") np=$np mem=$(mem_available_mb)MB"
     GOAL_CAN_LAUNCH=0   # one launch per tick
   else
+    touch "$PIPE/goal-$id.launch-failed"   # #514: counted as a launch failure at the next decision, never as "no progress"
     goal_err "launch of $id failed"
   fi
 }
@@ -992,12 +1010,13 @@ GOAL_QUEUE_FILE_NAME=goalqueue.json
 
 # _GOAL_QUEUE_JQ: registry goals (array) -> {queued: [goals in queue order], candidate: goal | null}. Goals sort by the
 # block's `order` (the registry issue number when absent), then by registry issue number. The candidate is the FIRST goal
-# in that order that is not delivered / stopped / waiting on JP, provided it is queued: any earlier goal that is active,
-# held, queued or unreadable holds the line.
+# in that order that is not delivered / stopped / waiting on JP / held, provided it is queued: any earlier goal that is
+# active, queued or unreadable holds the line. A held goal does not (#514): it is parked with no lead running, so letting
+# it hold the line stopped every approved goal behind it (~36 h with no delivery lead on either host).
 _GOAL_QUEUE_JQ='def okey: [((.block.priority? // .block.order? // .issue) | if type == "number" then . else 1e12 end), .issue];
   sort_by(okey) as $all
   | ($all | map(select(.st == "queued"))) as $q
-  | ($all | map(select((.st == "delivered" or .st == "stopped" or .st == "waiting_jp") | not)) | first // null) as $f
+  | ($all | map(select((.st == "delivered" or .st == "stopped" or .st == "waiting_jp" or .st == "held") | not)) | first // null) as $f
   | {queued: $q, candidate: (if $f != null and $f.st == "queued" then $f else null end),
      recent: ($all | map(select(.st == "delivered" or .st == "stopped")) | sort_by(.closed_at // "") | reverse | .[:5]),
      open: ($all | map(select(.st == "active" or .st == "held" or .st == "waiting_jp")))}'
