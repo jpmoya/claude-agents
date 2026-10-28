@@ -48,7 +48,8 @@ body_for() { printf 'Goal: %s\n\n```json\n%s\n```\n' "$1" "$2"; }
 
 # check_overlap <spec> <id> [exclude registry issue number] [repos csv, label goals] [extra ticket refs, one per line]
 # dies naming the live goal that conflicts. Live = open registry goal (active, held or waiting on JP); judged from the
-# registry, never the local cache. Label goals (#319): overlap = the same label name, or a shared ticket.
+# registry, never the local cache. Label goals (#319): overlap = the same label name, or a shared ticket. A feedback goal
+# (#517) only conflicts with itself: its scope yields every ticket another live goal covers.
 check_overlap() {
   local spec="$1" id="$2" skip="${3:-}" repos="${4:-}" extra="${5:-}" reg new_repo new_kind new_rows other row o_issue o_id o_spec o_st o_repo o_kind
   reg=$(_goal_registry_json) || die "cannot read the goal registry ($GOAL_REGISTRY_REPO); refusing to go on blind"
@@ -70,6 +71,9 @@ check_overlap() {
     o_repo=""; o_kind=""
     IFS=$'\t' read -r o_repo o_kind _ <<< "$(goal_parse "$o_spec" 2>/dev/null || true)"
     [ -n "$o_repo" ] || die "cannot read the stored spec of live goal $o_id; refusing to go on blind"
+    # #517: a feedback goal's scope leaves out every ticket another live goal covers, so it never overlaps one: a live
+    # feedback goal yields to the goal being registered, and a new one already excludes every live goal's tickets
+    if [ "$new_kind" = fb ] || [ "$o_kind" = fb ]; then continue; fi
     if [ "$new_kind" = label ] && [ "$o_kind" = label ] && [ "$o_spec" = "$spec" ]; then
       die "overlaps live goal $o_id (same goal label)"
     fi
