@@ -39,6 +39,11 @@ dg_setup() {
   DG_OLD=$(python3 -c "import datetime as d; print((d.datetime.now(d.timezone.utc)-d.timedelta(days=10)).strftime('%Y-%m-%dT%H:%M:%SZ'))")
   : > "$DG_BIN/gh-calls.log"; : > "$DG_BIN/writes.log"
   dg_install_fakes
+  # #527: check_overlap compares repos through repo_canon, whose `gh repo view` the fake gh does not serve: seed its
+  # 1-hour cache for the two fixture repos (each is its own canonical name)
+  mkdir -p "$DG_PIPE/repo-canon"
+  printf '%s' example-owner/project-a > "$DG_PIPE/repo-canon/example-owner__project-a"
+  printf '%s' example-owner/project-b > "$DG_PIPE/repo-canon/example-owner__project-b"
   cat > "$DG_HOME/.claude/pipeline/config.local.sh" <<EOF
 DISPATCH_REPOS=("example-owner/project-a:$DG_CK_A" "example-owner/project-b:$DG_CK_B")
 GOAL_REGISTRY_REPO=example-owner/registry
