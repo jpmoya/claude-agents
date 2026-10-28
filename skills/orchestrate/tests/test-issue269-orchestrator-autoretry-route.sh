@@ -1,6 +1,9 @@
 # Issue #269 AC1+AC2 — agents/orchestrator.md has a routing row, BEFORE the terminal `any BLOCKED` row, that resumes a
 # BLOCKED (class ci_pending|ci_red|merge_conflict|dependency) once a LATER `[supervisor] NOTE auto-retry n/max: <cls> cleared`
 # with the same class exists. Text-level checks on the doc (the orchestrator is an LLM prompt); expected strings from the ticket.
+# These greps alone let #269 ship while markers() still filtered every NOTE out, so the row could never fire.
+# test-orchestrator-sees-autoretry-note.sh is the behavioural guard: it runs the real markers()/gate-marker code
+# from orchestrator.md on a NOTE captured from a real supervisor tick.
 # Prefixed o269_.
 
 HERE_O269=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -32,7 +35,11 @@ test_o269_row_names_the_four_classes() {
 test_o269_row_has_exact_note_first_line() {
   local row; row=$(o269_row); assert_ne "$row" "" "269: row exists" || return 1
   assert_contains "$row" '**[supervisor] NOTE** auto-retry <n>/<max>: <cls> cleared' "269 AC1: exact NOTE first line" || return 1
-  assert_contains "$row" 'exactly' "269 AC2: first line must match exactly (non-exact does not resume)" || return 1
+  # The supervisor appends ` — <detail>` on infra-tolerated retries (#473); "exactly" rejected those. The row now defers to
+  # autoretry_note_re, the regex markers() reads with, so the doc and the code path cannot disagree.
+  assert_contains "$row" 'autoretry_note_re' "269 AC2: the row names the regex markers() lists the NOTE with" || return 1
+  assert_contains "$row" '` — <detail>`' "269 AC2: the row accepts the supervisor's detail suffix" || return 1
+  assert_contains "$row" 'leading text' "269 AC2: a NOTE with leading text resumes nothing" || return 1
 }
 
 test_o269_row_redispatches_blocked_author_with_note_url() {
