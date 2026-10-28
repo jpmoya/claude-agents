@@ -91,3 +91,10 @@ autoretry_classes() { echo 'ci_pending|ci_red|merge_conflict|dependency'; }  # #
 autoretry_note_re() {  # regex (jq oniguruma + gh --jq RE2) for the first line of the supervisor's auto-retry NOTE, the ONE NOTE the orchestrator's markers() lists: it is the resume signal for the BLOCKED before it (orchestrator.md auto-retry row). supervisor.sh step 1b posts `**[supervisor] NOTE** auto-retry <n>/<max>: <cls> cleared`, plus ` — <detail>` when it tolerated infrastructure-only failures (#473). Not part of marker_re: the supervisor's own readers must keep seeing the BLOCKED as the gate, or retries 2/3 and 3/3 never fire.
   printf '^\\*\\*\\[supervisor\\] NOTE\\*\\* auto-retry [0-9]+/[0-9]+: (%s) cleared( — .*)?[[:space:]]*$' "$(autoretry_classes)"
 }
+
+# decision_resolves_id <comment-body> → prints the numeric issuecomment id named by the body's single `Resolves:` target, exit 0;
+# prints nothing and exits 1 when none / ambiguous / quoted-only (claude-agents#523). STUB: the developer replaces this.
+decision_resolves_id() {
+  echo "NotImplemented: decision_resolves_id" >&2
+  return 2
+}
