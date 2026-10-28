@@ -88,3 +88,6 @@ marker_re() {  # marker_re [agent] → jq (oniguruma) regex for a valid first li
 block_classes() { echo 'ci_pending|ci_red|merge_conflict|unsupported_project|needs_jp|dependency|cost_ceiling|other'; }  # class word on a BLOCKED comment's `Blocked on:` line (line 2); anything else reads as `other`
 parkable_classes() { echo 'ci_pending|ci_red|merge_conflict|unsupported_project|dependency|other'; }  # #250: BLOCKED classes that are not JP-only (parked, shown with a reason)
 autoretry_classes() { echo 'ci_pending|ci_red|merge_conflict|dependency'; }  # #250: the subset the supervisor re-checks and relaunches once cleared
+autoretry_note_re() {  # regex (jq oniguruma + gh --jq RE2) for the first line of the supervisor's auto-retry NOTE, the ONE NOTE the orchestrator's markers() lists: it is the resume signal for the BLOCKED before it (orchestrator.md auto-retry row). supervisor.sh step 1b posts `**[supervisor] NOTE** auto-retry <n>/<max>: <cls> cleared`, plus ` — <detail>` when it tolerated infrastructure-only failures (#473). Not part of marker_re: the supervisor's own readers must keep seeing the BLOCKED as the gate, or retries 2/3 and 3/3 never fire.
+  printf '^\\*\\*\\[supervisor\\] NOTE\\*\\* auto-retry [0-9]+/[0-9]+: (%s) cleared( — .*)?[[:space:]]*$' "$(autoretry_classes)"
+}

@@ -474,7 +474,9 @@ test_gi_ac4_orchestrator_mockups_approved_lines_untouched() {
 }
 
 test_gi_ac4_orchestrator_needs_jp_lines_untouched() {
-  assert_eq "$(grep -F 'needs_jp' "$ORCH_GI" | gi_sha)" "5f25fc70c73d63bf00054d2a8536dec801c9eeca5d617c4961f9e5e4cedf0f6f" "AC4: needs_jp lines"
+  # Re-pinned for the auto-retry-NOTE reader fix: only the auto-retry row changed (how its NOTE is matched); its
+  # "Never applies to needs_jp …" clause and every other needs_jp line are byte-identical.
+  assert_eq "$(grep -F 'needs_jp' "$ORCH_GI" | gi_sha)" "f10120e67780a47f0260ac490d7c5d80742637ebd1a3c014b95c6b7842e1230e" "AC4: needs_jp lines"
 }
 
 test_gi_ac4_orchestrator_delegated_decision_lines_untouched() {
