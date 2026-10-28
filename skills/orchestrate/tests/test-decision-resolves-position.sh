@@ -139,12 +139,13 @@ t_dr_obs_ambiguous_logs_slog() {
   log=$( slog() { printf '%s\n' "$*"; }
     decision_resolves_id "**[delivery-lead] DECISION**
 Resolves: $DR_URL
-Resolves: $DR_OTHER" 2>/dev/null >/dev/null )
+Resolves: $DR_OTHER" 2>/dev/null )
   sha=$(git -C "$DR_ROOT" rev-parse --short=7 HEAD); host=$(hostname -s)
   assert_contains "$log" "orchestrator-decision" "obs route" || return 1
   assert_contains "$log" "$sha" "obs release sha" || return 1
   assert_contains "$log" "$host" "obs host" || return 1
-  assert_contains "$log" "issuecomment-999" "obs names comment ids" || return 1
+  assert_contains "$log" "$DR_ID" "obs names first comment id" || return 1
+  assert_contains "$log" "999" "obs names second comment id" || return 1
 }
 t_dr_obs_log_has_no_body_text() {
   local log
@@ -152,7 +153,7 @@ t_dr_obs_log_has_no_body_text() {
     decision_resolves_id "**[delivery-lead] DECISION**
 SECRET-PROSE-TOKEN
 Resolves: $DR_URL
-Resolves: $DR_OTHER" 2>/dev/null >/dev/null )
+Resolves: $DR_OTHER" 2>/dev/null )
   assert_contains "$log" "orchestrator-decision" "obs logged" || return 1
   assert_not_contains "$log" "SECRET-PROSE-TOKEN" "obs no body text"
 }
