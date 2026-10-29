@@ -894,6 +894,7 @@ PY
       slog "[rate-limited] #$issue limit=$exit_lk backoff=${RATE_LIMIT_BACKOFF_SECS}s"
     else
       slog "[queue-write-failed] #$issue — rate-limited entry not saved (disk full?); will re-enqueue next tick"
+      notify_engineering "$issue" ":warning:" "queue write failed — rate-limited entry not saved (disk full?); retrying next tick" "$repo"
     fi
     report_status_async "queue-restart"
     continue
@@ -996,6 +997,7 @@ PY
     should_escalate=true
   fi
 
+  restarts_prev=$(cat "$restarts_file" 2>/dev/null || true)   # #539: restored if the re-enqueue write fails, so one exit is never counted twice
   python3 -c "
 import json
 try: d = json.load(open('$restarts_file'))
@@ -1029,6 +1031,8 @@ json.dump(d, open('$restarts_file','w'))
     slog "[queue-restart] #$issue exit=$exit_code marker='$marker' transient=$transient run=${run_duration}s count=$count/$MAX_NO_PROGRESS total=$total backoff=${backoff_val}s"
   else
     slog "[queue-write-failed] #$issue — restart entry not saved (disk full?); will re-enqueue next tick"
+    notify_engineering "$issue" ":warning:" "queue write failed — restart entry not saved (disk full?); retrying next tick" "$repo"
+    if [ -n "$restarts_prev" ]; then printf '%s' "$restarts_prev" > "$restarts_file"; else rm -f "$restarts_file"; fi
     continue
   fi
   report_status_async "queue-restart"   # event push: run exited -> requeued (design #10 §4.4)
@@ -1287,6 +1291,7 @@ if [ "$launched" -eq 0 ] && [ "$HAS_CAP" -eq 1 ]; then
     if [ -z "$q_issue" ] || [ -z "$q_repo_chk" ]; then   # #539: 0-byte/unparseable entry — purge, never launch a blank ticket
       rm -f "$qf"
       slog "[drain-skip] ${qf##*/} — blank issue/repo (unparseable queue entry), purging"
+      notify_engineering "${qf##*/}" ":warning:" "purged blank queue entry ${qf##*/} (unparseable)" "${q_repo_chk:-unknown/unknown}"
       continue
     fi
     q_rk=${qf##*/orch-}; q_rk=${q_rk%.json}
