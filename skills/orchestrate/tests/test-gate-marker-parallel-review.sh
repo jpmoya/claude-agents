@@ -145,7 +145,8 @@ test_gm_ac2_tick_with_decision_takes_the_restart_path() {
 }
 
 test_gm_ac2_orchestrator_resume_rows_still_present() {   # characterisation: rows keyed on the BLOCKED gate marker are untouched
-  grep -qF 'whose line 2 is `Resolves: <URL of that BLOCKED comment>`' "$ORCH_GM" || { fail "resume row text missing"; return 1; }
+  # #523: the row no longer pins `Resolves:` to line 2 (position-independent, shared decision_resolves_id helper)
+  grep -qF 'carries exactly one unquoted `Resolves: <URL of that BLOCKED comment>` line' "$ORCH_GM" || { fail "resume row text missing"; return 1; }
   grep -qF 'where a private artefact is stored / who gets access' "$ORCH_GM" || { fail "JP-only carve-out missing"; return 1; }
 }
 

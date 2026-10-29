@@ -476,11 +476,14 @@ test_gi_ac4_orchestrator_mockups_approved_lines_untouched() {
 test_gi_ac4_orchestrator_needs_jp_lines_untouched() {
   # Re-pinned for the auto-retry-NOTE reader fix: only the auto-retry row changed (how its NOTE is matched); its
   # "Never applies to needs_jp …" clause and every other needs_jp line are byte-identical.
-  assert_eq "$(grep -F 'needs_jp' "$ORCH_GI" | gi_sha)" "f10120e67780a47f0260ac490d7c5d80742637ebd1a3c014b95c6b7842e1230e" "AC4: needs_jp lines"
+  # Re-pinned for #523 (position-independent Resolves:): the only change is the code-track DECISION resume row's
+  # "whose line 2 is `Resolves: …`" → "that carries exactly one unquoted `Resolves: …` line (any position after line 1; …)".
+  assert_eq "$(grep -F 'needs_jp' "$ORCH_GI" | gi_sha)" "04c523918204c3a181239e2ae2a97d72bd8956eb6e9daddbc615fdaf1c54bd06" "AC4: needs_jp lines"
 }
 
 test_gi_ac4_orchestrator_delegated_decision_lines_untouched() {
-  assert_eq "$(grep -F 'delegated-decision' "$ORCH_GI" | gi_sha)" "824f0a23661a8be56807ec0caecaa32fd73a0180b4adc53cc8e4be93af0c0f94" "AC4: delegated-decision lines"
+  # Re-pinned for #523: same single-row wording change as the needs_jp pin above; nothing else in these lines moved.
+  assert_eq "$(grep -F 'delegated-decision' "$ORCH_GI" | gi_sha)" "7ba99345dbd5ed3888ff8d4716cebe761b5eaa02e1094d4b23220fbc5e05e58e" "AC4: delegated-decision lines"
 }
 
 test_gi_ac4_orchestrator_states_operator_may_proceed_on_inherited_go() {

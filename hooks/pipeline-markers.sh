@@ -96,27 +96,29 @@ autoretry_note_re() {  # regex (jq oniguruma + gh --jq RE2) for the first line o
 # prints nothing and exits 1 when none / ambiguous / malformed / quoted-only (claude-agents#523). Position-independent: any line
 # after line 1, CRLF-safe, `>`-quoted lines ignored; /pull/N#issuecomment-X and /issues/N#issuecomment-X name the same target.
 # Ambiguous or malformed targets are logged via slog (release sha, host, route, comment ids — never body text) when slog exists.
+# The parsing is jq, not bash regex: the orchestrator calls this from its Bash tool, which is zsh on the Mac (no BASH_REMATCH,
+# no word-splitting, `declare -F` means float) — a bash-only parser there returned nothing for every decision.
+_PM_ROOT=$(cd -P "$(dirname "${BASH_SOURCE[0]:-$0}")/.." 2>/dev/null && pwd)   # repo root, captured at source time (bash: BASH_SOURCE, zsh: $0; -P follows the ~/.claude/hooks symlink)
 decision_resolves_id() {
-  local body=$1 line n=0 t id ids="" bad=0 sha host root
-  while IFS= read -r line || [ -n "$line" ]; do
-    n=$((n+1)); line=${line%$'\r'}
-    [ "$n" -gt 1 ] || continue
-    [[ "$line" =~ ^[[:space:]]*\> ]] && continue
-    [[ "$line" =~ ^Resolves:[[:space:]]*([^[:space:]]+) ]] || continue
-    t=${BASH_REMATCH[1]}
-    if [[ "$t" =~ issuecomment-([0-9]+) ]]; then
-      id=${BASH_REMATCH[1]}
-      case " $ids " in *" $id "*) ;; *) ids="${ids:+$ids }$id" ;; esac
-    else bad=$((bad+1)); fi
-  done <<< "$body"
-  set -- $ids
-  if [ "$#" -eq 1 ] && [ "$bad" -eq 0 ]; then printf '%s\n' "$1"; return 0; fi
-  if [ "$#" -gt 1 ] || [ "$bad" -gt 0 ]; then
-    if declare -F slog >/dev/null 2>&1; then
-      root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-      sha=$(git -C "$root" rev-parse --short=7 HEAD 2>/dev/null); host=$(hostname -s 2>/dev/null)
-      slog "orchestrator-decision release=${sha:-unknown} host=${host:-unknown} ambiguous/malformed Resolves: ids=[${ids// /,}] malformed=$bad"
-    fi
-  fi
+  local r sha host
+  r=$(jq -nr --arg b "$1" '
+    [ $b | split("\n") | .[1:][] | rtrimstr("\r")
+      | select(test("^\\s*>") | not)
+      | capture("^Resolves:\\s*(?<t>\\S+)") | .t
+      | ((capture("issuecomment-(?<id>[0-9]+)") | .id) // "") ] as $raw
+    | ([$raw[] | select(. != "")] | unique) as $ids
+    | ([$raw[] | select(. == "")] | length) as $bad
+    | if ($ids | length) == 1 and $bad == 0 then "ok " + $ids[0]
+      elif ($ids | length) > 1 or $bad > 0 then "bad " + ($ids | join(",")) + " " + ($bad | tostring)
+      else "none" end' 2>/dev/null)
+  case "$r" in
+    "ok "*) printf '%s\n' "${r#ok }"; return 0 ;;
+    "bad "*)
+      if typeset -f slog >/dev/null 2>&1; then
+        sha=$(git -C "${_PM_ROOT:-.}" rev-parse --short=7 HEAD 2>/dev/null); host=$(hostname -s 2>/dev/null)
+        r=${r#bad }
+        slog "orchestrator-decision release=${sha:-unknown} host=${host:-unknown} ambiguous/malformed Resolves: ids=[${r% *}] malformed=${r##* }"
+      fi ;;
+  esac
   return 1
 }
