@@ -145,10 +145,27 @@ _goal_repos() {
   printf '%s\n' "$r"
 }
 
-_goal_ms_rows() {  # <repo> <milestone number> -> owner/repo#N<TAB>state, issues only
+# _goal_rest_slug <owner/repo> -> the canonical slug for REST paths (#548): a goal registered before a GitHub rename still
+# names the old slug, and every call on it is a 301 plus a second request. repo_canon caches (1h); falls back to the name given.
+_goal_rest_slug() {
+  local c
+  c=$(repo_canon "$1" 2>/dev/null)
+  printf '%s\n' "${c:-$1}"
+}
+
+# Scope row jq (#548): "<ref>\t<state>", plus "\t<labels csv>" with GOAL_SCOPE_LABELS=1, or with GOAL_SCOPE_FULL=1 (goal_eval)
+# "\t<labels csv>\t<author>\t<start-gate refs csv>" so _goal_ticket_eval needs no issue read. Empty fields travel as "-"
+# (a tab is IFS whitespace: an empty field would shift the columns). Callers pass --arg r, --argjson l and --argjson full.
+_GOAL_ROW_JQ='def lb: [.labels[].name] | join(",");
+  def nz: if . == "" then "-" else . end;
+  def gates: [(.body // "") | scan("Depends on ([A-Za-z0-9._/-]*#[0-9]+) for starting work") | .[0]] | join(",");
+  def row: "\($r)#\(.number)\t\(.state)" + (if $full == 1 then "\t\(lb | nz)\t\(.user.login // "" | nz)\t\(gates | nz)" elif $l == 1 then "\t" + lb else "" end);'
+
+_goal_ms_rows() {  # <repo> <milestone number> [name for the ref] -> owner/repo#N<TAB>state, issues only
   local all
   all=$(_goal_get_all "repos/$1/issues?milestone=$2&state=all&per_page=100") || return 1
-  printf '%s' "$all" | jq -r --arg r "$1" --argjson l "${GOAL_SCOPE_LABELS:-0}" '.[] | select(has("pull_request") | not) | "\($r)#\(.number)\t\(.state)" + (if $l == 1 then "\t" + ([.labels[].name] | join(",")) else "" end)'
+  printf '%s' "$all" | jq -r --arg r "${3:-$1}" --argjson l "${GOAL_SCOPE_LABELS:-0}" --argjson full "${GOAL_SCOPE_FULL:-0}" "$_GOAL_ROW_JQ"'
+    .[] | select(has("pull_request") | not) | row'
 }
 
 # _goal_fb_err <repo> <what> — a failed feedback-scope read (#517), logged with release, host and route; the caller then
@@ -267,42 +284,43 @@ _goal_fb_covered() {
 # With the id of an already-registered milestone goal, scope by the number in the id (ms-<n>): the title is only
 # resolved at register time, so a milestone renamed at ship does not break resume, brief or the overlap guard.
 _goal_scope_rows() {
-  local line repo kind ref n ms one repos r js covered
+  local line repo kind ref n ms one repos r js covered crepo cr
   line=$(goal_parse "$1") || return 1
   IFS=$'\t' read -r repo kind ref <<< "$line"
+  crepo=$(_goal_rest_slug "$repo")   # REST paths use the canonical slug; the rows keep the name the goal was registered with
   case "$kind" in
     label)
       repos=$(_goal_repos "${2:-}" "${3:-}") || { echo "cannot find the repos of label goal ${2:-$1}" >&2; return 1; }
       for r in $repos; do
-        js=$(_goal_label_issues "$r" "$ref" all) || return 1
-        printf '%s' "$js" | jq -r --arg r "$r" '.[] | "\($r)#\(.number)\t\(.state)"'
+        cr=$(_goal_rest_slug "$r")
+        js=$(_goal_label_issues "$cr" "$ref" all) || return 1
+        printf '%s' "$js" | jq -r --arg r "$r" --argjson l 0 --argjson full "${GOAL_SCOPE_FULL:-0}" "$_GOAL_ROW_JQ"'.[] | row'
       done ;;
     ms)
       case "${2:-}" in
         *-ms-[0-9]*) n="${2##*-ms-}"; case "$n" in *[!0-9]*) n="" ;; esac ;;
         *) n="" ;;
       esac
-      [ -n "$n" ] || n=$(_goal_ms_number "$repo" "$ref") || return 1
-      _goal_ms_rows "$repo" "$n" ;;
+      [ -n "$n" ] || n=$(_goal_ms_number "$crepo" "$ref") || return 1
+      _goal_ms_rows "$crepo" "$n" "$repo" ;;
     fb)
       # #472/#517: the repo's user-feedback tickets that no other live goal covers (any milestone: the product-manager gives
       # every ticket one, so the old milestone=none filter matched nothing); closed rows count as delivered
       covered=$(_goal_fb_covered "$repo") || return 1
-      js=$(_goal_get_all "repos/$repo/issues?labels=$(_goal_uri "${LABEL_FEEDBACK:-user-feedback}")&state=all&per_page=100") \
+      js=$(_goal_get_all "repos/$crepo/issues?labels=$(_goal_uri "${LABEL_FEEDBACK:-user-feedback}")&state=all&per_page=100") \
         || { _goal_fb_err "$repo" "the ${LABEL_FEEDBACK:-user-feedback} tickets are unreadable"; return 1; }
-      printf '%s' "$js" | jq -r --arg r "$repo" --argjson l "${GOAL_SCOPE_LABELS:-0}" \
+      printf '%s' "$js" | jq -r --arg r "$repo" --argjson l "${GOAL_SCOPE_LABELS:-0}" --argjson full "${GOAL_SCOPE_FULL:-0}" \
         --argjson cov "$(printf '%s\n' "$covered" | jq -Rsc 'split("\n") | map(select(. != "") | tonumber)')" \
-        '.[] | select(has("pull_request") | not) | select(.number as $n | any($cov[]; . == $n) | not)
-         | "\($r)#\(.number)\t\(.state)" + (if $l == 1 then "\t" + ([.labels[].name] | join(",")) else "" end)' ;;
+        "$_GOAL_ROW_JQ"'.[] | select(has("pull_request") | not) | select(.number as $n | any($cov[]; . == $n) | not) | row' ;;
     msall)
-      ms=$(_goal_get_all "repos/$repo/milestones?state=open&per_page=100") || return 1
-      for n in $(printf '%s' "$ms" | jq -r '.[].number'); do _goal_ms_rows "$repo" "$n" || return 1; done ;;
+      ms=$(_goal_get_all "repos/$crepo/milestones?state=open&per_page=100") || return 1
+      for n in $(printf '%s' "$ms" | jq -r '.[].number'); do _goal_ms_rows "$crepo" "$n" "$repo" || return 1; done ;;
     t)
       # only a 404 is an empty scope; any other failure (rate limit, 5xx, network) must not read as "no tickets"
-      one=$(gh api "repos/$repo/issues/$ref" 2>&1) || {
+      one=$(gh api "repos/$crepo/issues/$ref" 2>&1) || {
         case "$one" in *"HTTP 404"*|*"Not Found"*|*"HTTP 410"*|*"Gone"*) return 0 ;; *) return 1 ;; esac
       }
-      printf '%s' "$one" | jq -r --arg r "$repo" --argjson l "${GOAL_SCOPE_LABELS:-0}" 'select(has("pull_request") | not) | "\($r)#\(.number)\t\(.state)" + (if $l == 1 then "\t" + ([.labels[].name] | join(",")) else "" end)' ;;
+      printf '%s' "$one" | jq -r --arg r "$repo" --argjson l "${GOAL_SCOPE_LABELS:-0}" --argjson full "${GOAL_SCOPE_FULL:-0}" "$_GOAL_ROW_JQ"'select(has("pull_request") | not) | row' ;;
   esac
 }
 
@@ -560,16 +578,29 @@ goal_milestone_approved() {
 # file_mtime, latest_marker, terminal_kind and $HOST defined there. REST (`gh api`) for every read of ours, like above.
 
 # _goal_ticket_eval <owner/repo> <issue> -> "<delivered|waiting_jp|active>\t<issue state>\t<latest marker first line>\t<reason>"
-# One REST issue read plus latest_marker; exit 1 when either read fails (a failed read is never "delivered").
+# #548: one comments fetch per open ticket, shared by latest_marker, the BLOCKED check and the #456 block. State, labels,
+# author and start-gate refs come from the scope row when the caller has it (args 3-6, as goal_eval passes them); only a
+# caller without a row (goal_ticket_state) pays one REST issue read. Exit 1 when a read fails (a failed read is never "delivered").
 _goal_ticket_eval() {
-  local repo="$1" n="$2" info st labels checkout m first mk tk l2 cls="active" why="-"
-  info=$(gh api "repos/$repo/issues/$n" 2>/dev/null) || return 1
-  st=$(printf '%s' "$info" | jq -r '(.state // empty) | ascii_upcase') || return 1
+  local repo="$1" n="$2" info st labels author gates slug checkout m first mk tk l2 cls="active" why="-" all_c
+  slug=$(_goal_rest_slug "$repo")
+  if [ -n "${6:-}" ]; then
+    st=$(printf '%s' "$3" | tr '[:lower:]' '[:upper:]')
+    labels=$4; [ "$labels" != "-" ] || labels=""; labels=${labels//,/ }
+    author=$5; [ "$author" != "-" ] || author=""
+    gates=$6; [ "$gates" != "-" ] || gates=""; gates=${gates//,/$'\n'}
+  else
+    info=$(gh api "repos/$slug/issues/$n" 2>/dev/null) || return 1
+    st=$(printf '%s' "$info" | jq -r '(.state // empty) | ascii_upcase') || return 1
+    labels=$(printf '%s' "$info" | jq -r '[.labels[].name] | join(" ")')
+    author=$(printf '%s' "$info" | jq -r '.user.login // empty')
+    gates=$(printf '%s' "$info" | jq -r '.body // ""' | grep -oE 'Depends on [A-Za-z0-9._/-]*#[0-9]+ for starting work' | sed -E 's/^Depends on ([^ ]+) for starting work$/\1/')
+  fi
   [ -n "$st" ] || return 1
   if [ "$st" = CLOSED ]; then printf 'delivered\tCLOSED\t-\t-\n'; return 0; fi
-  labels=$(printf '%s' "$info" | jq -r '[.labels[].name] | join(" ")')
   checkout=$(_goal_checkout "$repo") || return 1
-  m=$(latest_marker "$checkout" "$n")
+  all_c=$(_goal_get_all "repos/$slug/issues/$n/comments?per_page=100" 2>/dev/null) || { goal_err "cannot evaluate $repo#$n: comments read failed"; return 1; }
+  m=$(latest_marker "$checkout" "$n" "$all_c" "$author")
   [ "$m" != "?" ] || { goal_err "cannot evaluate $repo#$n: latest_marker read failed"; return 1; }
   first=${m%%$'\n'*}; first=${first%$'\r'}
   first=$(printf '%s' "$first" | tr '\t' ' ')
@@ -577,7 +608,7 @@ _goal_ticket_eval() {
   if [[ "$mk" =~ \]\ DEPLOYED\ TO\ STAGING$ ]]; then
     cls=waiting_jp; why="landed on staging, waiting for your promotion"
   elif [[ "$mk" =~ \]\ BLOCKED ]]; then
-    l2=$(_goal_get_all "repos/$repo/issues/$n/comments?per_page=100" 2>/dev/null \
+    l2=$(printf '%s' "$all_c" \
       | jq -r --arg f "$first" '[.[] | select((.body | split("\n")[0] | rtrimstr("\r")) == $f)] | last | .body | split("\n")[1] // "" | rtrimstr("\r")' 2>/dev/null) || l2=""
     if [ "$l2" = "Blocked on: needs_jp" ]; then cls=waiting_jp; why="blocked on a decision only you can make"; fi
   else
@@ -606,9 +637,7 @@ _goal_ticket_eval() {
   # comments read, author-checked (an agent-tag comment, "**[...] ...**", never counts, so this cannot loop on the
   # pipeline's own supervisor/claim notes — #427 AC4).
   if [ "$cls" != delivered ]; then
-    local author gate_at lead_blocked_at jp_answer_at all_c newest
-    author=$(printf '%s' "$info" | jq -r '.user.login // empty')
-    all_c=$(_goal_get_all "repos/$repo/issues/$n/comments?per_page=100" 2>/dev/null) || all_c="[]"
+    local gate_at lead_blocked_at jp_answer_at newest
     gate_at=""
     [ "$first" != none ] && [ -n "$first" ] && gate_at=$(printf '%s' "$all_c" \
       | jq -r --arg f "$first" '[.[] | select((.body | split("\n")[0] | rtrimstr("\r")) == $f)] | last | .created_at // empty')
@@ -646,13 +675,13 @@ _goal_ticket_eval() {
     while IFS= read -r g; do
       [ -n "$g" ] || continue
       case "$g" in "#"*) gr="$repo"; gn="${g#\#}" ;; *) gr="${g%#*}"; gn="${g##*#}" ;; esac
-      gst=$(gh api "repos/$gr/issues/$gn" --jq '(.state // "") | ascii_upcase' 2>/dev/null) || return 1
+      gst=$(gh api "repos/$(_goal_rest_slug "$gr")/issues/$gn" --jq '(.state // "") | ascii_upcase' 2>/dev/null) || return 1
       case "$gst" in
         OPEN|REOPENED) cls=waiting_jp; why="waits on $g (start-gate still open)"; break ;;
         CLOSED) ;;
         *) return 1 ;;
       esac
-    done < <(printf '%s' "$info" | jq -r '.body // ""' | grep -oE 'Depends on [A-Za-z0-9._/-]*#[0-9]+ for starting work' | sed -E 's/^Depends on ([^ ]+) for starting work$/\1/')
+    done <<< "$gates"
   fi
   printf '%s\t%s\t%s\t%s\n' "$cls" "$st" "${first:--}" "$why"
 }
@@ -948,16 +977,17 @@ goal_sync() {  # registry -> local: rebuild missing caches, propagate stop/close
 
 # goal_eval <id> <spec> — live scope + ticket classes into GE_* (current shell); exit 1 on any failed read
 goal_eval() {
-  local rows ref st repo n r cls istate marker why
+  local rows ref st repo n r cls istate marker why lbl au gates
   GE_TOTAL=0; GE_DELIVERED=0; GE_ACTIVE=0; GE_WAITING=0; GE_SNAP=""; GE_REFS=""
-  if [ -n "${3:-}" ]; then rows=$3; else rows=$(_goal_scope_rows "$2" "$1") || return 1; fi   # $3: explicit "ref<TAB>state" rows
-  while IFS=$'\t' read -r ref st; do
+  # $3: explicit "ref<TAB>state" rows. Live rows carry labels, author and start-gate refs too (#548: no per-ticket issue read).
+  if [ -n "${3:-}" ]; then rows=$3; else rows=$(GOAL_SCOPE_FULL=1 _goal_scope_rows "$2" "$1") || return 1; fi
+  while IFS=$'\t' read -r ref st lbl au gates; do
     [ -n "$ref" ] || continue
     if [ "$st" = closed ]; then
       cls=delivered; istate=CLOSED; marker="-"; why="-"
     else
       repo=${ref%%#*}; n=${ref##*#}
-      r=$(_goal_ticket_eval "$repo" "$n") || return 1
+      r=$(_goal_ticket_eval "$repo" "$n" "$st" "$lbl" "$au" "$gates") || return 1
       IFS=$'\t' read -r cls istate marker why <<< "$r"
     fi
     GE_TOTAL=$((GE_TOTAL + 1))

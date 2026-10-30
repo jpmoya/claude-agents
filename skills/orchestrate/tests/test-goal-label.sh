@@ -160,7 +160,8 @@ glb_count_label() {                                                             
   done
   echo "$c"
 }
-glb_calls_not_api() { awk '$1 != "api" && NF > 0' "$DG_BIN/gh-calls.log" | wc -l | tr -d ' '; }
+# `gh repo view` is repo_canon's cached REST name lookup (#548), not a GraphQL/project call
+glb_calls_not_api() { awk '$1 != "api" && !($1 == "repo" && $2 == "view") && NF > 0' "$DG_BIN/gh-calls.log" | wc -l | tr -d ' '; }
 glb_comments_all() { cat "$DG_ST"/comments/*.json 2>/dev/null; }
 
 # glb_v2 <registry issue n> <label> <title> <repos-csv> <active|stopped|delivered> <id> [requirements]
