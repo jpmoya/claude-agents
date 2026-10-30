@@ -165,7 +165,8 @@ latest_marker() {  # the GATE marker: newest real routing marker whose agent is 
     | ([\$pa, \$ga] | sort) as \$pair
     | (if (\$g0 | test(\"\\\\] (BLOCKED|TEST DEFECT|FAIL|TESTS FAIL)\") | not) and \$p != null and (if \$pair == [\"fullstack-developer\", \"test-reviewer\"] then ((\$p | test(\"\\\\] (BLOCKED|TEST DEFECT|TESTS FAIL)\")) or ((\$p | test(\"\\\\] IMPLEMENTED\")) and (\$g0 | test(\"\\\\] TESTS APPROVED\")))) else (\$p | test(\"\\\\] (BLOCKED|TEST DEFECT|FAIL|TESTS FAIL)\")) end)
          and (\$pair == [\"solutions-architect\", \"ui-ux-designer\"] or \$pair == [\"fullstack-developer\", \"test-reviewer\"] or \$pair == [\"code-reviewer\", \"test-reviewer\"])
-       then \$p else \$g0 end) as \$gate
+       then \$p else \$g0 end) as \$g1
+    | (if (\$g1 | test(\"^\\\\*\\\\*\\\\[jp\\\\] SKIP MOCKUPS\\\\*\\\\*\")) then ([\$m[] | select(test(\"\\\\] (DEPLOYED|DEPLOYED TO STAGING|APPLIED|SPLIT)(\\\\*\\\\*)?\$\"))] | last // \$g1) else \$g1 end) as \$gate  # a SKIP MOCKUPS after a terminal marker is inert (#551)
     | if (\$last | test(\"^\\\\*\\\\*\\\\[(delivery-lead|project-manager)\\\\] \") | not) then \$gate else \$gate + \"\\n\" + \$last end  # legacy alias"
   # REST, not GraphQL (#388): the shared GraphQL budget runs out hourly; the REST core limit is separate (same shape as #57's hook).
   # A failed read is "?" — callers must treat it as unknown, never as "no progress" (#387) — and is logged with rc + gh's first error line.
@@ -1285,6 +1286,7 @@ if [ "$launched" -eq 0 ] && [ "$HAS_CAP" -eq 1 ]; then
     # Skip if already running
     if [ -f "$PIPE/orch-$q_rk.pid" ] && kill -0 "$(cat "$PIPE/orch-$q_rk.pid")" 2>/dev/null; then
       rm -f "$qf"
+      slog "[drain-skip] #$q_issue — already running, purging queue entry"  # #551
       continue
     fi
 
