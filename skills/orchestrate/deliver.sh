@@ -8,6 +8,7 @@
 #                                         register (state queued). <goal> = owner/repo:milestone:<number|exact title>
 #                                         | owner/repo:milestones:all | owner/repo:feedback | owner/repo#N
 #                                         --now: also launch one cycle here at once (hand use, skips the queue)
+#                                         (GOAL_SERIAL=1, one goal at a time: a --now goal that does not hold the slot returns to the queue after that cycle)
 #                                         --priority N / --after <goal> / --before <goal>: where it goes in the start order (default: last)
 #                                         --host: pin the goal to that host (advisory for single tickets, see delivery-lead.md)
 #   deliver.sh --repos a/b,c/d --title "<title>" [--requirements owner/repo#N] [--include-sentry] [--mockups review|skip] [--now] [--host <hostname>] [--priority <n>] [instructions...]
@@ -602,6 +603,6 @@ case "${1:-}" in
   stop) shift; cmd_stop "$@" ;;
   release) shift; cmd_release "$@" ;;
   resume) shift; cmd_resume "$@" ;;
-  ''|-h|--help) sed -n '2,22p' "$0"; exit 2 ;;
+  ''|-h|--help) sed -n '2,23p' "$0"; exit 2 ;;
   *) cmd_register_args "$@" ;;
 esac
