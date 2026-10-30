@@ -57,15 +57,17 @@ def has_nearby_description(line, start, end):
     if m and word_count_ok(m.group(1)):
         return True
 
-    # 'the remove-technician-self-revert fix (#1184)' or '... (scheduler #1184)' — the ref sits
-    # inside parens, optionally with up to two short label words first (a repo name, 'PR',
-    # 'issue'); the description is the phrase before the opening paren, same status-card shape
-    # JP's own template uses: '<Ticket title> (<repo> #<issue>)'. The phrase is a pre-existing
-    # title, not a description written for this rule, so only its presence (>= 2 words) matters
-    # — not an upper bound: a long ticket title or a long lead-in sentence must still pass.
+    # 'the remove-technician-self-revert fix (#1184)' or '... (scheduler #1184)' / '...
+    # (Benjis-Plants/benjis-scheduler #1184)' / \"... (Benji's scheduler #1184)\" — the ref sits
+    # inside parens, optionally with up to three short label tokens first (a repo name, owner/repo,
+    # 'PR', 'issue'); the description is the phrase before the opening paren, same status-card
+    # shape JP's own template uses: '<Ticket title> (<repo> #<issue>)'. The phrase is a
+    # pre-existing title, not a description written for this rule, so only its presence (>= 2
+    # words) matters — not an upper bound: a long ticket title or a long lead-in sentence must
+    # still pass.
     if after.lstrip().startswith(')'):
         m = re.search(
-            r'([A-Za-z][^()\n]{3,80}?)\(\s*(?:[A-Za-z0-9][\w.-]{0,20}\s+){0,2}\$',
+            r'([A-Za-z][^()\n]{3,80}?)\(\s*(?:[^\s()#]{1,60}\s+){0,3}\$',
             before,
         )
         if m and word_count_at_least_2(m.group(1)):
@@ -84,19 +86,27 @@ def status_card_pr_ref_covered(line, start):
     return bool(m and word_count_at_least_2(m.group(1)) and ref_re.search(m.group(2)))
 
 
-bare = []
+# Coverage is judged per occurrence (line-local context) but applied message-wide by ref
+# identity: once any occurrence of a given '#1184' is described or card-covered, a later
+# occurrence of that same ref elsewhere in the message (e.g. a status card's header line vs. its
+# 'WHAT'S UP:' line further down) doesn't need its own separate description. A different,
+# never-described ref is unaffected — 'Filed #1959 (fix) and #1960.' still flags #1960.
+occurrences = []
+covered_refs = set()
 for line in text.split('\n'):
-    seen = set()
     for m in ref_re.finditer(line):
         ref = m.group(0)
-        if ref in seen:
-            continue
-        if has_nearby_description(line, m.start(), m.end()):
-            continue
-        if status_card_pr_ref_covered(line, m.start()):
-            continue
-        seen.add(ref)
-        bare.append(ref)
+        occurrences.append(ref)
+        if has_nearby_description(line, m.start(), m.end()) or status_card_pr_ref_covered(line, m.start()):
+            covered_refs.add(ref)
+
+bare = []
+seen = set()
+for ref in occurrences:
+    if ref in covered_refs or ref in seen:
+        continue
+    seen.add(ref)
+    bare.append(ref)
 
 print('\n'.join(bare))
 " 2>/dev/null)

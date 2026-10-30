@@ -8,7 +8,11 @@ HERE_TD=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT_TD=$(cd "$HERE_TD/../../.." && pwd)
 HOOK_TD="$ROOT_TD/hooks/ticket-description-check.sh"
 
-td_run() {  # td_run <assistant text> -> prints the hook's stderr, returns its exit code
+td_run() {  # td_run <assistant text> -> prints the hook's stderr, returns its exit code.
+  # Explicitly clears PIPELINE_AGENT: the orchestrator exports it for every real pipeline-stage
+  # process (agents/orchestrator.md), and a fullstack-developer fixing something under hooks/ or
+  # skills/orchestrate/ would run this very suite from inside such a process — PIPELINE_AGENT
+  # inherited from run-tests.sh's caller must not silently make every case here pass.
   local text=$1 dir transcript input rc out
   dir=$(mktemp -d "${TMPDIR:-/tmp}/orch-test-td.XXXXXX")
   transcript="$dir/transcript.jsonl"
@@ -20,7 +24,26 @@ print(json.dumps({'type': 'assistant', 'message': {'content': [{'type': 'text', 
 import json, sys
 print(json.dumps({'stop_hook_active': False, 'transcript_path': sys.argv[1]}))
 " "$transcript")
-  out=$(printf '%s' "$input" | bash "$HOOK_TD" 2>&1)
+  out=$(printf '%s' "$input" | PIPELINE_AGENT= bash "$HOOK_TD" 2>&1)
+  rc=$?
+  rm -rf "$dir"
+  TD_LAST_OUT=$out
+  return "$rc"
+}
+
+td_run_as_pipeline_agent() {  # same as td_run but with PIPELINE_AGENT set, like a real stage process
+  local text=$1 dir transcript input rc out
+  dir=$(mktemp -d "${TMPDIR:-/tmp}/orch-test-td.XXXXXX")
+  transcript="$dir/transcript.jsonl"
+  python3 -c "
+import json, sys
+print(json.dumps({'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': sys.argv[1]}]}}))
+" "$text" > "$transcript"
+  input=$(python3 -c "
+import json, sys
+print(json.dumps({'stop_hook_active': False, 'transcript_path': sys.argv[1]}))
+" "$transcript")
+  out=$(printf '%s' "$input" | PIPELINE_AGENT=fullstack-developer bash "$HOOK_TD" 2>&1)
   rc=$?
   rm -rf "$dir"
   TD_LAST_OUT=$out
@@ -101,6 +124,37 @@ test_td_inheritance_is_narrow_to_the_card_shape() {
   assert_eq "$?" "2" "a second, unrelated ref on the same line still needs its own description" || return 1
 }
 
+test_td_card_with_owner_slash_repo_label_passes() {
+  td_run "Remove technician self-revert (Benjis-Plants/benjis-scheduler #1184) — PR #1190 · release none yet"
+  assert_eq "$?" "0" "a full owner/repo label (with a slash) inside the parens must still pass" || return 1
+}
+
+test_td_card_with_apostrophe_label_passes() {
+  td_run "Remove technician self-revert (Benji's scheduler #1184) — PR #1190 · release none yet"
+  assert_eq "$?" "0" "a label with an apostrophe inside the parens must still pass" || return 1
+}
+
+test_td_same_ref_repeated_later_in_message_inherits_coverage() {
+  # A status card's header line describes the PR; a later line in the same report
+  # ('WHAT'S UP: ...') re-mentions the same PR number with no parenthetical of its own —
+  # that's the same thing already named higher up, not a second undescribed reference.
+  td_run "Remove technician self-revert (scheduler #1184) — PR #1190 · release none yet
+STATUS:    RUNNING
+WHAT'S UP: PR #1190 is waiting on CI."
+  assert_eq "$?" "0" "the same ref repeated on a later line inherits the earlier line's coverage" || return 1
+}
+
+test_td_different_uncovered_ref_on_another_line_still_blocks() {
+  td_run "Remove technician self-revert (scheduler #1184) — PR #1190 · release none yet
+NEEDED FROM YOU: also check #1959."
+  assert_eq "$?" "2" "a different, never-described ref elsewhere in the message still blocks" || return 1
+}
+
+test_td_pipeline_agent_set_always_skips() {
+  td_run_as_pipeline_agent "Filed #1959 and #1960 for this."
+  assert_eq "$?" "0" "with PIPELINE_AGENT set (a real pipeline-stage process), the hook must not check at all" || return 1
+}
+
 run_test test_td_bare_ticket_numbers_block
 run_test test_td_paren_after_description_passes
 run_test test_td_colon_after_description_passes
@@ -114,3 +168,8 @@ run_test test_td_status_card_long_title_passes
 run_test test_td_long_lead_in_sentence_before_parens_passes
 run_test test_td_bold_and_link_formatting_still_detected
 run_test test_td_inheritance_is_narrow_to_the_card_shape
+run_test test_td_card_with_owner_slash_repo_label_passes
+run_test test_td_card_with_apostrophe_label_passes
+run_test test_td_same_ref_repeated_later_in_message_inherits_coverage
+run_test test_td_different_uncovered_ref_on_another_line_still_blocks
+run_test test_td_pipeline_agent_set_always_skips
