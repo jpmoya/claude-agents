@@ -94,6 +94,7 @@ The repo holds the agent definitions, hooks and orchestrate skill. Integration b
                payroll-sync-tests|payroll-scrape-tests)
                  case "$p" in
                    .github/workflows/ci.yml) ;;
+                   vercel.json) continue ;;
                    src/*|scripts/*|e2e/*|tests/*|docs/*|public/*|supabase/*|android/*|ios/*|.github/workflows/*) continue ;;
                    */*) ;;
                    *.md) continue ;;
@@ -124,7 +125,7 @@ The repo holds the agent definitions, hooks and orchestrate skill. Integration b
          gh api --paginate "repos/<owner>/<repo>/pulls/<N>/files?per_page=100" --jq '.[] | .filename, (.previous_filename // empty)' | skip_licence <job key>
          ```
          In a `case`, `*` also matches `/`, so the order matters: the job's own entry files come before the area that holds them, and the `*/*` line keeps `*.md` to top-level files (a `.md` inside a job's own tree, e.g. `benjis_payroll/MIGRATION.md`, is not licensed). Why each list is safe (scheduler `staging`, 2026-10-28; re-check a job's read set before adding to its list, never to make a PR pass):
-         - **`payroll-sync-tests`, `payroll-scrape-tests`** run `cd benjis_payroll/<dir> && npm ci && npm test` (scrape also `--self-test`). They read `benjis_payroll/**` (the tests read `benjis_payroll/config/`) and `ci.yml` (`benjis_payroll/scrape/repo-guards.test.mjs`); no import or file read in `benjis_payroll/` reaches outside it. Other workflow files cannot change a `ci.yml` job.
+         - **`payroll-sync-tests`, `payroll-scrape-tests`** run `cd benjis_payroll/<dir> && npm ci && npm test` (scrape also `--self-test`). They read `benjis_payroll/**` (the tests read `benjis_payroll/config/`) and `ci.yml` (`benjis_payroll/scrape/repo-guards.test.mjs`); no import or file read in `benjis_payroll/` reaches outside it. Root `vercel.json` is licensed (exact path only, #541): the jobs only `cd benjis_payroll/<dir>`, no file in `benjis_payroll/` references `vercel`, and the only out-of-tree read is `ci.yml`. Other workflow files cannot change a `ci.yml` job.
          - **`migration-rehearsal`** runs `bash scripts/rehearse-migrations.sh`, which reads only `supabase/**` (migrations, `rehearsal/`, `cutover/`) and sources no other file. Its entry file `scripts/rehearse-migrations.sh` and `ci.yml` are off the list; the rest of `scripts/` is not read.
          - **`destructive-migration-approval`** runs only when `migration-lint` finds destructive DDL, and the linter scans only the `supabase/migrations/` files the PR adds or changes. With none in the list (old paths included) there is nothing to approve, whatever else the PR changed: licensed. With one, the linter's verdict counts only if nothing it loads changed. It loads root `package.json`, the lockfile, `.npmrc` and `tsconfig*.json` (`npm ci`, `npx tsx`), `scripts/lint-migrations.ts` and its imports in `scripts/lib/`, and the migrations. So the list holds the migrations and app areas, plus `scripts/**/*.test.ts` outside `scripts/lib/`: only vitest in `unit-tests` loads a test file, and nearly every migration PR adds one (`scripts/rehearse-migrations.test.ts`). Every other `scripts/` path, root file and `.github/` path is off.
 
