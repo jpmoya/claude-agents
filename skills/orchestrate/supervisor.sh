@@ -701,7 +701,8 @@ cap_exit_row() {
   local repo=$1 issue=$2 rk=$3 since owner_repo
   since=$(cat "$PIPE/orch-$rk.launched-at" 2>/dev/null || cat "$PIPE/orch-$rk.start" 2>/dev/null)
   [ -n "$since" ] && [ -f "$HOME/.claude/pipeline/runs.jsonl" ] || return 1
-  owner_repo=$(cd "$repo" 2>/dev/null && gh api repos/{owner}/{repo} --jq .full_name 2>/dev/null </dev/null) || return 1
+  owner_repo=$(cd "$repo" 2>/dev/null && gh api repos/{owner}/{repo} --jq .full_name 2>/dev/null </dev/null)
+  [ -n "$owner_repo" ] || owner_repo=$(git -C "$repo" remote get-url origin 2>/dev/null | sed -E 's#^.*github\.com[:/]##; s#\.git$##')
   [ -n "$owner_repo" ] || return 1
   python3 - "$HOME/.claude/pipeline/runs.jsonl" "$issue" "$since" "$owner_repo" <<'PY' 2>/dev/null
 import json, sys
@@ -1008,6 +1009,7 @@ json.dump(d, open('$restarts_file','w'))
     backoff_val=${TRANSIENT_BACKOFF[$idx]}
   else
     idx=$((count - 1))
+    [ "$idx" -lt 0 ] && idx=0
     [ "$idx" -ge "${#BACKOFF[@]}" ] && idx=$(( ${#BACKOFF[@]} - 1 ))
     backoff_val=${BACKOFF[$idx]}
   fi
