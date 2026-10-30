@@ -155,7 +155,7 @@ latest_marker() {  # the GATE marker: newest real routing marker whose agent is 
   # Parallel pairs (claude-agents#169, replaces the #133 exception): except for stages dispatched in parallel from the same marker (ui-ux-designer ∥ solutions-architect, fullstack-developer ∥ test-reviewer, code-reviewer ∥ test-reviewer): when that latest marker is not itself a `BLOCKED` / `TEST DEFECT` / `FAIL` and the nearest earlier marker from a different stage is a `BLOCKED`, `TEST DEFECT` or `FAIL` from its parallel partner, that earlier marker is the gate marker and stays so until its own stage posts again. A sibling's later marker answers the sibling's work, not the blocked stage. For fullstack-developer ∥ test-reviewer the partner block is `BLOCKED` / `TEST DEFECT` / `TESTS FAIL` only (a bare `FAIL` is the narrow review after the developer's fix, not a partner), and a developer `IMPLEMENTED` also stays the gate marker over a later `TESTS APPROVED`.
   # When the newest routing marker overall is a `[delivery-lead]` (or legacy `[project-manager]`) one (it follows the gate marker), it is printed on a 2nd line.
   # Both come out of the same single paginated REST comments read (claude-agents#59, #388).
-  local repo=$1 issue=$2 last list prog
+  local repo=$1 issue=$2 pre=${3:-} pre_author=${4:-} last list prog
   last=$(marker_last_jq); list=${last% | last // \"none\"}   # list = the same expression minus its final `last`
   prog="($last) as \$last | {author: .author, comments: [.comments[] | select(.body | test(\"^\\\\*\\\\*\\\\[(delivery-lead|project-manager)\\\\] \") | not)]} as \$np  # legacy alias
     | (\$np | $last) as \$g0 | (\$np | $list) as \$m | (\$m | length) as \$n
@@ -172,13 +172,15 @@ latest_marker() {  # the GATE marker: newest real routing marker whose agent is 
   # One comments call per read; the issue author (SKIP MOCKUPS check, #272) is fetched only when such a comment exists.
   local slug errf raw out rc=0 author=""
   slug=$(repo_slug "$repo"); errf=$(mktemp "${TMPDIR:-/tmp}/lm-err.XXXXXX")
-  if [ -z "$slug" ]; then rc=1; echo "repo name not resolvable" > "$errf"
+  if [ -n "$pre" ]; then   # #548: the caller already fetched the comments (one merged JSON array): no gh call
+    raw=$pre; author=$pre_author
+  elif [ -z "$slug" ]; then rc=1; echo "repo name not resolvable" > "$errf"
   else raw=$(cd "$repo" 2>/dev/null && gh api "repos/$slug/issues/$issue/comments?per_page=100" --paginate 2>"$errf" </dev/null) || rc=$?; fi
   if [ "$rc" -eq 0 ]; then
     raw=$(printf '%s' "$raw" | jq -s '{comments: (map(if type == "array" then .[] else . end))}' 2>>"$errf") || rc=1
   fi
   if [ "$rc" -eq 0 ] && printf '%s' "$raw" | grep -q 'SKIP MOCKUPS'; then
-    author=$(cd "$repo" 2>/dev/null && gh api "repos/$slug/issues/$issue" 2>/dev/null </dev/null | jq -r '.user.login // empty' 2>/dev/null) || author=""   # failure => no author => the skip is ignored, the gate stays
+    [ -n "$author" ] || author=$(cd "$repo" 2>/dev/null && gh api "repos/$slug/issues/$issue" 2>/dev/null </dev/null | jq -r '.user.login // empty' 2>/dev/null) || author=""   # failure => no author => the skip is ignored, the gate stays
     [ -z "$author" ] || raw=$(printf '%s' "$raw" | jq -c --arg a "$author" '. + {author: {login: $a}}')
   fi
   if [ "$rc" -eq 0 ] && out=$(printf '%s' "$raw" | jq -r "$prog" 2>>"$errf") && [ -n "$out" ]; then
@@ -277,18 +279,20 @@ sw_load_registry() {
 
 # sw_covered <owner/repo> <milestone number, or empty> <labels as a JSON array> → 0 covered by an approved
 # (go:true) goal, 1 not covered, 2 unknown (a read failed; the caller must not report the ticket as stale).
-# Milestone goals: goal_milestone_approved (deliver.sh's registered scope). Label goals: the registry's
+# Milestone goals: the same rules as goal_milestone_approved, answered from SW_REGISTRY_JSON (#548). Label goals: the registry's
 # open go:true label-goal entries (goal-lib's "label:<name>" spec) matched against the ticket's own labels
 # ("goal-label matching" — never this host's live/queued state, which only knows about goals running here).
 sw_covered() {
-  local owner_repo=$1 ms=$2 labels=$3 rc
-  if [ -n "$ms" ] && [ "$ms" != null ]; then
-    goal_milestone_approved "$owner_repo" "$ms" >/dev/null 2>&1; rc=$?
-    [ "$rc" -eq 0 ] && return 0
-    [ "$rc" -eq 2 ] && return 2
-  fi
+  local owner_repo=$1 ms=$2 labels=$3
   sw_load_registry
-  [ -n "$SW_REGISTRY_JSON" ] || return 2
+  [ -n "$SW_REGISTRY_JSON" ] || return 2   # unreadable: fail closed
+  if [ -n "$ms" ] && [ "$ms" != null ]; then
+    # #548: the same rules as goal_milestone_approved, answered from the registry already loaded for this run
+    printf '%s' "$SW_REGISTRY_JSON" | jq -e --arg repo "$owner_repo" --arg ms "$ms" \
+      'def covers: .spec == "\($repo):milestone:\($ms)" or .spec == "\($repo):milestones:all"
+                  or ((.spec | startswith("\($repo):milestone:")) and (.id | endswith("-ms-\($ms)")));
+       any(.[]; .state == "open" and .st != "unreadable" and covers and ((.block.go // false) == true))' >/dev/null 2>&1 && return 0
+  fi
   printf '%s' "$SW_REGISTRY_JSON" | jq -e --argjson labels "${labels:-[]}" \
     '.[] | select(.state == "open") | select((.block.go // false) == true) | select((.block.label // "") != "") | select($labels | index(.block.label))' \
     >/dev/null 2>&1 && return 0
