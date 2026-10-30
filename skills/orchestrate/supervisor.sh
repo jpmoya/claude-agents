@@ -1286,7 +1286,7 @@ if [ "$launched" -eq 0 ] && [ "$HAS_CAP" -eq 1 ]; then
     # Skip if already running
     if [ -f "$PIPE/orch-$q_rk.pid" ] && kill -0 "$(cat "$PIPE/orch-$q_rk.pid")" 2>/dev/null; then
       rm -f "$qf"
-      slog "[drain-skip] #$q_issue — already running, purging queue entry"
+      slog "[drain-skip] #$q_issue — already running, purging queue entry"  # #551
       continue
     fi
 
