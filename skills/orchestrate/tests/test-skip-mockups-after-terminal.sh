@@ -75,14 +75,32 @@ st_log() { cat "$ST_HOME/logs/pipeline/supervisor.log" 2>/dev/null; }
 
 # ------------------------------------------------------------------------------------------ AC1
 
-test_st_ac1_skip_after_each_terminal_marker_keeps_the_terminal_marker() {
-  local m rc=0
-  for m in "$ST_DEPLOYED" "$ST_STAGING" "$ST_APPLIED" "$ST_SPLIT"; do
-    st_env; st_thread "$ST_OPEN" "$m" "$ST_SKIP"
-    assert_eq "$(st_latest)" "$m" "AC1: latest_marker after [$m] + SKIP MOCKUPS" || rc=1
-    st_cleanup
-    [ "$rc" = 0 ] || return 1
-  done
+st_ac1_case() {  # st_ac1_case <terminal marker> <label> — [terminal] then SKIP MOCKUPS: the terminal marker stays the gate marker
+  st_env; st_thread "$ST_OPEN" "$1" "$ST_SKIP"
+  local got; got=$(st_latest); st_cleanup
+  assert_eq "$got" "$1" "AC1: latest_marker after $2 + SKIP MOCKUPS" || return 1
+}
+test_st_ac1_skip_after_deployed_keeps_deployed() { st_ac1_case "$ST_DEPLOYED" DEPLOYED; }
+test_st_ac1_skip_after_deployed_to_staging_keeps_it() { st_ac1_case "$ST_STAGING" "DEPLOYED TO STAGING"; }
+test_st_ac1_skip_after_applied_keeps_applied() { st_ac1_case "$ST_APPLIED" APPLIED; }
+test_st_ac1_skip_after_split_keeps_split() { st_ac1_case "$ST_SPLIT" SPLIT; }
+
+# Boundaries (AC1 wording: "an earlier comment's first line is a marker matching the terminal set")
+test_st_ac1_two_terminals_then_skip_returns_the_newest_terminal() {
+  st_env; st_thread "$ST_OPEN" "$ST_STAGING" "$ST_DEPLOYED" "$ST_SKIP"
+  local got; got=$(st_latest); st_cleanup
+  assert_eq "$got" "$ST_DEPLOYED" "AC1: STAGING, DEPLOYED, SKIP -> the newest terminal (DEPLOYED)" || return 1
+}
+test_st_ac1_two_skips_after_deployed_still_deployed() {
+  st_env; st_thread "$ST_OPEN" "$ST_DEPLOYED" "$ST_SKIP" "$ST_SKIP"
+  local got; got=$(st_latest); st_cleanup
+  assert_eq "$got" "$ST_DEPLOYED" "AC1: DEPLOYED, SKIP, SKIP -> DEPLOYED" || return 1
+}
+test_st_ac1_terminal_then_other_work_then_skip_is_still_inert() {
+  # literal AC: ANY earlier comment with a terminal first line makes the SKIP inert
+  st_env; st_thread "$ST_OPEN" "$ST_DEPLOYED" '**[test-writer] TESTS WRITTEN**' "$ST_SKIP"
+  local got; got=$(st_latest); st_cleanup
+  assert_eq "$got" "$ST_DEPLOYED" "AC1: DEPLOYED, TESTS WRITTEN, SKIP -> DEPLOYED (SKIP inert per 'an earlier comment')" || return 1
 }
 
 test_st_ac1_skip_with_intervening_note_still_inert() {
@@ -118,6 +136,16 @@ test_st_ac3_jp_go_after_deployed_to_staging_still_routes() {
   local got; got=$(st_latest); st_cleanup
   assert_eq "$got" '**[jp] GO**' "AC3: [jp] GO after DEPLOYED TO STAGING stays the gate marker" || return 1
 }
+test_st_ac3_jp_mockups_approved_after_deployed_to_staging_still_routes() {
+  st_env; st_thread "$ST_OPEN" "$ST_STAGING" '**[jp] MOCKUPS APPROVED**'
+  local got; got=$(st_latest); st_cleanup
+  assert_eq "$got" '**[jp] MOCKUPS APPROVED**' "AC3: another [jp] marker after DEPLOYED TO STAGING stays the gate marker" || return 1
+}
+test_st_ac3_jp_go_after_staging_then_skip_then_go_routes() {
+  st_env; st_thread "$ST_OPEN" "$ST_STAGING" "$ST_SKIP" '**[jp] GO**'
+  local got; got=$(st_latest); st_cleanup
+  assert_eq "$got" '**[jp] GO**' "AC3: STAGING, SKIP, GO -> GO" || return 1
+}
 
 # ------------------------------------------------------------------------------------------ AC4
 
@@ -145,18 +173,20 @@ test_st_ac4_tick_marks_done_and_does_not_restart() {
 
 test_st_ac5_launch_banner_logs_parent_pid_and_command() {
   st_env
-  local out rc log
-  out=$(HOME="$ST_HOME" PATH="$ST_GH:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$ST_PIPE" QUEUE="$ST_PIPE/queue" \
-    bash -c 'exec "$0" "$@"' "$ORCH_ST" "$ST_REPO" 42 2>&1); rc=$?
+  # a wrapper with a known PID launches orchestrate.sh as a child (no exec), so the banner's caller is the wrapper
+  local wrapper="$ST_PIPE/caller-wrapper-551.sh" out rc log wpid
+  printf '#!/bin/bash\necho $$ > "%s/wrapper.pid"\n"%s" "%s" 42\n' "$ST_PIPE" "$ORCH_ST" "$ST_REPO" > "$wrapper"; chmod +x "$wrapper"
+  out=$(HOME="$ST_HOME" PATH="$ST_GH:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$ST_PIPE" QUEUE="$ST_PIPE/queue" bash "$wrapper" 2>&1); rc=$?
+  wpid=$(cat "$ST_PIPE/wrapper.pid" 2>/dev/null)
   log=$(cat "$(rkp "$ST_PIPE/orch-42.log")" 2>/dev/null)
   st_cleanup
   assert_exit0 "$rc" "AC5: launch ($out)" || return 1
-  # the caller here is `bash -c 'exec <orchestrate.sh> ...'` re-exec'd, so the command shown is the orchestrate.sh invocation itself;
-  # the banner must carry a ppid=<digits> field and a cmd= field on the LAUNCH line, with the existing issue/reason fields kept.
-  printf '%s' "$log" | grep -E '^===== \[[^]]+\] LAUNCH issue=42 reason=manual .*ppid=[0-9]+' >/dev/null \
-    || { fail "AC5: LAUNCH banner has no ppid=<pid>: $(printf '%s' "$log" | grep LAUNCH)"; return 1; }
-  printf '%s' "$log" | grep -E 'LAUNCH issue=42 .*cmd=.*orchestrate\.sh' >/dev/null \
-    || { fail "AC5: LAUNCH banner has no cmd=<caller command>: $(printf '%s' "$log" | grep LAUNCH)"; return 1; }
+  [ -n "$wpid" ] || { fail "AC5: wrapper did not record its pid"; return 1; }
+  # hand-written expectation: the LAUNCH line keeps issue/reason and gains ppid=<wrapper's pid> and a cmd= naming the wrapper script
+  printf '%s' "$log" | grep -E "LAUNCH issue=42 reason=manual .*ppid=$wpid( |\$)" >/dev/null \
+    || { fail "AC5: LAUNCH banner has no ppid=$wpid: $(printf '%s' "$log" | grep LAUNCH)"; return 1; }
+  printf '%s' "$log" | grep -E 'LAUNCH issue=42 .*cmd=.*caller-wrapper-551\.sh' >/dev/null \
+    || { fail "AC5: LAUNCH banner cmd= does not name the caller (caller-wrapper-551.sh): $(printf '%s' "$log" | grep LAUNCH)"; return 1; }
 }
 
 # ------------------------------------------------------------------------------------------ AC6
@@ -177,14 +207,21 @@ test_st_ac6_drain_logs_when_it_removes_an_entry_for_a_running_issue() {
 
 # ------------------------------------------------------------------------------------------ AC7
 
-test_st_ac7_manual_relaunch_trail_logs_done_not_queue_restart_on_skip() {
+test_st_ac7_manual_relaunch_of_a_deployed_ticket_ends_in_done_not_queue_restart() {
   st_env
-  mk_restarting "$ST_PIPE" 42 "$ST_REPO"
+  printf '#!/bin/bash\nexit 0\n' > "$ST_GH/claude"; chmod +x "$ST_GH/claude"   # the relaunched orchestrator finds nothing to do and exits 0
   st_thread "$ST_OPEN" "$ST_DEPLOYED" "$ST_SKIP"
+  touch "$(rkp "$ST_PIPE/orch-42.done")"   # the tombstone a manual launch clears (orchestrate.sh)
+  local out rc i log done_f
+  out=$(HOME="$ST_HOME" PATH="$ST_GH:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$ST_PIPE" QUEUE="$ST_PIPE/queue" "$ORCH_ST" "$ST_REPO" 42 2>&1); rc=$?
+  for i in 1 2 3 4 5 6 7 8 9 10; do [ -e "$(rkp "$ST_PIPE/orch-42.exit")" ] && break; sleep 0.3; done
   st_tick; st_tick
-  local log; log=$(st_log); st_cleanup
-  assert_not_contains "$log" "marker='$ST_SKIP_L1'" "AC7: no queue-restart on the SKIP MOCKUPS marker" || return 1
-  assert_contains "$log" "[done] #42 — terminal marker: $ST_DEPLOYED" "AC7: done line instead" || return 1
+  log=$(st_log); done_f=$([ -e "$(rkp "$ST_PIPE/orch-42.done")" ] && echo present || echo absent)
+  st_cleanup
+  assert_exit0 "$rc" "AC7: manual launch ($out)" || return 1
+  assert_contains "$log" "[done] #42 — terminal marker: $ST_DEPLOYED" "AC7: done line after the relaunch" || return 1
+  assert_not_contains "$log" "[queue-restart] #42" "AC7: no queue-restart at all" || return 1
+  assert_eq "$done_f" "present" "AC7: .done re-written" || return 1
 }
 
 # ------------------------------------------------------------------------------------------ AC8
@@ -195,7 +232,7 @@ test_st_ac8_no_new_mechanism() {
   added=$(cd "$ROOT_ST" && git diff -U0 "$base" -- skills/orchestrate/supervisor.sh skills/orchestrate/orchestrate.sh | grep -E '^\+' | grep -vE '^\+\+\+ ')
   assert_not_contains "$(printf '%s' "$added" | grep -E '^\+[a-zA-Z_][a-zA-Z0-9_]*\(\) *\{' || true)" "()" "AC8: no new function definitions" || return 1
   assert_eq "$(printf '%s' "$added" | grep -cE 'touch .*orch-.*\.[a-z-]+"|> *"\$PIPE/orch-\$[a-z]+\.[a-z-]+"' || true)" "0" "AC8: no new per-run state file" || return 1
-  assert_eq "$(printf '%s' "$added" | grep -ciE 'counter|no_progress_count|\.np\b' || true)" "0" "AC8: no new counter" || return 1
+  assert_eq "$(printf '%s' "$added" | grep -cE '^\+[^#]*(no_progress_count|[a-z_]*_counter)[a-z_]*=' || true)" "0" "AC8: no new counter" || return 1
 }
 
 # ------------------------------------------------------------------------------------------ AC9
@@ -221,16 +258,48 @@ test_st_ac9_failing_marker_read_alerts_with_tags_and_no_secrets() {
   assert_not_contains "$alert" "JP said" "AC9: no comment text in the alert" || return 1
 }
 
-run_test test_st_ac1_skip_after_each_terminal_marker_keeps_the_terminal_marker
+test_st_ac9_failure_in_the_new_terminal_selection_branch_alerts() {
+  # The new branch lives in the one gate-selection jq program (the `as $gate` selection, ticket Files table). Comments read + normalisation succeed; only that program fails,
+  # on a DEPLOYED + SKIP MOCKUPS thread, i.e. the exact path the change adds. Green by design: it guards that the shared alert path covers the new branch.
+  st_env
+  local fakebin="$ST_PIPE/bin" realjq; mkdir -p "$fakebin"; realjq=$(command -v jq)
+  printf '#!/bin/bash\nfor a in "$@"; do case "$a" in *\$gate*) echo "jq: error: injected" >&2; exit 3 ;; esac; done\nexec "%s" "$@"\n' "$realjq" > "$fakebin/jq"; chmod +x "$fakebin/jq"
+  printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "%s/curl.log"\n' "$ST_PIPE" > "$fakebin/curl"; chmod +x "$fakebin/curl"
+  printf '#!/bin/bash\ncase "$*" in *"/comments"*) cat "%s/gh-issue-comments-json" ;; *) echo "{\\"user\\":{\\"login\\":\\"author-a\\"}}" ;; esac\n' "$ST_GH" > "$fakebin/gh"; chmod +x "$fakebin/gh"
+  st_thread "$ST_OPEN" "$ST_DEPLOYED" "$ST_SKIP"
+  local out alert
+  out=$( PATH="$fakebin:$PATH" SLACK_WEBHOOK_URL=https://hooks.example.test/x SLOG="$ST_PIPE/slog"
+    . "$MARKERS_ST"; . "$LIB_ST"
+    slog() { printf '%s\n' "$*" >> "$SLOG"; }
+    eval "$(st_fn "$SUP_ST" latest_marker)"; eval "$(st_fn "$SUP_ST" gh_err_line)"; eval "$(st_fn "$SUP_ST" autoretry_alert)"
+    latest_marker "$ST_REPO" 42 )
+  alert=$(cat "$ST_PIPE/curl.log" 2>/dev/null); st_cleanup
+  assert_eq "$out" "?" "AC9: failing terminal-selection jq answers ?" || return 1
+  assert_contains "$alert" "route=supervisor/latest_marker" "AC9: route tag on the new-branch failure" || return 1
+  assert_contains "$alert" "release=" "AC9: release tag" || return 1
+  assert_contains "$alert" "environment=" "AC9: environment tag" || return 1
+  assert_not_contains "$alert" "JP said" "AC9: no comment text in the alert" || return 1
+}
+
+run_test test_st_ac1_skip_after_deployed_keeps_deployed
+run_test test_st_ac1_skip_after_deployed_to_staging_keeps_it
+run_test test_st_ac1_skip_after_applied_keeps_applied
+run_test test_st_ac1_skip_after_split_keeps_split
+run_test test_st_ac1_two_terminals_then_skip_returns_the_newest_terminal
+run_test test_st_ac1_two_skips_after_deployed_still_deployed
+run_test test_st_ac1_terminal_then_other_work_then_skip_is_still_inert
 run_test test_st_ac1_skip_with_intervening_note_still_inert
 run_test test_st_ac2_skip_after_mockups_pending_is_still_the_gate_marker
 run_test test_st_ac2_skip_before_terminal_marker_terminal_wins_as_today
 run_test test_st_ac2_skip_alone_after_a_non_terminal_marker_is_the_gate_marker
 run_test test_st_ac3_jp_go_after_deployed_to_staging_still_routes
+run_test test_st_ac3_jp_mockups_approved_after_deployed_to_staging_still_routes
+run_test test_st_ac3_jp_go_after_staging_then_skip_then_go_routes
 run_test test_st_ac4_deployed_then_skip_is_done
 run_test test_st_ac4_tick_marks_done_and_does_not_restart
 run_test test_st_ac5_launch_banner_logs_parent_pid_and_command
 run_test test_st_ac6_drain_logs_when_it_removes_an_entry_for_a_running_issue
-run_test test_st_ac7_manual_relaunch_trail_logs_done_not_queue_restart_on_skip
+run_test test_st_ac7_manual_relaunch_of_a_deployed_ticket_ends_in_done_not_queue_restart
 run_test test_st_ac8_no_new_mechanism
 run_test test_st_ac9_failing_marker_read_alerts_with_tags_and_no_secrets
+run_test test_st_ac9_failure_in_the_new_terminal_selection_branch_alerts
