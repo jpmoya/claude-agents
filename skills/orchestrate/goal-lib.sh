@@ -1291,16 +1291,16 @@ _GOAL_QUEUE_JQ='def okey: [((.block.priority? // .block.order? // .issue) | if t
 # _GOAL_QUEUE_SERIAL_JQ (GOAL_SERIAL=1): the same order and output, plus `slot` = the goal holding the one system-wide goal
 # slot (the FIRST active goal in queue order, whatever host runs it) and `serial: true`. A queued goal is the candidate only
 # while no goal holds the slot and no registry entry is unreadable ANYWHERE in the order (fail closed: an unreadable entry
-# could be an active goal; goal_sync logs an error for each one so it gets fixed). With $fbfree (GOAL_SERIAL_FEEDBACK=0) feedback goals neither hold the slot nor
-# wait for it. Needs --argjson fbfree.
+# could be an active goal; goal_sync logs an error for each one so it gets fixed). With $fbfree (GOAL_SERIAL_FEEDBACK=0)
+# a running feedback goal never holds the slot, but a queued one still waits for its turn like any goal. Needs --argjson fbfree.
 _GOAL_QUEUE_SERIAL_JQ='def okey: [((.block.priority? // .block.order? // .issue) | if type == "number" then . else 1e12 end), .issue];
   def exempt: $fbfree and ((.spec // "") | test(":feedback$"));
   sort_by(okey) as $all
   | ($all | map(select(.st == "queued"))) as $q
   | ($all | map(select(.st == "active" and (exempt | not))) | first // null) as $h
   | (($h != null) or any($all[]; .st == "unreadable")) as $busy
-  | ($all | map(select(.st == "unreadable" or (.st == "queued" and (exempt or ($busy | not))))) | first // null) as $f
-  | {queued: $q, candidate: (if $f != null and $f.st == "queued" then $f else null end), serial: true, slot: ($h.id // null),
+  | ($all | map(select(.st == "unreadable" or .st == "queued")) | first // null) as $f
+  | {queued: $q, candidate: (if ($busy | not) and $f != null and $f.st == "queued" then $f else null end), serial: true, slot: ($h.id // null),
      recent: ($all | map(select(.st == "delivered" or .st == "stopped")) | sort_by(.closed_at // "") | reverse | .[:5]),
      open: ($all | map(select(.st == "active" or .st == "held" or .st == "waiting_jp")))}'
 

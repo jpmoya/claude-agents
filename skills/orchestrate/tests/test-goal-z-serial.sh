@@ -1,6 +1,6 @@
 # One goal at a time across both hosts (GOAL_SERIAL, JP 2026-10-30).
-#   S1 queue admission (pure jq): any active goal holds the one slot, wherever it sits in the order; feedback goals are exempt
-#      unless GOAL_SERIAL_FEEDBACK=1; an unreadable entry fails closed; GOAL_SERIAL=0 gives byte-identical queue output.
+#   S1 queue admission (pure jq): any active goal holds the one slot, wherever it sits in the order; a running feedback goal
+#      does not hold it unless GOAL_SERIAL_FEEDBACK=1 (a queued one still waits its turn); an unreadable entry fails closed; GOAL_SERIAL=0 gives byte-identical queue output.
 #   S2 supervisor ticks: two queued goals, both hosts ticking -> exactly one lead; a later-priority active goal elsewhere
 #      blocks an earlier queued one (serial) but not with GOAL_SERIAL=0 (today's rule).
 #   S3 an extra active goal (hand launch / already running) is returned to the queue at the end of its cycle, never killed;
@@ -67,7 +67,9 @@ test_zs_s1_any_active_goal_holds_the_slot() {
 test_zs_s1_feedback_goals_exempt_by_default() {
   local fb=example-owner/project-a:feedback c
   c=$(zs_q 1 0 candidate "$(zs_goal 50 goal-a active 1)" "$(zs_goal 51 goal-fb queued 2 "$fb")")
-  assert_eq "$c" "goal-fb" "S1 serial: a queued feedback goal starts beside the one goal" || return 1
+  assert_eq "$c" "null" "S1 serial: a queued feedback goal still waits for its turn (no queue jumping)" || return 1
+  c=$(zs_q 1 0 candidate "$(zs_goal 50 goal-fb queued 1 "$fb")" "$(zs_goal 51 goal-b queued 2)")
+  assert_eq "$c" "goal-fb" "S1 serial: slot free -> a feedback goal first in line starts" || return 1
   c=$(zs_q 1 0 candidate "$(zs_goal 50 goal-fb active 1 "$fb")" "$(zs_goal 51 goal-b queued 2)")
   assert_eq "$c" "goal-b" "S1 serial: an active feedback goal does not hold the slot" || return 1
   c=$(zs_q 1 0 slot "$(zs_goal 50 goal-fb active 1 "$fb")" "$(zs_goal 51 goal-b queued 2)")

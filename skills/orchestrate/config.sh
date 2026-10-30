@@ -65,7 +65,8 @@ GOAL_MAX_LAUNCH_FAILS=3     # consecutive attempts that never got to work (launc
 # tickets even with SHARED_DISPATCH_ENABLED=0. 0 = the old behaviour: up to MAX_GOALS leads per host, no cross-host spread
 # while shared dispatch is off. Revert = set 0 here and sync both hosts (a per-host override splits the guarantee).
 GOAL_SERIAL=${GOAL_SERIAL:-1}
-# 0 = standing feedback goals (owner/repo:feedback) run beside the one goal and never hold the slot; 1 = they take it too.
+# 0 = a running standing feedback goal (owner/repo:feedback) never holds the slot (it starts in its queue turn, then runs
+# beside the one goal and is never sent back to the queue); 1 = feedback goals take the slot like any goal.
 GOAL_SERIAL_FEEDBACK=${GOAL_SERIAL_FEEDBACK:-0}
 
 # Supervisor stale-work digest (#491): pure observability, logged/alerted, never acted on automatically.
