@@ -173,6 +173,10 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/brevity-stop.sh"
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/ticket-description-check.sh"
           }
         ]
       }

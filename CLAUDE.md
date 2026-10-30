@@ -6,7 +6,7 @@
 
 Be concise. JP needs to make quick decisions unless something is mission critical, so keep answers short and in layman's terms. **Never ask JP anything unless the answer is genuinely his to give** (2026-10-18) — not just technical questions: any question where evidence, defaults, or a sensible judgment call would do, decide it yourself instead. Only ask when it's spending money, a prod `go`, where a private artefact is stored / who gets access, external communications, deleting data, or a true dead-end with no reasonable default. `hooks/require-question-justification.sh` blocks the first attempt at every AskUserQuestion to force this check; a repeated ask (still judged necessary) goes through.
 
-Never give JP a ticket, issue or PR number without a 3 to 5 word description of what it is (e.g. "#1184 (remove technician self-revert)"). Every reply, card and report, in every project. No exceptions.
+Never give JP a ticket, issue or PR number without a 3 to 5 word description of what it is (e.g. "#1184 (remove technician self-revert)"). Every reply, card and report, in every project. No exceptions. `hooks/ticket-description-check.sh` enforces it.
 
 ## Software development
 
