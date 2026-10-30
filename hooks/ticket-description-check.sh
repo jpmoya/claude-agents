@@ -2,7 +2,8 @@
 # Stop hook: JP's hard rule — never give JP a ticket, issue or PR number without a 3-5 word
 # description of what it is (e.g. "#1184 (remove technician self-revert)"). Blocks (once) a final
 # message that cites a bare ticket/PR/issue number with no nearby description so Claude rewrites
-# it. Interactive sessions only.
+# it. Covers every session without PIPELINE_AGENT, headless main agents (orchestrator,
+# delivery-lead) included.
 [ -n "${PIPELINE_AGENT:-}" ] && exit 0
 IN=$(cat)
 [ "$(printf '%s' "$IN" | jq -r '.stop_hook_active // false')" = "true" ] && exit 0
