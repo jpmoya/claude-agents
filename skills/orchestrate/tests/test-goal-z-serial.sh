@@ -310,6 +310,46 @@ test_zs_s5_off_keeps_todays_no_spread() {
   assert_eq "$(zs_spread 0 other)" "no no" "S5 off: today, shared dispatch off means no spread at all" || return 1
 }
 
+# Review fix: a requeue whose label delete fails (the delete swallows errors) must not drop the local cache: the registry
+# still reads waiting on JP, so with no cache anywhere nothing would ever restart the goal. The fake fails every DELETE
+# of goal-waiting-jp; the goal must stay owned here (cache kept), not launched, and must not read queued-but-strandable.
+test_zs_s4_failed_label_delete_never_strands_the_goal() {
+  zq_env; zs_mode 1
+  mv "$GS_BIN/gh" "$GS_BIN/gh.inner"
+  printf '#!/bin/bash\nHERE=$(cd "$(dirname "$0")" && pwd)\ncase "$*" in *"-X DELETE"*goal-waiting-jp*) exit 1 ;; esac\nexec "$HERE/gh.inner" "$@"\n' > "$GS_BIN/gh"
+  chmod +x "$GS_BIN/gh"
+  zq_reg 50 "$ZQ_A" "$ZQ_SPEC_A" waiting 1 host-a; gs_cache 50 "$ZQ_A" "$ZQ_SPEC_A" host-a; gs_launch_state "$ZQ_A" 5000 0 4000
+  echo "#7 x" > "$GS_PIPE/goal-$ZQ_A.waiting"
+  gs_tick; gs_settle
+  local n cache=gone; n=$(gs_claude_count); [ -f "$GS_PIPE/goal-$ZQ_A.json" ] && cache=kept
+  gs_cleanup
+  assert_eq "$n" "0" "S4 serial: no relaunch while the requeue is incomplete" || return 1
+  assert_eq "$cache" "kept" "S4 serial: the local cache stays, so the next decision retries the requeue" || return 1
+}
+
+# Review fix: the spread list is from the last sync; once its goal no longer holds the slot (stopped here), step 5 stops
+# spreading at once instead of until the next sync. GS_SYNC=default: tick 1 syncs (writes the list), tick 2 does not.
+zs_spread_after_stop() {
+  local stop=$1 out=no
+  GS_SYNC=default zq_env; zs_mode 1; zq_ac on
+  echo "SHARED_DISPATCH_ENABLED=0" >> "$GS_HOME/.claude/pipeline/config.local.sh"
+  zs_gh_honours_feedback_search
+  gs_issue 42 open "" "" "agent-go"
+  echo '[]' > "$GS_BIN/issue-list-$GS_A.json"
+  zq_reg 50 example-owner_project-a-t-42 example-owner/project-a#42 active 1 host-b
+  gs_tick
+  [ "$stop" = stop ] && zq_reg 50 example-owner_project-a-t-42 example-owner/project-a#42 stopped 1 host-b
+  jq -sc '[.[] | {number, title, labels, milestone}]' "$GS_ST/issues/$GS_A/42.json" > "$GS_BIN/issue-list-$GS_A.json"
+  gs_tick; gs_settle
+  [ "$(gs_reg_comment_count_issue 42 'claim: Host-A')" -ge 1 ] && out=yes
+  gs_cleanup
+  printf '%s' "$out"
+}
+test_zs_s5_spread_stops_when_the_goal_leaves_the_slot() {
+  assert_eq "$(zs_spread_after_stop keep)" "yes" "S5 control: the list from the last sync spreads on a tick without a sync" || return 1
+  assert_eq "$(zs_spread_after_stop stop)" "no" "S5 serial: goal stopped since the sync -> its tickets are no longer spread" || return 1
+}
+
 # ---------------------------------------------------------------- S6: two-host race --------------------------------
 
 # Both hosts tick the same queued candidate; host-b already holds the earliest claim -> host-a loses, never launches.
@@ -359,5 +399,7 @@ run_test test_zs_s5_other_host_dispatches_the_slot_goal_tickets
 run_test test_zs_s5_milestone_goal_spreads_too
 run_test test_zs_s5_lead_host_leaves_tickets_to_the_live_lead
 run_test test_zs_s5_off_keeps_todays_no_spread
+run_test test_zs_s4_failed_label_delete_never_strands_the_goal
+run_test test_zs_s5_spread_stops_when_the_goal_leaves_the_slot
 run_test test_zs_s6_race_on_the_one_candidate
 run_test test_zs_s6_slot_taken_during_the_settle_wait

@@ -1620,6 +1620,10 @@ if [ "$launched" -eq 0 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
     now_epoch=$(date +%s)
     cutoff=$(python3 -c "import datetime; print((datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(seconds=$CLAIM_WINDOW_SECS)).strftime('%Y-%m-%dT%H:%M:%SZ'))")
     goal_skip_json=$( { goal_live_labels; goal_queued_labels; goal_foreign_labels; } 2>/dev/null | jq -Rsc 'split("\n") | map(select(length > 0))' 2>/dev/null) || goal_skip_json='[]'
+    # GOAL_SERIAL=1 spread: read the slot holder from the registry once per tick (goal_slot_spread_nums runs per repo, in a subshell)
+    if [ "$dispatch_feedback_only" -eq 1 ] && goal_serial && [ -s "$PIPE/goal-slot-scope" ]; then
+      GOAL_SPREAD_HOLDER=$(goal_slot_holder fresh 2>/dev/null) || GOAL_SPREAD_HOLDER=""
+    fi
     [ -n "$goal_skip_json" ] || goal_skip_json='[]'
     for entry in "${DISPATCH_REPOS[@]}"; do
       [ "$launched" -ge 1 ] && break
