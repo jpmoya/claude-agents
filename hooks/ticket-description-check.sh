@@ -34,6 +34,10 @@ text = re.sub(r'[*_]+', '', text)
 ref_re = re.compile(r'(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#[0-9]{1,6}\b')
 
 
+def word_count_at_least_2(phrase):
+    return len(phrase.strip().split()) >= 2
+
+
 def word_count_ok(phrase):
     words = phrase.strip().split()
     return 2 <= len(words) <= 8
@@ -56,32 +60,40 @@ def has_nearby_description(line, start, end):
     # 'the remove-technician-self-revert fix (#1184)' or '... (scheduler #1184)' — the ref sits
     # inside parens, optionally with up to two short label words first (a repo name, 'PR',
     # 'issue'); the description is the phrase before the opening paren, same status-card shape
-    # JP's own template uses: '<Ticket title> (<repo> #<issue>)'.
+    # JP's own template uses: '<Ticket title> (<repo> #<issue>)'. The phrase is a pre-existing
+    # title, not a description written for this rule, so only its presence (>= 2 words) matters
+    # — not an upper bound: a long ticket title or a long lead-in sentence must still pass.
     if after.lstrip().startswith(')'):
         m = re.search(
             r'([A-Za-z][^()\n]{3,80}?)\(\s*(?:[A-Za-z0-9][\w.-]{0,20}\s+){0,2}\$',
             before,
         )
-        if m and word_count_ok(m.group(1)):
+        if m and word_count_at_least_2(m.group(1)):
             return True
 
     return False
 
 
+def status_card_pr_ref_covered(line, start):
+    # 'Title (repo #1184) — PR #1190 · release ...' — JP's own mandated status-card template
+    # names the ticket once; the 'PR #<n>' right after doesn't need its own separate
+    # description. Only this exact shape is exempted (not any earlier ref on the line in
+    # general) so 'Filed #1959 (fix) and #1960.' still flags #1960.
+    head = line[:start]
+    m = re.search(r'([A-Za-z][^()\n]*?)\(([^()]*)\)\s*[–—-]\s*PR\s+\$', head)
+    return bool(m and word_count_at_least_2(m.group(1)) and ref_re.search(m.group(2)))
+
+
 bare = []
 for line in text.split('\n'):
-    refs = list(ref_re.finditer(line))
-    if not refs:
-        continue
-    described = [has_nearby_description(line, m.start(), m.end()) for m in refs]
-    # Economy of reference: once one ref on the line carries its own description, later refs on
-    # the same line plainly point at the same thing JP's rule doesn't need re-described per
-    # number — this is exactly the mandated status-card shape: 'Title (repo #1184) — PR #1190 ...'.
-    line_has_desc = any(described)
     seen = set()
-    for m, ok in zip(refs, described):
+    for m in ref_re.finditer(line):
         ref = m.group(0)
-        if ok or line_has_desc or ref in seen:
+        if ref in seen:
+            continue
+        if has_nearby_description(line, m.start(), m.end()):
+            continue
+        if status_card_pr_ref_covered(line, m.start()):
             continue
         seen.add(ref)
         bare.append(ref)
