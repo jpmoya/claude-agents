@@ -228,7 +228,7 @@ with open('$QUEUE/orch-$RK.json', 'w') as f:
     # a prompt arguing "you are the exception to the CLAUDE.md rule" reads as a prompt injection and
     # was intermittently refused (#217, #151, #637 — 2026-09-17).
     PROMPT="Drive $OWNER_REPO#$ISSUE through the pipeline. Repo: $REPO. Read the latest marker on the issue and continue from there. $EXTRA"
-    printf '\n===== [%s] LAUNCH issue=%s reason=manual ppid=%s cmd=%s =====\n' "$(date -u +%FT%TZ)" "$ISSUE" "$PPID" "$(printf '%s' "$0 $*" | tr -d '\n' | cut -c1-200)" >> "$PIPE/orch-$RK.log"
+    printf '\n===== [%s] LAUNCH issue=%s reason=manual ppid=%s cmd=%s =====\n' "$(date -u +%FT%TZ)" "$ISSUE" "$PPID" "$(ps -o args= -p "$PPID" 2>/dev/null | tr -d '\n' | cut -c1-200)" >> "$PIPE/orch-$RK.log"
     cd "$REPO"
     CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 nohup $SETSID bash -c '
       echo 300 > /proc/self/oom_score_adj 2>/dev/null
