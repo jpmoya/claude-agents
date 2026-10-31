@@ -154,12 +154,12 @@ _goal_rest_slug() {
 }
 
 # Scope row jq (#548): "<ref>\t<state>", plus "\t<labels csv>" with GOAL_SCOPE_LABELS=1, or with GOAL_SCOPE_FULL=1 (goal_eval)
-# "\t<labels csv>\t<author>\t<start-gate refs csv>" so _goal_ticket_eval needs no issue read. Empty fields travel as "-"
-# (a tab is IFS whitespace: an empty field would shift the columns). Callers pass --arg r, --argjson l and --argjson full.
+# "\t<labels csv>\t<author>\t<start-gate refs csv>\t<state_reason>" so _goal_ticket_eval needs no issue read. Empty fields
+# travel as "-" (a tab is IFS whitespace: an empty field would shift the columns). Callers pass --arg r, --argjson l and --argjson full.
 _GOAL_ROW_JQ='def lb: [.labels[].name] | join(",");
   def nz: if . == "" then "-" else . end;
   def gates: [(.body // "") | scan("Depends on ([A-Za-z0-9._/-]*#[0-9]+) for starting work") | .[0]] | join(",");
-  def row: "\($r)#\(.number)\t\(.state)" + (if $full == 1 then "\t\(lb | nz)\t\(.user.login // "" | nz)\t\(gates | nz)" elif $l == 1 then "\t" + lb else "" end);'
+  def row: "\($r)#\(.number)\t\(.state)" + (if $full == 1 then "\t\(lb | nz)\t\(.user.login // "" | nz)\t\(gates | nz)\t\(.state_reason // "" | nz)" elif $l == 1 then "\t" + lb else "" end);'
 
 _goal_ms_rows() {  # <repo> <milestone number> [name for the ref] -> owner/repo#N<TAB>state, issues only
   local all
@@ -582,22 +582,32 @@ goal_milestone_approved() {
 # author and start-gate refs come from the scope row when the caller has it (args 3-6, as goal_eval passes them); only a
 # caller without a row (goal_ticket_state) pays one REST issue read. Exit 1 when a read fails (a failed read is never "delivered").
 _goal_ticket_eval() {
-  local repo="$1" n="$2" info st labels author gates slug checkout m first mk tk l2 cls="active" why="-" all_c
+  local repo="$1" n="$2" info st labels author gates slug checkout m first mk tk l2 cls="active" why="-" all_c sr
   slug=$(_goal_rest_slug "$repo")
   if [ -n "${6:-}" ]; then
     st=$(printf '%s' "$3" | tr '[:lower:]' '[:upper:]')
     labels=$4; [ "$labels" != "-" ] || labels=""; labels=${labels//,/ }
     author=$5; [ "$author" != "-" ] || author=""
     gates=$6; [ "$gates" != "-" ] || gates=""; gates=${gates//,/$'\n'}
+    sr=${7:-}; [ "$sr" != "-" ] || sr=""
   else
     info=$(gh api "repos/$slug/issues/$n" 2>/dev/null) || return 1
     st=$(printf '%s' "$info" | jq -r '(.state // empty) | ascii_upcase') || return 1
     labels=$(printf '%s' "$info" | jq -r '[.labels[].name] | join(" ")')
     author=$(printf '%s' "$info" | jq -r '.user.login // empty')
     gates=$(printf '%s' "$info" | jq -r '.body // ""' | grep -oE 'Depends on [A-Za-z0-9._/-]*#[0-9]+ for starting work' | sed -E 's/^Depends on ([^ ]+) for starting work$/\1/')
+    sr=$(printf '%s' "$info" | jq -r '.state_reason // ""')
   fi
   [ -n "$st" ] || return 1
-  if [ "$st" = CLOSED ]; then printf 'delivered\tCLOSED\t-\t-\n'; return 0; fi
+  if [ "$st" = CLOSED ]; then
+    # #557: same rule as goal_eval — closed "not planned" never shipped, so it is not "delivered" on its own.
+    if [ "$sr" = not_planned ]; then
+      printf 'waiting_jp\tCLOSED\t-\tclosed without shipping (not planned) — check it before the goal can finish\n'
+    else
+      printf 'delivered\tCLOSED\t-\t-\n'
+    fi
+    return 0
+  fi
   checkout=$(_goal_checkout "$repo") || return 1
   all_c=$(_goal_get_all "repos/$slug/issues/$n/comments?per_page=100" 2>/dev/null) || { goal_err "cannot evaluate $repo#$n: comments read failed"; return 1; }
   m=$(latest_marker "$checkout" "$n" "$all_c" "$author")
@@ -997,14 +1007,23 @@ goal_sync() {  # registry -> local: rebuild missing caches, propagate stop/close
 
 # goal_eval <id> <spec> — live scope + ticket classes into GE_* (current shell); exit 1 on any failed read
 goal_eval() {
-  local rows ref st repo n r cls istate marker why lbl au gates
+  local rows ref st repo n r cls istate marker why lbl au gates sr
   GE_TOTAL=0; GE_DELIVERED=0; GE_ACTIVE=0; GE_WAITING=0; GE_SNAP=""; GE_REFS=""
-  # $3: explicit "ref<TAB>state" rows. Live rows carry labels, author and start-gate refs too (#548: no per-ticket issue read).
+  # $3: explicit "ref<TAB>state" rows. Live rows carry labels, author, start-gate refs and state_reason too (#548/#557: no
+  # per-ticket issue read).
   if [ -n "${3:-}" ]; then rows=$3; else rows=$(GOAL_SCOPE_FULL=1 _goal_scope_rows "$2" "$1") || return 1; fi
-  while IFS=$'\t' read -r ref st lbl au gates; do
+  while IFS=$'\t' read -r ref st lbl au gates sr; do
     [ -n "$ref" ] || continue
     if [ "$st" = closed ]; then
-      cls=delivered; istate=CLOSED; marker="-"; why="-"
+      # #557: a closed issue only counts as delivered when GitHub says it was actually completed. "not_planned" (closed
+      # as a duplicate, wontfix, or by mistake while still in the goal's scope) never shipped anything, so it must not
+      # let the goal close silently — surface it to JP instead. An unknown/missing state_reason (explicit fallback rows
+      # with no 6th column, or an older API shape) keeps the old fail-open behavior: delivered.
+      if [ "$sr" = not_planned ]; then
+        cls=waiting_jp; istate=CLOSED; marker="-"; why="closed without shipping (not planned) — check it before the goal can finish"
+      else
+        cls=delivered; istate=CLOSED; marker="-"; why="-"
+      fi
     else
       repo=${ref%%#*}; n=${ref##*#}
       r=$(_goal_ticket_eval "$repo" "$n" "$st" "$lbl" "$au" "$gates") || return 1
