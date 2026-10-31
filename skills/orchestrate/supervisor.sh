@@ -1620,6 +1620,10 @@ if [ "$launched" -eq 0 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
     now_epoch=$(date +%s)
     cutoff=$(python3 -c "import datetime; print((datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(seconds=$CLAIM_WINDOW_SECS)).strftime('%Y-%m-%dT%H:%M:%SZ'))")
     goal_skip_json=$( { goal_live_labels; goal_queued_labels; goal_foreign_labels; } 2>/dev/null | jq -Rsc 'split("\n") | map(select(length > 0))' 2>/dev/null) || goal_skip_json='[]'
+    # GOAL_SERIAL=1 spread: read the slot holder from the registry once per tick (goal_slot_spread_nums runs per repo, in a subshell)
+    if [ "$dispatch_feedback_only" -eq 1 ] && goal_serial && [ -s "$PIPE/goal-slot-scope" ]; then
+      GOAL_SPREAD_HOLDER=$(goal_slot_holder fresh 2>/dev/null) || GOAL_SPREAD_HOLDER=""
+    fi
     [ -n "$goal_skip_json" ] || goal_skip_json='[]'
     for entry in "${DISPATCH_REPOS[@]}"; do
       [ "$launched" -ge 1 ] && break
@@ -1635,10 +1639,21 @@ if [ "$launched" -eq 0 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
       # A failed listing or sort is logged with release/environment/route tags and alerted via notify_engineering (#247).
       rq_err=$(mktemp); rq_tags="release=$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --short HEAD 2>/dev/null || echo unknown) environment=${HOST} route=dispatch-order"
       dispatch_search="-label:\"$LABEL_IN_PROGRESS\""
-      [ "$dispatch_feedback_only" -eq 1 ] && dispatch_search="$dispatch_search label:\"$LABEL_FEEDBACK\""
+      # GOAL_SERIAL=1 (one goal for both hosts): the active goal's own tickets are dispatched here too when its lead runs on the
+      # other host, even with SHARED_DISPATCH_ENABLED=0, so that goal uses both machines (goal_slot_spread_nums; [] otherwise)
+      spread_json='[]'; spread_sel=""
+      if [ "$dispatch_feedback_only" -eq 1 ]; then
+        spread_json=$(goal_slot_spread_nums "$owner_repo" 2>/dev/null) || spread_json='[]'
+        [ -n "$spread_json" ] || spread_json='[]'
+      fi
+      if [ "$spread_json" != '[]' ]; then
+        spread_sel="| select(([.labels[].name] | index(\"$LABEL_FEEDBACK\")) or (.number as \$n | $spread_json | any(.[]; . == \$n)))"
+      elif [ "$dispatch_feedback_only" -eq 1 ]; then
+        dispatch_search="$dispatch_search label:\"$LABEL_FEEDBACK\""
+      fi
       candidates=$(gh issue list --repo "$owner_repo" --state open --label "$LABEL_GO" --limit 500 \
         --search "$dispatch_search" --json number,labels,milestone \
-        --jq "[.[] | select([.labels[].name] | index(\"$LABEL_IN_PROGRESS\") | not) | select(([.labels[].name] | map(. as \$l | $goal_skip_json | index(\$l)) | any(. != null)) | not)]
+        --jq "[.[] | select([.labels[].name] | index(\"$LABEL_IN_PROGRESS\") | not) | select(([.labels[].name] | map(. as \$l | $goal_skip_json | index(\$l)) | any(. != null)) | not) $spread_sel]
           | map(. as \$i | ((((\$i.milestone.title? // \"\") | tostring) | capture(\"^v(?<a>[0-9]+)\\\\.(?<b>[0-9]+)\\\\.(?<c>[0-9]+)\")) // null) as \$v
             | {n: \$i.number, k: (if \$v then [0, (\$v.a|tonumber), (\$v.b|tonumber), (\$v.c|tonumber), \$i.number] else [1, 0, 0, 0, \$i.number] end)})
           | sort_by(.k) | .[].n" 2>"$rq_err") || {

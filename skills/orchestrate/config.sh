@@ -53,11 +53,21 @@ COST_CEILING_USD=40        # refuse a new fix-cycle developer/test-writer stage 
 GOAL_AGENT=project-manager   # deprecated alias of delivery-lead (#192); default flip is a follow-up, goal tests pin this value
 GOAL_REGISTRY_REPO=jpmoya/claude-agents
 # Supervisor goal step (#195)
-MAX_GOALS=2                 # goal (delivery-lead) pids alive at once on this host; not counted in count_running
+MAX_GOALS=2                 # goal (delivery-lead) pids alive at once on this host; not counted in count_running (with GOAL_SERIAL=1 the one goal plus any feedback goals)
 GOAL_CYCLE_SECS=1200        # a cleanly ended cycle is relaunched only this long after its launch
 GOAL_SYNC_SECS=300          # registry sync + live-goal re-evaluation throttle, per host
 GOAL_MAX_NO_PROGRESS=3      # relaunch decisions with an unchanged scope snapshot before a goal is parked
 GOAL_MAX_LAUNCH_FAILS=3     # consecutive attempts that never got to work (launch error / exit < MIN_RUN_SECS) before a goal is parked (#514)
+# One goal at a time (JP 2026-10-30): 1 = a single goal slot for BOTH hosts. A queued goal starts only when no other goal is
+# active anywhere (registry state), a goal coming back from held / waiting on JP goes back to the queue instead of
+# relaunching, an extra active goal (a --now / resume hand launch, or a goal already running when this was switched on)
+# finishes its current cycle and then returns to the queue, and the other host dispatches the one active goal's agent-go
+# tickets even with SHARED_DISPATCH_ENABLED=0. 0 = the old behaviour: up to MAX_GOALS leads per host, no cross-host spread
+# while shared dispatch is off. Revert = set 0 here and sync both hosts (a per-host override splits the guarantee).
+GOAL_SERIAL=${GOAL_SERIAL:-1}
+# 0 = a running standing feedback goal (owner/repo:feedback) never holds the slot (it starts in its queue turn, then runs
+# beside the one goal and is never sent back to the queue); 1 = feedback goals take the slot like any goal.
+GOAL_SERIAL_FEEDBACK=${GOAL_SERIAL_FEEDBACK:-0}
 
 # Supervisor stale-work digest (#491): pure observability, logged/alerted, never acted on automatically.
 STALE_WORK_HOURS=4
