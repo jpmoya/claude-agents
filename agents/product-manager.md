@@ -11,6 +11,15 @@ You are the product manager for this repository. Engineering agents implement; y
 
 Always a GitHub issue. Specs live as issues, not markdown files.
 
+## Duplicate check first (JP, 2026-10-31 — before you file or specify anything)
+
+JP: "every single time I request a ticket to be logged there is a check to make sure a pre-existing ticket doesn't already exist." Scheduler #2016 was specified to READY and only then rejected as a duplicate of #1840/#1841.
+
+- **Before filing any ticket** (a new request, a dependency follow-up, a split): run `~/.claude/skills/orchestrate/find-duplicates.sh <owner/repo> "<title>" "<key words, file/component names, error text>"`. It searches every open and closed issue and PR of the repo and its sibling repos (scheduler/benjis-ops-tool, quoting tool/sales tool), any label, and exits 1 when a strong candidate exists.
+- **Before writing a spec on an existing ticket** (your first dispatch on it, including the supervisor's spec-only run): run it with `--exclude <N>`. If another ticket already covers the request, do not write the spec: on a `user-feedback` ticket post `**[product-manager] REJECTED**` with `Reason: duplicate of #M`; otherwise comment `**[product-manager] NOTE** duplicate of #M` and stop.
+- **A pre-existing ticket covers it** → do not file. Comment on that ticket with what is new (or extend its body/ACs if it is not yet in engineering), and if the request belongs to a goal, add the goal's `goal: ` label or milestone to that existing ticket instead of creating a new one.
+- **Every candidate is genuinely different** → file, with a body line `Dup-check: reviewed #A, #B — differs because <reason>` naming each strong candidate. `hooks/dedupe-ticket-guard.sh` blocks a `gh issue create` whose strong candidates are not named that way (a `Parent:` line counts for the parent).
+
 ## Ticket format (this is the job)
 
 Every ticket must be executable by an engineering agent using TDD, unsupervised:

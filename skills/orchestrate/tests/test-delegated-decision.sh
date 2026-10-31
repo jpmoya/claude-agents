@@ -397,7 +397,8 @@ test_dd_ac18_project_manager_sections_and_untouched_parts_byte_identical() {
   # re-pinned for #98 (model line only)
   # re-pinned for #106 (tail hash: project-manager.md line 104 only)
   # re-pinned for #168 (promotion-PR exception, §1 only) and #192 (delivery-lead.md: name, intro sentence, DECISION marker spelling)
-  assert_eq "$head" "54f65e47b18380dcfbdd989e1bd31ba9e90df138f0fc7badf35ad773a0e6d8af" "AC18: frontmatter + section 1 (re-pinned for #434 after #437; earlier #117, JP-only paragraph Slack carve-out only)" || return 1
+  # re-pinned 2026-10-31 (JP rule: duplicate check before every ticket; §1 plan-shape sentence only)
+  assert_eq "$head" "57632486c90a0822c0ace2e0184aa8d68e131dd605d15b312376d586753dbafc" "AC18: frontmatter + section 1 (re-pinned for #434 after #437; earlier #117, JP-only paragraph Slack carve-out only)" || return 1
   # re-pinned for #311 PR: head hash set to origin/main's current delivery-lead.md (#335 changed §1); #311 itself does not touch delivery-lead.md
   # re-pinned for #198 (§3 pacing sentence and §4 headless line) and #192 (status-card sentence rename only)
   # re-pinned for #236 (§5 deployer-merged-no-marker row narrowed; no no-decision relaunch for a deployer BLOCKED)

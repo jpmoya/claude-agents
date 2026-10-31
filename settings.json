@@ -95,6 +95,11 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/no-duplicate-stage.sh"
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/dedupe-ticket-guard.sh",
+            "timeout": 120
           }
         ]
       },
