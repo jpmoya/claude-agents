@@ -278,6 +278,56 @@ test_dup_ticket_filers_told_to_search_first() {
   return 0
 }
 
+DUP_HEREDOC_NOTE=$(printf 'cat > notes.md <<%sEOF%s\ngh issue create -R Benjis-Plants/scheduler --title "%s"\nEOF' "'" "'" "$T2016_TITLE")
+DUP_SPLIT_RECIPE=$(printf 'gh issue create -R Benjis-Plants/scheduler --title "%s" \\\n  --body "$(cat <<%sEOF%s\nContext: one field at checkout.\nEOF\n)"' "$T2016_TITLE" "'" "'")
+
+test_dup_hook_phrase_in_text_is_not_a_command() {
+  dup_setup
+  local c rc
+  for c in 'grep -rn "gh issue create" agents/' \
+           "git commit -m \"docs: run find-duplicates before gh issue create --title x\"" \
+           "gh pr create --title t --body \"the hook now checks gh issue create -R a/b --title x\"" \
+           "$DUP_HEREDOC_NOTE" \
+           "echo 'gh api repos/Benjis-Plants/scheduler/issues -f title=x'"; do
+    dup_hook "$c"; rc=$?
+    [ "$rc" = "0" ] || { dup_teardown; fail "phrase in text must pass: $c ($DUP_OUT)"; return 1; }
+  done
+  [ -e "$DUP_DIR/gh.log" ] && { dup_teardown; fail "text mention searched GitHub"; return 1; }
+  dup_teardown
+}
+
+test_dup_hook_command_positions_still_block() {
+  dup_setup
+  local c rc
+  for c in "cd /tmp && gh issue create -R Benjis-Plants/scheduler --title \"$T2016_TITLE\" --body x" \
+           "GH_REPO=a/b gh issue create -R Benjis-Plants/scheduler --title \"$T2016_TITLE\" --body x" \
+           "url=\$(gh issue create -R Benjis-Plants/scheduler --title \"$T2016_TITLE\" --body x)" \
+           "$DUP_SPLIT_RECIPE"; do
+    dup_hook "$c"; rc=$?
+    [ "$rc" = "2" ] || { dup_teardown; fail "should block: $c (rc $rc)"; return 1; }
+  done
+  dup_teardown
+}
+
+dup_reject() {  # dup_reject <comments json> -> pm_closing_reject output
+  printf '%s' "$1" | bash -c '. "$1/hooks/pipeline-markers.sh"; . "$1/skills/orchestrate/pipeline-lib.sh" >/dev/null 2>&1; pm_closing_reject' _ "$ROOT_DUP"
+}
+
+test_dup_pm_closing_reject_closes_spec_run() {
+  # supervisor 3c: a spec-only run whose PM ends with REJECTED duplicate closes the issue instead of retrying it.
+  local out
+  out=$(dup_reject '{"comments":[{"body":"**[product-manager] READY FOR ENGINEERING**\nspec"},{"body":"**[product-manager] REJECTED**\nReason: duplicate of #1841"}]}')
+  assert_eq "$out" "duplicate of #1841" "latest REJECTED duplicate" || return 1
+  out=$(dup_reject '{"comments":[{"body":"**[product-manager] REJECTED**\nReason: duplicate of #1841"},{"body":"**[product-manager] READY FOR ENGINEERING**\nchanged"}]}')
+  assert_eq "$out" "" "a later READY wins" || return 1
+  out=$(dup_reject '{"comments":[{"body":"**[product-manager] REJECTED**\nReason: needs-spec"}]}')
+  assert_eq "$out" "" "needs-spec never closes" || return 1
+  grep -qF 'pm_closing_reject' "$ROOT_DUP/skills/orchestrate/supervisor.sh" || { fail "supervisor 3c does not use pm_closing_reject"; return 1; }
+}
+
+run_test test_dup_hook_phrase_in_text_is_not_a_command
+run_test test_dup_hook_command_positions_still_block
+run_test test_dup_pm_closing_reject_closes_spec_run
 run_test test_dup_regression_2016_finds_1840_1841
 run_test test_dup_title_only_still_finds_2016_dupes
 run_test test_dup_reworded_requests_still_match

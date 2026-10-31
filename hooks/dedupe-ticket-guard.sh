@@ -76,8 +76,41 @@ def remote_repo():
     return m.group(1) if m else None
 
 # ---- find the create operation ------------------------------------------------------------------
+def mask(s):
+    # Same-length copy with quoted strings and heredoc bodies blanked out, so "gh issue create" inside a
+    # grep pattern, a commit message, a PR body or a file being written never counts as a command.
+    out, i, n = list(s), 0, len(s)
+    def blank(a, b):
+        for k in range(a, min(b, n)):
+            if out[k] != "\n":
+                out[k] = "x"
+    while i < n:
+        c = s[i]
+        if c == "\\":
+            i += 2; continue
+        if c == "\x27":
+            j = s.find("\x27", i + 1); j = n if j < 0 else j
+            blank(i + 1, j); i = j + 1; continue
+        if c == "\"":
+            j = i + 1
+            while j < n and s[j] != "\"":
+                j += 2 if s[j] == "\\" else 1
+            blank(i + 1, j); i = j + 1; continue
+        m = re.match(r"<<-?\s*[\x27\"]?([A-Za-z_][A-Za-z0-9_]*)[\x27\"]?", s[i:])
+        if m:
+            nl = s.find("\n", i)
+            if nl >= 0:
+                end = re.compile(r"^[ \t]*" + re.escape(m.group(1)) + r"[ \t]*$", re.M).search(s, nl + 1)
+                stop = end.start() if end else n
+                blank(nl + 1, stop); i = stop; continue
+        i += 1
+    return "".join(out)
+
+masked = mask(cmd)
+# A command word: start, after ; & | ( newline or $(, after if/then/do/..., after VAR=value prefixes.
+POS = r"(?:^|[;&|(\n]|\$\()\s*(?:(?:if|then|else|elif|do|time|exec|command|env|!)\s+)*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*"
 op = None   # dict(repo, title, body)
-m = re.search(r"\bgh\s+issue\s+create\b", cmd)
+m = re.search(POS + r"gh\s+issue\s+create\b", masked)
 if m:
     tl = toks(cmd[m.end():])
     if "--help" in tl[:3] or "-h" in tl[:3]:
@@ -88,7 +121,7 @@ if m:
         body = readf(bf) if bf != "-" else cmd
     op = dict(repo=opt(tl, ["--repo", "-R"]) or remote_repo(), title=opt(tl, ["--title", "-t"]), body=body)
 if op is None:
-    for m in re.finditer(r"\bgh\s+api\b", cmd):
+    for m in re.finditer(POS + r"gh\s+api\b", masked):
         tl = toks(cmd[m.end():].split("\n|")[0])
         path = next((t for t in tl if re.match(r"^/?repos/[^/\s]+/[^/\s]+/issues/?(\?.*)?$", t)), None)
         meth = (opt(tl, ["-X", "--method"]) or "").upper()
@@ -107,7 +140,8 @@ if op is None:
         elif "graphql" in tl and re.search(r"\bcreateIssue\b", cmd):
             op = dict(repo=None, title=None, body=None); break
 if op is None:
-    m = re.search(r"\bcurl\b.*api\.github\.com/repos/([\w.-]+/[\w.-]+)/issues(?![/\w])", cmd, re.S)
+    c0 = re.search(POS + r"curl\b", masked)
+    m = c0 and re.compile(r"api\.github\.com/repos/([\w.-]+/[\w.-]+)/issues(?![/\w])").search(cmd, c0.end())
     if m and re.search(r"(-X\s*POST|--request\s+POST|\s-d\s|--data)", cmd):
         title = None
         t = re.search(r"\"title\"\s*:\s*\"((?:[^\"\\\\]|\\\\.)*)\"", cmd)

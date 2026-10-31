@@ -1467,6 +1467,14 @@ for idf in "$PIPE"/spec-*.id; do   # exited PM runs: marker posted -> hand the s
   [ -e "$idf" ] || break
   k=$(basename "$idf" .id); read -r s_repo s_num < "$idf"
   kill -0 "$(cat "$PIPE/$k.pid" 2>/dev/null)" 2>/dev/null && continue
+  # The PM's last word is a closing REJECTED (e.g. duplicate of #N, found by its pre-spec duplicate check): close, don't retry or propose.
+  s_c=$(gh issue view "$s_num" --repo "$s_repo" --json comments 2>/dev/null) || continue
+  s_rj=$(printf '%s' "$s_c" | pm_closing_reject)
+  if [ -n "$s_rj" ]; then
+    gh issue edit "$s_num" --repo "$s_repo" --remove-label "$LABEL_IN_PROGRESS" --remove-label user-feedback-needs-spec >/dev/null 2>&1
+    gh issue close "$s_num" --repo "$s_repo" --reason "not planned" >/dev/null 2>&1
+    rm -f "$PIPE/$k".{id,pid,path,attempts}; slog "[spec] $s_repo#$s_num rejected by the PM ($s_rj), closed as not planned"; continue
+  fi
   m=$(spec_pm_markers "$s_repo" "$s_num"); case "$m" in ''|*[!0-9]*) continue ;; esac   # failed gh/jq lookup: act on nothing, retry next tick
   if [ "$m" != 0 ]; then
     gh issue edit "$s_num" --repo "$s_repo" --remove-label "$LABEL_IN_PROGRESS" --remove-label user-feedback-needs-spec --add-label "$LABEL_PROPOSED" >/dev/null 2>&1
