@@ -440,6 +440,8 @@ rejected_ok() {
 }
 # #115 end
 # "done" covers DEPLOYED / DEPLOYED TO STAGING / APPLIED and the architect's SPLIT (children run their own pipelines; #118).
+# "done" here means the pipeline RUN is over, not that the ticket is on production: a deployer merge to staging ends the run
+# too. Goal scope counting (goal-lib.sh _goal_ticket_eval) reads the DEPLOYED body and keeps a staging merge out of "delivered".
 # terminal_kind <gate marker> <issue> [<delivery-lead marker posted after it>] [<repo dir>] → prints "done" / "gate" /
 # "grace" (BLOCKED inside the grace window: wait) / "" (not terminal). It judges the GATE marker. A later
 # `[delivery-lead] DECISION` / `JP CONFIRMED` (legacy spelling `[project-manager]` accepted) lifts exactly one gate — a code-track BLOCKED — so the run takes the

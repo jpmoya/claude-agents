@@ -82,6 +82,17 @@ check_overlap() {
     [ -n "$o_repo" ] || die "cannot read the stored spec of live goal $o_id; refusing to go on blind"
     # #517: a feedback goal's scope leaves out every ticket another live goal covers, so it never overlaps one: a live
     # feedback goal yields to the goal being registered, and a new one already excludes every live goal's tickets
+    # ...but two feedback goals on one repo are the same goal even when their ids differ: a goal stored under the pre-rename
+    # slug (Benjis-Plants/scheduler, id ..._scheduler-fb-feedback) and one registered under the new slug (benjis-ops-tool)
+    # escaped the same-id check above and ran side by side, sharing one project (registry #534 / #537, 2026-10-29).
+    if [ "$new_kind" = fb ] && [ "$o_kind" = fb ]; then
+      rc=0; _goal_same_repo "$o_repo" "$new_repo" || rc=$?
+      case "$rc" in
+        0) die "overlaps live goal $o_id (the feedback goal of the same repo, $o_repo)" ;;
+        1) continue ;;
+        *) die "cannot tell whether live goal $o_id ($o_repo) is on $new_repo (repo name unresolvable); refusing to go on blind" ;;
+      esac
+    fi
     if [ "$new_kind" = fb ] || [ "$o_kind" = fb ]; then continue; fi
     if [ "$new_kind" = label ] && [ "$o_kind" = label ] && [ "$o_spec" = "$spec" ]; then
       die "overlaps live goal $o_id (same goal label)"

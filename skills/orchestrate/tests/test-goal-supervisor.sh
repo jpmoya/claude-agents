@@ -315,13 +315,13 @@ gs_milestone() {  # <number> <title>
 }
 
 # gs_issue <n> <open|closed> [milestone number|""] [pr] [labels-csv]
-gs_issue() {
-  local n=$1 st=$2 ms=${3:-} pr=${4:-} lb=${5:-}
-  jq -nc --argjson n "$n" --arg st "$st" --arg ms "$ms" --arg pr "$pr" --arg lb "$lb" --arg now "$GS_NOW" '
+gs_issue() {  # <n> <state> [milestone number] [pr] [labels csv] [milestone state, default open] [milestone title, default m]
+  local n=$1 st=$2 ms=${3:-} pr=${4:-} lb=${5:-} mss=${6:-open} mst=${7:-m}
+  jq -nc --argjson n "$n" --arg st "$st" --arg ms "$ms" --arg pr "$pr" --arg lb "$lb" --arg now "$GS_NOW" --arg mss "$mss" --arg mst "$mst" '
     {number:$n, title:("ticket " + ($n|tostring)), body:"", state:$st,
      labels:($lb | split(",") | map(select(length > 0)) | map({name:.})),
      created_at:$now, updated_at:$now, closed_at:(if $st == "closed" then $now else null end),
-     milestone:(if $ms == "" then null else {number:($ms|tonumber), title:"m"} end)}
+     milestone:(if $ms == "" then null else {number:($ms|tonumber), title:$mst, state:$mss} end)}
     + (if $pr != "" then {pull_request:{url:"x"}} else {} end)' > "$GS_ST/issues/$GS_A/$n.json"
 }
 
@@ -626,6 +626,98 @@ test_gs_classify_active() {
   gs_check_class active "REJECTED without the user-feedback label is inert" open "" $'**[product-manager] REJECTED**\nReason: not-a-bug' || return 1
 }
 
+
+# ---------------------------------------------------------------- staging merge is not delivery ----------------
+# The deployer posts a plain `**[deployer] DEPLOYED**` for an ordinary merge to staging (agents/deployer.md step 7: "- PR #<N>
+# merged to <main|staging>", last line "Production deploy pending JP's review on staging." or "Route: direct ..."), and
+# `DEPLOYED TO STAGING` only in post-merge mode. Real example: Benjis-Plants/benjis-ops-tool#1970 (2026-10-28), open, plain
+# DEPLOYED, "- PR #1973 merged to staging". Production ships later; release automation closes the vX.Y.Z milestone at ship
+# (benjis-ops-tool#926: still open, milestone v1.5.0 closed = shipped).
+
+# gs_classify_ms <issue state> <milestone state> <milestone title> <comment body…> — gs_classify with a milestone on t-7
+gs_classify_ms() {
+  local st=$1 mss=$2 mst=$3 b out=none
+  shift 3
+  gs_env
+  gs_issue 7 "$st" 99 "" "" "$mss" "$mst"
+  rm -f "$GS_ST/comments/$GS_A-7.json"
+  for b in "$@"; do gs_comment 7 "$b"; done
+  gs_own "$GS_ID_T7" 50 "$GS_SPEC_T7" 3600 ""
+  gs_tick
+  if [ "$(gs_reg_state 50)" = closed ] && ! gs_has_label 50 goal-stopped; then out=delivered
+  elif gs_has_label 50 goal-waiting-jp; then out=waiting_jp
+  elif gs_wait_claude 1; then out=active
+  fi
+  gs_cleanup
+  printf '%s' "$out"
+}
+
+GS_DEP_STAGING=$'**[deployer] DEPLOYED**\n- PR #1973 merged to staging\n- Migrations: none\nProduction deploy pending JP\'s review on staging.'
+GS_DEP_DIRECT=$'**[deployer] DEPLOYED**\n- PR #12 merged to staging (abc1234)\n- Migrations: none\n- Route: direct — the auto-release workflow promotes it when enabled; otherwise production deploy pending JP\'s review.'
+GS_DEP_MAIN=$'**[deployer] DEPLOYED**\n- PR #9 merged to main\n- Migrations: none (n/a)'
+
+test_gs_classify_staging_merge() {
+  gs_check_class waiting_jp "plain DEPLOYED, merged to staging, still open" open "" "$GS_DEP_STAGING" || return 1
+  gs_check_class waiting_jp "plain DEPLOYED, direct route, merged to staging" open "" "$GS_DEP_DIRECT" || return 1
+  gs_check_class delivered "plain DEPLOYED, merged to main (claude-agents)" open "" "$GS_DEP_MAIN" || return 1
+  local got
+  # JP: "close all tickets in a goal before closing that goal" — a shipped milestone never delivers an open issue;
+  # it parks non-blocking (close-shipped-issues.sh will close it) until the issue itself is CLOSED.
+  got=$(gs_classify_ms open closed "v1.5.0" "$GS_DEP_STAGING")
+  assert_eq "$got" waiting_jp "staging merge whose vX.Y.Z milestone is closed (shipped) stays open until the issue closes" || return 1
+  got=$(gs_classify_ms open closed "v1.2.0 - Goal delivery" $'**[deployer] DEPLOYED TO STAGING**\nstaging up')
+  assert_eq "$got" waiting_jp "DEPLOYED TO STAGING whose release milestone shipped stays open until the issue closes" || return 1
+  got=$(gs_classify_ms open open "v1.22.2 - Tech app fix" "$GS_DEP_STAGING")
+  assert_eq "$got" waiting_jp "staging merge with an open release milestone is not delivered" || return 1
+  got=$(gs_classify_ms open closed "Tech app visit report fixes" "$GS_DEP_STAGING")
+  assert_eq "$got" waiting_jp "a closed non-version milestone is no ship signal" || return 1
+}
+
+# A direct-route staging merge waits on the release bot, never on JP: the card must not ask him for anything.
+test_gs_staging_direct_route_card_asks_nothing() {
+  gs_env
+  gs_issue 7 open
+  rm -f "$GS_ST/comments/$GS_A-7.json"
+  gs_comment 7 "$GS_DEP_DIRECT"
+  gs_own "$GS_ID_T7" 50 "$GS_SPEC_T7" 3600 ""
+  gs_tick
+  local card st; card=$(gs_reg_comments 50); st=$(gs_reg_state 50)
+  gs_cleanup
+  assert_eq "$st" open "direct-route staging merge: the goal is not closed as delivered" || return 1
+  assert_contains "$card" "release bot" "direct-route card names the release bot" || return 1
+  assert_not_contains "$card" "WAITING ON YOU" "direct-route card does not say it waits on JP" || return 1
+  assert_not_contains "$card" "waiting on you" "direct-route card header does not say it waits on JP" || return 1
+}
+
+# A shipped release (closed vX.Y.Z milestone) whose issue close-shipped-issues.sh hasn't closed yet: non-blocking park,
+# the card asks nothing of JP, and the goal does not deliver (close) with that issue still open.
+test_gs_shipped_milestone_open_issue_card_asks_nothing() {
+  gs_env
+  gs_issue 7 open 99 "" "" closed "v1.5.0"
+  rm -f "$GS_ST/comments/$GS_A-7.json"
+  gs_comment 7 "$GS_DEP_STAGING"
+  gs_own "$GS_ID_T7" 50 "$GS_SPEC_T7" 3600 ""
+  gs_tick
+  local card st; card=$(gs_reg_comments 50); st=$(gs_reg_state 50)
+  gs_cleanup
+  assert_eq "$st" open "a shipped-but-open ticket does not deliver (close) the goal" || return 1
+  assert_not_contains "$card" "WAITING ON YOU" "shipped-but-open card does not say it waits on JP" || return 1
+  assert_not_contains "$card" "waiting on you" "shipped-but-open card header does not say it waits on JP" || return 1
+}
+
+# Bug D: a priority set in the registry block (deliver.sh priority, on either host) reaches this host's cache on the next sync.
+test_gs_sync_refreshes_the_cached_priority_from_the_registry() {
+  gs_env
+  gs_issue 7 open
+  gs_own "$GS_ID_T7" 50 "$GS_SPEC_T7" 3600 ""
+  local f b; f=$(gs_regfile 50)
+  b=$(jq -r .body "$f" | awk '/^```json$/{x=1;next} /^```$/{x=0} x' | jq -c '. + {priority: 4}')
+  jq --arg b "$(printf 'Goal: %s\n\n```json\n%s\n```\n' "$GS_SPEC_T7" "$b")" '.body = $b' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  gs_tick
+  local got; got=$(jq -r '.priority // "none"' "$GS_PIPE/goal-$GS_ID_T7.json" 2>/dev/null)
+  gs_cleanup
+  assert_eq "$got" 4 "the registry block's priority reaches the local cache" || return 1
+}
 
 # ---------------------------------------------------------------- #428: start-gated, never-started ticket -------
 
@@ -1214,6 +1306,10 @@ run_test test_gs_ac4_all_delivered_closes_registry_with_card_and_removes_cache
 run_test test_gs_classify_delivered
 run_test test_gs_classify_waiting_jp
 run_test test_gs_classify_active
+run_test test_gs_classify_staging_merge
+run_test test_gs_staging_direct_route_card_asks_nothing
+run_test test_gs_shipped_milestone_open_issue_card_asks_nothing
+run_test test_gs_sync_refreshes_the_cached_priority_from_the_registry
 run_test test_gs_428_open_start_gate_without_marker_is_waiting
 run_test test_gs_428_closed_start_gate_is_active
 run_test test_gs_428_open_gate_with_marker_is_classified_as_today
