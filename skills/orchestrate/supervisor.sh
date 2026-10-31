@@ -1459,7 +1459,10 @@ fi
 #     Any PM routing marker except REJECTED blocks a launch, as do two REJECTED needs-spec (a PM REJECTED needs-spec is how a fix reaches here). State: PIPE/spec-<owner_repo>-<n>.*
 spec_key() { printf 'spec-%s-%s' "${1//\//_}" "$2"; }
 spec_pm_markers() {  # <owner/repo> <issue> → PM routing markers other than REJECTED, +1 once two REJECTED needs-spec are on the issue (re-reject loop stop)
-  gh issue view "$2" --repo "$1" --json comments 2>/dev/null | jq --arg re "$(marker_re product-manager)" '[.comments[].body | split("\n")] as $c
+  gh issue view "$2" --repo "$1" --json comments 2>/dev/null | spec_pm_markers_json
+}
+spec_pm_markers_json() {  # same count, from `--json comments` output on stdin (the exit handler reads the comments once)
+  jq --arg re "$(marker_re product-manager)" '[.comments[].body | split("\n")] as $c
     | ([$c[] | select(.[0] | test($re) and (test("\\] REJECTED") | not))] | length)
     + (if ([$c[] | select((.[0] | test("^\\*\\*\\[(product-manager|fullstack-developer)\\] REJECTED")) and ((.[1] // "") | test("^Reason: needs-spec")))] | length) >= 2 then 1 else 0 end)' 2>/dev/null
 }
@@ -1467,7 +1470,15 @@ for idf in "$PIPE"/spec-*.id; do   # exited PM runs: marker posted -> hand the s
   [ -e "$idf" ] || break
   k=$(basename "$idf" .id); read -r s_repo s_num < "$idf"
   kill -0 "$(cat "$PIPE/$k.pid" 2>/dev/null)" 2>/dev/null && continue
-  m=$(spec_pm_markers "$s_repo" "$s_num"); case "$m" in ''|*[!0-9]*) continue ;; esac   # failed gh/jq lookup: act on nothing, retry next tick
+  # The PM's last word is a closing REJECTED (e.g. duplicate of #N, found by its pre-spec duplicate check): close, don't retry or propose.
+  s_c=$(gh issue view "$s_num" --repo "$s_repo" --json comments 2>/dev/null) || continue
+  s_rj=$(printf '%s' "$s_c" | pm_closing_reject)
+  if [ -n "$s_rj" ]; then
+    gh issue edit "$s_num" --repo "$s_repo" --remove-label "$LABEL_IN_PROGRESS" --remove-label user-feedback-needs-spec >/dev/null 2>&1
+    gh issue close "$s_num" --repo "$s_repo" --reason "not planned" >/dev/null 2>&1
+    rm -f "$PIPE/$k".{id,pid,path,attempts}; slog "[spec] $s_repo#$s_num rejected by the PM ($s_rj), closed as not planned"; continue
+  fi
+  m=$(printf '%s' "$s_c" | spec_pm_markers_json); case "$m" in ''|*[!0-9]*) continue ;; esac   # failed jq: act on nothing, retry next tick
   if [ "$m" != 0 ]; then
     gh issue edit "$s_num" --repo "$s_repo" --remove-label "$LABEL_IN_PROGRESS" --remove-label user-feedback-needs-spec --add-label "$LABEL_PROPOSED" >/dev/null 2>&1
     rm -f "$PIPE/$k".{id,pid,path,attempts}; slog "[spec] $s_repo#$s_num spec written, moved to $LABEL_PROPOSED"

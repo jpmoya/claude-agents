@@ -509,3 +509,13 @@ canonicalize_repo_lists() {
   done
 }
 _canon_warn() { if declare -F slog >/dev/null 2>&1; then slog "$1"; else echo "$1" >&2; fi; }
+
+# pm_closing_reject <comments json on stdin> → the Reason of the issue's LATEST product-manager routing marker when it
+# is a REJECTED that closes the issue (not-a-bug | cannot-reproduce | duplicate of #N), else nothing. The supervisor's
+# spec-only run (3c) uses it so a spec run that ends in "duplicate of #N" closes the issue as not planned, the same
+# outcome the orchestrator gives it, instead of being retried or moved to agent-proposed (#2016, 2026-10-31).
+pm_closing_reject() {
+  jq -r --arg re "$(marker_re product-manager)" '[.comments[].body | split("\n") | select(.[0] | test($re))] | last // []
+    | select((.[0] // "") | test("^\\*\\*\\[product-manager\\] REJECTED"))
+    | (.[1] // "") | select(test("^Reason: (not-a-bug|cannot-reproduce|duplicate of #[0-9]+)")) | sub("^Reason: "; "")' 2>/dev/null
+}
