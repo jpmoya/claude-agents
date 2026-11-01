@@ -83,6 +83,17 @@ check_overlap() {
     [ -n "$o_repo" ] || die "cannot read the stored spec of live goal $o_id; refusing to go on blind"
     # #517: a feedback goal's scope leaves out every ticket another live goal covers, so it never overlaps one: a live
     # feedback goal yields to the goal being registered, and a new one already excludes every live goal's tickets
+    # ...but two feedback goals on one repo are the same goal even when their ids differ: a goal stored under the pre-rename
+    # slug (Benjis-Plants/scheduler, id ..._scheduler-fb-feedback) and one registered under the new slug (benjis-ops-tool)
+    # escaped the same-id check above and ran side by side, sharing one project (registry #534 / #537, 2026-10-29).
+    if [ "$new_kind" = fb ] && [ "$o_kind" = fb ]; then
+      rc=0; _goal_same_repo "$o_repo" "$new_repo" || rc=$?
+      case "$rc" in
+        0) die "overlaps live goal $o_id (the feedback goal of the same repo, $o_repo)" ;;
+        1) continue ;;
+        *) die "cannot tell whether live goal $o_id ($o_repo) is on $new_repo (repo name unresolvable); refusing to go on blind" ;;
+      esac
+    fi
     if [ "$new_kind" = fb ] || [ "$o_kind" = fb ]; then continue; fi
     if [ "$new_kind" = label ] && [ "$o_kind" = label ] && [ "$o_spec" = "$spec" ]; then
       die "overlaps live goal $o_id (same goal label)"
@@ -275,13 +286,11 @@ cmd_register() {
   fi
   clear_stale_goal_state "$id"   # #224: a re-registered goal keeps its id, so it must not inherit the old goal's stop/held files
   [ "$kind" = fb ] || fb_yield_here   # #527: the new goal is live: a feedback lead running here over its tickets ends now
-  if [ "$now" != 1 ]; then register_project "$resp" >/dev/null; echo "queued $id (issue #$n)"; return 0; fi
+  if [ "$now" != 1 ]; then register_project "$resp"; echo "queued $id (issue #$n)"; return 0; fi
   mkdir -p "$LOGDIR/goals"
   write_cache "$id" "$block" "$n"
-  local launch_goal
-  launch_goal=$(register_project "$resp")   # before the lead starts, so its brief names the project it is pinned to
-  [ -n "$launch_goal" ] || launch_goal=$(printf '%s' "$resp" | _goal_issue_to_goal)
-  if ! goal_launch "$id" "$launch_goal"; then
+  register_project "$resp"   # before the lead starts, so its brief names the project it is pinned to
+  if ! goal_launch "$id" "$(launch_goal_for "$id" "$n" "$resp")"; then
     launch_alert "$id" "$n"
     # don't leave a ghost active goal behind
     if [ "$go" = true ]; then   # take the dispatchable labels back with the goal
@@ -298,17 +307,22 @@ cmd_register() {
   echo "log=$PIPE/goal-$id.log"
 }
 
+# launch_goal_for <id> <issue n> <POST response> — the goal to launch. The registry read is used only when it is the issue just
+# created (keeps the project binding); a lagging list returns a closed same-id predecessor, so otherwise use the POST response (#440).
+launch_goal_for() {
+  local g
+  g=$(_goal_find "$1" 2>/dev/null) || g=""
+  if [ -n "$g" ] && [ "$(printf '%s' "$g" | jq -r '.issue // empty' 2>/dev/null)" = "$2" ]; then printf '%s\n' "$g"; return 0; fi
+  printf '%s' "$3" | _goal_issue_to_goal
+}
+
 # register_project <registry issue JSON> — the goal's GitHub Project (goal-project.sh): created, linked, recorded in the registry block,
 # tickets added. Best effort: skipped without the `project` scope, any error is only logged, never fails the register.
-# Prints the goal built from that response (+ its project binding when one exists): the launch uses it, never a registry list read (#440).
 register_project() {
-  local g p
+  local g
   g=$(printf '%s' "$1" | _goal_issue_to_goal 2>/dev/null) || return 0
   [ -n "$g" ] || return 0
-  p=$(goal_project_ensure "$g" create 2>/dev/null) || p=""
-  if [ -n "$p" ]; then g=$(printf '%s' "$g" | jq -c --argjson p "$p" '.block.project = $p' 2>/dev/null) || true; fi
   goal_project_sync_one "$g" create >/dev/null 2>&1 || true
-  printf '%s\n' "$g"
   return 0
 }
 
@@ -397,17 +411,15 @@ cmd_register_label() {
 
   fi
   if [ "$now" != 1 ]; then
-    register_project "$resp" >/dev/null
+    register_project "$resp"
     echo "queued $id (issue #$n)"
     echo "label=$label repos=$kept go=$go"
     return 0
   fi
   mkdir -p "$LOGDIR/goals"
   write_cache "$id" "$block" "$n"
-  local launch_goal
-  launch_goal=$(register_project "$resp")   # before the lead starts, so its brief names the project it is pinned to
-  [ -n "$launch_goal" ] || launch_goal=$(printf '%s' "$resp" | _goal_issue_to_goal)
-  if ! goal_launch "$id" "$launch_goal"; then
+  register_project "$resp"   # before the lead starts, so its brief names the project it is pinned to
+  if ! goal_launch "$id" "$(launch_goal_for "$id" "$n" "$resp")"; then
     launch_alert "$id" "$n"
     register_rollback "$n" "registered $id but the launch failed"
   fi
