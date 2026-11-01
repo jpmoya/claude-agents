@@ -10,7 +10,7 @@ chk 'REVIEW_REQUIRED'
 chk '--admin'
 chk 'bypasses required status checks'
 chk 'never to get past a red check, a conflict or a dependency'
-chk 'every other repo'
+chk 'Every other repo'
 g="$(grep -F -- 'Class guide for deployer BLOCKEDs' "$f")"
 printf '%s' "$g" | grep -qF 'review-count' || { echo "MISSING: class guide review-count exclusion"; fail=1; }
 exit $fail
