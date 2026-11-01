@@ -132,8 +132,38 @@ EOF
   dg_teardown; return $rc
 }
 
+# #440 label-goal path (cmd_register_label), list lagging, closed same-id predecessor #10 with OLD instructions.
+# Hand arithmetic: label "goal: Cross-repo goal model for the" → id "label-goal__Cross-repo_goal_model_for_the".
+test_dl_label_reregistration_with_lagging_list_uses_new_issue() {
+  glb_setup
+  mv "$DG_BIN/gh" "$DG_BIN/gh.real"
+  cat > "$DG_BIN/gh" <<'GH_EOF'
+#!/bin/bash
+HERE=$(cd "$(dirname "$0")" && pwd)
+case "$*" in
+  *"issues?"*labels=delivery-goal*) "$HERE/gh.real" "$@" | jq -c 'map(select(.number < 900))' ;;
+  *) exec "$HERE/gh.real" "$@" ;;
+esac
+GH_EOF
+  chmod +x "$DG_BIN/gh"
+  local id rc=0 d prompt
+  id=$(printf 'label-%s' "$GLB_L" | sed 's/[^A-Za-z0-9._-]/_/g')
+  glb_v2 10 "$GLB_L" "$GLB_T" "$GLB_REPOS" stopped "$id" "$GLB_RA#7"
+  jq '.body |= sub("\"go\":true"; "\"instructions\":\"OLD-INSTRUCTIONS-FROM-PREDECESSOR\",\"go\":true")' \
+    "$DG_ST/issues/$DG_REG/10.json" > "$DG_ST/x.json" && mv "$DG_ST/x.json" "$DG_ST/issues/$DG_REG/10.json"
+  glb_seed7; glb_ticket $GLB_B 1 open
+  glb_reg "$GLB_T" "NEW-INSTRUCTIONS-FROM-REGISTER"
+  assert_eq "$DG_RC" "0" "#440 label: register exits 0 (stderr: $DG_ERR)" || rc=1
+  dg_wait_claude 1 || { fail "#440 label: the lead was never launched"; glb_teardown; return 1; }
+  d=$(dg_last_claude_dir); prompt=$(cat "$d/argv")
+  assert_contains "$prompt" "Instructions: NEW-INSTRUCTIONS-FROM-REGISTER" "#440 label: new instructions launched" || rc=1
+  assert_not_contains "$prompt" "OLD-INSTRUCTIONS-FROM-PREDECESSOR" "#440 label: predecessor instructions absent" || rc=1
+  glb_teardown; return $rc
+}
+
 run_test test_dl_first_registration_with_lagging_list_launches
 run_test test_dl_reregistration_with_lagging_list_uses_new_issue
 run_test test_dl_register_passes_created_goal_and_keeps_single_parser
 run_test test_dl_resume_still_launches_via_registry
 run_test test_dl_launch_failure_is_alerted_once_without_instructions
+run_test test_dl_label_reregistration_with_lagging_list_uses_new_issue

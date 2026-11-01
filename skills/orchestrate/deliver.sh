@@ -290,7 +290,7 @@ cmd_register() {
   mkdir -p "$LOGDIR/goals"
   write_cache "$id" "$block" "$n"
   register_project "$resp"   # before the lead starts, so its brief names the project it is pinned to
-  if ! goal_launch "$id" "$(_goal_find "$id" 2>/dev/null || printf '%s' "$resp" | _goal_issue_to_goal)"; then
+  if ! goal_launch "$id" "$(launch_goal_for "$id" "$n" "$resp")"; then
     launch_alert "$id" "$n"
     # don't leave a ghost active goal behind
     if [ "$go" = true ]; then   # take the dispatchable labels back with the goal
@@ -305,6 +305,15 @@ cmd_register() {
   fi
   echo "registered $id (issue #$n)"
   echo "log=$PIPE/goal-$id.log"
+}
+
+# launch_goal_for <id> <issue n> <POST response> — the goal to launch. The registry read is used only when it is the issue just
+# created (keeps the project binding); a lagging list returns a closed same-id predecessor, so otherwise use the POST response (#440).
+launch_goal_for() {
+  local g
+  g=$(_goal_find "$1" 2>/dev/null) || g=""
+  if [ -n "$g" ] && [ "$(printf '%s' "$g" | jq -r '.issue // empty' 2>/dev/null)" = "$2" ]; then printf '%s\n' "$g"; return 0; fi
+  printf '%s' "$3" | _goal_issue_to_goal
 }
 
 # register_project <registry issue JSON> — the goal's GitHub Project (goal-project.sh): created, linked, recorded in the registry block,
@@ -410,7 +419,7 @@ cmd_register_label() {
   mkdir -p "$LOGDIR/goals"
   write_cache "$id" "$block" "$n"
   register_project "$resp"   # before the lead starts, so its brief names the project it is pinned to
-  if ! goal_launch "$id" "$(_goal_find "$id" 2>/dev/null || printf '%s' "$resp" | _goal_issue_to_goal)"; then
+  if ! goal_launch "$id" "$(launch_goal_for "$id" "$n" "$resp")"; then
     launch_alert "$id" "$n"
     register_rollback "$n" "registered $id but the launch failed"
   fi
