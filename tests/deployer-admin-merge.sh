@@ -12,5 +12,5 @@ chk 'bypasses required status checks'
 chk 'never to get past a red check, a conflict or a dependency'
 chk 'Every other repo'
 g="$(grep -F -- 'Class guide for deployer BLOCKEDs' "$f")"
-printf '%s' "$g" | grep -qF 'review-count' || { echo "MISSING: class guide review-count exclusion"; fail=1; }
+printf '%s' "$g" | grep -qF 'a review-count block on `jpmoya/claude-agents` is not `needs_jp`' || { echo "MISSING: class guide review-count exclusion"; fail=1; }
 exit $fail
