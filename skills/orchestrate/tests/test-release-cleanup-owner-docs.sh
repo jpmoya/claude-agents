@@ -13,7 +13,7 @@ test_rc_ac1_sentence_verbatim_after_stamp_sentence_in_releases_paragraph() {
   para=$(grep -F '**Exception — releases**' "$CLAUDE_RC")
   assert_ne "$para" "" "AC1: releases paragraph exists" || return 1
   assert_contains "$para" "and report anything left unstamped. $RC_SENTENCE" "AC1: sentence verbatim, right after the stamp sentence" || return 1
-  assert_contains "$para" "$RC_SENTENCE \`vX.Y.Z\` milestones are write-once" "AC1: milestone sentence still follows" || return 1
+  assert_contains "$para" "$RC_SENTENCE Shipped (closed) \`vX.Y.Z…\` milestones are write-once" "AC1: milestone sentence still follows (re-pinned for #442: closed-milestone wording)" || return 1
 }
 
 test_rc_ac2_close_shipped_issues_named_on_exactly_one_line() {

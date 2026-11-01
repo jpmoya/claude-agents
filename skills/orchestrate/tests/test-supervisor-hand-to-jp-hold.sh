@@ -80,7 +80,9 @@ test_i129_merge_gate_wait_holds() {
   [ -n "$row" ] || { fail "orchestrator.md: post-PASS hand-to-JP rule row missing"; return 1; }
   assert_not_contains "$row" "merge gate:" "#304: hand-to-jp reason template has no merge-gate reason" || return 1
   assert_not_contains "$row" "merge-gate wait" "#304: merge-gate wait is not an exit of the hand-to-jp rule" || return 1
-  assert_not_contains "$row" "Depends on #N for merging" "#304: hand-to-jp rule does not read the merge-gate line" || return 1
+  # #442: the row now names the dependency line only to say it is NOT a hand-to-JP exit (the deployer gets dispatched instead)
+  assert_contains "$row" 'A `Depends on #N for merging` line with #N still open is not one: dispatch the deployer' "#304: hand-to-jp rule does not read the merge-gate line (it dispatches the deployer)" || return 1
+  assert_not_contains "${row//A \`Depends on #N for merging\` line with #N still open is not one/}" "Depends on #N for merging" "#304: no other mention of the merge-gate line in the rule" || return 1
 }
 
 test_i129_stale_hand_to_jp_fail_restarts() {
@@ -192,7 +194,8 @@ test_i129_no_second_hand_to_jp_rule() {
 test_i129_orchestrator_lists_merge_gate_wait_as_hand_to_jp_exit() {
   local f="$ROOT_I129/agents/orchestrator.md"
   # #304: inverted — no line may list the merge-gate wait as a hand-to-jp exit
-  if grep -iE 'merge.gate|Depends on #N for merging' "$f" | grep -qF 'hand-to-jp'; then
+  # #442: ignore the one sentence that says a `Depends on #N for merging` line is NOT a hand-to-JP exit
+  if sed 's/A `Depends on #N for merging` line with #N still open is not one//' "$f" | grep -iE 'merge.gate|Depends on #N for merging' | grep -qF 'hand-to-jp'; then
     fail "orchestrator.md: a line still lists the merge-gate wait as a hand-to-jp exit"; return 1
   fi
   if grep -iE 'merge.gate wait' "$f" | grep -qiE 'hand(ed)?[ -]to[ -]JP'; then

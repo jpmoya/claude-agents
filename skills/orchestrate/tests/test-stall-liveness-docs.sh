@@ -64,7 +64,7 @@ test_sl_ac4_nag_mtime_only_on_exited_stall_line() {
 }
 
 test_sl_ac5_stage_caps_unchanged() {
-  local want='**Stage caps** (process alive, no marker): reviewers, deployer, infra-reviewer **10 min**; product-manager, ux-flow-designer, infra-planner **15 min**; test-writer, fullstack-developer (and fix cycles), ui-ux-designer, infra-operator **30 min**.'
+  local want; want=$'**Stage caps** (process alive, no marker): reviewers, infra-reviewer **10 min**; deployer **45 min** (its 30 min pending-checks wait + ~10 min post-wait work + 5 min slack; raise only with `agents/deployer.md`\x27s wait cap); product-manager, ux-flow-designer, infra-planner **15 min**; test-writer, fullstack-developer (and fix cycles), ui-ux-designer, infra-operator **30 min**.'
   local got; got=$(grep -F '**Stage caps**' "$ORCH_SL")
   assert_eq "$got" "$want" "AC5: stage caps line byte-for-byte"
 }
@@ -85,9 +85,9 @@ test_sl_ac6_deployer_in_progress_outcome() {
 
 test_sl_ac7_no_new_mechanism() {
   local n h; n=$(ls "$ROOT_SL/hooks" | wc -l | tr -d ' ')
-  assert_eq "$n" 12 "AC7: hooks/ file count unchanged" || return 1
+  assert_eq "$n" 17 "AC7: hooks/ file count unchanged (re-pinned for #442; was 12, then 16, before later hooks landed)" || return 1
   h=$(git hash-object "$ROOT_SL/hooks/require-handoff-marker.sh")
-  assert_eq "$h" 73de42d9cb5613f423bd62337b40e8b67b9cac00 "AC7: require-handoff-marker.sh unmodified" || return 1
+  assert_eq "$h" aca09fa98bd6f3806a23c64ec71f3925746e5263 "AC7: require-handoff-marker.sh unmodified" || return 1
   if sl_cap_branch | grep -qiE 'heartbeat|reaper|timer|counter'; then fail "AC7: new mechanism in cap-hit branch"; return 1; fi
   assert_eq 0 0 "AC7 ok"
 }

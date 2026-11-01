@@ -355,7 +355,7 @@ SWREPOS
 sw_hold_class() {
   local rk=$1 repo=$2 issue=$3 cls="" info
   if [ -s "$PIPE/orch-$rk.alert" ]; then
-    cls=$(sed -nE 's/.*auto-retry \((ci_red|ci_pending|merge_conflict)\).*/\1/p' "$PIPE/orch-$rk.alert" 2>/dev/null | head -1)
+    cls=$(sed -nE "s/.*auto-retry \\(($(autoretry_classes))\\).*/\\1/p" "$PIPE/orch-$rk.alert" 2>/dev/null | head -1)
   fi
   [ -n "$cls" ] && { printf '%s\n' "$cls"; return 0; }
   info=$(issue_info_rest "$repo" "$issue") || { echo "ERR"; return 1; }
