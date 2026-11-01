@@ -195,6 +195,7 @@ except Exception: print('?')
     if [ "$FORCE" -eq 0 ]; then
       sleep "$CLAIM_SETTLE_SECS"
       if WINNER=$(claim_winner "$REPO" "$ISSUE"); then
+        [ -n "$WINNER" ] || { echo "#$ISSUE could not see our own claim to arbitrate — refusing, labels untouched; check gh access, then relaunch (or --force to take over)" >&2; exit 1; }
         [ "$WINNER" = "$(hostname -s)" ] || { echo "#$ISSUE lost claim to ${WINNER:-?} — running there; use --force to take over" >&2; exit 1; }
       else
         echo "#$ISSUE could not read claims to arbitrate — refusing, labels untouched; check gh access, then relaunch (or --force to take over)" >&2; exit 1

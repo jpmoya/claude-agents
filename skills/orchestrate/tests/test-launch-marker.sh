@@ -145,22 +145,22 @@ test_lm_supervisor_do_launch_writes_marker_when_title_absent() {
 test_lm_supervisor_failed_fetch_removes_stale_marker() {
   lm_env open
   printf '%s\n' '**[solutions-architect] SPEC RESOLVED**' > "$LM_BIN/gh-issue-latest-marker"
+  touch "$LM_PIPE/status-reconcile.stamp"                    # throttle the ticks' background reconcile (it would rewrite the marker and mask the removal)
   mk_queued "$LM_PIPE" 41 "$LM_REPO"
   lm_tick
   local ctl; ctl=$(lm_marker_file 41)                       # control: good fetch writes the file
   echo 1 > "$LM_BIN/gh-issue-title-rc"
-  echo "STALE MARKER" > "$(rkp "$LM_PIPE/orch-42.marker")"
+  local k42; k42=$(_mk_key "$LM_REPO" 42)                    # seed the REAL keyed path the launcher writes/removes
+  echo "STALE MARKER" > "$LM_PIPE/orch-$k42.marker"
   mk_queued "$LM_PIPE" 42 "$LM_REPO"
   lm_tick
   local m pid=absent
-  m=$(lm_marker_file 42)
+  m=ABSENT; [ -f "$LM_PIPE/orch-$k42.marker" ] && m=$(head -n1 "$LM_PIPE/orch-$k42.marker")
   [ -f "$(rkp "$LM_PIPE/orch-42.pid")" ] && pid=present
   lm_cleanup
   assert_eq "$ctl" "SPEC RESOLVED" "#94: control — #41's marker written" || return 1
   assert_eq "$pid" "present" "#94: supervisor launch not blocked by a failed fetch" || return 1
-  # The tick's reconcile pass (reconcile-status.sh, REST marker read) may legitimately rewrite the marker from the true latest one;
-  # what must never survive a failed title fetch is the stale content.
-  assert_eq "$([ "$m" = "STALE MARKER" ] && echo stale || echo fresh-or-absent)" "fresh-or-absent" "#94: failed fetch at supervisor launch -> stale marker content is gone" || return 1
+  assert_eq "$m" "ABSENT" "#94: failed fetch at supervisor launch -> the stale marker is removed" || return 1
 }
 
 test_lm_marker_parsing_lives_once_in_pipeline_lib() {

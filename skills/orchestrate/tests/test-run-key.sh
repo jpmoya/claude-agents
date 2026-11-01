@@ -83,7 +83,7 @@ rk_tick() {
   rk_settle
 }
 rk_settle() {  # bounded poll (max ~5s): wait until the PIPE file listing is unchanged for 3 consecutive 0.1s checks
-  local prev cur same=0 i
+  local prev="" cur same=0 i
   for i in $(seq 1 50); do
     cur=$(find "$RK_PIPE" -type f 2>/dev/null | sort | xargs cat 2>/dev/null | cksum; find "$RK_PIPE" -type f | sort)
     if [ "$cur" = "$prev" ]; then same=$((same+1)); [ "$same" -ge 3 ] && return 0; else same=0; fi

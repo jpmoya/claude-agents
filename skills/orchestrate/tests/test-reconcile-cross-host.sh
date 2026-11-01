@@ -225,7 +225,7 @@ GH_EOF
   # #442: since #217 a hand launch arbitrates on the claims it can read; with its own claim comment failing there is none, so it refuses
   # (fail closed, labels untouched) instead of launching. A forced launch (dispatch already arbitrated) is the takeover path.
   assert_eq "$rc" "1" "#217: launch refuses when the claim comment fails and no claim is visible" || return 1
-  assert_contains "$out" "lost claim" "#217: refused as a lost claim" || return 1
+  assert_contains "$out" "could not see our own claim" "#217: refused with a no-visible-claim message (not a phantom winner)" || return 1
   assert_eq "$started" "no" "#217: pid file not written" || return 1
 }
 
