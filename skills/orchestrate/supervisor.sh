@@ -130,7 +130,7 @@ autoretry_alert() {  # <issue> <what> [step, default auto-retry] — Slack webho
     --data "$(jq -nc --arg t "$msg" '{text:$t}')" "$SLACK_WEBHOOK_URL" >/dev/null 2>&1 || true
 }
 
-# issue_info_rest <checkout> <issue> → JSON {state, body, comments:[{body,createdAt}]} over REST (the old `gh issue view --json
+# issue_info_rest <checkout> <issue> → JSON {state, body, comments:[{id,body,createdAt}]} over REST (the old `gh issue view --json
 # state,body,comments` shape, #388). On failure returns 1 and prints a one-line, token-free reason instead.
 issue_info_rest() {
   local repo=$1 issue=$2 slug errf iss com rc=0
@@ -144,7 +144,7 @@ issue_info_rest() {
     printf '%s' "$com" | jq -s '{c: (map(if type == "array" then .[] else . end))}' 2>>"$errf" | jq -c --argjson i "$iss" \
       '{state: (($i.state // "") | ascii_upcase), body: ($i.body // ""), updatedAt: $i.updated_at,
         author: (if ($i.user.login | type) == "string" then {login: $i.user.login} else null end),
-        comments: [.c[] | {body: .body, createdAt: .created_at, author: (if (.user.login | type) == "string" then {login: .user.login} else null end)}]}' 2>>"$errf" \
+        comments: [.c[] | {id: .id, body: .body, createdAt: .created_at, author: (if (.user.login | type) == "string" then {login: .user.login} else null end)}]}' 2>>"$errf" \
       && { rm -f "$errf"; return 0; }
     rc=1
   fi
@@ -1190,13 +1190,19 @@ for f in "$PIPE"/orch-*.held; do
     || { slog "[auto-retry] #$issue — issue read failed: ${info:-no error text}"; autoretry_alert "$issue" "issue read"; continue; }
   [ "$(printf '%s' "$info" | jq -r '.state // empty')" = "OPEN" ] || continue
   if [ "$is_lc" -eq 1 ]; then
-    # Resume only on a delegated decision posted AFTER the hold: [delivery-lead] DECISION / JP CONFIRMED (legacy [project-manager] spelling).
-    # The relaunched orchestrator validates it (Resolves: line); if it refuses, the new hold is later than the decision, so no loop.
-    held_at=$(file_mtime "$f")
-    if [ -n "$held_at" ] && printf '%s' "$info" | jq -e --argjson t "$held_at" '[.comments[]
-        | select((.body | split("\n")[0] | rtrimstr("\r")) as $l | ($l == "**[delivery-lead] DECISION**" or $l == "**[delivery-lead] JP CONFIRMED**"
-            or $l == "**[project-manager] DECISION**" or $l == "**[project-manager] JP CONFIRMED**")
-          and (.createdAt | fromdateiso8601) > $t)] | length > 0' >/dev/null 2>&1; then
+    # Resume only on a delegated decision ([delivery-lead] DECISION / JP CONFIRMED, legacy [project-manager] spelling) with a higher
+    # issuecomment id than the baseline: the newest "loop-cap hold resumed" NOTE, else the newest other pipeline marker (the gate).
+    # Invariant (#560): ordering is by issuecomment id, never createdAt/mtime (GitHub stamps can be skewed). A refused decision is
+    # followed by a new resumed NOTE with a higher id, so it cannot resume twice; the orchestrator still checks Resolves:.
+    if printf '%s' "$info" | jq -e '
+        def l1: (.body | select(type == "string") | split("\n")[0] | rtrimstr("\r")) // "";
+        def isdec: l1 as $l | ($l == "**[delivery-lead] DECISION**" or $l == "**[delivery-lead] JP CONFIRMED**"
+            or $l == "**[project-manager] DECISION**" or $l == "**[project-manager] JP CONFIRMED**");
+        [.comments[] | select((.id | type) == "number")] as $cs
+        | ([$cs[] | select(l1 | startswith("**[supervisor] NOTE** loop-cap hold resumed")) | .id] | max) as $rn
+        | (if $rn != null then $rn
+           else ([$cs[] | select((l1 | test("^\\*\\*\\[[^]]+\\]")) and (isdec | not) and (l1 | startswith("**[supervisor] NOTE**") | not)) | .id] | max) // 0 end) as $base
+        | [$cs[] | select(isdec and .id > $base)] | length > 0' >/dev/null 2>&1; then
       if ! (cd "$repo" && gh issue comment "$issue" --body "**[supervisor] NOTE** loop-cap hold resumed: a delegated decision was posted after the stop" >/dev/null 2>&1 </dev/null); then
         slog "[loopcap-resume] #$issue — NOTE post failed, staying held"
         continue

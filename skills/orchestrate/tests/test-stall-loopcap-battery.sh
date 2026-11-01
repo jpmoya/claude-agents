@@ -60,14 +60,14 @@ test_sl_keep_awake_only_with_live_run() {
 }
 
 # ---- B ----
-sl_lc_fixture() {  # sl_lc_fixture <comment first line> <createdAt> [alert]
+sl_lc_fixture() {  # sl_lc_fixture <comment first line> <createdAt> [alert] [comment id] — gate marker is id 100 (#560: ordered by comment id)
   sq_env open; sq_free_slots; ar2_install_gh
   mk_held "$SQ_PIPE" 42 "$SQ_REPO"
   printf 'FAIL\n' > "$(rkp "$SQ_PIPE/orch-42.marker")"
   mkdir -p "$SQ_HOME/.claude/pipeline"
   printf '{"issue":42,"event":"validate","result":"fail","stage":"loop-cap","ts":"2026-01-01T00:00:00Z"}\n' > "$SQ_HOME/.claude/pipeline/runs.jsonl"
   [ -n "${3:-}" ] && echo "$3" > "$(rkp "$SQ_PIPE/orch-42.alert")"
-  jq -nc --arg b "$1"$'\nResolves: x' --arg t "$2" '[{body:$b, createdAt:$t, author:{login:"x"}}]' > "$SQ_GH/gh-issue-comments-json-42"
+  jq -nc --arg b "$1"$'\nResolves: x' --arg t "$2" --argjson id "${4:-200}" '[{id:100, body:"**[fullstack-developer] IMPLEMENTED**", createdAt:"2026-01-01T00:00:00Z", author:{login:"x"}},{id:$id, body:$b, createdAt:$t, author:{login:"x"}}]' > "$SQ_GH/gh-issue-comments-json-42"
   : > "$SQ_PIPE/claude.calls"
 }
 
@@ -87,10 +87,10 @@ test_sl_loopcap_jp_confirmed_legacy_spelling_relaunches() {
   assert_eq "$n" "1" "legacy JP CONFIRMED -> relaunched" || return 1
 }
 test_sl_loopcap_decision_before_hold_stays_held() {
-  sl_lc_fixture '**[delivery-lead] DECISION**' "2020-01-01T00:00:00Z"
+  sl_lc_fixture '**[delivery-lead] DECISION**' "2099-01-01T00:00:00Z" "" 50
   ar2_tick
   local n h; n=$(ar2_no_launch); h=$(ar2_held); sq_cleanup
-  assert_eq "$n" "0" "decision older than the hold -> no relaunch" || return 1
+  assert_eq "$n" "0" "decision with a lower comment id than the gate marker -> no relaunch" || return 1
   assert_eq "$h" "present" "still held" || return 1
 }
 test_sl_loopcap_other_comment_stays_held() {
