@@ -275,11 +275,13 @@ cmd_register() {
   fi
   clear_stale_goal_state "$id"   # #224: a re-registered goal keeps its id, so it must not inherit the old goal's stop/held files
   [ "$kind" = fb ] || fb_yield_here   # #527: the new goal is live: a feedback lead running here over its tickets ends now
-  if [ "$now" != 1 ]; then register_project "$resp"; echo "queued $id (issue #$n)"; return 0; fi
+  if [ "$now" != 1 ]; then register_project "$resp" >/dev/null; echo "queued $id (issue #$n)"; return 0; fi
   mkdir -p "$LOGDIR/goals"
   write_cache "$id" "$block" "$n"
-  register_project "$resp"   # before the lead starts, so its brief names the project it is pinned to
-  if ! goal_launch "$id" "$(_goal_find "$id" 2>/dev/null || printf '%s' "$resp" | _goal_issue_to_goal)"; then
+  local launch_goal
+  launch_goal=$(register_project "$resp")   # before the lead starts, so its brief names the project it is pinned to
+  [ -n "$launch_goal" ] || launch_goal=$(printf '%s' "$resp" | _goal_issue_to_goal)
+  if ! goal_launch "$id" "$launch_goal"; then
     launch_alert "$id" "$n"
     # don't leave a ghost active goal behind
     if [ "$go" = true ]; then   # take the dispatchable labels back with the goal
@@ -298,11 +300,15 @@ cmd_register() {
 
 # register_project <registry issue JSON> — the goal's GitHub Project (goal-project.sh): created, linked, recorded in the registry block,
 # tickets added. Best effort: skipped without the `project` scope, any error is only logged, never fails the register.
+# Prints the goal built from that response (+ its project binding when one exists): the launch uses it, never a registry list read (#440).
 register_project() {
-  local g
+  local g p
   g=$(printf '%s' "$1" | _goal_issue_to_goal 2>/dev/null) || return 0
   [ -n "$g" ] || return 0
+  p=$(goal_project_ensure "$g" create 2>/dev/null) || p=""
+  if [ -n "$p" ]; then g=$(printf '%s' "$g" | jq -c --argjson p "$p" '.block.project = $p' 2>/dev/null) || true; fi
   goal_project_sync_one "$g" create >/dev/null 2>&1 || true
+  printf '%s\n' "$g"
   return 0
 }
 
@@ -391,15 +397,17 @@ cmd_register_label() {
 
   fi
   if [ "$now" != 1 ]; then
-    register_project "$resp"
+    register_project "$resp" >/dev/null
     echo "queued $id (issue #$n)"
     echo "label=$label repos=$kept go=$go"
     return 0
   fi
   mkdir -p "$LOGDIR/goals"
   write_cache "$id" "$block" "$n"
-  register_project "$resp"   # before the lead starts, so its brief names the project it is pinned to
-  if ! goal_launch "$id" "$(_goal_find "$id" 2>/dev/null || printf '%s' "$resp" | _goal_issue_to_goal)"; then
+  local launch_goal
+  launch_goal=$(register_project "$resp")   # before the lead starts, so its brief names the project it is pinned to
+  [ -n "$launch_goal" ] || launch_goal=$(printf '%s' "$resp" | _goal_issue_to_goal)
+  if ! goal_launch "$id" "$launch_goal"; then
     launch_alert "$id" "$n"
     register_rollback "$n" "registered $id but the launch failed"
   fi
