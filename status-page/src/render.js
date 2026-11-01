@@ -275,14 +275,24 @@ const GOAL_COLUMNS = [
 /**
  * True when report `a` of a goal beats report `b`: a started goal beats a queued one (a stale queue view), then the goal's
  * own host's report, then a queued report that carries the pause reason (#320: only the Mac knows it is on battery),
- * then the newer received_at.
+ * then — when both hosts claim the goal (a goal with tickets on both) — the more active state (running, then waiting
+ * on JP, held, between cycles), then the newer received_at. Without the state step each host's push won in turn and
+ * the row flip-flopped between reports.
  */
+const OWNER_STATE_RANK = ["running", "waiting_jp", "held", "between_cycles"];
 function beats(a, b) {
   const started = (c) => (c.goal.state === "queued" ? 0 : 1);
   if (started(a) !== started(b)) return started(a) > started(b);
   if (a.own !== b.own) return a.own;
   const paused = (c) => (c.goal.paused ? 1 : 0);
   if (paused(a) !== paused(b)) return paused(a) > paused(b);
+  if (a.own && b.own) {
+    const r = (c) => {
+      const i = OWNER_STATE_RANK.indexOf(c.goal.state);
+      return i === -1 ? OWNER_STATE_RANK.length : i;
+    };
+    if (r(a) !== r(b)) return r(a) < r(b);
+  }
   return a.receivedMs > b.receivedMs;
 }
 

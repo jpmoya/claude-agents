@@ -4,7 +4,9 @@
 # kept in step with the ticket. The registry block records it as `project: {owner, number, url}`.
 #
 # THIS IS THE ONLY FILE THAT MAY CALL `gh project` OR GraphQL (it needs the token's `project` scope; the tests pin that).
-# Hosts without the scope (the VM) skip everything: goal_project_enabled is false there. Nothing here may block or fail a
+# Hosts without the scope skip everything: goal_project_enabled is false there. Do not assume only one host syncs: any host
+# whose token has the scope (the Mac, and the VM when its token has it) runs the sync, so every decision here must be safe
+# when both hosts make it (see _gp_live_sharer). Nothing here may block or fail a
 # goal: every error is logged ([goal] project: ...) and skipped; callers use `|| true`.
 # Needs goal-lib.sh sourced first (GOAL_REGISTRY_REPO, _goal_scope_rows, _goal_issue_to_goal, _goal_queue_body, ...).
 
@@ -187,8 +189,25 @@ goal_project_sweep_done() {
   return 0
 }
 
+# _gp_live_sharer <project number> <registry issue of the goal asking> — exit 0 when another LIVE registry goal (queued, active,
+# held or waiting on JP) is bound to that project, or when the registry cannot be read (fail closed: never close blind).
+# Reads $_GP_REG (goal_project_sync_all sets it) or the registry itself (deliver.sh register / project).
+_gp_live_sharer() {
+  local reg="${_GP_REG:-}"
+  [ -n "$reg" ] || reg=$(_goal_registry_json 2>/dev/null) || return 0
+  [ -n "$reg" ] || return 0
+  printf '%s' "$reg" | jq -e --argjson n "$1" --arg self "$2" 'any(.[];
+      (.st == "queued" or .st == "active" or .st == "held" or .st == "waiting_jp")
+      and ((.issue | tostring) != $self)
+      and ((.block.project? // {}) | type == "object" and .number == $n))' >/dev/null 2>&1 && return 0
+  printf '%s' "$reg" | jq -e 'type == "array"' >/dev/null 2>&1 || return 0
+  return 1
+}
+
 # goal_project_sync_one <goal json> [bind|create] — ensure the project, add every ticket of the goal (idempotent), mirror Status, and
 # close the project when the goal is delivered or stopped (reopen it when the goal is live again). Never closes the registry.
+# A project another live goal shares is never closed on behalf of a delivered/stopped one (a stopped duplicate kept closing
+# projects #22 and #37 under live goals, 2026-10); the live goal's own sync owns it.
 goal_project_sync_one() {
   local g="$1" mode="${2:-bind}" st id spec repos p o n rows items ref s repo num want have item pid fid oid view closed added=0 rc=0 live=1
   goal_project_enabled || return 1
@@ -237,7 +256,11 @@ goal_project_sync_one() {
   view=$(gh project view "$n" --owner "$o" --format json 2>/dev/null) || return 1
   closed=$(printf '%s' "$view" | jq -r '.closed // false')
   if [ "$live" = 0 ] && [ "$closed" != true ]; then
-    gh project close "$n" --owner "$o" >/dev/null 2>&1 || { _gp_log "cannot close project $n"; rc=1; }
+    if _gp_live_sharer "$n" "$(printf '%s' "$g" | jq -r '.issue // ""')"; then
+      _gp_log "project $n: goal $id is $st but a live goal shares the project (or the registry is unreadable), left open"
+    else
+      gh project close "$n" --owner "$o" >/dev/null 2>&1 || { _gp_log "cannot close project $n"; rc=1; }
+    fi
   elif [ "$live" = 1 ] && [ "$closed" = true ]; then
     gh project close "$n" --owner "$o" --undo >/dev/null 2>&1 || { _gp_log "cannot reopen project $n"; rc=1; }
   fi
@@ -249,6 +272,7 @@ goal_project_sync_all() {
   local g
   goal_project_enabled || return 0
   _GP_NUMS=$(_gp_list | jq -r '[.[].number] | join(" ")' 2>/dev/null) || _GP_NUMS=""
+  _GP_REG="$1"
   while IFS= read -r g; do
     [ -n "$g" ] || continue
     goal_project_sync_one "$g" bind || _gp_log "sync of $(printf '%s' "$g" | jq -r '.id // "?"') skipped"

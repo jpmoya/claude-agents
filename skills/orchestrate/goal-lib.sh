@@ -154,12 +154,14 @@ _goal_rest_slug() {
 }
 
 # Scope row jq (#548): "<ref>\t<state>", plus "\t<labels csv>" with GOAL_SCOPE_LABELS=1, or with GOAL_SCOPE_FULL=1 (goal_eval)
-# "\t<labels csv>\t<author>\t<start-gate refs csv>\t<state_reason>" so _goal_ticket_eval needs no issue read. Empty fields
-# travel as "-" (a tab is IFS whitespace: an empty field would shift the columns). Callers pass --arg r, --argjson l and --argjson full.
+# "\t<labels csv>\t<author>\t<start-gate refs csv>\t<state_reason>\t<milestone state|title>" so _goal_ticket_eval needs no
+# issue read. Empty fields travel as "-" (a tab is IFS whitespace: an empty field would shift the columns). Callers pass
+# --arg r, --argjson l and --argjson full.
 _GOAL_ROW_JQ='def lb: [.labels[].name] | join(",");
   def nz: if . == "" then "-" else . end;
   def gates: [(.body // "") | scan("Depends on ([A-Za-z0-9._/-]*#[0-9]+) for starting work") | .[0]] | join(",");
-  def row: "\($r)#\(.number)\t\(.state)" + (if $full == 1 then "\t\(lb | nz)\t\(.user.login // "" | nz)\t\(gates | nz)\t\(.state_reason // "" | nz)" elif $l == 1 then "\t" + lb else "" end);'
+  def ms: if .milestone == null then "-" else "\(.milestone.state // "")|\(.milestone.title // "" | gsub("[\t\n\r]"; " "))" end;
+  def row: "\($r)#\(.number)\t\(.state)" + (if $full == 1 then "\t\(lb | nz)\t\(.user.login // "" | nz)\t\(gates | nz)\t\(.state_reason // "" | nz)\t\(ms)" elif $l == 1 then "\t" + lb else "" end);'
 
 _goal_ms_rows() {  # <repo> <milestone number> [name for the ref] -> owner/repo#N<TAB>state, issues only
   local all
@@ -579,10 +581,21 @@ goal_milestone_approved() {
 
 # _goal_ticket_eval <owner/repo> <issue> -> "<delivered|waiting_jp|active>\t<issue state>\t<latest marker first line>\t<reason>"
 # #548: one comments fetch per open ticket, shared by latest_marker, the BLOCKED check and the #456 block. State, labels,
-# author and start-gate refs come from the scope row when the caller has it (args 3-6, as goal_eval passes them); only a
+# author, start-gate refs, state_reason and milestone come from the scope row when the caller has it (args 3-8, as goal_eval
+# passes them); only a
 # caller without a row (goal_ticket_state) pays one REST issue read. Exit 1 when a read fails (a failed read is never "delivered").
+#
+# A deployer merge to `staging` is not delivery (scheduler / quoting tool: production ships later, by the release bot or JP's
+# promotion). The deployer writes `**[deployer] DEPLOYED**` for an ordinary staging merge ("- PR #N merged to staging", last
+# line "Production deploy pending ..." or "Route: direct ...") and `DEPLOYED TO STAGING` only in post-merge mode, so the body,
+# not the first line, says where it landed. Such a ticket stays open until the release ships it (close-shipped-issues.sh) and
+# counts as delivered only once the GitHub issue itself is CLOSED (JP: "close all tickets in a goal before closing that
+# goal" — never delivered on an open issue, even after its milestone ships as a closed vX.Y.Z). Until then it is
+# waiting_jp: the goal parks (no lead cycles) and is re-checked every sync. A non-blocking park (direct-route release, or
+# shipped-but-not-yet-closed) has a reason ending "(nothing needed from you)" and its card asks nothing of JP.
+# A `DEPLOYED` that says "merged to main" (claude-agents, main-only repos) or names no branch is delivered, as before.
 _goal_ticket_eval() {
-  local repo="$1" n="$2" info st labels author gates slug checkout m first mk tk l2 cls="active" why="-" all_c sr
+  local repo="$1" n="$2" info st labels author gates sr ms slug checkout m first mk tk l2 cls="active" why="-" all_c dbody staged=0
   slug=$(_goal_rest_slug "$repo")
   if [ -n "${6:-}" ]; then
     st=$(printf '%s' "$3" | tr '[:lower:]' '[:upper:]')
@@ -590,6 +603,7 @@ _goal_ticket_eval() {
     author=$5; [ "$author" != "-" ] || author=""
     gates=$6; [ "$gates" != "-" ] || gates=""; gates=${gates//,/$'\n'}
     sr=${7:-}; [ "$sr" != "-" ] || sr=""
+    ms=${8:-?}
   else
     info=$(gh api "repos/$slug/issues/$n" 2>/dev/null) || return 1
     st=$(printf '%s' "$info" | jq -r '(.state // empty) | ascii_upcase') || return 1
@@ -597,6 +611,7 @@ _goal_ticket_eval() {
     author=$(printf '%s' "$info" | jq -r '.user.login // empty')
     gates=$(printf '%s' "$info" | jq -r '.body // ""' | grep -oE 'Depends on [A-Za-z0-9._/-]*#[0-9]+ for starting work' | sed -E 's/^Depends on ([^ ]+) for starting work$/\1/')
     sr=$(printf '%s' "$info" | jq -r '.state_reason // ""')
+    ms=$(printf '%s' "$info" | jq -r 'if .milestone == null then "-" else "\(.milestone.state // "")|\(.milestone.title // "")" end')
   fi
   [ -n "$st" ] || return 1
   if [ "$st" = CLOSED ]; then
@@ -615,8 +630,27 @@ _goal_ticket_eval() {
   first=${m%%$'\n'*}; first=${first%$'\r'}
   first=$(printf '%s' "$first" | tr '\t' ' ')
   mk=${first%%\*\*}
-  if [[ "$mk" =~ \]\ DEPLOYED\ TO\ STAGING$ ]]; then
-    cls=waiting_jp; why="landed on staging, waiting for your promotion"
+  if [[ "$mk" =~ \]\ DEPLOYED(\ TO\ STAGING)?$ ]]; then
+    dbody=$(printf '%s' "$all_c" \
+      | jq -r --arg f "$first" '[.[] | select((.body | split("\n")[0] | rtrimstr("\r")) == $f)] | last | .body // ""' 2>/dev/null) || dbody=""
+    if [[ "$mk" =~ TO\ STAGING$ ]] || printf '%s\n' "$dbody" | grep -qiE 'merged to `?staging`?([^a-z]|$)'; then
+      staged=1
+      if [ "$ms" = "?" ]; then   # a scope row without the milestone field: one issue read, only for a staging-merged ticket
+        ms=$(gh api "repos/$slug/issues/$n" --jq 'if .milestone == null then "-" else "\(.milestone.state // "")|\(.milestone.title // "")" end' 2>/dev/null) || return 1
+      fi
+      if [[ "$ms" =~ ^closed\|v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+        # st is always OPEN here (CLOSED returned at the top of this function): the release shipped but
+        # close-shipped-issues.sh hasn't closed this issue yet. Never "delivered" on an open issue (JP's
+        # "close all tickets in a goal before closing that goal" rule) — park it, non-blocking, until it is.
+        cls=waiting_jp; why="shipped to production; the ticket will close on its own shortly (nothing needed from you)"
+      elif printf '%s\n' "$dbody" | grep -qE '^[-* ]*Route: direct'; then
+        cls=waiting_jp; why="on staging; the release bot ships it to production (nothing needed from you)"
+      else
+        cls=waiting_jp; why="landed on staging, waiting for your promotion"
+      fi
+    else
+      cls=delivered
+    fi
   elif [[ "$mk" =~ \]\ BLOCKED ]]; then
     l2=$(printf '%s' "$all_c" \
       | jq -r --arg f "$first" '[.[] | select((.body | split("\n")[0] | rtrimstr("\r")) == $f)] | last | .body | split("\n")[1] // "" | rtrimstr("\r")' 2>/dev/null) || l2=""
@@ -646,7 +680,8 @@ _goal_ticket_eval() {
   # goal can sit held, re-evaluate every sync, and never unhold even after JP answers (#390, 2026-10-23). One extra
   # comments read, author-checked (an agent-tag comment, "**[...] ...**", never counts, so this cannot loop on the
   # pipeline's own supervisor/claim notes — #427 AC4).
-  if [ "$cls" != delivered ]; then
+  # A staging merge is not a gate JP answers by commenting: only the release moves it, so it skips this block.
+  if [ "$cls" != delivered ] && [ "$staged" = 0 ]; then
     local gate_at lead_blocked_at jp_answer_at newest
     gate_at=""
     [ "$first" != none ] && [ -n "$first" ] && gate_at=$(printf '%s' "$all_c" \
@@ -977,9 +1012,10 @@ goal_sync() {  # registry -> local: rebuild missing caches, propagate stop/close
             || goal_err "cannot write the cache of $id"
           rm -f "$f.tmp"
         fi
-        # the project recorded in the registry block (goal-project.sh) reaches the cache the status page reads
-        if [ -f "$f" ] && [ "$(jq -c '.project // null' "$f" 2>/dev/null)" != "$(printf '%s' "$block" | jq -c '.project // null')" ]; then
-          jq -c --argjson p "$(printf '%s' "$block" | jq -c '.project // null')" '. + {project: $p}' "$f" > "$f.tmp" 2>/dev/null && mv "$f.tmp" "$f"
+        # the project and the priority recorded in the registry block (goal-project.sh, `deliver.sh priority` on either host)
+        # reach the cache the status page reads: a priority set on the other host used to stay stale here for good
+        if [ -f "$f" ] && [ "$(jq -c '[.project // null, .priority // null]' "$f" 2>/dev/null)" != "$(printf '%s' "$block" | jq -c '[.project // null, .priority // null]')" ]; then
+          jq -c --argjson b "$(printf '%s' "$block" | jq -c '{project: (.project // null), priority: (.priority // null)}')" '. + $b' "$f" > "$f.tmp" 2>/dev/null && mv "$f.tmp" "$f"
           rm -f "$f.tmp"
         fi
         # .held holds "registry" once the registry confirmed the park (goal_park after its label write, or this sync)
@@ -1007,12 +1043,12 @@ goal_sync() {  # registry -> local: rebuild missing caches, propagate stop/close
 
 # goal_eval <id> <spec> — live scope + ticket classes into GE_* (current shell); exit 1 on any failed read
 goal_eval() {
-  local rows ref st repo n r cls istate marker why lbl au gates sr
+  local rows ref st repo n r cls istate marker why lbl au gates sr ms
   GE_TOTAL=0; GE_DELIVERED=0; GE_ACTIVE=0; GE_WAITING=0; GE_SNAP=""; GE_REFS=""
   # $3: explicit "ref<TAB>state" rows. Live rows carry labels, author, start-gate refs and state_reason too (#548/#557: no
   # per-ticket issue read).
   if [ -n "${3:-}" ]; then rows=$3; else rows=$(GOAL_SCOPE_FULL=1 _goal_scope_rows "$2" "$1") || return 1; fi
-  while IFS=$'\t' read -r ref st lbl au gates sr; do
+  while IFS=$'\t' read -r ref st lbl au gates sr ms; do
     [ -n "$ref" ] || continue
     if [ "$st" = closed ]; then
       # #557: a closed issue only counts as delivered when GitHub says it was actually completed. "not_planned" (closed
@@ -1026,7 +1062,7 @@ goal_eval() {
       fi
     else
       repo=${ref%%#*}; n=${ref##*#}
-      r=$(_goal_ticket_eval "$repo" "$n" "$st" "$lbl" "$au" "$gates") || return 1
+      r=$(_goal_ticket_eval "$repo" "$n" "$st" "$lbl" "$au" "$gates" "$sr" "$ms") || return 1
       IFS=$'\t' read -r cls istate marker why <<< "$r"
     fi
     GE_TOTAL=$((GE_TOTAL + 1))
@@ -1059,6 +1095,8 @@ goal_cards() {  # <delivered|waiting_jp> — one card block per ticket of that c
     [ -n "$title" ] || title="ticket"
     if [ "$want" = delivered ]; then
       goal_card "$title ($repo #$n)" "DONE" "Delivered." "Nothing"
+    elif [[ "$why" == *"(nothing needed from you)" ]]; then   # non-blocking park: nothing here is JP's to act on
+      goal_card "$title ($repo #$n)" "DEPLOYED" "$why." "Nothing"
     else
       goal_card "$title ($repo #$n)" "WAITING ON YOU" "Paused until you act." "- $why"
     fi
@@ -1087,13 +1125,16 @@ $(goal_cards delivered)"
 }
 
 goal_waiting() {  # <id> <issue> <spec>
-  local id=$1 issue=$2 spec=$3 set prev body
+  local id=$1 issue=$2 spec=$3 set prev body head="Goal $spec is waiting on you; nothing is running until you act."
   set=$(printf '%s' "$GE_REFS" | awk -F'\t' '$2 == "waiting_jp" {print $1 " " $3}' | sort)
   prev=$(cat "$PIPE/goal-$id.waiting" 2>/dev/null)
   [ "$prev" = "$set" ] && return 0
+  # every waiting ticket is a non-blocking park (direct-route staging merge, or shipped but not yet closed): nothing is JP's
+  printf '%s' "$GE_REFS" | awk -F'\t' '$2 == "waiting_jp" && $3 !~ /\(nothing needed from you\)$/ {f=1} END {exit f}' \
+    && head="Goal $spec is parked on work only automation moves forward (staging promotion or a release closing its ticket); nothing is needed from you."
   body="**[deliver] NOTE** card
 
-Goal $spec is waiting on you; nothing is running until you act.
+$head
 
 $(goal_cards waiting_jp)"
   _goal_label_add "$issue" goal-waiting-jp || { goal_err "cannot label the registry issue of $id"; return 0; }

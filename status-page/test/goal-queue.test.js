@@ -96,4 +96,13 @@ describe('#320 render.js — queue position and paused reason', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0][2]).toBe('running');
   });
+
+  it('a goal both hosts own keeps the more active state whichever host pushed last (no flip-flop)', () => {
+    const g = (host, state) => ({ id: 'project-22', title: 'Shared goal', repos: ['org/repo-a'], host, state });
+    for (const [macAt, vmAt] of [['2026-09-21T11:59:00Z', '2026-09-21T11:00:00Z'], ['2026-09-21T11:00:00Z', '2026-09-21T11:59:00Z']]) {
+      const rows = goalRows(render(rec([g('mac', 'between_cycles')], { received_at: macAt }), rec([g('vm', 'running')], { received_at: vmAt })));
+      expect(rows).toHaveLength(1);
+      expect(rows[0][2]).toBe('running');
+    }
+  });
 });

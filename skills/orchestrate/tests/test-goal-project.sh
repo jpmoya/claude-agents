@@ -108,6 +108,54 @@ test_gp_stopped_goal_closes_its_project_not_the_registry_row() {
   dg_teardown; return $rc
 }
 
+# A stopped duplicate registry goal bound to the same project as a live goal (projects #22 / #37, 2026-10) must not close it;
+# once no live goal is bound to it, the stopped goal's sync closes it as before.
+test_gp_stopped_duplicate_never_closes_a_live_goals_project() {
+  gp_setup
+  local rc=0 f dup blk
+  dg_run "$DG_SPEC_MS"; assert_eq "$DG_RC" "0" "register exits 0 (stderr: $DG_ERR)" || rc=1
+  f=$(dg_reg_file_for "$DG_ID_MS"); blk=$(dg_block "$f" | jq -c '.id = "dup-goal"')
+  dup="$(dirname "$f")/999.json"
+  jq --arg b "$(printf 'Goal: %s\n\n```json\n%s\n```\n' "$DG_SPEC_MS" "$blk")" \
+    '.number = 999 | .body = $b | .state = "closed" | .closed_at = .created_at | .labels = [{name:"delivery-goal"},{name:"goal-stopped"}]' "$f" > "$dup"
+  dg_run project dup-goal; assert_eq "$DG_RC" "0" "project on the stopped duplicate exits 0 (stderr: $DG_ERR)" || rc=1
+  assert_eq "$(jq -r '.[0].closed' "$DG_BIN/proj/projects.json")" "false" "the live goal's project stays open" || rc=1
+  dg_run stop "$DG_ID_MS"; dg_run project dup-goal
+  assert_eq "$(jq -r '.[0].closed' "$DG_BIN/proj/projects.json")" "true" "closed once no live goal shares it" || rc=1
+  dg_teardown; return $rc
+}
+
+test_gp_live_sharer_fails_closed_on_an_unreadable_registry() {
+  gp_setup
+  local rc=0 reg
+  reg='[{"issue":5,"st":"active","block":{"project":{"number":3}}},{"issue":6,"st":"stopped","block":{"project":{"number":4}}}]'
+  dg_lib ". \"$DG_SKILL/goal-project.sh\"; _GP_REG='$reg'; _gp_live_sharer 3 9"; assert_eq "$DG_RC" "0" "a live goal on project 3: shared" || rc=1
+  dg_lib ". \"$DG_SKILL/goal-project.sh\"; _GP_REG='$reg'; _gp_live_sharer 3 5"; assert_eq "$DG_RC" "1" "the asking goal itself does not count" || rc=1
+  dg_lib ". \"$DG_SKILL/goal-project.sh\"; _GP_REG='$reg'; _gp_live_sharer 4 9"; assert_eq "$DG_RC" "1" "only a stopped goal on project 4: not shared" || rc=1
+  dg_lib ". \"$DG_SKILL/goal-project.sh\"; _GP_REG='not json'; _gp_live_sharer 4 9"; assert_eq "$DG_RC" "0" "unreadable registry: never close blind" || rc=1
+  dg_teardown; return $rc
+}
+
+# Bug C: a closed project is "delivered" on the status page only when no live goal is bound to it; a live goal bound to a
+# closed project still gets its live row; a closed project whose bound goals were all stopped reads "stopped".
+test_gp_status_page_closed_project_with_a_live_goal_keeps_its_row() {
+  local rc=0 d out seen
+  d=$(mktemp -d "${TMPDIR:-/tmp}/gp-pipe.XXXXXX")
+  seen=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  jq -nc --arg s "$seen" '{owner:"x", projects:[
+      {number:22,title:"Goal: Shared",url:"https://github.com/users/x/projects/22",closed:true,closed_seen:$s},
+      {number:23,title:"Goal: Abandoned",url:"https://github.com/users/x/projects/23",closed:true,closed_seen:$s},
+      {number:24,title:"Goal: Shipped",url:"https://github.com/users/x/projects/24",closed:true,closed_seen:$s}]}' > "$d/goalprojects.json"
+  jq -nc '{id:"g1", host:"mac", spec:"o/r#4", state:"active", priority:3, project:{owner:"x",number:22,url:"https://github.com/users/x/projects/22"}}' > "$d/goal-g1.json"
+  jq -nc '{recent:[{id:"g2", spec:"o/r#5", st:"stopped", project_url:"https://github.com/users/x/projects/23"},
+                   {id:"g3", spec:"o/r#6", st:"delivered", project_url:"https://github.com/users/x/projects/24"}]}' > "$d/goalqueue.json"
+  out=$(python3 "$DG_SKILL/build-runs-json.py" "" "$d/runs.jsonl" "$d" goals </dev/null 2>/dev/null)
+  assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id == "project-22") | "\(.state) \(.host) \(.priority)"')" "between_cycles mac 3" "a live goal on a closed project keeps its live row" || rc=1
+  assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id == "project-23") | .state')" "stopped" "a closed project whose goal was stopped is not delivered" || rc=1
+  assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id == "project-24") | .state')" "delivered" "a closed project whose goal was delivered is delivered" || rc=1
+  rm -rf "$d"; return $rc
+}
+
 test_gp_binds_existing_project_with_the_same_title() {
   gp_setup
   local rc=0
@@ -266,7 +314,7 @@ test_gp_gh_project_and_graphql_only_in_goal_project_sh() {
 }
 
 for t in test_gp_register_creates_project_adds_tickets_and_records_it test_gp_project_command_is_idempotent_and_mirrors_status \
-         test_gp_stopped_goal_closes_its_project_not_the_registry_row test_gp_project_command_binds_but_never_creates_for_existing_goals test_gp_brief_names_the_bound_project test_gp_binds_existing_project_with_the_same_title test_gp_register_joins_the_project_that_already_holds_all_its_tickets test_gp_register_joins_a_project_holding_half_of_its_tickets \
+         test_gp_stopped_goal_closes_its_project_not_the_registry_row test_gp_stopped_duplicate_never_closes_a_live_goals_project test_gp_live_sharer_fails_closed_on_an_unreadable_registry test_gp_status_page_closed_project_with_a_live_goal_keeps_its_row test_gp_project_command_binds_but_never_creates_for_existing_goals test_gp_brief_names_the_bound_project test_gp_binds_existing_project_with_the_same_title test_gp_register_joins_the_project_that_already_holds_all_its_tickets test_gp_register_joins_a_project_holding_half_of_its_tickets \
          test_gp_without_project_scope_nothing_runs_and_register_succeeds test_gp_project_failure_never_fails_the_goal \
          test_gp_status_page_link_prefers_the_project test_gp_new_project_appears_on_the_status_page_without_manual_steps test_gp_process_without_project_scope_never_blanks_an_existing_list test_gp_binding_to_a_deleted_project_is_dropped test_gp_gh_project_and_graphql_only_in_goal_project_sh; do
   run_test "$t"

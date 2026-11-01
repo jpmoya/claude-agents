@@ -356,6 +356,20 @@ def build_goals():
     except OSError:
         return []
     out = []
+    # Registry priorities (goalqueue.json, rewritten from the registry every sync): they win over a local cache's copy, which
+    # only the host that ran `deliver.sh priority` refreshed, so two hosts no longer report one goal at two priorities.
+    reg_prio = {}
+    try:
+        with open(os.path.join(pipe_dir, "goalqueue.json"), encoding="utf-8") as f:
+            gq = json.load(f)
+        for k in ("open", "queued", "recent"):
+            for d in (gq.get(k) or []) if isinstance(gq, dict) else []:
+                if isinstance(d, dict) and isinstance(d.get("id"), str):
+                    pr = d.get("priority")
+                    if isinstance(pr, int) and not isinstance(pr, bool) and pr > 0 and d["id"] not in reg_prio:
+                        reg_prio[d["id"]] = pr
+    except (OSError, ValueError, AttributeError, TypeError):
+        reg_prio = {}
     for name in names:
         stem = name[:-5]
         base = os.path.join(pipe_dir, stem)
@@ -406,6 +420,8 @@ def build_goals():
         if _goal_link(d):
             entry["url"] = _goal_link(d)
         _set_priority(entry, d)
+        if d["id"] in reg_prio:
+            entry["priority"] = reg_prio[d["id"]]
         _fill_name(entry)
         out.append(entry)
         if len(out) >= GOALS_MAX:
@@ -534,8 +550,9 @@ _PROJECT_RANK = {"running": 0, "waiting_jp": 1, "held": 2, "between_cycles": 3, 
 def _project_rows(out):
     """The goal list IS the GitHub projects (goal-project.sh keeps $PIPE/goalprojects.json): one row per open project, its title as the
     name linking to the project, state / host / priority / progress taken from the live goals bound to it (best state wins); a project
-    no goal is bound to yet is `queued` (not started); a project closed within a week is `delivered`. Goals bound to no project are not
-    rows. None when the cache does not exist (this host cannot list projects): the caller keeps the plain goal rows."""
+    no goal is bound to yet is `queued` (not started); a closed project that a live goal is bound to is that goal's live row; any other
+    project closed within a week is `delivered` (`stopped` when every registry goal bound to it was stopped). Goals bound to no project
+    are not rows. None when the cache does not exist (this host cannot list projects): the caller keeps the plain goal rows."""
     try:
         with open(os.path.join(pipe_dir, "goalprojects.json"), encoding="utf-8") as f:
             cache = json.load(f)
@@ -554,18 +571,23 @@ def _project_rows(out):
         if not (isinstance(title, str) and title.strip()) or not (isinstance(url, str) and proj_re.match(url)):
             continue
         entry = {"id": "project-%d" % p["number"], "host": "", "title": re.sub(r"[<>\"`]", "", re.sub(r"^Goal:\s*", "", title.strip()).replace("&", "and")), "url": url}   # the page refuses < > & \" `
-        if p.get("closed"):
+        live = [e for e in out if e.get("url") == url and e.get("state") in _PROJECT_RANK]
+        if p.get("closed") and not live:
+            # closed and no live goal bound to it: "delivered" only from the registry's own verdict on the goals bound to it
+            # (a stopped goal used to close a project a live goal shared, which then read as delivered); a project no
+            # known goal is bound to keeps the old reading (goal_project_sweep_done closes it once every ticket is closed)
+            bound = [e for e in out if e.get("url") == url and e.get("state") in ("delivered", "stopped")]
             seen = p.get("closed_seen")
             try:
                 age = now - datetime.datetime.strptime(seen, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc).timestamp()
             except (TypeError, ValueError):
                 continue
             if age <= 7 * 86400:
-                entry["state"] = "delivered"
+                entry["state"] = "stopped" if bound and all(e["state"] == "stopped" for e in bound) else "delivered"
                 entry["closed_at"] = seen
                 closed_rows.append((age, entry))
             continue
-        live = [e for e in out if e.get("url") == url and e.get("state") in _PROJECT_RANK]
+        # a live goal always gets its row, even while its project reads closed (closed under it by another goal's sync)
         if live:
             live.sort(key=lambda e: _PROJECT_RANK[e["state"]])
             best = live[0]
