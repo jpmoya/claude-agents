@@ -309,7 +309,7 @@ test_sl_status_one_gh_issue_view_per_run_using_shared_expression() {
   assert_eq "$ncalls" "2" "AC3: status over 2 runs makes exactly 2 gh calls in total" || { sl_status_cleanup; return 1; }
   assert_eq "$nview" "2" "AC3: both are 'gh issue view' (one per run)" || { sl_status_cleanup; return 1; }
   for i in 1 2; do
-    assert_eq "$(cat "$SL_D/json-$i.txt" 2>/dev/null)" "state,comments" "AC3: call $i keeps the single combined --json state,comments" || { sl_status_cleanup; return 1; }
+    assert_eq "$(cat "$SL_D/json-$i.txt" 2>/dev/null)" "state,author,comments" "AC3: call $i keeps the single combined --json state,author,comments (re-pinned for #442: orchestrate.sh status now also reads author)" || { sl_status_cleanup; return 1; }
     assert_contains "$(cat "$SL_D/jq-$i.txt" 2>/dev/null)" "$expr" "AC2: call $i's --jq must contain marker_last_jq's output" || { sl_status_cleanup; return 1; }
   done
   sl_status_cleanup

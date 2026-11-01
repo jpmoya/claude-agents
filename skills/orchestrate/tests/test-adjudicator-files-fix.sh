@@ -32,7 +32,7 @@ test_af_ac5_hard_limits() {
   local hl
   hl=$(awk '/^## Hard limits/ { on = 1; next } on && /^## / { exit } on { print }' "$ADJ_AF")
   for s in '`gh issue comment`' '`gh issue create` (repo `jpmoya/claude-agents` only)' \
-           '`gh issue edit --add-label agent-go` on the issue you just created' 'no `orchestrate.sh`'; do
+           '`gh issue edit --add-label agent-go --add-label user-feedback` on the issue you just created' 'no `orchestrate.sh`'; do
     case "$hl" in *"$s"*) ;; *) fail "hard limits: missing [$s]"; return 1 ;; esac
   done
 }

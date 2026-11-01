@@ -16,6 +16,7 @@ sl_power() {  # sl_power <pmset output> [BATTERY_MIN_PCT] -> prints ok|blocked
   printf '#!/bin/bash\nprintf "%%s\\n" "$PMSET_OUT"\n' > "$d/pmset"
   printf '#!/bin/bash\necho Darwin\n' > "$d/uname"; chmod +x "$d/pmset" "$d/uname"
   (
+    unset ALLOW_BATTERY   # #442: an earlier file in the full run leaks ALLOW_BATTERY=1 into the shell; this case pins the unset default
     export PMSET_OUT="$1" PATH="$d:$PATH"; [ -n "${2:-}" ] && export BATTERY_MIN_PCT=$2
     eval "$(sed -n '/^power_ok() {/,/^}/p' "$HERE_SL/../supervisor.sh")"
     power_ok && echo ok || echo blocked

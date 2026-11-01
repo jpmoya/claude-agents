@@ -30,7 +30,9 @@ test_rs_ac1_agents_never_write_a_version() {
 
 # AC2: the existing milestone guardrail must survive the edit.
 test_rs_ac2_milestone_rule_still_present() {
-  rs_has 'never pre-assign a release milestone'
+  # re-pinned for #442: the PM now owns planning milestones (#194/#310); the old "never pre-assign a release milestone" line is gone.
+  # The surviving guardrail is that the milestone is a PM-owned planning label (version planned, never a gate).
+  rs_has 'Every ticket you create or refine gets a milestone' && rs_has 'a target, never a gate'
 }
 
 # AC3 (negative control): the pin helper really fails on an absent literal.

@@ -219,7 +219,7 @@ test_rj_ac7_scan_never_stamps_agent_proposed_on_needs_spec_issues() {
 #!/bin/bash
 echo "$*" >> "$GH_LOG"
 if [ "$1" = "issue" ] && [ "$2" = "list" ]; then
-  expr=""; prev=""; for a in "$@"; do [ "$prev" = "--jq" ] && expr=$a; prev=$a; done
+  expr=""; prev=""; for a in "$@"; do [ "$prev" = "--jq" ] && expr=$a; [ "$a" = "--search" ] && exit 0; prev=$a; done   # #442: the claim-comment search lists no claimed issues
   json='[{"number":1,"title":"idea awaiting spec","labels":[{"name":"user-feedback"},{"name":"user-feedback-needs-spec"}]},
          {"number":2,"title":"idea, PM running","labels":[{"name":"user-feedback"},{"name":"user-feedback-needs-spec"},{"name":"agent-in-progress"}]},
          {"number":3,"title":"control","labels":[]}]'

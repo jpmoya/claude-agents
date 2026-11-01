@@ -278,6 +278,7 @@ gs_env() {
     echo "DISPATCH_REPOS=(\"example-owner/project-a:$GS_CK_A\")"
     echo "GOAL_REGISTRY_REPO=example-owner/registry"
     echo "MEM_FLOOR_MB=0"
+    echo "GOAL_SERIAL=0"   # #442: these cases pin the per-host goal rules; GOAL_SERIAL=1 (#554 default) is covered by test-goal-z-serial.sh
     [ "${GS_SYNC:-}" = default ] || echo "GOAL_SYNC_SECS=0"
   } > "$GS_HOME/.claude/pipeline/config.local.sh"
   GS_RS_LOG="$GS_HOME/rs-calls.log"; : > "$GS_RS_LOG"
