@@ -1191,7 +1191,7 @@ for f in "$PIPE"/orch-*.held; do
   [ "$(printf '%s' "$info" | jq -r '.state // empty')" = "OPEN" ] || continue
   if [ "$is_lc" -eq 1 ]; then
     # Resume only on a delegated decision ([delivery-lead] DECISION / JP CONFIRMED, legacy [project-manager] spelling) with a higher
-    # issuecomment id than the baseline: the newest "loop-cap hold resumed" NOTE, else the newest other pipeline marker (the gate).
+    # issuecomment id than the baseline: the newest "loop-cap hold resumed" NOTE, else the newest loop-cap gate comment (BLOCKED / TEST DEFECT / FAIL / TESTS FAIL / IMPLEMENTED; later non-gate comments never move it).
     # Invariant (#560): ordering is by issuecomment id, never createdAt/mtime (GitHub stamps can be skewed). A refused decision is
     # followed by a new resumed NOTE with a higher id, so it cannot resume twice; the orchestrator still checks Resolves:.
     if printf '%s' "$info" | jq -e '
@@ -1201,7 +1201,7 @@ for f in "$PIPE"/orch-*.held; do
         [.comments[] | select((.id | type) == "number")] as $cs
         | ([$cs[] | select(l1 | startswith("**[supervisor] NOTE** loop-cap hold resumed")) | .id] | max) as $rn
         | (if $rn != null then $rn
-           else ([$cs[] | select((l1 | test("^\\*\\*\\[[^]]+\\]")) and (isdec | not) and (l1 | startswith("**[supervisor] NOTE**") | not)) | .id] | max) // 0 end) as $base
+           else ([$cs[] | select((l1 | test("^\\*\\*\\[[^]]+\\] (BLOCKED|TEST DEFECT|FAIL|TESTS FAIL|IMPLEMENTED)")) and (isdec | not)) | .id] | max) // 0 end) as $base
         | [$cs[] | select(isdec and .id > $base)] | length > 0' >/dev/null 2>&1; then
       if ! (cd "$repo" && gh issue comment "$issue" --body "**[supervisor] NOTE** loop-cap hold resumed: a delegated decision was posted after the stop" >/dev/null 2>&1 </dev/null); then
         slog "[loopcap-resume] #$issue — NOTE post failed, staying held"
