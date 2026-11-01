@@ -315,14 +315,15 @@ gs_milestone() {  # <number> <title>
 }
 
 # gs_issue <n> <open|closed> [milestone number|""] [pr] [labels-csv]
-gs_issue() {  # <n> <state> [milestone number] [pr] [labels csv] [milestone state, default open] [milestone title, default m]
-  local n=$1 st=$2 ms=${3:-} pr=${4:-} lb=${5:-} mss=${6:-open} mst=${7:-m}
-  jq -nc --argjson n "$n" --arg st "$st" --arg ms "$ms" --arg pr "$pr" --arg lb "$lb" --arg now "$GS_NOW" --arg mss "$mss" --arg mst "$mst" '
+gs_issue() {  # <n> <state> [milestone number] [pr] [labels csv] [milestone state, default open] [milestone title, default m] [state_reason]
+  local n=$1 st=$2 ms=${3:-} pr=${4:-} lb=${5:-} mss=${6:-open} mst=${7:-m} sr=${8:-}
+  jq -nc --argjson n "$n" --arg st "$st" --arg ms "$ms" --arg pr "$pr" --arg lb "$lb" --arg now "$GS_NOW" --arg mss "$mss" --arg mst "$mst" --arg sr "$sr" '
     {number:$n, title:("ticket " + ($n|tostring)), body:"", state:$st,
      labels:($lb | split(",") | map(select(length > 0)) | map({name:.})),
      created_at:$now, updated_at:$now, closed_at:(if $st == "closed" then $now else null end),
      milestone:(if $ms == "" then null else {number:($ms|tonumber), title:$mst, state:$mss} end)}
-    + (if $pr != "" then {pull_request:{url:"x"}} else {} end)' > "$GS_ST/issues/$GS_A/$n.json"
+    + (if $pr != "" then {pull_request:{url:"x"}} else {} end)
+    + (if $sr != "" then {state_reason:$sr} else {} end)' > "$GS_ST/issues/$GS_A/$n.json"
 }
 
 gs_body() {  # <n> <body> — set a project-a ticket body
@@ -598,6 +599,22 @@ gs_check_class() {  # <expected> <label> <state> <labels> <comments…>
   assert_eq "$got" "$want" "classification: $label" || return 1
 }
 
+# gs_classify_sr <issue state> <state_reason> — same as gs_classify, but sets the ticket's state_reason (#557)
+gs_classify_sr() {
+  local st=$1 sr=$2 out=none
+  gs_env
+  gs_issue 7 "$st" "" "" "" open m "$sr"
+  rm -f "$GS_ST/comments/$GS_A-7.json"
+  gs_own "$GS_ID_T7" 50 "$GS_SPEC_T7" 3600 ""
+  gs_tick
+  if [ "$(gs_reg_state 50)" = closed ] && ! gs_has_label 50 goal-stopped; then out=delivered
+  elif gs_has_label 50 goal-waiting-jp; then out=waiting_jp
+  elif gs_wait_claude 1; then out=active
+  fi
+  gs_cleanup
+  printf '%s' "$out"
+}
+
 test_gs_classify_delivered() {
   gs_check_class delivered "issue CLOSED, no marker" closed "" || return 1
   gs_check_class delivered "CLOSED with a lookalike DEPLOYED TO STAGING" closed "" $'**[deployer] DEPLOYED TO STAGING**\nstaging up' || return 1
@@ -605,6 +622,18 @@ test_gs_classify_delivered() {
   gs_check_class delivered "open + [infra-operator] APPLIED" open "" $'**[infra-operator] APPLIED**\ndone' || return 1
   gs_check_class delivered "open + [solutions-architect] SPLIT" open "" $'**[solutions-architect] SPLIT**\nchildren filed' || return 1
   gs_check_class delivered "open + valid REJECTED (user-feedback, Reason:)" open "user-feedback" $'**[product-manager] REJECTED**\nReason: not-a-bug' || return 1
+}
+
+# #557: a closed issue only counts as delivered when it was actually completed — "not_planned" (duplicate, wontfix, or
+# closed by mistake while still in the goal's scope) never shipped anything and must not let the goal close silently.
+test_gs_557_closed_not_planned_is_not_delivered() {
+  local got
+  got=$(gs_classify_sr closed not_planned)
+  assert_eq "$got" "waiting_jp" "555: closed not_planned is waiting_jp, not delivered" || return 1
+  got=$(gs_classify_sr closed completed)
+  assert_eq "$got" "delivered" "555: closed completed is still delivered" || return 1
+  got=$(gs_classify_sr closed "")
+  assert_eq "$got" "delivered" "555: closed with no state_reason keeps the old fail-open behavior" || return 1
 }
 
 test_gs_classify_waiting_jp() {
@@ -1304,6 +1333,7 @@ run_test test_gs_ac3_crash_backoff_indexed_by_restarts_then_clean_exit_resets
 run_test test_gs_ac3_short_run_is_transient
 run_test test_gs_ac4_all_delivered_closes_registry_with_card_and_removes_cache
 run_test test_gs_classify_delivered
+run_test test_gs_557_closed_not_planned_is_not_delivered
 run_test test_gs_classify_waiting_jp
 run_test test_gs_classify_active
 run_test test_gs_classify_staging_merge
