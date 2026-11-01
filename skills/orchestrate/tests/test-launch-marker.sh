@@ -158,7 +158,9 @@ test_lm_supervisor_failed_fetch_removes_stale_marker() {
   lm_cleanup
   assert_eq "$ctl" "SPEC RESOLVED" "#94: control — #41's marker written" || return 1
   assert_eq "$pid" "present" "#94: supervisor launch not blocked by a failed fetch" || return 1
-  assert_eq "$m" "ABSENT" "#94: failed fetch at supervisor launch -> no stale marker file" || return 1
+  # The tick's reconcile pass (reconcile-status.sh, REST marker read) may legitimately rewrite the marker from the true latest one;
+  # what must never survive a failed title fetch is the stale content.
+  assert_eq "$([ "$m" = "STALE MARKER" ] && echo stale || echo fresh-or-absent)" "fresh-or-absent" "#94: failed fetch at supervisor launch -> stale marker content is gone" || return 1
 }
 
 test_lm_marker_parsing_lives_once_in_pipeline_lib() {
