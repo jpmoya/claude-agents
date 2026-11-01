@@ -7,7 +7,19 @@
 [ -n "${PIPELINE_AGENT:-}" ] && exit 0
 INPUT=$(cat)
 SID="${CLAUDE_CODE_SESSION_ID:-nosession}"
-HASH=$(printf '%s' "$INPUT" | python3 -c "import sys,hashlib; print(hashlib.sha1(sys.stdin.buffer.read()).hexdigest())" 2>/dev/null)
+# Hash only the stable question content (questions/options text), not the whole
+# hook payload — that payload carries a per-call tool_use id that changes on
+# every invocation, which made an "identical" retry never actually match.
+HASH=$(printf '%s' "$INPUT" | python3 -c "
+import sys, json, hashlib
+try:
+    data = json.load(sys.stdin)
+    stable = data.get('tool_input', {}).get('questions', data)
+    payload = json.dumps(stable, sort_keys=True)
+except Exception:
+    payload = sys.stdin.read()
+print(hashlib.sha1(payload.encode()).hexdigest())
+" 2>/dev/null)
 [ -n "$HASH" ] || exit 0
 STATE_DIR="/tmp/claude-askq-$SID"
 mkdir -p "$STATE_DIR" 2>/dev/null
