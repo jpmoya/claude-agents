@@ -28,7 +28,7 @@ STATUS:    <RUNNING | WAITING ON YOU | BLOCKED | HELD | STALLED, retrying | DEPL
 WHAT'S UP: <one sentence, layman's terms>
 NEEDED FROM YOU: <bulleted list, e.g. "staging review is ready", "missing: A, B, C"; "Nothing" if none>
 TECHNICAL PROBLEM: <No | Yes — one line: run killed / stopped unexpectedly / restarted, and why>
-SELF-HEAL TICKETS: <owner/repo #n — open/queued/fixed, one line each; if a technical problem happened and no ticket exists, say so and that the diagnostician → adjudicator run is owed>
+SELF-HEAL TICKETS: <owner/repo #n (3-5 word description) — open/queued/fixed, one line each; if a technical problem happened and no ticket exists, say so and that the diagnostician → adjudicator run is owed>
 ```
 
 A technical problem (run killed, exited, restarted, held unexpectedly) means the diagnostician → adjudicator flow above is owed: launch it, don't just report it. Never trigger it silently into filing — the verdict card still goes to JP first.
