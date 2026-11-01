@@ -473,7 +473,7 @@ test_dd_i76_ac2_validation_row_gains_the_go_clause() {
   assert_ne "$row" "" "i76 AC2: the resume-on-delegated-decision validation row exists" || return 1
   # AC2: "gate marker on the carve-out -> validation fails unless a later JP go comment in the exact form of
   # AC1 exists, dated after the BLOCKED, in which case it passes" (issue #76 AC2)
-  for s in 'carve-out' 'JP go comment' 'dated after'; do
+  for s in 'carve-out' 'JP go comment' 'issuecomment id is higher'; do
     dd_text_has "i76 AC2: validation row go clause" "$row" "$s" || return 1
   done
 }
