@@ -114,6 +114,47 @@ test_lc_baseline_ignores_supervisor_notes_and_delivery_lead() {
   assert_eq "$n" "1" "a claim NOTE (id 300) is not a baseline -> decision 200 resumes" || return 1
 }
 
+# ---- AC1: legacy [project-manager] spellings are decisions too (positive case) ----
+test_lc_legacy_project_manager_decision_resumes() {
+  lc_fixture
+  local gate dec n
+  gate=$(lc_c 100 '**[fullstack-developer] IMPLEMENTED**' 2026-01-01T00:00:00Z)
+  dec=$(lc_c 200 $'**[project-manager] DECISION**\nResolves: x' 2020-01-01T00:00:00Z)
+  lc_comments "[$gate,$dec]"; ar2_tick
+  n=$(ar2_launches); sq_cleanup
+  assert_eq "$n" "1" "legacy [project-manager] DECISION id 200 > gate 100 -> relaunch" || return 1
+}
+test_lc_legacy_project_manager_jp_confirmed_resumes() {
+  lc_fixture
+  local gate dec n
+  gate=$(lc_c 100 '**[fullstack-developer] IMPLEMENTED**' 2026-01-01T00:00:00Z)
+  dec=$(lc_c 200 $'**[project-manager] JP CONFIRMED**\nResolves: x' 2020-01-01T00:00:00Z)
+  lc_comments "[$gate,$dec]"; ar2_tick
+  n=$(ar2_launches); sq_cleanup
+  assert_eq "$n" "1" "legacy [project-manager] JP CONFIRMED id 200 > gate 100 -> relaunch" || return 1
+}
+
+# ---- ids compare numerically, not as strings: 99 vs 100 (hand: 100 > 99 numerically, "100" < "99" as strings) ----
+test_lc_ids_compare_numerically_longer_id_resumes() {
+  lc_fixture
+  local gate dec n
+  gate=$(lc_c 99 '**[fullstack-developer] IMPLEMENTED**' 2026-01-01T00:00:00Z)
+  dec=$(lc_c 100 $'**[delivery-lead] DECISION**\nResolves: x' 2026-01-02T00:00:00Z)
+  lc_comments "[$gate,$dec]"; ar2_tick
+  n=$(ar2_launches); sq_cleanup
+  assert_eq "$n" "1" "decision id 100 > gate id 99 numerically -> relaunch" || return 1
+}
+test_lc_ids_compare_numerically_shorter_id_stays_held() {
+  lc_fixture
+  local gate dec n h
+  gate=$(lc_c 100 '**[fullstack-developer] IMPLEMENTED**' 2026-01-01T00:00:00Z)
+  dec=$(lc_c 99 $'**[delivery-lead] DECISION**\nResolves: x' 2099-01-01T00:00:00Z)
+  lc_comments "[$gate,$dec]"; ar2_tick
+  n=$(ar2_no_launch); h=$(ar2_held); sq_cleanup
+  assert_eq "$n" "0" "decision id 99 < gate id 100 numerically -> no relaunch" || return 1
+  assert_eq "$h" "present" "still held" || return 1
+}
+
 # ---- Observability: NOTE post fails -> logged, hold kept, no relaunch ----
 test_lc_note_post_failure_stays_held_and_logs() {
   lc_fixture
@@ -169,3 +210,7 @@ run_test test_lc_note_post_failure_stays_held_and_logs
 run_test test_lc_supervisor_has_no_mtime_compare_and_states_invariant
 run_test test_lc_issue_info_rest_keeps_comment_ids
 run_test test_lc_orchestrator_orders_by_comment_id
+run_test test_lc_legacy_project_manager_decision_resumes
+run_test test_lc_legacy_project_manager_jp_confirmed_resumes
+run_test test_lc_ids_compare_numerically_longer_id_resumes
+run_test test_lc_ids_compare_numerically_shorter_id_stays_held
