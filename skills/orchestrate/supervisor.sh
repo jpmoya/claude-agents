@@ -1536,6 +1536,8 @@ fi
 
 # 3d. Goal step (#195) — goal pids are coordinators: not in count_running, never set the orchestrator `launched` flag.
 goal_step
+# 3d-2. Blocker adoption (#566): the staff-feedback goal's scope takes in a goal-less agent-go blocker of an in-scope ticket by label, no LLM (goal_fb_adopt_blockers). Every 5 min, gh class normal.
+if [ "${T_NORMAL:-1}" = 1 ] && gh_tick_due adopt-blockers "${GOAL_ADOPT_SECS:-300}"; then GH_CLASS=normal goal_fb_adopt_blockers >/dev/null 2>&1 || true; fi
 
 # 3e. Promote deferred children (#315) — a ticket filed with the PM deferral NOTE ("approval inherited from <ref> — agent-go deferred:
 #     start-gate #N open") gets agent-go once every start-gate is CLOSED as completed. Launch permission only: no JP-only gate is answered here.

@@ -1709,6 +1709,60 @@ goal_queue_step() {
   return 0
 }
 
+# goal_fb_adopt_blockers (#566, code path) — the supervisor, not the lead's LLM, adopts a goal-less blocker into the staff-feedback
+# goal: for each repo with a live owner/repo:feedback goal, an open ticket that (a) already carries agent-go, (b) lacks user-feedback and
+# is covered by no other live goal and no stopped hold (_goal_fb_covered), (c) carries no agent-stop/agent-hold/jp-hold/on-hold label, and
+# (d) blocks an open in-scope ticket gets the user-feedback label (nothing else changes). "Blocks" = the in-scope ticket's body has a
+# `Depends on` / `merge-gate` / `blocked by` line whose FIRST #N is that ticket (a PR number or another repo's ref never matches, #573),
+# or its latest `[delivery-lead]`/`[deployer]` BLOCKED comment names it. Idempotent (a labelled ticket is in scope, so skipped); at most
+# GOAL_ADOPT_MAX (5) adoptions per call; never Business-Intelligence; fails closed (no adoption) on any unreadable read. One issue list
+# per repo plus one comment read per open in-scope ticket (max 30), all through the gh-budget wrapper (class normal). Prints the
+# adoption count. The caller throttles it (supervisor: every 5 min).
+goal_fb_adopt_blockers() {
+  local reg specs spec repo crepo cov js ins n cand body cm deps d blk adopted=0 max="${GOAL_ADOPT_MAX:-5}" kind seen=" " cnt
+  local fb="${LABEL_FEEDBACK:-user-feedback}"
+  reg=$(_goal_registry_json) || { echo 0; return 0; }
+  specs=$(printf '%s' "$reg" | jq -r '.[] | select(.st == "queued" or .st == "active" or .st == "held" or .st == "waiting_jp") | .spec // empty' 2>/dev/null | sort -u)
+  for spec in $specs; do
+    [ "$adopted" -lt "$max" ] || break
+    IFS=$'\t' read -r repo kind _ <<< "$(goal_parse "$spec" 2>/dev/null || true)"
+    [ "$kind" = fb ] || continue
+    _goal_is_bi "$repo" && continue
+    case "$seen" in *" $repo "*) continue ;; esac; seen="$seen$repo "
+    crepo=$(_goal_rest_slug "$repo")
+    cov=$(_goal_fb_covered "$repo") || continue
+    js=$(_goal_get_all "repos/$crepo/issues?state=open&per_page=100") || continue
+    cov=$(printf '%s\n' "$cov" | jq -Rsc 'split("\n") | map(select(. != "") | tonumber)')
+    ins=$(printf '%s' "$js" | jq -r --arg fb "$fb" --argjson cov "$cov" '.[] | select(has("pull_request") | not)
+      | select(.number as $n | any($cov[]; . == $n) | not) | select(any(.labels[]; .name == $fb)) | .number' 2>/dev/null) || continue
+    [ -n "$ins" ] || continue
+    cand=$(printf '%s' "$js" | jq -r --arg fb "$fb" --argjson cov "$cov" '.[] | select(has("pull_request") | not)
+      | select(.number as $n | any($cov[]; . == $n) | not)
+      | ([.labels[].name]) as $l | select(($l | index("agent-go")) and ($l | index($fb) | not))
+      | select(($l | map(select(. == "agent-stop" or . == "agent-hold" or . == "jp-hold" or . == "on-hold")) | length) == 0) | .number' 2>/dev/null) || continue
+    [ -n "$cand" ] || continue
+    cnt=0
+    for n in $ins; do
+      cnt=$((cnt + 1)); [ "$cnt" -le 30 ] || break
+      body=$(printf '%s' "$js" | jq -r --argjson n "$n" '.[] | select(.number == $n) | .body // ""')
+      deps=$(printf '%s\n' "$body" | jq -Rr 'capture("(?i)(?:depends on|merge-gate|blocked by)(?<pre>[^#]*)#(?<n>[0-9]+)") | select(.pre | test("[A-Za-z0-9_./-]$") | not) | .n' 2>/dev/null)
+      cm=$(_goal_get_all "repos/$crepo/issues/$n/comments?per_page=100" 2>/dev/null) || cm="[]"
+      blk=$(printf '%s' "$cm" | jq -r '[.[] | select((.body // "") | split("\n")[0] | test("^\\*\\*\\[(delivery-lead|deployer)\\] BLOCKED"))] | last | .body // "" | [scan("#([0-9]+)") | .[0]] | .[]' 2>/dev/null) || blk=""
+      for d in $deps $blk; do
+        [ "$d" != "$n" ] || continue
+        printf '%s\n' "$cand" | grep -qx -- "$d" || continue
+        case "$seen" in *" $repo#$d "*) continue ;; esac
+        [ "$adopted" -lt "$max" ] || break 2
+        if gh issue edit "$d" --repo "$repo" --add-label "$fb" >/dev/null 2>&1; then
+          seen="$seen$repo#$d "; adopted=$((adopted + 1))
+          if type slog >/dev/null 2>&1; then slog "[adopt] #$d adopted into the feedback goal: blocker of #$n"; else echo "[adopt] #$d adopted into the feedback goal: blocker of #$n" >&2; fi
+        fi
+      done
+    done
+  done
+  echo "$adopted"
+}
+
 goal_step() {
   local last now f id h live=0
   GOAL_THIS_HOST=$(pipeline_host)
