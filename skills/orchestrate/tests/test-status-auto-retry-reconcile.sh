@@ -162,3 +162,59 @@ run_test test_ar_payload_carries_fixed_labels_only
 run_test test_ar_payload_has_no_block_class_for_jp_gates
 run_test test_ar_closed_file_held_run_is_not_published_as_a_run
 run_test test_ar_reconcile_gh_failure_alerts_slack_with_tags_and_no_secret
+
+# ---- Issue #566: the supervisor's #484 hand-off alert ("finished red (real failure)") means nothing will retry. ----
+# ar_alert <issue> <text> — the run's .alert as supervisor.sh:1237 writes it
+ar_alert() { printf '%s\n' "$2" > "$(rkp "$AR_PIPE/orch-$1.alert")"; }
+AR_HANDOFF='2026-11-02T22:44:26Z Pipeline #N waiting on JP — [fullstack-developer] BLOCKED — finished red (real failure); relaunch (or re-add agent-go) after acting'
+
+test_ar566_ci_red_with_handoff_alert_is_not_auto_retry() {
+  ar_env; ar_gate 600 "$BLK" 'Blocked on: ci_red — checks failing on the PR'; ar_alert 600 "$AR_HANDOFF"
+  ar_reconcile
+  local r n; r=$(ar_file "$(rkp "$AR_PIPE/orch-600.parked_reason")"); n=$(ar_file "$(rkp "$AR_PIPE/orch-600.needs")")
+  ar_cleanup
+  assert_eq "$r" "ABSENT" "#566: ci_red + 'finished red (real failure)' alert -> no auto_retry" || return 1
+  assert_ne "$n" "ABSENT" "#566: the run is shown under Needs JP (non-empty .needs)" || return 1
+}
+
+test_ar566_ci_red_without_alert_still_auto_retry() {
+  ar_env; ar_gate 601 "$BLK" 'Blocked on: ci_red — checks failing on the PR'
+  ar_reconcile
+  local r; r=$(ar_file "$(rkp "$AR_PIPE/orch-601.parked_reason")")
+  ar_cleanup
+  assert_eq "$r" "auto_retry" "#566: same BLOCKED, no alert -> still auto_retry" || return 1
+}
+
+test_ar566_unrelated_alert_keeps_auto_retry() {
+  ar_env; ar_gate 602 "$BLK" 'Blocked on: ci_red — checks failing on the PR'; ar_alert 602 '2026-11-02T22:00:00Z Pipeline #602 exited unexpectedly'
+  ar_reconcile
+  local r; r=$(ar_file "$(rkp "$AR_PIPE/orch-602.parked_reason")")
+  ar_cleanup
+  assert_eq "$r" "auto_retry" "#566: an alert without the hand-off phrase does not change auto_retry" || return 1
+}
+
+test_ar566_every_parkable_class_with_handoff_alert_is_not_auto_retry() {
+  local cls i=0 r
+  for cls in ci_pending merge_conflict dependency unsupported_project other; do
+    i=$((i + 1)); ar_env; ar_gate $((610 + i)) "$BLK" "Blocked on: $cls — some detail"; ar_alert $((610 + i)) "$AR_HANDOFF"
+    ar_reconcile
+    r=$(ar_file "$(rkp "$AR_PIPE/orch-$((610 + i)).parked_reason")")
+    ar_cleanup
+    assert_eq "$r" "ABSENT" "#566: class $cls with hand-off alert -> no auto_retry" || return 1
+  done
+}
+
+test_ar566_payload_has_no_parked_reason_for_handoff() {
+  ar_env; ar_gate 620 "$BLK" 'Blocked on: ci_red — x'; ar_alert 620 "$AR_HANDOFF"
+  ar_reconcile
+  local out; out=$(ar_print)
+  ar_cleanup
+  assert_eq "$(ar_field "$out" 620 state)" "held" "#566: control: still a published held run" || return 1
+  assert_eq "$(ar_field "$out" 620 parked_reason)" "MISSING_FIELD" "#566: payload carries no parked_reason=auto_retry" || return 1
+}
+
+run_test test_ar566_ci_red_with_handoff_alert_is_not_auto_retry
+run_test test_ar566_ci_red_without_alert_still_auto_retry
+run_test test_ar566_unrelated_alert_keeps_auto_retry
+run_test test_ar566_every_parkable_class_with_handoff_alert_is_not_auto_retry
+run_test test_ar566_payload_has_no_parked_reason_for_handoff
