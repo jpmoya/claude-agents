@@ -450,6 +450,18 @@ test_ar2_573_first_ref_only_ignores_overlap_and_merged_pr() {
   assert_not_contains "$calls" "issue view 79" "573: overlap ref never read" || return 1
 }
 
+test_ar2_573_gated_on_wording_and_capitalised_depends_on() {
+  ar2_fixture 'Blocked on: dependency — waits'
+  printf 'Why\nThis was gated on #77 for merging (open PR #78)\nDepends On #79\n' > "$SQ_GH/gh-issue-body-42"
+  echo CLOSED > "$SQ_GH/gh-issue-state-77"; echo CLOSED > "$SQ_GH/gh-issue-state-79"; echo OPEN > "$SQ_GH/gh-issue-state-78"
+  ar2_tick
+  local n calls; n=$(ar2_launches); calls=$(gh_calls "$SQ_GH")
+  sq_cleanup
+  assert_eq "$n" "1" "573: 'gated on #77' and 'Depends On #79' both read, cleared" || return 1
+  assert_contains "$calls" "issue view 79" "573: capitalised Depends On parsed" || return 1
+  assert_not_contains "$calls" "issue view 78" "573: PR ref after the gate ignored" || return 1
+}
+
 test_ar2_573_open_dep_with_merged_issue_pr_cleared() {
   ar2_fixture 'Blocked on: dependency — waits'
   printf 'Depends on #77\n' > "$SQ_GH/gh-issue-body-42"
@@ -546,6 +558,7 @@ run_test test_ar2_269_comment_failure_alerts_slack_with_tags
 run_test test_ar2_269_issue_read_failure_alerts_slack_with_tags
 run_test test_ar2_269_monthly_spend_held_run_is_not_retried
 run_test test_ar2_573_first_ref_only_ignores_overlap_and_merged_pr
+run_test test_ar2_573_gated_on_wording_and_capitalised_depends_on
 run_test test_ar2_573_open_dep_with_merged_issue_pr_cleared
 run_test test_ar2_573_open_dep_without_merged_pr_not_cleared
 run_test test_ar2_573_cross_repo_dep_read_in_that_repo
