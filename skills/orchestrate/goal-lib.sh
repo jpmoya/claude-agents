@@ -1718,6 +1718,7 @@ goal_queue_step() {
 # GOAL_ADOPT_MAX (5) adoptions per call; never Business-Intelligence; fails closed (no adoption) on any unreadable read. One issue list
 # per repo plus one comment read per open in-scope ticket (max 30), all through the gh-budget wrapper (class normal). Prints the
 # adoption count. The caller throttles it (supervisor: every 5 min).
+_goal_ensure_label_in() { gh api -X POST "repos/$1/labels" -f "name=$2" >/dev/null 2>&1 || true; }   # <repo slug> <label>: create when missing (422 already exists is fine)
 goal_fb_adopt_blockers() {
   local reg specs spec repo crepo cov js ins n cand body cm deps d blk adopted=0 max="${GOAL_ADOPT_MAX:-5}" kind seen=" " cnt
   local fb="${LABEL_FEEDBACK:-user-feedback}"
@@ -1741,30 +1742,31 @@ goal_fb_adopt_blockers() {
       | ([.labels[].name]) as $l | select(($l | index("agent-go")) and ($l | index($fb) | not))
       | select(($l | map(select(. == "agent-stop" or . == "agent-hold" or . == "jp-hold" or . == "on-hold")) | length) == 0) | .number' 2>/dev/null) || continue
     [ -n "$cand" ] || continue
-    # depth 1 only (#566): a ticket this function adopted is never scanned for blockers of its own, so one false match cannot chain.
-    adf="${PIPE:-$HOME/.claude/pipeline/state}/adopted-${crepo//\//_}.list"
+    # depth 1 only (#566): a ticket this function adopted carries the adopted-blocker label (set in the same call as user-feedback, so it
+    # holds across hosts) and is never scanned for blockers of its own, so one false match cannot chain.
     # at most 30 tickets read per pass; the window rotates every 5 minutes so the same first 30 are not always the ones read
     ins=$(printf '%s\n' "$ins" | awk -v r="$(( $(date +%s) / 300 ))" '{a[NR]=$0} END{for(i=0;i<NR;i++) print a[(i+r)%NR+1]}')
     cnt=0
     for n in $ins; do
-      [ -f "$adf" ] && grep -qx -- "$n" "$adf" && continue
+      printf '%s' "$js" | jq -e --argjson n "$n" '.[] | select(.number == $n) | any(.labels[]; .name == "adopted-blocker")' >/dev/null 2>&1 && continue
       cnt=$((cnt + 1)); [ "$cnt" -le 30 ] || break
       # body: a line that STARTS with the keyword, then only optional ':'/spaces, then a bare #N (first one only)
       deps=$(printf '%s' "$js" | jq -r --argjson n "$n" '.[] | select(.number == $n) | .body // "" | split("\n")[]
-        | capture("^\\s*(?:[-*]\\s+)?[*_]*(?:depends on|merge-gate|blocked by)[*_]*\\s*:?\\s*[*_]*#(?<n>[0-9]+)"; "i") | .n' 2>/dev/null) || continue
+        | capture("^\\s*(?:[-*]\\s+)?(?:\\[[ xX]\\]\\s+)?[*_]*(?:depends on|merge-gate|blocked by)[*_\\s:]*#(?<n>[0-9]+)"; "i") | .n' 2>/dev/null) || continue
       # any read failure: nothing is adopted for this ticket (fail closed)
       cm=$(_goal_get_all "repos/$crepo/issues/$n/comments?per_page=100" 2>/dev/null) || continue
       # latest [delivery-lead]/[deployer] BLOCKED comment: only its `Blocked on:` line is read, bare #N refs only (no owner/repo#N)
       blk=$(printf '%s' "$cm" | jq -r '[.[] | select((.body // "") | split("\n")[0] | test("^\\*\\*\\[(delivery-lead|deployer)\\] BLOCKED"))] | last | .body // ""
-        | split("\n")[] | select(test("^Blocked on:")) | [scan("(?<![A-Za-z0-9_./-])#([0-9]+)") | .[0]] | .[]' 2>/dev/null) || continue
+        | split("\n")[] | select(test("^Blocked on:"))
+        | capture("(?:dependency|merge-gate)(?:dependency|merge-gate|[\\s:\\-\u2014\u2013])*#(?<n>[0-9]+)"; "i") | .n' 2>/dev/null) || continue
       for d in $deps $blk; do
         [ "$d" != "$n" ] || continue
         printf '%s\n' "$cand" | grep -qx -- "$d" || continue
         case "$seen" in *" $repo#$d "*) continue ;; esac
         [ "$adopted" -lt "$max" ] || break 2
-        if _goal_issue_label_add "$crepo" "$d" "$fb"; then
+        _goal_ensure_label_in "$crepo" adopted-blocker
+        if gh api -X POST "repos/$crepo/issues/$d/labels" -f "labels[]=$fb" -f "labels[]=adopted-blocker" >/dev/null 2>&1; then
           seen="$seen$repo#$d "; adopted=$((adopted + 1))
-          mkdir -p "${adf%/*}" 2>/dev/null; echo "$d" >> "$adf" 2>/dev/null
           if type slog >/dev/null 2>&1; then slog "[adopt] #$d adopted into the feedback goal: blocker of #$n"; else echo "[adopt] #$d adopted into the feedback goal: blocker of #$n" >&2; fi
         fi
       done

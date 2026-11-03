@@ -45,7 +45,7 @@ test_dga_adopts_via_blocked_comment_and_merge_gate() {
   dga_ticket 312 "no dependency line" user-feedback
   dga_ticket 320 "gate" agent-go
   dga_ticket 321 "named in a BLOCKED comment" agent-go
-  dg_comment $A 312 $'**[delivery-lead] BLOCKED**\nBlocked on: dependency - waiting for #321 to merge'
+  dg_comment $A 312 $'**[delivery-lead] BLOCKED**\nBlocked on: dependency — #321 waiting to merge'
   dga_run
   dga_has 320 user-feedback || { fail "320 (merge-gate) should be adopted"; rc=1; }
   dga_has 321 user-feedback || { fail "321 (BLOCKED comment) should be adopted"; rc=1; }
@@ -158,8 +158,8 @@ test_dga_blocked_comment_reads_only_blocked_on_line_with_slug_guard() {
   dga_ticket 350 "x" agent-go
   dga_ticket 351 "x" agent-go
   dga_ticket 352 "x" agent-go
-  dg_comment $A 311 $'**[deployer] BLOCKED**\nBlocked on: dependency - waiting for Benjis-Plants/other#350\nThis is unrelated to #351'
-  dg_comment $A 312 $'**[delivery-lead] BLOCKED**\nBlocked on: dependency - waiting for #352\nsee also #351'
+  dg_comment $A 311 $'**[deployer] BLOCKED**\nBlocked on: dependency — Benjis-Plants/other#350\nThis is unrelated to #351'
+  dg_comment $A 312 $'**[delivery-lead] BLOCKED**\nBlocked on: dependency — #352 waiting\nsee also #351'
   dga_run
   dga_has 350 user-feedback && { fail "350 (cross-repo slug) adopted"; rc=1; }
   dga_has 351 user-feedback && { fail "351 (outside the Blocked on line) adopted"; rc=1; }
@@ -192,6 +192,46 @@ test_dga_comment_read_failure_adopts_nothing_for_that_ticket() {
   dg_teardown; return $rc
 }
 
+test_dga_body_markdown_forms_adopt() {
+  dga_setup
+  local rc=0
+  dga_ticket 311 '**Depends on:** #360' user-feedback
+  dga_ticket 312 '- [ ] Depends on #361' user-feedback
+  dga_ticket 313 '* [x] **merge-gate**: #362' user-feedback
+  local n; for n in 360 361 362; do dga_ticket $n "blocker" agent-go; done
+  dga_run
+  for n in 360 361 362; do dga_has $n user-feedback || { fail "$n (markdown form) not adopted"; rc=1; }; done
+  dga_has 360 adopted-blocker || { fail "adopted-blocker marker label missing"; rc=1; }
+  dg_teardown; return $rc
+}
+
+test_dga_blocked_on_line_probes() {
+  dga_setup
+  local rc=0 n
+  dga_ticket 311 plain user-feedback; dga_ticket 312 plain user-feedback; dga_ticket 313 plain user-feedback
+  for n in 370 371 372; do dga_ticket $n "candidate" agent-go; done
+  dg_comment $A 311 $'**[deployer] BLOCKED**\nBlocked on: dependency \xe2\x80\x94 none (see #370)'
+  dg_comment $A 312 $'**[deployer] BLOCKED**\nBlocked on: dependency \xe2\x80\x94 owner/repo #371'
+  dg_comment $A 313 $'**[deployer] BLOCKED**\nBlocked on: dependency \xe2\x80\x94 merge-gate dependency #372 (button consistency) is still OPEN'
+  dga_run
+  dga_has 370 user-feedback && { fail "370 (none, see #) adopted"; rc=1; }
+  dga_has 371 user-feedback && { fail "371 (owner/repo #N) adopted"; rc=1; }
+  dga_has 372 user-feedback || { fail "372 (merge-gate dependency #N) not adopted"; rc=1; }
+  assert_eq "$(dga_edits)" "1" "one edit" || rc=1
+  dg_teardown; return $rc
+}
+
+test_dga_adopted_label_blocks_scanning_across_hosts() {
+  dga_setup
+  local rc=0
+  dga_ticket 311 "plain" user-feedback
+  dga_ticket 310 "Depends on #309" user-feedback adopted-blocker   # adopted earlier, possibly by the other host
+  dga_ticket 309 "second level" agent-go
+  dga_run
+  assert_eq "$(dga_edits)" "0" "a ticket carrying adopted-blocker is not scanned" || rc=1
+  dg_teardown; return $rc
+}
+
 run_test test_dga_adopts_qualifying_blocker
 run_test test_dga_adopts_via_blocked_comment_and_merge_gate
 run_test test_dga_no_adoption_without_agent_go
@@ -205,3 +245,6 @@ run_test test_dga_probe_strings_not_adopted
 run_test test_dga_blocked_comment_reads_only_blocked_on_line_with_slug_guard
 run_test test_dga_depth_one_no_chaining
 run_test test_dga_comment_read_failure_adopts_nothing_for_that_ticket
+run_test test_dga_body_markdown_forms_adopt
+run_test test_dga_blocked_on_line_probes
+run_test test_dga_adopted_label_blocks_scanning_across_hosts
