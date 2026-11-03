@@ -8,6 +8,8 @@ source "$(cd "$(dirname "$0")" && pwd)/config.sh"
 source "$(cd "$(dirname "$0")" && pwd)/pipeline-lib.sh"
 source "$(cd "$(dirname "$0")" && pwd)/goal-lib.sh"
 [ "${SCAN_BACKLOG:-0}" = "1" ] || { echo "SCAN_BACKLOG not enabled on this machine"; exit 0; }
+gh_class optional   # gh-budget: the scan is optional work
+gh_tier_allows optional || { echo "gh-quota below GH_QUOTA_OPTIONAL_BELOW: skipping the backlog scan this hour"; exit 0; }
 
 new_issues=()
 seen=" "
