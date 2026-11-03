@@ -725,6 +725,22 @@ PY
 # #178 end
 # --- Main tick ---
 
+# GitHub API budget (gh-budget.sh): one quota line per tick (times in Europe/Madrid), a fresh read cache per tick, and the tier flags
+# the steps below consult. Core (REST) at 0 = nothing can be read or written until the reset, so the tick ends quietly instead of
+# failing hundreds of calls (2026-10-29..11-03: 550-2753 "API rate limit exceeded" lines a day).
+gh_cache_clear
+if [ "$GH_BUDGET_ENABLED" = 1 ]; then
+  slog "$(gh_quota_line)"
+  if ! gh_tier_allows essential; then
+    slog "[gh-quota] REST quota exhausted — no GitHub work this tick, resuming after the reset"
+    exit 0
+  fi
+fi
+T_NORMAL=1; gh_tier_allows normal || T_NORMAL=0       # below GH_QUOTA_ESSENTIAL_BELOW: only restarts and already-queued launches
+T_OPT=1; gh_tier_allows optional || T_OPT=0           # below GH_QUOTA_OPTIONAL_BELOW: no optional work
+[ "$T_NORMAL" = 1 ] && [ "$T_OPT" = 1 ] || slog "[gh-quota] reduced tier: normal=$T_NORMAL optional=$T_OPT"
+gh_class essential
+
 launched=0
 
 # 0. One-time legacy migration (#318): orch-<N>.* sets whose .repo names a known checkout move to orch-<run_key>.*
@@ -736,8 +752,8 @@ WORKTREE_SWEEP_INTERVAL_SECS=1800
 _wts_last="$PIPE/worktree-sweep.last"
 _wts_prev=$(cat "$_wts_last" 2>/dev/null) || _wts_prev=
 case "$_wts_prev" in ''|*[!0-9]*) _wts_prev=0 ;; esac   # missing/empty/corrupt stamp: treat as never run, don't let arithmetic choke on it
-if [ $(( $(date +%s) - _wts_prev )) -ge "$WORKTREE_SWEEP_INTERVAL_SECS" ]; then
-  sweep_stale_worktrees
+if [ "$T_OPT" = 1 ] && [ $(( $(date +%s) - _wts_prev )) -ge "$WORKTREE_SWEEP_INTERVAL_SECS" ]; then
+  GH_CLASS=optional sweep_stale_worktrees
   date +%s > "$_wts_last"
 fi
 unset _wts_prev
@@ -1341,6 +1357,8 @@ except Exception:
   fi
 fi
 
+gh_class normal   # steps 3-5 and the goal step: not run below GH_QUOTA_ESSENTIAL_BELOW
+if [ "$T_NORMAL" = 1 ]; then
 # 3. Label lifecycle — agent-in-progress means "an orchestrator owns this somewhere"; drop it once this machine
 #    finished (done), parked (held: gate or escalation), stopped, or dead with no pending relaunch.
 for f in "$PIPE"/orch-*.pid; do
@@ -1579,12 +1597,12 @@ promote_deferred() {
         | [.number, $d[0].ref, ($gs | join(" "))] | @tsv' 2>/dev/null)
   done
 }
-if [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then promote_deferred; fi
+if [ "${#DISPATCH_REPOS[@]}" -gt 0 ] && gh_tick_due promote-deferred "${GH_PROMOTE_DEFERRED_SECS:-300}"; then promote_deferred; fi
 
 # 4. Label reconciliation — catch orphaned agent-in-progress labels that have no local state at all
 #    (e.g. /tmp was cleared, or a run from another machine died). Only clear if no marker movement for 30+ min.
 STALE_LABEL_SECS=1800
-if [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
+if [ "${#DISPATCH_REPOS[@]}" -gt 0 ] && gh_tick_due label-reconcile "${GH_LABEL_RECONCILE_SECS:-600}"; then   # gh-budget: 30-min staleness window, so every 10 min is enough
   for entry in "${DISPATCH_REPOS[@]}"; do
     owner_repo="${entry%%:*}"; local_path="${entry#*:}"; local_path="${local_path/#\~/$HOME}"
     [ -d "$local_path/.git" ] || continue
@@ -1701,6 +1719,8 @@ if [ "$launched" -eq 0 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
   fi
 fi
 
+fi   # T_NORMAL (gh-budget)
+
 # 6. Slack reply bridge — handled by openclaw's native Slack event routing (agent "pipeline-bridge"
 #    in ~/.openclaw/agents/, binding in openclaw.json for #engineering, requireMention: true), not
 #    by this supervisor tick. The relay's own logic is two tracked files in this repo:
@@ -1708,10 +1728,11 @@ fi
 #    skills/orchestrate/pipeline-bridge-prompt.md (the relay's instructions — manually installed to
 #    ~/.openclaw/agents/pipeline-bridge/agent/IDENTITY.md, outside this repo; see README.md).
 
+gh_class optional
 # 7. Status reconcile (issue #51) — refresh every listed ticket from GitHub (closed -> Completed, latest marker).
 #    Throttled inside the script (600 s/host); backgrounded with fd 9 closed like report_status_async, so a slow
 #    or failing pass never delays or fails the tick.
-( "$HERE/reconcile-status.sh" >/dev/null 2>&1 & ) 9>&- || true
+[ "$T_OPT" = 1 ] && { ( "$HERE/reconcile-status.sh" >/dev/null 2>&1 & ) 9>&- || true; }
 
 # 8. PM Slack DM poll (issue #117) — copy JP's DM replies onto the tickets the project-manager asked about.
 #    No-op unless PM_SLACK_BOT_TOKEN is set on this host; backgrounded with fd 9 closed so it never delays or fails the tick.
@@ -1720,6 +1741,6 @@ fi
 # 9. Stale-work digest (#491) — stale agent-go, stuck ci_red/ci_pending/merge_conflict holds, disk pressure.
 #    Read-only observability, logged (never acted on); throttled internally to once per 600 s. Runs last, after
 #    dispatch, so it never delays or blocks a launch decision made earlier in this tick.
-stale_work_digest || true
+[ "$T_OPT" = 1 ] && { stale_work_digest || true; }
 
 exec 9>&- 2>/dev/null

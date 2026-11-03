@@ -118,3 +118,13 @@ for _nd in "/opt/homebrew/opt/node@$PIPELINE_NODE_MAJOR/bin" "/usr/local/opt/nod
   [ -x "$_nd/node" ] && { export PATH="$_nd:$PATH"; break; }
 done
 unset _nd
+
+# GitHub API budget guard (gh-budget.sh): call log, quota tiers, short read cache. Thresholds are REST/GraphQL "remaining" calls.
+GH_QUOTA_OPTIONAL_BELOW="${GH_QUOTA_OPTIONAL_BELOW:-1500}"   # below this, optional work (status push, stale digest, scan-backlog, held-goal evaluation, worktree sweep, status reconcile) is skipped
+GH_QUOTA_ESSENTIAL_BELOW="${GH_QUOTA_ESSENTIAL_BELOW:-300}"  # below this, only essential work (restarting live runs, draining already-queued launches) runs; 0 = no gh call until the reset
+GH_QUOTA_TTL_SECS="${GH_QUOTA_TTL_SECS:-60}"                 # `gh api rate_limit` is read at most this often (cached in $PIPE/gh-quota)
+GH_CACHE_TTL_SECS="${GH_CACHE_TTL_SECS:-60}"                 # issue/comment/milestone/registry reads are reused this long (0 = off); flushed by any write and at each supervisor tick
+if [ -f "$(dirname "${BASH_SOURCE[0]}")/gh-budget.sh" ]; then . "$(dirname "${BASH_SOURCE[0]}")/gh-budget.sh"
+else   # config.sh copied without its siblings (a test fixture): the budget guard is simply absent
+  GH_BUDGET_ENABLED=0; gh_class() { :; }; gh_tier_allows() { return 0; }; gh_tick_due() { return 0; }; gh_cache_clear() { :; }
+fi

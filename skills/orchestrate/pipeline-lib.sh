@@ -458,7 +458,7 @@ claim_winner() {
   [ -z "${3:-}" ] || repo_arg="--repo $3"
   cutoff=$(python3 -c "import datetime,sys; print((datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(seconds=int(sys.argv[1]))).strftime('%Y-%m-%dT%H:%M:%SZ'))" "${CLAIM_WINDOW_SECS:-600}") \
     || { pipeline_event claim_lookup_failed --argjson issue "${issue:-0}" --arg stage cutoff; claim_alert "$issue" cutoff; return 1; }
-  out=$(cd "$path" && gh issue view "$issue" $repo_arg --json comments \
+  out=$(cd "$path" && GH_NOCACHE=1 gh issue view "$issue" $repo_arg --json comments \
     --jq "[.comments[] | select(.body | startswith(\"**[supervisor] NOTE** claim: \")) | select(.createdAt > \"$cutoff\")] | sort_by(.createdAt) | first | .body // \"\"" 2>/dev/null) \
     || { pipeline_event claim_lookup_failed --argjson issue "${issue:-0}" --arg stage gh; claim_alert "$issue" gh; return 1; }
   printf '%s\n' "$out" | awk '{print $4}'
@@ -470,7 +470,7 @@ claim_winner_rest() {
   local cutoff out
   cutoff=$(python3 -c "import datetime,sys; print((datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(seconds=int(sys.argv[1]))).strftime('%Y-%m-%dT%H:%M:%SZ'))" "${CLAIM_WINDOW_SECS:-600}") \
     || { pipeline_event claim_lookup_failed --argjson issue "${2:-0}" --arg stage cutoff; claim_alert "$2" cutoff; return 1; }
-  out=$(set -o pipefail; gh api "repos/$1/issues/$2/comments?per_page=100" --paginate 2>/dev/null | jq -rs --arg c "$cutoff" \
+  out=$(set -o pipefail; GH_NOCACHE=1 gh api "repos/$1/issues/$2/comments?per_page=100" --paginate 2>/dev/null | jq -rs --arg c "$cutoff" \
     '[.[][] | select(.body | startswith("**[supervisor] NOTE** claim: ")) | select((.created_at // .createdAt) > $c)] | sort_by(.created_at // .createdAt) | first | .body // ""') \
     || { pipeline_event claim_lookup_failed --argjson issue "${2:-0}" --arg stage gh; claim_alert "$2" gh; return 1; }
   printf '%s\n' "$out" | awk '{print $4}'

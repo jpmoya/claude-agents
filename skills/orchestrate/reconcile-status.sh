@@ -33,6 +33,8 @@ FORCE=0
 
 command -v jq >/dev/null 2>&1 && command -v gh >/dev/null 2>&1 || exit 0
 mkdir -p "$PIPE" "$LOGDIR" 2>/dev/null
+gh_class optional   # gh-budget: optional work
+gh_tier_allows optional || exit 0
 
 now=$(date +%s)
 if [ "$FORCE" -eq 0 ]; then
