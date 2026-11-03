@@ -433,7 +433,7 @@ goal_brief() {
     printf 'Cross-repo goal: tickets carry the label "%s" in %s\n' "$(printf '%s' "$g" | jq -r '.block.label')" "$(printf '%s' "$g" | jq -r '(.block.repos // []) | join(", ")')"
   fi
   if [ "$(goal_parse "$spec" | cut -f2)" = fb ]; then
-    printf 'Standing staff-feedback goal: scope is the open tickets of %s labelled %s that no other live goal covers (that goal'"'"'s lead owns the others) and no stopped goal holds (JP stopped that work: leave those tickets alone until he releases them). The scope is re-read while you run: if another goal takes a ticket over, the supervisor ends this cycle and the next brief leaves it out. Your job is to clear their TECHNICAL blocks yourself (full disk, failed or flaky CI, a merged change whose deploy is unconfirmed, a malformed or missing delegated decision: post a valid DECISION with its Resolves line, then relaunch) and to surface to JP only product/business calls and JP-only items. Never add agent-go or change the tickets'"'"' labels, milestones or routing: intake and the product-manager own those, and the supervisor already dispatches these tickets.\n' "$repo" "${LABEL_FEEDBACK:-user-feedback}"
+    printf 'Standing staff-feedback goal: scope is the open tickets of %s labelled %s that no other live goal covers (for a ticket another live goal covers, that other lead owns it) and no stopped goal holds (JP stopped that work: leave those tickets alone until he releases them). The scope is re-read while you run: if another goal takes a ticket over, the supervisor ends this cycle and the next brief leaves it out. Your job is to clear their TECHNICAL blocks yourself (full disk, failed or flaky CI, a merged change whose deploy is unconfirmed, a malformed or missing delegated decision: post a valid DECISION with its Resolves line, then relaunch) and to surface to JP only product/business calls and JP-only items. Never add agent-go or change the tickets'"'"' labels, milestones or routing: intake and the product-manager own those, and the supervisor already dispatches these tickets. One exception: when an in-scope ticket is blocked on an open ticket that no live goal covers and no stopped goal holds, that ticket is yours only if it already carries agent-go; add the user-feedback label to it (no other change) and handle its BLOCKEDs like any in-scope ticket. A blocker still awaiting approval goes to JP through the existing needs-JP request. Never park the in-scope ticket needs_jp to ask JP to queue a blocker.\n' "$repo" "${LABEL_FEEDBACK:-user-feedback}"
   fi
   proj=$(printf '%s' "$g" | jq -r '.block.project? // empty | select(type == "object") | "\(.url) (owner \(.owner), number \(.number))"' 2>/dev/null)
   if [ -n "$proj" ]; then
@@ -1707,6 +1707,72 @@ goal_queue_step() {
     rm -f "$PIPE"/goal-"$id".*
   fi
   return 0
+}
+
+# goal_fb_adopt_blockers (#566, code path) — the supervisor, not the lead's LLM, adopts a goal-less blocker into the staff-feedback
+# goal: for each repo with a live owner/repo:feedback goal, an open ticket that (a) already carries agent-go, (b) lacks user-feedback and
+# is covered by no other live goal and no stopped hold (_goal_fb_covered), (c) carries no agent-stop/agent-hold/jp-hold/on-hold label, and
+# (d) blocks an open in-scope ticket gets the user-feedback label (nothing else changes). "Blocks" = the in-scope ticket's body has a
+# `Depends on` / `merge-gate` / `blocked by` line whose FIRST #N is that ticket (a PR number or another repo's ref never matches, #573),
+# or its latest `[delivery-lead]`/`[deployer]` BLOCKED comment names it. Idempotent (a labelled ticket is in scope, so skipped); at most
+# GOAL_ADOPT_MAX (5) adoptions per call; never Business-Intelligence; fails closed (no adoption) on any unreadable read. One issue list
+# per repo plus one comment read per open in-scope ticket (max 30), all through the gh-budget wrapper (class normal). Prints the
+# adoption count. The caller throttles it (supervisor: every 5 min).
+_goal_ensure_label_in() { gh api -X POST "repos/$1/labels" -f "name=$2" >/dev/null 2>&1 || true; }   # <repo slug> <label>: create when missing (422 already exists is fine)
+goal_fb_adopt_blockers() {
+  local reg specs spec repo crepo cov js ins n cand body cm deps d blk adopted=0 max="${GOAL_ADOPT_MAX:-5}" kind seen=" " cnt
+  local fb="${LABEL_FEEDBACK:-user-feedback}"
+  reg=$(_goal_registry_json) || { echo 0; return 0; }
+  specs=$(printf '%s' "$reg" | jq -r '.[] | select(.st == "queued" or .st == "active" or .st == "held" or .st == "waiting_jp") | .spec // empty' 2>/dev/null | sort -u)
+  for spec in $specs; do
+    [ "$adopted" -lt "$max" ] || break
+    IFS=$'\t' read -r repo kind _ <<< "$(goal_parse "$spec" 2>/dev/null || true)"
+    [ "$kind" = fb ] || continue
+    _goal_is_bi "$repo" && continue
+    case "$seen" in *" $repo "*) continue ;; esac; seen="$seen$repo "
+    crepo=$(_goal_rest_slug "$repo")
+    cov=$(_goal_fb_covered "$repo") || continue
+    js=$(_goal_get_all "repos/$crepo/issues?state=open&per_page=100") || continue
+    cov=$(printf '%s\n' "$cov" | jq -Rsc 'split("\n") | map(select(. != "") | tonumber)')
+    ins=$(printf '%s' "$js" | jq -r --arg fb "$fb" --argjson cov "$cov" '.[] | select(has("pull_request") | not)
+      | select(.number as $n | any($cov[]; . == $n) | not) | select(any(.labels[]; .name == $fb)) | .number' 2>/dev/null) || continue
+    [ -n "$ins" ] || continue
+    cand=$(printf '%s' "$js" | jq -r --arg fb "$fb" --argjson cov "$cov" '.[] | select(has("pull_request") | not)
+      | select(.number as $n | any($cov[]; . == $n) | not)
+      | ([.labels[].name]) as $l | select(($l | index("agent-go")) and ($l | index($fb) | not))
+      | select(($l | map(select(. == "agent-stop" or . == "agent-hold" or . == "jp-hold" or . == "on-hold")) | length) == 0) | .number' 2>/dev/null) || continue
+    [ -n "$cand" ] || continue
+    # depth 1 only (#566): a ticket this function adopted carries the adopted-blocker label (set in the same call as user-feedback, so it
+    # holds across hosts) and is never scanned for blockers of its own, so one false match cannot chain.
+    # at most 30 tickets read per pass; the window rotates every 5 minutes so the same first 30 are not always the ones read
+    ins=$(printf '%s\n' "$ins" | awk -v r="$(( $(date +%s) / 300 ))" '{a[NR]=$0} END{for(i=0;i<NR;i++) print a[(i+r)%NR+1]}')
+    cnt=0
+    for n in $ins; do
+      printf '%s' "$js" | jq -e --argjson n "$n" '.[] | select(.number == $n) | any(.labels[]; .name == "adopted-blocker")' >/dev/null 2>&1 && continue
+      cnt=$((cnt + 1)); [ "$cnt" -le 30 ] || break
+      # body: a line that STARTS with the keyword, then only optional ':'/spaces, then a bare #N (first one only)
+      deps=$(printf '%s' "$js" | jq -r --argjson n "$n" '.[] | select(.number == $n) | .body // "" | split("\n")[]
+        | capture("^\\s*(?:[-*]\\s+)?(?:\\[[ xX]\\]\\s+)?[*_]*(?:depends on|merge-gate|blocked by)[*_\\s:]*#(?<n>[0-9]+)"; "i") | .n' 2>/dev/null) || continue
+      # any read failure: nothing is adopted for this ticket (fail closed)
+      cm=$(_goal_get_all "repos/$crepo/issues/$n/comments?per_page=100" 2>/dev/null) || continue
+      # latest [delivery-lead]/[deployer] BLOCKED comment: only its `Blocked on:` line is read, bare #N refs only (no owner/repo#N)
+      blk=$(printf '%s' "$cm" | jq -r '[.[] | select((.body // "") | split("\n")[0] | test("^\\*\\*\\[(delivery-lead|deployer)\\] BLOCKED"))] | last | .body // ""
+        | split("\n")[] | select(test("^Blocked on:"))
+        | capture("(?:dependency|merge-gate)(?:dependency|merge-gate|[\\s:\\-\u2014\u2013])*#(?<n>[0-9]+)"; "i") | .n' 2>/dev/null) || continue
+      for d in $deps $blk; do
+        [ "$d" != "$n" ] || continue
+        printf '%s\n' "$cand" | grep -qx -- "$d" || continue
+        case "$seen" in *" $repo#$d "*) continue ;; esac
+        [ "$adopted" -lt "$max" ] || break 2
+        _goal_ensure_label_in "$crepo" adopted-blocker
+        if gh api -X POST "repos/$crepo/issues/$d/labels" -f "labels[]=$fb" -f "labels[]=adopted-blocker" >/dev/null 2>&1; then
+          seen="$seen$repo#$d "; adopted=$((adopted + 1))
+          if type slog >/dev/null 2>&1; then slog "[adopt] #$d adopted into the feedback goal: blocker of #$n"; else echo "[adopt] #$d adopted into the feedback goal: blocker of #$n" >&2; fi
+        fi
+      done
+    done
+  done
+  echo "$adopted"
 }
 
 goal_step() {

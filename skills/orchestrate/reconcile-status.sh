@@ -235,8 +235,13 @@ RCFACTS
           # Issue #250: a BLOCKED whose line 2 names a machine-clearable class is not a JP gate.
           bclass=$(printf '%s' "$line2" | sed -n 's/^Blocked on: \([a-z_][a-z_]*\)\( .*\)\{0,1\}$/\1/p')
           case "|$(parkable_classes)|" in *"|$bclass|"*) ;; *) bclass="" ;; esac
+          # #566: the supervisor's #484 hand-off ("finished red (real failure)") means nothing will retry it: Needs JP.
+          if [ -n "$bclass" ] && grep -qF 'finished red (real failure)' "$PIPE/orch-$rk.alert" 2>/dev/null; then
+            bclass=""; needs="Decision needed"
+          fi
           if [ -n "$bclass" ]; then
             reason="auto_retry"
+          elif [ -n "$needs" ]; then :
           elif printf '%s' "$line2" | grep -Eqi 'credential|token|secret|api key|password|access'; then
             needs="Missing credential"
           else
