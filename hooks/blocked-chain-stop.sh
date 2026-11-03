@@ -12,7 +12,7 @@ LOGD="$HOME/logs/pipeline"; LOG="$LOGD/blocked-chain-stop.log"; STATE="$LOGD/blo
 PIPE="${PIPE:-$HOME/.claude/pipeline/state}"; EVENTS="$LOGD/events.jsonl"
 RUN_RE="${BCS_RUN_RE:-(benjis-ops-tool|benjis-sales-tool|scheduler|benjis-quoting-tool)-[0-9]+$}"
 SCOPE_RE="${BCS_SCOPE_RE:-(benjis-ops-tool|benjis-sales-tool|benjis-quoting-tool|scheduler|claude-agents)(\.git)?$}"
-JPONLY_RE='needs_jp|AWAITING GO|MOCKUPS? PENDING|mockup approv|prod(uction)? go|production (deploy|release|migration|database)|spend(ing)? money|third-party system|system of record|delet(e|ing) (the )?(data|prod)|external communication|private artefact|who gets access|infra(structure)? go|JP-only|JP only'
+JPONLY_RE='prod(uction)?[ -]?(deploy|release|migration|database)|deploy(ing)? to prod|merge (it |this )?to main|release bot|risky.list|safe route|destructive|JP.{0,12}(go|approv|decision|confirm)|needs_jp|AWAITING GO|MOCKUPS? PENDING|mockup approv|prod(uction)? go|production (deploy|release|migration|database)|spend(ing)? money|third-party system|system of record|delet(e|ing) (the )?(data|prod)|external communication|private artefact|who gets access|infra(structure)? go|JP-only|JP only'
 BLOCK_RE='BLOCKED|delivery-lead.{0,25}decision'
 NOW="${BCS_NOW:-$(date +%s)}"
 mkdir -p "$LOGD" 2>/dev/null
@@ -29,17 +29,20 @@ main() {
     URL=$(git -C "$CWD" config --get remote.origin.url 2>/dev/null)
     if [ -n "$URL" ] && ! printf '%s' "$URL" | grep -Eq "$SCOPE_RE"; then return 0; fi
   fi
-  # A status / stop request in the last user message may always end the turn.
-  if [ -f "$T" ]; then
-    L1=$(jq -rs '[.[]|select(.type=="user")|.message.content|if type=="string" then . else (map(select(.type=="text")|.text)|join(" ")) end|select(length>0)]|last // ""' "$T" 2>/dev/null)
-    if printf '%s' "$L1" | grep -Eqi '(^|[^a-z])(status|update me|where (is|are)|what.?s up|how.?s it going|progress|stop|cancel|abort|pause|halt)([^a-z]|$)'; then return 0; fi
-  fi
+  # Claude Code sets stop_hook_active when the session is already continuing because of a Stop hook: never trap it twice.
+  [ "$(printf '%s' "$IN" | jq -r '.stop_hook_active // false' 2>/dev/null)" = "true" ] && return 0
   [ -s "$EVENTS" ] || return 0
   # Manual run_launch rows within 3 h, ascending by time.
   rows=$(tail -n 4000 "$EVENTS" | jq -R -r --argjson now "$NOW" \
     'fromjson? | select(.event=="run_launch" and .reason=="manual") | (.ts|fromdateiso8601) as $t | select($now-$t < 10800)
      | [$t, .repo, .issue] | @tsv' 2>/dev/null | sort -k1,1n) || return 3
   [ -n "$rows" ] || return 0
+  # An explicit status question in the last user message may end the turn. Read only the transcript tail (fast), and only
+  # after the cheap events check above.
+  if [ -f "$T" ]; then
+    L1=$(tail -n 60 "$T" 2>/dev/null | jq -R -r 'fromjson? | select(.type=="user") | .message.content | if type=="string" then . else (map(select(.type=="text")|.text)|join(" ")) end | select(length>0)' 2>/dev/null | tail -n 1)
+    if printf '%s' "$L1" | grep -Eqi '(^|[^a-z])(status|update me|where (is|are)|what.?s up|how.?s it going)([^a-z]|$)'; then return 0; fi
+  fi
   while IFS="$(printf '\t')" read -r epoch repo issue; do
     [ -n "$issue" ] || continue
     key="${repo//\//_}-$issue"

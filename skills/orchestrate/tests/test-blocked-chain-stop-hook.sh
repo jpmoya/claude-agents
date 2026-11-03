@@ -128,6 +128,26 @@ test_bcs_garbage_input_fails_open_and_logs() {
   bcs_cleanup
 }
 
+
+test_bcs_prod_and_risky_list_blocks_are_jp_only() {
+  local txt
+  for txt in "**[deployer] BLOCKED** deploy to prod with a destructive migration" \
+             "**[deployer] BLOCKED** merge to main requires JP approval of the risky list" \
+             "**[deployer] BLOCKED** needs JP go before production"; do
+    bcs_setup 3600 "$txt"
+    bcs_run; local rc=$?
+    assert_eq "$rc" "0" "JP-only gate must not trap the session: $txt" || { bcs_cleanup; return 1; }
+    bcs_cleanup
+  done
+}
+
+test_bcs_stop_hook_active_never_traps_twice() {
+  bcs_setup 3600 "**[orchestrator] BLOCKED** needs a delivery-lead decision on the failing check"
+  bcs_run '{"stop_hook_active":true}'; local rc=$?
+  assert_eq "$rc" "0" "already continuing because of a Stop hook" || { bcs_cleanup; return 1; }
+  bcs_cleanup
+}
+
 test_bcs_settings_registers_hook() {
   assert_contains "$(cat "$ROOT_BCS/settings.json")" 'hooks/blocked-chain-stop.sh' "registered as a Stop hook" || return 1
   bash -n "$HOOK_BCS" || return 1
@@ -146,3 +166,5 @@ run_test test_bcs_status_request_exits_0
 run_test test_bcs_unrelated_cwd_repo_exits_0
 run_test test_bcs_garbage_input_fails_open_and_logs
 run_test test_bcs_settings_registers_hook
+run_test test_bcs_prod_and_risky_list_blocks_are_jp_only
+run_test test_bcs_stop_hook_active_never_traps_twice
