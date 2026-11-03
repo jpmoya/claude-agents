@@ -1,27 +1,13 @@
 # Issue #566 (code path) — goal_fb_adopt_blockers: the SUPERVISOR adds user-feedback to a goal-less, already-agent-go blocker of an
 # in-scope feedback ticket. No LLM. Sources the dg_*/dgf_* sandbox of test-goal-deliver.sh / test-goal-feedback.sh (sorted earlier).
 # Fixture (project-a): feedback goal active. 301 = in-scope feedback ticket (open, user-feedback). 303 = in-scope too.
-# Blocker candidates are created per test: 310 (agent-go, no user-feedback), etc. Fake gh = the REST fake plus an `issue edit`
-# shim that turns --add-label into the REST label call (so the real code path `gh issue edit` runs).
+# Blocker candidates are created per test: 310 (agent-go, no user-feedback), etc. Fake gh = the REST fake; the code adds
+# the label with gh api POST .../labels (counted in writes.log).
 
 A=example-owner_project-a
 
 dga_setup() {
   dgf_setup
-  mv "$DG_BIN/gh" "$DG_BIN/gh.real"
-  cat > "$DG_BIN/gh" <<'EOF'
-#!/bin/bash
-HERE=$(cd "$(dirname "$0")" && pwd)
-if [ "$1" = issue ] && [ "$2" = edit ]; then
-  n=$3; shift 3; repo=""; lab=""
-  while [ $# -gt 0 ]; do case "$1" in --repo) repo=$2; shift ;; --add-label) lab=$2; shift ;; esac; shift; done
-  printf 'issue-edit %s %s %s\n' "$repo" "$n" "$lab" >> "$HERE/edits.log"
-  exec "$HERE/gh.real" api -X POST "repos/$repo/issues/$n/labels" -f "labels[]=$lab"
-fi
-exec "$HERE/gh.real" "$@"
-EOF
-  chmod +x "$DG_BIN/gh"
-  : > "$DG_BIN/edits.log"
   DG_GOAL_ID=$DGF_ID; dg_goal 501 "$DGF_SPEC" host-a active
 }
 
@@ -36,7 +22,7 @@ dga_ticket() {
 
 dga_run() { dg_lib "goal_fb_adopt_blockers"; }
 dga_has() { dg_has_label "$DG_ST/issues/$A/$1.json" "$2"; }
-dga_edits() { wc -l < "$DG_BIN/edits.log" | tr -d ' '; }
+dga_edits() { grep -c "^POST repos/.*/issues/[0-9]*/labels" "$DG_BIN/writes.log" | tr -d ' '; }
 
 test_dga_adopts_qualifying_blocker() {
   dga_setup
@@ -59,7 +45,7 @@ test_dga_adopts_via_blocked_comment_and_merge_gate() {
   dga_ticket 312 "no dependency line" user-feedback
   dga_ticket 320 "gate" agent-go
   dga_ticket 321 "named in a BLOCKED comment" agent-go
-  dg_comment $A 312 $'**[delivery-lead] BLOCKED**\nwaiting for #321 to merge'
+  dg_comment $A 312 $'**[delivery-lead] BLOCKED**\nBlocked on: dependency - waiting for #321 to merge'
   dga_run
   dga_has 320 user-feedback || { fail "320 (merge-gate) should be adopted"; rc=1; }
   dga_has 321 user-feedback || { fail "321 (BLOCKED comment) should be adopted"; rc=1; }
@@ -150,6 +136,62 @@ test_dga_skips_business_intelligence_repo() {
   assert_contains "$(cat "$DG_SKILL/SKILL.md")" "goal_fb_adopt_blockers" "SKILL.md names it" || return 1
 }
 
+test_dga_probe_strings_not_adopted() {
+  dga_setup
+  local rc=0 n
+  dga_ticket 311 "Depends on nothing. Related: #340" user-feedback
+  dga_ticket 312 "Blocked by: none (see #341)" user-feedback
+  dga_ticket 313 "Depends on owner/repo #342" user-feedback
+  dga_ticket 314 "Depends on PR #343" user-feedback
+  dga_ticket 315 "Depends on Benjis-Plants/other#344" user-feedback
+  for n in 340 341 342 343 344; do dga_ticket $n "candidate" agent-go; done
+  dga_run
+  assert_eq "$(dga_edits)" "0" "prose / cross-repo / PR-prefixed refs adopt nothing" || rc=1
+  dg_teardown; return $rc
+}
+
+test_dga_blocked_comment_reads_only_blocked_on_line_with_slug_guard() {
+  dga_setup
+  local rc=0
+  dga_ticket 311 "plain" user-feedback
+  dga_ticket 312 "plain" user-feedback
+  dga_ticket 350 "x" agent-go
+  dga_ticket 351 "x" agent-go
+  dga_ticket 352 "x" agent-go
+  dg_comment $A 311 $'**[deployer] BLOCKED**\nBlocked on: dependency - waiting for Benjis-Plants/other#350\nThis is unrelated to #351'
+  dg_comment $A 312 $'**[delivery-lead] BLOCKED**\nBlocked on: dependency - waiting for #352\nsee also #351'
+  dga_run
+  dga_has 350 user-feedback && { fail "350 (cross-repo slug) adopted"; rc=1; }
+  dga_has 351 user-feedback && { fail "351 (outside the Blocked on line) adopted"; rc=1; }
+  dga_has 352 user-feedback || { fail "352 (Blocked on line) not adopted"; rc=1; }
+  assert_eq "$(dga_edits)" "1" "one edit" || rc=1
+  dg_teardown; return $rc
+}
+
+test_dga_depth_one_no_chaining() {
+  dga_setup
+  local rc=0
+  dga_ticket 311 "Depends on #310" user-feedback
+  dga_ticket 310 "Depends on #309" agent-go
+  dga_ticket 309 "second level" agent-go
+  dga_run; dga_run
+  dga_has 310 user-feedback || { fail "310 adopted"; rc=1; }
+  dga_has 309 user-feedback && { fail "309 chained from adopted 310"; rc=1; }
+  assert_eq "$(dga_edits)" "1" "only the first level" || rc=1
+  dg_teardown; return $rc
+}
+
+test_dga_comment_read_failure_adopts_nothing_for_that_ticket() {
+  dga_setup
+  local rc=0
+  dga_ticket 311 "Depends on #310" user-feedback
+  dga_ticket 310 "blocker" agent-go
+  printf 'x' > "$DG_ST/comments/$A-311.json"   # not JSON: the comments read fails
+  dga_run
+  assert_eq "$(dga_edits)" "0" "unreadable comments: the body path does not adopt either" || rc=1
+  dg_teardown; return $rc
+}
+
 run_test test_dga_adopts_qualifying_blocker
 run_test test_dga_adopts_via_blocked_comment_and_merge_gate
 run_test test_dga_no_adoption_without_agent_go
@@ -159,3 +201,7 @@ run_test test_dga_idempotent
 run_test test_dga_refuses_non_dependency_and_held_tickets
 run_test test_dga_first_ref_only_and_pr_numbers_ignored
 run_test test_dga_skips_business_intelligence_repo
+run_test test_dga_probe_strings_not_adopted
+run_test test_dga_blocked_comment_reads_only_blocked_on_line_with_slug_guard
+run_test test_dga_depth_one_no_chaining
+run_test test_dga_comment_read_failure_adopts_nothing_for_that_ticket

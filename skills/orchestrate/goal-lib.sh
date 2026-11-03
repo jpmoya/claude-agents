@@ -1741,20 +1741,30 @@ goal_fb_adopt_blockers() {
       | ([.labels[].name]) as $l | select(($l | index("agent-go")) and ($l | index($fb) | not))
       | select(($l | map(select(. == "agent-stop" or . == "agent-hold" or . == "jp-hold" or . == "on-hold")) | length) == 0) | .number' 2>/dev/null) || continue
     [ -n "$cand" ] || continue
+    # depth 1 only (#566): a ticket this function adopted is never scanned for blockers of its own, so one false match cannot chain.
+    adf="${PIPE:-$HOME/.claude/pipeline/state}/adopted-${crepo//\//_}.list"
+    # at most 30 tickets read per pass; the window rotates every 5 minutes so the same first 30 are not always the ones read
+    ins=$(printf '%s\n' "$ins" | awk -v r="$(( $(date +%s) / 300 ))" '{a[NR]=$0} END{for(i=0;i<NR;i++) print a[(i+r)%NR+1]}')
     cnt=0
     for n in $ins; do
+      [ -f "$adf" ] && grep -qx -- "$n" "$adf" && continue
       cnt=$((cnt + 1)); [ "$cnt" -le 30 ] || break
-      body=$(printf '%s' "$js" | jq -r --argjson n "$n" '.[] | select(.number == $n) | .body // ""')
-      deps=$(printf '%s\n' "$body" | jq -Rr 'capture("(?i)(?:depends on|merge-gate|blocked by)(?<pre>[^#]*)#(?<n>[0-9]+)") | select(.pre | test("[A-Za-z0-9_./-]$") | not) | .n' 2>/dev/null)
-      cm=$(_goal_get_all "repos/$crepo/issues/$n/comments?per_page=100" 2>/dev/null) || cm="[]"
-      blk=$(printf '%s' "$cm" | jq -r '[.[] | select((.body // "") | split("\n")[0] | test("^\\*\\*\\[(delivery-lead|deployer)\\] BLOCKED"))] | last | .body // "" | [scan("#([0-9]+)") | .[0]] | .[]' 2>/dev/null) || blk=""
+      # body: a line that STARTS with the keyword, then only optional ':'/spaces, then a bare #N (first one only)
+      deps=$(printf '%s' "$js" | jq -r --argjson n "$n" '.[] | select(.number == $n) | .body // "" | split("\n")[]
+        | capture("^\\s*(?:[-*]\\s+)?[*_]*(?:depends on|merge-gate|blocked by)[*_]*\\s*:?\\s*[*_]*#(?<n>[0-9]+)"; "i") | .n' 2>/dev/null) || continue
+      # any read failure: nothing is adopted for this ticket (fail closed)
+      cm=$(_goal_get_all "repos/$crepo/issues/$n/comments?per_page=100" 2>/dev/null) || continue
+      # latest [delivery-lead]/[deployer] BLOCKED comment: only its `Blocked on:` line is read, bare #N refs only (no owner/repo#N)
+      blk=$(printf '%s' "$cm" | jq -r '[.[] | select((.body // "") | split("\n")[0] | test("^\\*\\*\\[(delivery-lead|deployer)\\] BLOCKED"))] | last | .body // ""
+        | split("\n")[] | select(test("^Blocked on:")) | [scan("(?<![A-Za-z0-9_./-])#([0-9]+)") | .[0]] | .[]' 2>/dev/null) || continue
       for d in $deps $blk; do
         [ "$d" != "$n" ] || continue
         printf '%s\n' "$cand" | grep -qx -- "$d" || continue
         case "$seen" in *" $repo#$d "*) continue ;; esac
         [ "$adopted" -lt "$max" ] || break 2
-        if gh issue edit "$d" --repo "$repo" --add-label "$fb" >/dev/null 2>&1; then
+        if _goal_issue_label_add "$crepo" "$d" "$fb"; then
           seen="$seen$repo#$d "; adopted=$((adopted + 1))
+          mkdir -p "${adf%/*}" 2>/dev/null; echo "$d" >> "$adf" 2>/dev/null
           if type slog >/dev/null 2>&1; then slog "[adopt] #$d adopted into the feedback goal: blocker of #$n"; else echo "[adopt] #$d adopted into the feedback goal: blocker of #$n" >&2; fi
         fi
       done
