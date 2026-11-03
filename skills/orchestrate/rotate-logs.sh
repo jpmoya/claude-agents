@@ -44,7 +44,7 @@ if [ "$ARCHIVE" = 1 ]; then
   exit 0
 fi
 
-for f in "$LOGDIR/supervisor.log" "$LOGDIR/report-status.log"; do
+for f in "$LOGDIR/supervisor.log" "$LOGDIR/report-status.log" "$LOGDIR/gh-calls.log"; do
   [ -f "$f" ] || continue
   [ "$(fsize "$f")" -gt "$ROTATE_MIN_BYTES" ] || continue
   shift_rotations "$f"; mv -f "$f" "$f.1"; drop_overflow "$f"

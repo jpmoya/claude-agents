@@ -29,6 +29,7 @@ export PIPELINE_TEST_CLAIM_SETTLE_SECS=0   # #217: hand launches wait the settle
 # dirty (any worktree or feature branch, or a stale local main). That is host state, not what these suites test: switch it off here.
 # test-code-sync.sh drives code-sync.sh directly and sets its own state.
 export CODE_SYNC_ENABLED=0
+export GH_BUDGET_ENABLED=0   # gh-budget.sh (call log, quota guard, read cache) is off for the suites; test-gh-budget.sh turns it on for itself
 
 . "$HERE/lib/assert.sh"
 . "$HERE/lib/fixture.sh"

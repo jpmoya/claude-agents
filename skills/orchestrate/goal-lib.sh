@@ -1182,7 +1182,7 @@ goal_tick_one() {  # <id>
   if [ -f "$PIPE/goal-$id.stopped" ]; then [ "$alive" -eq 0 ] || goal_kill "$id"; return 0; fi
   if [ -f "$PIPE/goal-$id.held" ]; then
     # #427: a held goal is looked at once per sync: delivered when its scope is done, unheld when the snapshot moved
-    if [ "$GOAL_SYNC_DUE" -eq 1 ]; then
+    if [ "$GOAL_SYNC_DUE" -eq 1 ] && { ! type gh_tier_allows >/dev/null 2>&1 || gh_tier_allows optional; }; then   # gh-budget: below GH_QUOTA_OPTIONAL_BELOW a held goal waits for the next sync
       if goal_eval "$id" "$spec"; then
         if [ "$GE_TOTAL" -gt 0 ] && [ "$GE_DELIVERED" -eq "$GE_TOTAL" ]; then goal_deliver "$id" "$issue" "$spec"; return 0; fi
         # #443: a held goal whose every open ticket waits on JP is "waiting on JP", not "no progress": it stops holding the queue line
