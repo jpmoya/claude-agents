@@ -102,8 +102,15 @@ goal_names_fill() {
 
 # _goal_get_all <rest path> -> one JSON array, all pages (no --jq: it runs per page)
 _goal_get_all() {
-  local raw
-  raw=$(gh api --paginate "$1" 2>/dev/null) || return 1
+  local raw errf rc
+  errf=$(mktemp "${TMPDIR:-/tmp}/goal-gh-err.XXXXXX") || errf=/dev/null
+  raw=$(gh api --paginate "$1" 2>"$errf"); rc=$?
+  if [ "$rc" -ne 0 ]; then
+    # #567: say why (first line, tokens redacted, 200 chars) on stderr; the return code is unchanged
+    echo "rc=$rc: $(head -1 "$errf" 2>/dev/null | sed -E -e 's/(gh[pousr]_|github_pat_)[A-Za-z0-9_]+/[redacted]/g' -e 's/([Bb]earer|[Tt]oken)[ =:]+[^ ]+/\1 [redacted]/g' | cut -c1-200)" >&2
+    rm -f "$errf"; return 1
+  fi
+  rm -f "$errf"
   printf '%s' "$raw" | jq -s 'add // []'
 }
 
@@ -623,8 +630,9 @@ _goal_ticket_eval() {
     fi
     return 0
   fi
-  checkout=$(_goal_checkout "$repo") || return 1
-  all_c=$(_goal_get_all "repos/$slug/issues/$n/comments?per_page=100" 2>/dev/null) || { goal_err "cannot evaluate $repo#$n: comments read failed"; return 1; }
+  checkout=$(_goal_checkout "$repo") || { goal_err "cannot evaluate $repo#$n: repo not in DISPATCH_REPOS on this host"; return 1; }
+  all_c=$(_goal_get_all "repos/$slug/issues/$n/comments?per_page=100" 2>"${TMPDIR:-/tmp}/goal-c.$$") || { goal_err "cannot evaluate $repo#$n: comments read failed $(head -1 "${TMPDIR:-/tmp}/goal-c.$$" 2>/dev/null)"; rm -f "${TMPDIR:-/tmp}/goal-c.$$"; return 1; }
+  rm -f "${TMPDIR:-/tmp}/goal-c.$$"
   m=$(latest_marker "$checkout" "$n" "$all_c" "$author")
   [ "$m" != "?" ] || { goal_err "cannot evaluate $repo#$n: latest_marker read failed"; return 1; }
   first=${m%%$'\n'*}; first=${first%$'\r'}
@@ -950,7 +958,8 @@ goal_mirror() {  # <id> <state> [<scope_total> <scope_delivered>] — the cache 
 
 goal_sync() {  # registry -> local: rebuild missing caches, propagate stop/close; goals pinned to another host are ignored
   local reg g id n st host block f cur
-  reg=$(_goal_registry_json) || { goal_err "cannot read the goal registry"; return 0; }
+  reg=$(_goal_registry_json 2>"${TMPDIR:-/tmp}/goal-r.$$") || { goal_err "cannot read the goal registry: $(head -1 "${TMPDIR:-/tmp}/goal-r.$$" 2>/dev/null)"; rm -f "${TMPDIR:-/tmp}/goal-r.$$"; return 0; }
+  rm -f "${TMPDIR:-/tmp}/goal-r.$$"
   goal_queue_save "$reg"
   goal_queue_derive "$reg"
   goal_names_fill "$reg"

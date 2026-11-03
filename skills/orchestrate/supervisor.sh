@@ -572,11 +572,16 @@ do_launch() {  # <repo> <issue> <extra> <restart_n> <reason> <queue_wait_s> <run
   owner_repo=$(cd "$repo" && gh api repos/{owner}/{repo} --jq .full_name 2>/dev/null || true)
   [ -n "$owner_repo" ] || owner_repo=$(git -C "$repo" remote get-url origin 2>/dev/null | sed -E 's#^.*github\.com[:/]##; s#\.git$##')
   [ -n "$owner_repo" ] || owner_repo=unknown
-  gh api "repos/$owner_repo/issues/$issue/comments" -f body="**[supervisor] NOTE** claim: $HOST $(date -u +%FT%TZ)" >/dev/null 2>&1 \
-    || { slog "[launch] #$issue — claim comment failed; not launching (will retry)"; return 2; }
+  local claim_err claim_rc
+  claim_err=$(mktemp "${TMPDIR:-/tmp}/claim-err.XXXXXX")
+  gh api "repos/$owner_repo/issues/$issue/comments" -f body="**[supervisor] NOTE** claim: $HOST $(date -u +%FT%TZ)" >/dev/null 2>"$claim_err" \
+    || { claim_rc=$?; slog "[launch] #$issue — claim comment failed rc=$claim_rc: $(gh_err_line "$claim_err"); not launching (will retry)"; rm -f "$claim_err"; return 2; }
+  rm -f "$claim_err"
   sleep "$CLAIM_SETTLE_SECS"
-  claim_win=$(claim_winner_rest "$owner_repo" "$issue") \
-    || { slog "[launch] #$issue — claim lookup failed; not launching (will retry)"; return 2; }
+  claim_err=$(mktemp "${TMPDIR:-/tmp}/claim-err.XXXXXX")
+  claim_win=$(claim_winner_rest "$owner_repo" "$issue" 2>"$claim_err") \
+    || { claim_rc=$?; slog "[launch] #$issue — claim lookup failed rc=$claim_rc: $(gh_err_line "$claim_err"); not launching (will retry)"; rm -f "$claim_err"; return 2; }
+  rm -f "$claim_err"
   if [ -n "$claim_win" ] && [ "$claim_win" != "$HOST" ]; then
     slog "[launch] #$issue — lost claim to $claim_win; not launching (running there)"
     return 1
