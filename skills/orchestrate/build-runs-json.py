@@ -256,6 +256,66 @@ if mode in LIST_CAPS:
     print(json.dumps(build_list(mode)))
     sys.exit(0)
 
+# ---- backlog (issue: backlog reorder view) ---------------------------------------------------
+# Standalone (non-goal) open agent-go tickets from <pipe-dir>/status-backlog.json (reconcile-status.sh,
+# which already drops any ticket with a "goal: " label or LABEL_IN_PROGRESS), ordered by JP's stored
+# priority (<pipe-dir>/backlog-priority.json, {"owner/repo#issue": rank}; lower rank first) and, for any
+# ticket the store has no rank for, by today's milestone+issue fallback (same tiebreak supervisor.sh's
+# dispatch step uses) -- so an empty/missing store still renders a sensible, stable order. A ranked
+# ticket always sorts before every unranked one, matching supervisor.sh's dispatch order exactly for
+# this (already-goal-filtered) list; see skills/orchestrate/lib/backlog-sort.jq for the dispatch side.
+BACKLOG_CAP = 100
+MILESTONE_VERSION_RE = re.compile(r"^v([0-9]+)\.([0-9]+)\.([0-9]+)")
+
+
+def load_backlog_priority():
+    if not pipe_dir:
+        return {}
+    try:
+        with open(os.path.join(pipe_dir, "backlog-priority.json"), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {k: v for k, v in data.items()
+            if isinstance(k, str) and isinstance(v, (int, float)) and not isinstance(v, bool)}
+
+
+def _milestone_fallback_key(milestone, issue):
+    m = MILESTONE_VERSION_RE.match(str(milestone or ""))
+    if m:
+        return (1, int(m.group(1)), int(m.group(2)), int(m.group(3)), issue)
+    return (2, 0, 0, 0, issue)
+
+
+def build_backlog():
+    prio = load_backlog_priority()
+    rows = []
+    for d in load_list("backlog"):
+        owner_repo = d["owner_repo"]
+        issue = d["issue"]
+        rank = prio.get("%s#%s" % (owner_repo, issue))
+        item = {
+            "repo": aliases.get(owner_repo, "other"),
+            "issue": issue,
+            "title": str(d.get("title") or "")[:TITLE_MAX_CHARS],
+            "url": "https://github.com/%s/issues/%s" % (owner_repo, issue),
+        }
+        if isinstance(rank, (int, float)):
+            item["rank"] = rank
+            sort_key = (0, rank, (0, 0, 0, 0, 0))
+        else:
+            sort_key = (1, 0, _milestone_fallback_key(d.get("milestone"), issue))
+        rows.append((sort_key, item))
+    rows.sort(key=lambda pair: pair[0])
+    return [item for _, item in rows[:BACKLOG_CAP]]
+
+
+if mode == "backlog":
+    print(json.dumps(build_backlog()))
+    sys.exit(0)
+
 GOALS_MAX = 50
 GOALS_RECENT_MAX = 5
 GOAL_STATES = ("active", "waiting_jp", "held")

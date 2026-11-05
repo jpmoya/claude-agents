@@ -417,6 +417,9 @@ describe("existing status view unchanged (AC3)", () => {
   .badge.goal-between_cycles { background: var(--gray-soft); color: var(--gray); }
   .badge.goal-delivered { background: var(--green-soft); color: var(--green); }
   .badge.goal-stopped { background: var(--gray-soft); color: var(--gray); }
+  .backlog-help { font-size: 0.85rem; color: var(--muted); margin: 0 0 0.75rem; }
+  .backlog-cmd { white-space: pre-wrap; word-break: break-all; font-size: 0.78rem; background: var(--gray-soft);
+    border-radius: 0.375rem; padding: 0.6rem 0.75rem; margin: 0.75rem 0 0; }
   .legend h3 { font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin: 1em 0 0.5em; }
   .legend dt { font-weight: 600; margin-top: 0.6em; font-size: 0.85rem; }
   .legend dd { margin: 0.1em 0 0 0; color: var(--muted); font-size: 0.85rem; }

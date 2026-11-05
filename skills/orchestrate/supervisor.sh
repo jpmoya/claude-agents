@@ -1684,12 +1684,25 @@ if [ "$launched" -eq 0 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
       elif [ "$dispatch_feedback_only" -eq 1 ]; then
         dispatch_search="$dispatch_search label:\"$LABEL_FEEDBACK\""
       fi
+      # Backlog priority (JP's drag-and-reorder on the status page, status-page section "Backlog priority"):
+      # a per-repo rank map {"<issue>": <rank>} sliced from $PIPE/backlog-priority.json (backlog-priority.sh
+      # pull keeps it fresh; reconcile-status.sh calls it). Any read/parse failure — missing file, corrupt
+      # JSON, no entries for this repo — falls back to {}, so dispatch for this repo is never aborted by a
+      # bad store. The map only ever reorders non-goal tickets among themselves (skills/orchestrate/lib/backlog-sort.jq).
+      prio_json='{}'
+      if [ -s "$PIPE/backlog-priority.json" ]; then
+        prio_json=$(jq -c --arg r "$owner_repo#" \
+          '[to_entries[] | select(.key | startswith($r)) | {key: (.key | ltrimstr($r)), value}] | from_entries' \
+          "$PIPE/backlog-priority.json" 2>/dev/null) || prio_json='{}'
+        case "$prio_json" in ''|null) prio_json='{}' ;; esac
+      fi
       candidates=$(gh issue list --repo "$owner_repo" --state open --label "$LABEL_GO" --limit 500 \
         --search "$dispatch_search" --json number,labels,milestone \
         --jq "[.[] | select([.labels[].name] | index(\"$LABEL_IN_PROGRESS\") | not) | select(([.labels[].name] | map(. as \$l | $goal_skip_json | index(\$l)) | any(. != null)) | not) $spread_sel]
           | map(. as \$i | ((((\$i.milestone.title? // \"\") | tostring) | capture(\"^v(?<a>[0-9]+)\\\\.(?<b>[0-9]+)\\\\.(?<c>[0-9]+)\")) // null) as \$v
-            | {n: \$i.number, k: (if \$v then [0, (\$v.a|tonumber), (\$v.b|tonumber), (\$v.c|tonumber), \$i.number] else [1, 0, 0, 0, \$i.number] end)})
-          | sort_by(.k) | .[].n" 2>"$rq_err") || {
+            | {n: \$i.number, g: ((\$i.labels // []) | any(.name // \"\" | test(\"^goal: \"))), k: (if \$v then [0, (\$v.a|tonumber), (\$v.b|tonumber), (\$v.c|tonumber), \$i.number] else [1, 0, 0, 0, \$i.number] end)})
+          | sort_by(.k)" 2>"$rq_err" \
+        | jq --argjson prio "$prio_json" -f "$HERE/lib/backlog-sort.jq" 2>>"$rq_err") || {
         slog "[dispatch] $owner_repo — listing or release sort failed ($rq_tags): $(head -c 300 "$rq_err" | tr '\n' ' ')"
         notify_engineering 0 ":warning:" "dispatch listing/sort failed for $owner_repo ($rq_tags)" "$owner_repo"; rm -f "$rq_err"; continue; }
       rm -f "$rq_err"

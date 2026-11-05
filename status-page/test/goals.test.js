@@ -64,7 +64,7 @@ describe('AC2 — validate.js goals', () => {
     expect(r.value).not.toHaveProperty('goals');
   });
 
-  it('a payload without goals validates to exactly the pre-change value', () => {
+  it('a payload without goals validates to exactly the pre-change value plus an empty backlog[]', () => {
     const r = validateBeatPayload(validPayload());
     expect(r.ok).toBe(true);
     expect(r.value).toEqual({
@@ -76,6 +76,7 @@ describe('AC2 — validate.js goals', () => {
       completed: [],
       staging: [],
       approved: [],
+      backlog: [],
     });
   });
 

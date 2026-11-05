@@ -6,7 +6,7 @@
 // tested directly per skills/quality-gate/SKILL.md).
 
 import { isIssueUrl } from "./validate.js";
-import { groupTickets } from "./group.js";
+import { groupTickets, buildBacklog } from "./group.js";
 import { PIPELINES } from "./pipelines.js";
 
 // Auto-refresh interval in seconds. Must stay <= 30 (AC15). Grepped directly by tests.
@@ -245,6 +245,52 @@ export const GOAL_LEGEND = [
   ],
 ];
 
+// Pulls "owner/repo#issue" out of a backlog row's `url` (already validated as a GitHub issue URL
+// by validate.js's ISSUE_URL check) — the key backlog-priority.sh's `set` wants. `repo` on the row
+// is only the published alias (never the real owner/repo), so the key must come from the URL.
+const OWNER_REPO_ISSUE_RE = /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/issues\/(\d+)$/;
+function backlogKeyOf(row) {
+  const m = isIssueUrl(row.url) ? OWNER_REPO_ISSUE_RE.exec(row.url) : null;
+  return m ? `${m[1]}#${m[2]}` : null;
+}
+
+/**
+ * Backlog priority (reorder view, no JS on this page — grouped-render.test.js pins that): lists
+ * every standalone (non-goal) open `agent-go` ticket in today's dispatch order (JP's stored rank
+ * first, lowest rank first; unranked tickets after, by issue number) and prints the
+ * `backlog-priority.sh set` command pre-filled with that same order. JP edits the order of the
+ * quoted keys in the command (cut/paste in a text editor, or by hand) and runs it on either host;
+ * the next supervisor tick on both hosts picks up the new order (reconcile-status.sh pulls the
+ * registry issue the command writes to). There is no drag-and-drop here: the page emits no
+ * `<script>` and this Worker has no authenticated write path for a browser to call directly.
+ */
+function renderBacklogSection(hosts) {
+  const rows = buildBacklog(hosts);
+  const keys = rows.map(backlogKeyOf).filter((k) => k !== null);
+  const body = rows.length
+    ? rows
+        .map(
+          (row, i) =>
+            `<tr><td data-label="#">${i + 1}</td><td data-label="Issue">#${esc(row.issue)}</td><td data-label="Ticket">${renderTicketCell(row)}</td></tr>`,
+        )
+        .join("")
+    : `<tr><td colspan="3">none</td></tr>`;
+  const cmd = keys.length
+    ? `~/.claude/skills/orchestrate/backlog-priority.sh set ${keys.map((k) => `'${esc(k)}'`).join(" ")}`
+    : "";
+  return `<section class="group backlog">
+    <h2>Backlog priority (${rows.length})</h2>
+    <p class="backlog-help">Standalone (non-goal) <code>agent-go</code> tickets, in today's dispatch order. Dispatch picks
+      one repo at a time (config order), so this order only matters between tickets of the <strong>same</strong> repo.
+      To set your own order: reorder the quoted keys below, then run the command on either host.</p>
+    <div class="table-scroll"><table>
+      <tr class="cols"><th>#</th><th>Issue</th><th>Ticket</th></tr>
+      <tbody>${body}</tbody>
+    </table></div>
+    ${cmd ? `<pre class="backlog-cmd">${esc(cmd)}</pre>` : ""}
+  </section>`;
+}
+
 function renderLegend() {
   const items = GOAL_LEGEND.map(
     ([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`,
@@ -462,7 +508,7 @@ export function renderPage(hosts, thresholds, nowEpochSecs) {
 
   const body = bothEmpty
     ? '<p class="empty">no data from either host yet</p>'
-    : `${renderHostSection("mac", hosts.mac, thresholds, nowEpochSecs)}${renderHostSection("vm", hosts.vm, thresholds, nowEpochSecs)}${renderGoalsSection(hosts)}${renderLegend()}${groupTickets(hosts, nowEpochSecs).map(renderGroupSection).join("")}`;
+    : `${renderHostSection("mac", hosts.mac, thresholds, nowEpochSecs)}${renderHostSection("vm", hosts.vm, thresholds, nowEpochSecs)}${renderGoalsSection(hosts)}${renderBacklogSection(hosts)}${renderLegend()}${groupTickets(hosts, nowEpochSecs).map(renderGroupSection).join("")}`;
 
   return `<!doctype html>
 <html lang="en">
@@ -489,6 +535,9 @@ ${ROOT_VARS_CSS}
   .badge.goal-between_cycles { background: var(--gray-soft); color: var(--gray); }
   .badge.goal-delivered { background: var(--green-soft); color: var(--green); }
   .badge.goal-stopped { background: var(--gray-soft); color: var(--gray); }
+  .backlog-help { font-size: 0.85rem; color: var(--muted); margin: 0 0 0.75rem; }
+  .backlog-cmd { white-space: pre-wrap; word-break: break-all; font-size: 0.78rem; background: var(--gray-soft);
+    border-radius: 0.375rem; padding: 0.6rem 0.75rem; margin: 0.75rem 0 0; }
   .legend h3 { font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin: 1em 0 0.5em; }
   .legend dt { font-weight: 600; margin-top: 0.6em; font-size: 0.85rem; }
   .legend dd { margin: 0.1em 0 0 0; color: var(--muted); font-size: 0.85rem; }

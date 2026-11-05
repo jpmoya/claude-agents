@@ -222,6 +222,30 @@ function sanitiseList(raw, max = Infinity) {
   return Array.isArray(raw) ? raw.map(sanitiseListItem).filter((item) => item !== null).slice(0, max) : [];
 }
 
+const MAX_BACKLOG = 100;
+
+/**
+ * Sanitises one backlog[] item (backlog reorder view): standalone (non-goal) open agent-go
+ * tickets, {repo, issue, title?, url?, rank?}. Invalid `issue` -> item dropped; `rank` (JP's
+ * stored priority; lower = dispatched first) is omitted when absent or out of range — the
+ * ticket then renders/sorts as "unranked", never as rank 0.
+ */
+function sanitiseBacklogItem(rawItem) {
+  if (!isPlainObject(rawItem)) return null;
+  if (!isIntInRange(rawItem.issue, 1, 999999)) return null;
+
+  const item = { repo: sanitiseRepo(rawItem.repo), issue: rawItem.issue };
+  const title = sanitiseTitle(rawItem.title);
+  if (title !== null) item.title = title;
+  if (isIssueUrl(rawItem.url)) item.url = rawItem.url;
+  if (isIntInRange(rawItem.rank, 0, 999999)) item.rank = rawItem.rank;
+  return item;
+}
+
+function sanitiseBacklog(raw) {
+  return Array.isArray(raw) ? raw.map(sanitiseBacklogItem).filter((item) => item !== null).slice(0, MAX_BACKLOG) : [];
+}
+
 /**
  * @param {unknown} parsedBody - already-JSON-parsed request body
  * @returns {{ ok: true, value: object } | { ok: false, reason: 'bad-json'|'bad-version'|'too-many-runs' }}
@@ -267,6 +291,9 @@ export function validateBeatPayload(parsedBody) {
   // Optional (issue #62): absent or non-array -> []; never a rejection.
   value.staging = sanitiseList(parsedBody.staging, MAX_STAGING);
   value.approved = sanitiseList(parsedBody.approved); // never truncated (jpmoya/claude-agents#386, #460)
+
+  // Optional (backlog reorder view): absent or non-array -> []; never a rejection.
+  value.backlog = sanitiseBacklog(parsedBody.backlog);
 
   // Optional (issue #197): absent or non-array -> no key. First 50 entries, then filtered.
   if (Array.isArray(parsedBody.goals)) {

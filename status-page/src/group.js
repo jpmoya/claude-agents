@@ -64,6 +64,39 @@ function mergeList(hosts, name, field, keep = () => true) {
 
 const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 
+/**
+ * Backlog reorder view: standalone (non-goal) open agent-go tickets, merged across both hosts by
+ * key (a repo in both hosts' DISPATCH_REPOS/SCAN_ONLY_REPOS may publish the same ticket twice).
+ * Ranked tickets (JP's stored priority; lower rank = dispatched first) sort first, lowest rank
+ * first. Unranked tickets keep the relative order the host already gave them (build-runs-json.py
+ * "backlog" mode sorts by rank then by today's milestone+issue tiebreak before publishing) — this
+ * only merges two already-correctly-ordered lists, via a stable sort, rather than re-deriving the
+ * fallback order from issue numbers (which would silently disagree with milestone order).
+ *
+ * Note: supervisor.sh dispatches one repo at a time (config order in DISPATCH_REPOS), so this
+ * view's ordering is only ever load-bearing *within* a repo — see the page's own help text.
+ * @param {{ mac?: object|null, vm?: object|null }} hosts
+ * @returns {object[]}
+ */
+export function buildBacklog(hosts) {
+  const byKey = new Map();
+  for (const hostKey of HOST_ORDER) {
+    for (const item of listOf(hosts[hostKey], 'backlog')) {
+      const key = keyOf(item);
+      const seen = byKey.get(key);
+      if (!seen || (typeof seen.rank !== 'number' && typeof item.rank === 'number')) byKey.set(key, item);
+    }
+  }
+  return [...byKey.values()].sort((a, b) => {
+    const ra = typeof a.rank === 'number' ? a.rank : null;
+    const rb = typeof b.rank === 'number' ? b.rank : null;
+    if (ra !== null && rb !== null) return ra - rb;
+    if (ra !== null) return -1;
+    if (rb !== null) return 1;
+    return 0; // stable sort (Array#sort is stable per spec): keep the host's own correct fallback order
+  });
+}
+
 /** Needs JP: groups by (repo, milestone), biggest group first; ties by repo, then milestone ("no release" last). */
 function groupNeedsJp(rows) {
   const byKey = new Map();

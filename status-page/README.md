@@ -114,6 +114,40 @@ Completed-ticket source (issue #51):
   than 10 items keep the first 10, a non-array becomes `[]`). Payload `v` stays 1: an older Worker
   drops the key, a newer Worker renders a payload without it as an empty Done group.
 
+## Backlog priority (reorder view)
+
+JP's priority order for standalone (non-goal) open `agent-go` tickets across both hosts'
+`DISPATCH_REPOS` ∪ `SCAN_ONLY_REPOS`. It only ever reorders standalone tickets among themselves —
+the goals-first-then-fill-with-standalone-tickets dispatch logic, `MAX_CONCURRENT` and
+`GOAL_SERIAL` are untouched, and a ticket carrying a `goal: <title>` label (goal-lib.sh's
+`goal_label_name`) is never reordered by this feature.
+
+- **Store.** `$PIPE/backlog-priority.json` on each host, `{"owner/repo#issue": <0-based rank>}`
+  (lower rank = dispatched first). Source of truth is a single machine-managed GitHub issue (label
+  `backlog-priority-registry`, body = a JSON array of keys in order) in `$GOAL_REGISTRY_REPO` —
+  same pattern as the goal registry (goal-lib.sh: "A goal is a registry issue on GitHub ...;
+  `$PIPE/goal-<id>.*` is only a host-local cache"). `skills/orchestrate/backlog-priority.sh pull`
+  refreshes the cache (called from `reconcile-status.sh`'s pass, throttled the same way);
+  `backlog-priority.sh set <owner/repo#issue>...` writes a new full order (registry issue, then
+  the local cache) — this is the command the status page prints for JP to edit and run by hand.
+- **Dispatch side** (`supervisor.sh`'s shared-dispatch step, around "5. Shared dispatch"): the
+  per-repo candidate list is sorted today's way (milestone `vX.Y.Z` asc, then issue asc), then
+  `skills/orchestrate/lib/backlog-sort.jq` reorders only the non-goal slots by stored rank
+  (ranked first, lowest rank first; unranked after, in today's order) — a goal-labelled ticket's
+  position in that sorted list is never touched. A missing or corrupt store (bad JSON, no entries
+  for the repo) falls back to `{}`: dispatch for that repo is never aborted by it.
+- **Display side.** `reconcile-status.sh` also refreshes `$PIPE/status-backlog.json` — open
+  `agent-go` issues, minus anything carrying `agent-in-progress` or a `goal: ` label, for every
+  repo in `DISPATCH_REPOS` ∪ `SCAN_ONLY_REPOS`. The network-free builder (`build-runs-json.py
+  backlog`) turns that plus the local priority cache into the payload's `backlog[]`: `{repo, issue,
+  title?, url?, rank?}` (cap 100; `rank` omitted when the ticket is untracked), ordered the same
+  way as the dispatch side. The page merges both hosts' `backlog[]` by key (a repo in both hosts'
+  scope can publish the same ticket twice) and renders a numbered table plus the exact
+  `backlog-priority.sh set` command for that order — **no `<script>`, no drag-and-drop**: this page
+  emits no JS (`grouped-render.test.js` pins that for the whole page), and the Worker has no
+  authenticated write path a browser could call directly without a new secret and extra KV-write
+  budget. JP reorders the printed keys by hand and runs the command on either host.
+
 ## Infra hand-off contract (companion `infra` issue's job, not this one's)
 
 1. Create a KV namespace and bind it as `STATUS` in `wrangler.jsonc`, replacing the placeholder

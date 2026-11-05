@@ -50,8 +50,9 @@ describe('AC6 — seven headings, in order, with counts, no per-host run table',
     expect(Number(h2('Done').exec(html)[1])).toBe(1);
   });
 
-  it('renders exactly seven <table> elements when both hosts have data', () => {
-    expect(count(html, /<table/g)).toBe(7);
+  it('renders exactly seven ticket-group <table> elements plus the Backlog priority table when both hosts have data', () => {
+    // 7 (Running/Queued/Approved/Needs JP/On staging/Parked/Done) + 1 (Backlog priority, the reorder view)
+    expect(count(html, /<table/g)).toBe(8);
   });
 
   it('an empty group renders "(0)" and a single "none" row', () => {
@@ -67,10 +68,10 @@ describe('AC6 — seven headings, in order, with counts, no per-host run table',
     expect(html).toContain('Capacity: running 1 / max 3 (queued 0)');
   });
 
-  it('one host never seen: its block reads "no data yet", still seven tables', () => {
+  it('one host never seen: its block reads "no data yet", still seven ticket-group tables plus Backlog priority', () => {
     const h = render(mac, null);
     expect(h).toContain('no data yet');
-    expect(count(h, /<table/g)).toBe(7);
+    expect(count(h, /<table/g)).toBe(8);
   });
 
   it('neither host seen: "no data from either host yet" is still shown', () => {
