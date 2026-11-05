@@ -14,7 +14,7 @@ product-manager → test-writer → test-reviewer → fullstack-developer → co
 
 ## Fast lane
 
-Bug fixes and small changes: product-manager → fullstack-developer (writes its own regression test) → code-reviewer + test-reviewer (narrow) → deployer.
+Default lane: product-manager → fullstack-developer (writes its own regression test) → code-reviewer + test-reviewer (narrow) → deployer. The PM defaults to `Lane: fast` and only sets `Lane: full` for a named disqualifier (schema change, new endpoint, new dependency, UI change, >3 files, or a multi-repo change) — see `agents/product-manager.md`. These disqualifiers override the `fast-lane` label too.
 
 ## Infra track
 
