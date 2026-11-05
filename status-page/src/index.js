@@ -1,17 +1,41 @@
-// src/index.js — router, bearer auth, rate limiting, response headers.
+// src/index.js — router, bearer auth, Google sign-in, rate limiting, response headers.
 //
-// Routes: POST /beat, GET /status.json, GET /, GET /pipelines, GET /robots.txt, else 404. X-Robots-Tag: noindex
-// is applied in one place to every response. Auth is a pure-JS constant-time compare
-// (XOR-accumulate, no early return — crypto.subtle.timingSafeEqual doesn't exist in the Node
-// test runtime) against both TOKEN_MAC and TOKEN_VM, with no early exit; the host label is
-// whichever secret matched, never read from the body. Rate limiting is a module-scope Map keyed
-// by CF-Connecting-IP, fixed 60s window, bounded eviction, reset via __resetRateLimiter for
-// vitest. See issue #11 / #4 §5 for the full routes and validation tables.
+// Routes: POST /beat, GET /status.json, GET /, GET /pipelines, GET /robots.txt, GET /login,
+// GET /auth/callback, else 404. X-Robots-Tag: noindex is applied in one place to every response.
+//
+// POST /beat auth is unchanged: a pure-JS constant-time compare (XOR-accumulate, no early
+// return — crypto.subtle.timingSafeEqual doesn't exist in the Node test runtime) against both
+// TOKEN_MAC and TOKEN_VM, with no early exit; the host label is whichever secret matched, never
+// read from the body. Rate limiting is a module-scope Map keyed by CF-Connecting-IP, fixed 60s
+// window, bounded eviction, reset via __resetRateLimiter for vitest. Neither /beat's auth nor
+// its rate limiter apply to the human-facing routes below.
+//
+// The human-facing routes (GET /, /status.json, /pipelines) require a signed session cookie
+// (Google OAuth 2.0 Authorization Code flow, see src/auth.js): unauthenticated -> 302 to /login
+// -> 302 to Google -> /auth/callback exchanges the code, checks the ALLOWED_EMAILS allowlist,
+// and issues the session cookie. See issue #11 / #4 §5 for the pre-existing routes/validation
+// tables.
 
-import { validateBeatPayload } from './validate.js';
-import { renderPage, renderPipelines } from './render.js';
-import { captureError } from './capture.js';
-import { KEEPALIVE_SECS, computeThresholds } from './vocab.js';
+import { validateBeatPayload } from "./validate.js";
+import { renderPage, renderPipelines } from "./render.js";
+import { captureError } from "./capture.js";
+import { KEEPALIVE_SECS, computeThresholds } from "./vocab.js";
+import {
+  requireSession,
+  isConfiguredSecret as isConfiguredAuthSecret,
+  buildGoogleAuthUrl,
+  exchangeCodeForTokens,
+  fetchGoogleUserinfo,
+  isEmailAllowed,
+  signSession,
+  buildCookie,
+  clearCookie,
+  parseCookies,
+  SESSION_COOKIE_NAME,
+  SESSION_MAX_AGE_SECS,
+  STATE_COOKIE_NAME,
+  STATE_COOKIE_MAX_AGE_SECS,
+} from "./auth.js";
 
 const MAX_BEAT_BYTES = 128 * 1024; // 128 KB cap (#62; "> 128 KB" -> 413)
 const RATE_LIMIT_WINDOW_MS = 60_000;
@@ -27,7 +51,7 @@ let rateLimitState = new Map();
  * @returns {boolean}
  */
 export function constantTimeEqual(a, b) {
-  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  if (typeof a !== "string" || typeof b !== "string") return false;
   const len = Math.max(a.length, b.length);
   let diff = a.length ^ b.length;
   for (let i = 0; i < len; i++) {
@@ -67,39 +91,44 @@ function isRateLimited(ip) {
 
 function noindexResponse(body, init = {}) {
   const response = new Response(body, init);
-  response.headers.set('X-Robots-Tag', 'noindex');
+  response.headers.set("X-Robots-Tag", "noindex");
   return response;
 }
 
 function extractBearerToken(request) {
-  const header = request.headers.get('Authorization') || '';
+  const header = request.headers.get("Authorization") || "";
   const match = /^Bearer\s+(.+)$/.exec(header);
   return match ? match[1] : null;
 }
 
 /** True if `secret` is a real configured value, not a missing/blank binding. */
 function isConfiguredSecret(secret) {
-  return typeof secret === 'string' && secret.length > 0;
+  return typeof secret === "string" && secret.length > 0;
 }
 
 async function handleBeat(request, env) {
-  const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+  const ip = request.headers.get("CF-Connecting-IP") || "unknown";
   if (isRateLimited(ip)) return noindexResponse(null, { status: 429 });
 
   const token = extractBearerToken(request);
   // Both compares always run (no early exit against either secret) — but an unconfigured
   // secret (missing `wrangler secret put`) never matches, even against an empty/missing
   // token, so a deploy that forgot to set TOKEN_MAC/TOKEN_VM fails closed, not open.
-  const okMac = isConfiguredSecret(env.TOKEN_MAC) && constantTimeEqual(token ?? '', env.TOKEN_MAC);
-  const okVm = isConfiguredSecret(env.TOKEN_VM) && constantTimeEqual(token ?? '', env.TOKEN_VM);
+  const okMac =
+    isConfiguredSecret(env.TOKEN_MAC) &&
+    constantTimeEqual(token ?? "", env.TOKEN_MAC);
+  const okVm =
+    isConfiguredSecret(env.TOKEN_VM) &&
+    constantTimeEqual(token ?? "", env.TOKEN_VM);
   let host = null;
-  if (okMac) host = 'mac';
-  else if (okVm) host = 'vm';
+  if (okMac) host = "mac";
+  else if (okVm) host = "vm";
   if (!host) return noindexResponse(null, { status: 401 });
 
   const rawBody = await request.text();
   const byteLength = new TextEncoder().encode(rawBody).length;
-  if (byteLength > MAX_BEAT_BYTES) return noindexResponse(null, { status: 413 });
+  if (byteLength > MAX_BEAT_BYTES)
+    return noindexResponse(null, { status: 413 });
 
   let parsed;
   try {
@@ -117,7 +146,10 @@ async function handleBeat(request, env) {
 }
 
 async function readHostRecords(env) {
-  const [macRaw, vmRaw] = await Promise.all([env.STATUS.get('host:mac'), env.STATUS.get('host:vm')]);
+  const [macRaw, vmRaw] = await Promise.all([
+    env.STATUS.get("host:mac"),
+    env.STATUS.get("host:vm"),
+  ]);
   return { mac: parseHostRecord(macRaw), vm: parseHostRecord(vmRaw) };
 }
 
@@ -143,7 +175,10 @@ async function handleStatusJson(env) {
   });
   return noindexResponse(body, {
     status: 200,
-    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'max-age=15' },
+    headers: {
+      "Content-Type": "application/json",
+      "Cache-Control": "max-age=15",
+    },
   });
 }
 
@@ -154,7 +189,10 @@ async function handleHome(env) {
   const html = renderPage(hosts, thresholds, nowEpochSecs);
   return noindexResponse(html, {
     status: 200,
-    headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'max-age=15' },
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "max-age=15",
+    },
   });
 }
 
@@ -163,20 +201,153 @@ async function handlePipelines(env) {
     const html = renderPipelines();
     return noindexResponse(html, {
       status: 200,
-      headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'max-age=15' },
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "max-age=15",
+      },
     });
   } catch (err) {
-    const tags = { release: env.RELEASE, environment: env.ENVIRONMENT, route: '/pipelines' };
+    const tags = {
+      release: env.RELEASE,
+      environment: env.ENVIRONMENT,
+      route: "/pipelines",
+    };
     await captureError(err, tags, env);
-    return noindexResponse('Internal error', { status: 500, headers: { 'Content-Type': 'text/plain' } });
+    return noindexResponse("Internal error", {
+      status: 500,
+      headers: { "Content-Type": "text/plain" },
+    });
   }
 }
 
 function handleRobots() {
-  return noindexResponse('User-agent: *\nDisallow: /\n', {
+  return noindexResponse("User-agent: *\nDisallow: /\n", {
     status: 200,
-    headers: { 'Content-Type': 'text/plain' },
+    headers: { "Content-Type": "text/plain" },
   });
+}
+
+/** 302 redirect carrying X-Robots-Tag like every other response (never Response.redirect — its headers are immutable). */
+function redirectTo(location) {
+  const headers = new Headers({ Location: location });
+  return noindexResponse(null, { status: 302, headers });
+}
+
+function callbackRedirectUri(url) {
+  return `${url.origin}/auth/callback`;
+}
+
+/** GET /login — starts the Google OAuth flow for the human-facing routes. */
+function handleLogin(request, env) {
+  if (
+    !isConfiguredAuthSecret(env.GOOGLE_CLIENT_ID) ||
+    !isConfiguredAuthSecret(env.SESSION_SECRET)
+  ) {
+    return noindexResponse("Sign-in is not configured yet", {
+      status: 503,
+      headers: { "Content-Type": "text/plain" },
+    });
+  }
+  const url = new URL(request.url);
+  const state = crypto.randomUUID();
+  const headers = new Headers();
+  headers.append(
+    "Set-Cookie",
+    buildCookie(STATE_COOKIE_NAME, state, {
+      maxAgeSecs: STATE_COOKIE_MAX_AGE_SECS,
+    }),
+  );
+  headers.set(
+    "Location",
+    buildGoogleAuthUrl(env, callbackRedirectUri(url), state),
+  );
+  return noindexResponse(null, { status: 302, headers });
+}
+
+/** GET /auth/callback — exchanges the code, checks the allowlist, issues the session cookie. */
+async function handleAuthCallback(request, env) {
+  if (
+    !isConfiguredAuthSecret(env.GOOGLE_CLIENT_ID) ||
+    !isConfiguredAuthSecret(env.GOOGLE_CLIENT_SECRET) ||
+    !isConfiguredAuthSecret(env.SESSION_SECRET)
+  ) {
+    return noindexResponse("Sign-in is not configured yet", {
+      status: 503,
+      headers: { "Content-Type": "text/plain" },
+    });
+  }
+
+  const url = new URL(request.url);
+  const code = url.searchParams.get("code");
+  const returnedState = url.searchParams.get("state");
+  const cookies = parseCookies(request);
+  const expectedState = cookies[STATE_COOKIE_NAME];
+
+  function failureHeaders(extra) {
+    const headers = new Headers(extra);
+    headers.append("Set-Cookie", clearCookie(STATE_COOKIE_NAME));
+    headers.set("Content-Type", "text/plain");
+    return headers;
+  }
+
+  if (
+    !code ||
+    !returnedState ||
+    !expectedState ||
+    !constantTimeEqual(returnedState, expectedState)
+  ) {
+    return noindexResponse("Sign-in failed", {
+      status: 400,
+      headers: failureHeaders(),
+    });
+  }
+
+  try {
+    const tokens = await exchangeCodeForTokens(
+      code,
+      env,
+      callbackRedirectUri(url),
+    );
+    const profile = await fetchGoogleUserinfo(tokens.access_token);
+    const email = typeof profile.email === "string" ? profile.email : null;
+    const verified =
+      profile.email_verified === true || profile.email_verified === "true";
+
+    if (!email || !verified || !isEmailAllowed(email, env.ALLOWED_EMAILS)) {
+      return noindexResponse("Not authorized", {
+        status: 403,
+        headers: failureHeaders(),
+      });
+    }
+
+    const expiresAt = Math.floor(Date.now() / 1000) + SESSION_MAX_AGE_SECS;
+    const sessionValue = await signSession(
+      email.trim().toLowerCase(),
+      expiresAt,
+      env.SESSION_SECRET,
+    );
+
+    const headers = new Headers({ Location: "/" });
+    headers.append("Set-Cookie", clearCookie(STATE_COOKIE_NAME));
+    headers.append(
+      "Set-Cookie",
+      buildCookie(SESSION_COOKIE_NAME, sessionValue, {
+        maxAgeSecs: SESSION_MAX_AGE_SECS,
+      }),
+    );
+    return noindexResponse(null, { status: 302, headers });
+  } catch (err) {
+    const tags = {
+      release: env.RELEASE,
+      environment: env.ENVIRONMENT,
+      route: "/auth/callback",
+    };
+    await captureError(err, tags, env);
+    return noindexResponse("Sign-in failed", {
+      status: 502,
+      headers: failureHeaders(),
+    });
+  }
 }
 
 export default {
@@ -189,28 +360,48 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
-    if (url.pathname === '/beat') {
-      if (request.method !== 'POST') return noindexResponse(null, { status: 405 });
+    if (url.pathname === "/beat") {
+      if (request.method !== "POST")
+        return noindexResponse(null, { status: 405 });
       return handleBeat(request, env);
     }
 
-    if (url.pathname === '/status.json') {
-      if (request.method !== 'GET') return noindexResponse(null, { status: 405 });
+    if (url.pathname === "/status.json") {
+      if (request.method !== "GET")
+        return noindexResponse(null, { status: 405 });
+      if (!(await requireSession(request, env))) return redirectTo("/login");
       return handleStatusJson(env);
     }
 
-    if (url.pathname === '/') {
-      if (request.method !== 'GET') return noindexResponse(null, { status: 405 });
+    if (url.pathname === "/") {
+      if (request.method !== "GET")
+        return noindexResponse(null, { status: 405 });
+      if (!(await requireSession(request, env))) return redirectTo("/login");
       return handleHome(env);
     }
 
-    if (url.pathname === '/pipelines') {
-      if (request.method !== 'GET') return noindexResponse(null, { status: 405 });
+    if (url.pathname === "/pipelines") {
+      if (request.method !== "GET")
+        return noindexResponse(null, { status: 405 });
+      if (!(await requireSession(request, env))) return redirectTo("/login");
       return handlePipelines(env);
     }
 
-    if (url.pathname === '/robots.txt') {
-      if (request.method !== 'GET') return noindexResponse(null, { status: 405 });
+    if (url.pathname === "/login") {
+      if (request.method !== "GET")
+        return noindexResponse(null, { status: 405 });
+      return handleLogin(request, env);
+    }
+
+    if (url.pathname === "/auth/callback") {
+      if (request.method !== "GET")
+        return noindexResponse(null, { status: 405 });
+      return handleAuthCallback(request, env);
+    }
+
+    if (url.pathname === "/robots.txt") {
+      if (request.method !== "GET")
+        return noindexResponse(null, { status: 405 });
       return handleRobots();
     }
 
