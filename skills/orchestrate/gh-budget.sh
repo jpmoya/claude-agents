@@ -171,7 +171,16 @@ gh_tier_allows() {
   _gh_tier_ok "$GHQ_CORE" "${1:-normal}"
 }
 
-gh_cache_clear() { _gh_budget_paths; rm -f "$GH_CACHE_DIR"/* 2>/dev/null; return 0; }
+# Finished entries only (all-digit names): another process's in-flight <key>.<pid> / <key>.w<pid> files must survive (#582).
+gh_cache_clear() {
+  _gh_budget_paths
+  local f
+  for f in "$GH_CACHE_DIR"/[0-9]*; do
+    case "${f##*/}" in *[!0-9]*) continue ;; esac
+    rm -f "$f" 2>/dev/null
+  done
+  return 0
+}
 
 gh() {
   if [ "$GH_BUDGET_ENABLED" != 1 ] || [ -n "${_GH_INNER:-}" ]; then command gh "$@"; return $?; fi
