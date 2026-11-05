@@ -90,8 +90,12 @@ print(datetime.datetime.fromtimestamp(int(sys.argv[1]), tz=datetime.timezone.utc
   printf '%s' "$SENT_AT"
 }
 
+_rs_build_backlog_json() {  # the payload's backlog array (backlog reorder view), local files only
+  python3 "$RS_HERE/build-runs-json.py" "$(_rs_aliases_arg)" "$HOME/.claude/pipeline/runs.jsonl" "$PIPE" backlog </dev/null
+}
+
 build_payload() {
-  local runs_tsv running queued runs_json completed_json staging_json approved_json goals_json
+  local runs_tsv running queued runs_json completed_json staging_json approved_json goals_json backlog_json
   runs_tsv=$(derive_runs)
   running=$(printf '%s\n' "$runs_tsv" | awk -F'\t' '$3=="running"{c++} END{print c+0}')
   queued=$(printf '%s\n' "$runs_tsv" | awk -F'\t' '$3=="queued"{c++} END{print c+0}')
@@ -102,6 +106,7 @@ build_payload() {
   staging_json=$(_rs_build_list_json staging);   [ -n "$staging_json" ] || staging_json='[]'
   approved_json=$(_rs_build_list_json approved); [ -n "$approved_json" ] || approved_json='[]'
   goals_json=$(_rs_build_goals_json); [ -n "$goals_json" ] || goals_json='[]'
+  backlog_json=$(_rs_build_backlog_json); [ -n "$backlog_json" ] || backlog_json='[]'
   jq -n \
     --argjson goals "$goals_json" \
     --arg sent_at "$SENT_AT" \
@@ -113,9 +118,10 @@ build_payload() {
     --argjson completed "$completed_json" \
     --argjson staging "$staging_json" \
     --argjson approved "$approved_json" \
+    --argjson backlog "$backlog_json" \
     '{v: 1, sent_at: $sent_at, supervisor_last_tick: $tick,
       capacity: {running: $running, max: $max, queued: $queued}, runs: $runs, completed: $completed,
-      staging: $staging, approved: $approved} + (if ($goals | length) > 0 then {goals: $goals} else {} end)'
+      staging: $staging, approved: $approved, backlog: $backlog} + (if ($goals | length) > 0 then {goals: $goals} else {} end)'
 }
 
 SENT_AT=$(python3 -c "import datetime; print(datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))")

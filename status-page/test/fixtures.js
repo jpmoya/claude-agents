@@ -140,8 +140,19 @@ export function validApprovedItem(overrides = {}) {
   };
 }
 
+/** One valid backlog[] item (backlog reorder view): {repo, issue, title?, url?, rank?}. */
+export function validBacklogItem(overrides = {}) {
+  return {
+    repo: 'project-a',
+    issue: 9,
+    title: 'Standalone ticket',
+    url: 'https://github.com/example-owner/project-a/issues/9',
+    ...overrides,
+  };
+}
+
 /** A stored KV host record (validated payload + received_at). Keys left undefined are omitted (today's shape). */
-export function hostRecord({ runs = [], completed, staging, approved, received_at = '2026-09-21T12:00:00Z' } = {}) {
+export function hostRecord({ runs = [], completed, staging, approved, backlog, received_at = '2026-09-21T12:00:00Z' } = {}) {
   const rec = {
     v: 1,
     sent_at: received_at,
@@ -153,5 +164,6 @@ export function hostRecord({ runs = [], completed, staging, approved, received_a
   if (completed !== undefined) rec.completed = completed;
   if (staging !== undefined) rec.staging = staging;
   if (approved !== undefined) rec.approved = approved;
+  if (backlog !== undefined) rec.backlog = backlog;
   return rec;
 }

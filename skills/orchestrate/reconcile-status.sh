@@ -27,6 +27,7 @@ RECENT_SECS=$((48 * 3600))      # done/stopped records older than this are not r
 STAMP="$PIPE/status-reconcile.stamp"
 STAGING_LIST="$PIPE/status-staging.json"
 APPROVED_LIST="$PIPE/status-approved.json"
+BACKLOG_LIST="$PIPE/status-backlog.json"   # standalone (non-goal) agent-go tickets, backlog priority reorder view
 
 FORCE=0
 [ "${1:-}" = "--force" ] && FORCE=1
@@ -97,6 +98,41 @@ rc_refresh_list() {
   done <<RCREPOS
 $(rc_repos)
 RCREPOS
+  if [ "$merged" != "$prev" ] || [ ! -f "$file" ]; then
+    tmp=$(mktemp "$file.XXXXXX" 2>/dev/null) || return 0
+    printf '%s\n' "$merged" > "$tmp" && mv -f "$tmp" "$file" || rm -f "$tmp"
+    [ "$merged" != "$prev" ] && changed=1
+  fi
+  return 0
+}
+
+# rc_refresh_backlog <file> — standalone (non-goal) open agent-go tickets across DISPATCH_REPOS u
+# SCAN_ONLY_REPOS: the backlog-reorder view's source list. Same per-repo fetch/merge shape as
+# rc_refresh_list, but needs `labels` to drop a goal ticket ("goal: " label) and an in-progress one
+# (LABEL_IN_PROGRESS), and `milestone` for the builder's fallback order (build-runs-json.py "backlog").
+rc_refresh_backlog() {
+  local file=$1
+  local repo out fresh merged="[]" prev tmp
+  prev=$(jq -c 'if type=="array" then . else [] end' "$file" 2>/dev/null) || prev="[]"
+  [ -n "$prev" ] || prev="[]"
+  while IFS= read -r repo; do
+    [ -n "$repo" ] || continue
+    if out=$(gh issue list --repo "$repo" --state open --label "$LABEL_GO" --limit 200 \
+                --json number,title,updatedAt,labels,milestone 2>/dev/null </dev/null) \
+       && fresh=$(printf '%s' "$out" | jq -c --arg r "$repo" --arg ip "$LABEL_IN_PROGRESS" \
+            '[.[] | select(([.labels[].name] | index($ip)) | not)
+                  | select(([.labels[].name] | any(test("^goal: "))) | not)]
+              | map({owner_repo: $r, issue: .number, title: (.title // ""), updated_at: (.updatedAt // ""),
+                     milestone: (.milestone.title // "")})' 2>/dev/null) \
+       && [ -n "$fresh" ]; then
+      :
+    else
+      fresh=$(printf '%s' "$prev" | jq -c --arg r "$repo" 'map(select(.owner_repo == $r))' 2>/dev/null) || fresh="[]"
+    fi
+    merged=$(jq -nc --argjson a "$merged" --argjson b "${fresh:-[]}" '$a + $b' 2>/dev/null) || continue
+  done <<RCBACKLOG
+$(rc_repos)
+RCBACKLOG
   if [ "$merged" != "$prev" ] || [ ! -f "$file" ]; then
     tmp=$(mktemp "$file.XXXXXX" 2>/dev/null) || return 0
     printf '%s\n' "$merged" > "$tmp" && mv -f "$tmp" "$file" || rm -f "$tmp"
@@ -265,6 +301,13 @@ EOF
 
 rc_refresh_list "$STAGING_LIST" --search "milestone:staging" --limit 100
 rc_refresh_list "$APPROVED_LIST" --label agent-go --limit 50
+rc_refresh_backlog "$BACKLOG_LIST"
+
+# Backlog priority (issue: backlog reorder view, status page): keep the host-local rank cache
+# ($PIPE/backlog-priority.json) fresh from the GitHub registry issue JP's drag-and-drop writes to.
+# Silent no-op on any failure (same contract as the rest of this pass) — never affects `changed`,
+# since the cache is read straight off disk by supervisor.sh's dispatch step, not published here.
+"$RC_HERE/backlog-priority.sh" pull >/dev/null 2>&1 || true
 
 [ "$changed" -eq 1 ] && report_status_async "reconcile"
 exit 0
