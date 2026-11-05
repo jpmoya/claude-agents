@@ -221,7 +221,10 @@ describe('#29 — POST /beat with the optional ticket fields', () => {
 
     const home = await worker.fetch(getRequest('/'), env, {});
     const html = (await home.text()).replace(/<nav>[\s\S]*?<\/nav>/, ''); // #273 nav carries hrefs
-    const tbody = html.match(/<tbody>([\s\S]*?)<\/tbody>/)[1];
+    // Scope to the "Running" group section — the goals and backlog-priority sections (#584)
+    // also render a <tbody>, so the first one on the page is no longer necessarily this run's.
+    const runningSection = html.match(/<h2>Running[\s\S]*?<\/section>/)[0];
+    const tbody = runningSection.match(/<tbody>([\s\S]*?)<\/tbody>/)[1];
     const cells = [...tbody.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((m) => m[1].trim());
     expect(cells).toHaveLength(8); // AC 6: run-shaped rows are 8 columns (Host inserted)
     expect(cells[cells.length - 7]).toBe(''); // Ticket
