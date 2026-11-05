@@ -10,7 +10,10 @@ Tests run entirely against the exported `fetch` handler with a hand-written mock
 
 ## What is published (issue #29)
 
-The page is public (no auth, `noindex` only). By JP's decision (2026-09-19) each run's
+The human-facing routes (`GET /`, `/status.json`, `/pipelines`) now require Google sign-in
+against an allowlist (2026-11-05, JP — see "Sign-in" below); `POST /beat`'s own bearer-token
+auth is unaffected. Before sign-in was added, the page was public (no auth, `noindex` only). By
+JP's decision (2026-09-19) each run's
 **issue title and GitHub issue URL are published**. The runs table is
 `Issue · Ticket · State · Stage · Marker · Last activity · Restarts`, the Ticket cell links the
 title to the issue, and timestamps read like `Sat 19 Sep, 14:05` in Europe/Madrid time
@@ -125,6 +128,66 @@ Completed-ticket source (issue #51):
    remembered the manual step).
 4. Put the deployed URL in each host's `config.local.sh` as `STATUS_PUSH_URL`, and the matching
    token as `STATUS_PUSH_TOKEN` (host-side reporter, issue #10).
+
+## Sign-in (Google OAuth, 2026-11-05)
+
+`GET /`, `GET /status.json` and `GET /pipelines` require a signed-in, allowlisted Google
+account. `POST /beat` (the pipeline hosts' heartbeat) is untouched — still bearer-token auth,
+never a cookie.
+
+**How it works** (`src/auth.js`, wired into `src/index.js`): a standard OAuth 2.0 Authorization
+Code flow, no library. An unauthenticated GET on a protected route redirects (302) to `/login`,
+which sets a short-lived, signed `oauth_state` cookie and redirects to Google. Google redirects
+back to `/auth/callback?code=...&state=...`; the Worker checks `state` against the cookie
+(CSRF), exchanges `code` for a token at Google's token endpoint, reads the signed-in email from
+Google's userinfo endpoint, and — only if `email_verified` is true and the email (lowercased,
+trimmed) is in the `ALLOWED_EMAILS` secret — issues a signed session cookie
+(`email|expiresAtEpochSecs|hmacSha256Hex`, 30-day expiry, HttpOnly/Secure/SameSite=Lax) and
+redirects to `/`. The allowlist is re-checked on every request, so removing an email from
+`ALLOWED_EMAILS` revokes an already-issued cookie immediately, without rotating `SESSION_SECRET`.
+Adding a second viewer is a one-line `ALLOWED_EMAILS` edit — no code change.
+
+**This repo cannot create the Google OAuth client** — that needs JP's own GCP Console access.
+Everything below is a one-time setup JP (or whoever JP delegates) does once this PR is open (the
+redirect URI must exist before testing sign-in; the secrets must exist before this merges — see
+the deploy note at the end):
+
+1. **Create the OAuth client** — Google Cloud Console → APIs & Services → Credentials → Create
+   Credentials → OAuth client ID → Application type **Web application**.
+   - **Authorized redirect URI** (exact match, no trailing slash):
+     `https://status-page.jpmoya.workers.dev/auth/callback`
+     (the deployed Worker's `workers.dev` subdomain is `jpmoya`, from the root `README.md`
+     "Status board" paragraph — this PR does not change it).
+   - If prompted to configure the **OAuth consent screen** first: User type **External**,
+     publish it to **Production** (not "Testing" — Testing restricts sign-in to a hand-picked
+     test-user list, which defeats "adding a second viewer is a one-line secret change"). Scopes
+     are just `openid` and `email` (also `.../auth/userinfo.email`) — at the time of writing
+     that scope tier does not require Google's app-verification review, but re-check this against
+     Google's current verification rules before publishing, since Google's policy here has
+     changed before.
+2. Copy the **Client ID** and **Client secret** Google shows you.
+3. Set four Worker secrets from this directory (never paste values as CLI arguments — use the
+   interactive prompt each `wrangler secret put` opens):
+   ```
+   wrangler secret put GOOGLE_CLIENT_ID
+   wrangler secret put GOOGLE_CLIENT_SECRET
+   wrangler secret put SESSION_SECRET      # any long random string, e.g. `openssl rand -hex 32`
+   wrangler secret put ALLOWED_EMAILS      # start with just your own address
+   ```
+   `ALLOWED_EMAILS` is comma-separated (`you@example.com, someone-else@example.com`) — case and
+   surrounding whitespace don't matter, both are normalised on every check.
+4. **Set the secrets before merging this PR to `main`.** The Worker currently redeploys
+   automatically on every push to `main` via Cloudflare's own Workers Builds git integration (not
+   a GitHub Actions workflow — see the note at the end of "Infra hand-off contract" above, which
+   still describes the older GitHub Actions deploy and is stale as of #528). Secrets persist
+   independently of a deploy, so setting them first means the human-facing routes work the moment
+   this merges; merging first would lock out `/`, `/status.json` and `/pipelines` (not `/beat`)
+   until the secrets are set.
+5. Sign in once at `https://status-page.jpmoya.workers.dev/login` to confirm the redirect URI and
+   the allowlist are both right.
+
+A misconfigured or not-yet-set `GOOGLE_CLIENT_ID`/`SESSION_SECRET` makes `/login` and
+`/auth/callback` fail closed with `503` rather than redirect with an empty `client_id`.
 
 ## Pipelines tab (issue #273)
 
