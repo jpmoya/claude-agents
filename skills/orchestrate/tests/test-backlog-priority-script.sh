@@ -21,7 +21,8 @@ D="$(cd "$(dirname "$0")" && pwd)"
 printf '%s\n' "$*" >> "$D/gh-calls.log"
 n=$(cat "$D/registry-number" 2>/dev/null)
 case "$*" in
-  "issue list --repo "*"--label backlog-priority-registry"*)
+  "api repos/"*"/issues?labels=backlog-priority-registry&state=open"*)
+    [ -f "$D/lookup-fail" ] && exit 1
     if [ -n "$n" ]; then jq -rn --argjson n "$n" '$n|tostring'; fi
     exit 0 ;;
   "api -X POST "*"/labels"*"name=backlog-priority-registry"*)
@@ -117,14 +118,29 @@ test_bp_pull_refreshes_local_cache_from_registry_body() {
   assert_eq "$cache" '{"owner/repo#9":0,"owner/repo#1":1}' "pull rebuilds the local cache from the registry issue" || return 1
 }
 
-test_bp_pull_on_no_registry_issue_yet_is_a_silent_empty_cache() {
+test_bp_pull_on_lookup_failure_leaves_the_cache_untouched_and_creates_nothing() {
+  bp_env
+  bp_run set 'owner/repo#9' 'owner/repo#1' >/dev/null
+  local before; before=$(cat "$BP_PIPE/backlog-priority.json" 2>/dev/null)
+  touch "$BP_D/lookup-fail"   # simulate an outage (e.g. GraphQL/REST budget exhausted) on the next pull
+  bp_run pull >/dev/null
+  local after calls; after=$(cat "$BP_PIPE/backlog-priority.json" 2>/dev/null)
+  calls=$(wc -l < "$BP_D/create-calls" | tr -d ' ')
+  bp_cleanup
+  assert_eq "$after" "$before" "a failed lookup never wipes JP's stored order to {}" || return 1
+  assert_eq "$calls" "1" "a failed lookup during pull never creates a (duplicate) registry issue" || return 1
+}
+
+test_bp_pull_on_no_registry_issue_yet_creates_nothing_and_writes_no_cache() {
   bp_env
   local out rc
   out=$(bp_run pull); rc=$?
-  local cache; cache=$(cat "$BP_PIPE/backlog-priority.json" 2>/dev/null)
+  local calls; calls=$(wc -l < "$BP_D/create-calls" | tr -d ' ')
+  local has_cache=0; [ -f "$BP_PIPE/backlog-priority.json" ] && has_cache=1
   bp_cleanup
   assert_eq "$rc" "0" "pull with nothing registered yet still exits 0" || return 1
-  assert_eq "$cache" '{}' "cache defaults to {} (today's fallback order applies for every ticket)" || return 1
+  assert_eq "$calls" "0" "pull never creates the registry issue (only set does)" || return 1
+  assert_eq "$has_cache" "0" "no cache file yet -- supervisor.sh's own {} fallback covers this, not a written empty file" || return 1
 }
 
 run_test test_bp_set_rejects_malformed_key
@@ -133,4 +149,5 @@ run_test test_bp_set_creates_registry_issue_once_and_writes_body_and_cache
 run_test test_bp_set_dedupes_repeated_keys_keeping_first_position
 run_test test_bp_set_reuses_existing_registry_issue
 run_test test_bp_pull_refreshes_local_cache_from_registry_body
-run_test test_bp_pull_on_no_registry_issue_yet_is_a_silent_empty_cache
+run_test test_bp_pull_on_lookup_failure_leaves_the_cache_untouched_and_creates_nothing
+run_test test_bp_pull_on_no_registry_issue_yet_creates_nothing_and_writes_no_cache

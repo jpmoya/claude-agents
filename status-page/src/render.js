@@ -280,8 +280,9 @@ function renderBacklogSection(hosts) {
     : "";
   return `<section class="group backlog">
     <h2>Backlog priority (${rows.length})</h2>
-    <p class="backlog-help">Standalone (non-goal) <code>agent-go</code> tickets, in today's dispatch order. To set your own
-      order: reorder the quoted keys below, then run the command on either host.</p>
+    <p class="backlog-help">Standalone (non-goal) <code>agent-go</code> tickets, in today's dispatch order. Dispatch picks
+      one repo at a time (config order), so this order only matters between tickets of the <strong>same</strong> repo.
+      To set your own order: reorder the quoted keys below, then run the command on either host.</p>
     <div class="table-scroll"><table>
       <tr class="cols"><th>#</th><th>Issue</th><th>Ticket</th></tr>
       <tbody>${body}</tbody>

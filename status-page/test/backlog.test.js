@@ -57,12 +57,20 @@ const urlFor = (n) => `https://github.com/example-owner/project-a/issues/${n}`;
 const bi = (issue, overrides = {}) => validBacklogItem({ issue, url: urlFor(issue), ...overrides });
 
 describe('group.js — buildBacklog: cross-host merge and order', () => {
-  it('ranked items sort first (lowest rank), unranked after by issue number', () => {
+  it('ranked items sort first (lowest rank), unranked after, keeping the host order', () => {
     const mac = hostRecord({
       backlog: [bi(30, { rank: 0 }), bi(20)],
     });
     const rows = buildBacklog({ mac, vm: null });
     expect(rows.map((r) => r.issue)).toEqual([30, 20]);
+  });
+
+  it('unranked tickets keep the host\'s own (milestone-first) order, never re-sorted by raw issue number', () => {
+    // build-runs-json.py would have already put the v1.0.0 ticket (#50) before the no-milestone
+    // one (#5) even though 50 > 5 -- buildBacklog must not undo that by sorting on .issue itself.
+    const mac = hostRecord({ backlog: [bi(50), bi(5)] });
+    const rows = buildBacklog({ mac, vm: null });
+    expect(rows.map((r) => r.issue)).toEqual([50, 5]);
   });
 
   it('dedupes the same ticket seen from both hosts (same repo in both DISPATCH_REPOS)', () => {

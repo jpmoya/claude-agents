@@ -80,7 +80,8 @@ for entry in ${DISPATCH_REPOS[@]+"${DISPATCH_REPOS[@]}"} ${SCAN_ONLY_REPOS[@]+"$
       (contains(["'"$LABEL_IN_PROGRESS"'"]) | not) and
       (contains(["user-feedback-intake"]) | not) and
       (contains(["user-feedback-needs-spec"]) | not) and
-      (contains(["release-watch"]) | not)
+      (contains(["release-watch"]) | not) and
+      (contains(["backlog-priority-registry"]) | not)
     ) | "\(.number)\t\(.title)\t\([.labels[].name] | join(","))"' 2>/dev/null) || continue
   [ -n "$issues" ] || continue
   while IFS=$'\t' read -r num title lbls; do

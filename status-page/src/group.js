@@ -68,8 +68,13 @@ const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
  * Backlog reorder view: standalone (non-goal) open agent-go tickets, merged across both hosts by
  * key (a repo in both hosts' DISPATCH_REPOS/SCAN_ONLY_REPOS may publish the same ticket twice).
  * Ranked tickets (JP's stored priority; lower rank = dispatched first) sort first, lowest rank
- * first; unranked tickets follow, by issue number (display only — the exact dispatch tiebreak for
- * an unranked ticket is milestone+issue, computed host-side; see skills/orchestrate/lib/backlog-sort.jq).
+ * first. Unranked tickets keep the relative order the host already gave them (build-runs-json.py
+ * "backlog" mode sorts by rank then by today's milestone+issue tiebreak before publishing) — this
+ * only merges two already-correctly-ordered lists, via a stable sort, rather than re-deriving the
+ * fallback order from issue numbers (which would silently disagree with milestone order).
+ *
+ * Note: supervisor.sh dispatches one repo at a time (config order in DISPATCH_REPOS), so this
+ * view's ordering is only ever load-bearing *within* a repo — see the page's own help text.
  * @param {{ mac?: object|null, vm?: object|null }} hosts
  * @returns {object[]}
  */
@@ -88,7 +93,7 @@ export function buildBacklog(hosts) {
     if (ra !== null && rb !== null) return ra - rb;
     if (ra !== null) return -1;
     if (rb !== null) return 1;
-    return (a.issue ?? 0) - (b.issue ?? 0);
+    return 0; // stable sort (Array#sort is stable per spec): keep the host's own correct fallback order
   });
 }
 
