@@ -482,8 +482,8 @@ test_gi_ac4_orchestrator_needs_jp_lines_untouched() {
 }
 
 test_gi_ac4_orchestrator_delegated_decision_lines_untouched() {
-  # Re-pinned for #523: same single-row wording change as the needs_jp pin above; nothing else in these lines moved.
-  assert_eq "$(grep -F 'delegated-decision' "$ORCH_GI" | gi_sha)" "7ba99345dbd5ed3888ff8d4716cebe761b5eaa02e1094d4b23220fbc5e05e58e" "AC4: delegated-decision lines"
+  # Re-pinned for #328: the loop-cap-section sentence about the infra PLAN FAIL cap changed (the cap now has a JP-go exit); nothing else in these lines moved.
+  assert_eq "$(grep -F 'delegated-decision' "$ORCH_GI" | gi_sha)" "a92df36242a14337ef00d23a0d013871590312704da9d33adaf5beeb76e61374" "AC4: delegated-decision lines"
 }
 
 test_gi_ac4_orchestrator_states_operator_may_proceed_on_inherited_go() {
