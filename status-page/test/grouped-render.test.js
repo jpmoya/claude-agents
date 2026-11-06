@@ -78,8 +78,12 @@ describe('AC6 — seven headings, in order, with counts, no per-host run table',
     expect(render(null, null)).toContain('no data from either host yet');
   });
 
-  it('no <script> and no third-party resource', () => {
-    expect(html).not.toMatch(/<script/i);
+  it('no third-party script or resource (the backlog reorder <script>, if any, is same-origin only)', () => {
+    // The Backlog priority section ships one inline, same-origin <script> when it has reorderable
+    // rows (src/render.js's BACKLOG_REORDER_SCRIPT) — see test/backlog.test.js. This fixture's
+    // backlog[] is empty, so no <script> is emitted here either; the no-third-party-src check
+    // still applies regardless.
+    expect(html).not.toMatch(/<script[^>]+\ssrc=/i);
     expect(html).not.toMatch(/(src|href)="https?:\/\/(?!github\.com)/i);
   });
 });

@@ -59,7 +59,7 @@ n=$(printf '%s' "$*" | sed -n -e 's/.*issue view \([0-9][0-9]*\).*/\1/p' -e 's|^
 if [ "$1" = api ]; then
   [ -f "$HERE/gh-api-fail" ] && { echo "token=ghp_FAKESECRET123" >&2; exit 1; }
   case "$*" in
-    *"/comments"*) jq -c 'map({body: .body, created_at: .createdAt})' "$HERE/gh-issue-comments-json-$n" 2>/dev/null || echo '[]' ;;
+    *"/comments"*) jq -c 'map({id: .id, body: .body, created_at: .createdAt})' "$HERE/gh-issue-comments-json-$n" 2>/dev/null || echo '[]' ;;
     *) jq -nc --arg s "$(cat "$HERE/gh-issue-state-$n" 2>/dev/null || echo OPEN)" --arg b "$(cat "$HERE/gh-issue-body-$n" 2>/dev/null)" '{state:($s|ascii_downcase), body:$b, updated_at:"2026-01-01T00:00:00Z"}' ;;
   esac
   exit 0
@@ -321,6 +321,40 @@ test_ar2_cause_check_error_alerts_slack_with_tags_and_no_secret() {
   assert_eq "$h" "present" "stays held" || return 1
 }
 
+# ---- #590: only a literal MERGEABLE clears merge_conflict; the raw value is logged ------------------------------
+ar2_590_case() {  # <value> <expect-launches> ; sets AR590_LOG / AR590_CTR / AR590_CALLS
+  ar2_fixture 'Blocked on: merge_conflict — rebase needed'
+  printf '%s' "$1" > "$SQ_GH/gh-pr-mergeable"
+  ar2_tick
+  if [ "$2" = 1 ]; then AR590_N=$(ar2_launches); else AR590_N=$(ar2_no_launch); fi
+  AR590_LOG=$(sq_log); AR590_CTR=$(ar2_counter); AR590_CALLS=$(gh_calls "$SQ_GH")
+  sq_cleanup
+}
+test_ar2_590_mergeable_clears_and_logs() {
+  ar2_590_case MERGEABLE 1
+  assert_eq "$AR590_N" "1" "MERGEABLE -> relaunched" || return 1
+  assert_contains "$AR590_LOG" "autoretry merge_conflict pr=7 mergeable=MERGEABLE" "raw value logged" || return 1
+}
+test_ar2_590_conflicting_not_cleared_and_logs() {
+  ar2_590_case CONFLICTING 0
+  assert_eq "$AR590_N" "0" "CONFLICTING -> no relaunch" || return 1
+  assert_contains "$AR590_LOG" "autoretry merge_conflict pr=7 mergeable=CONFLICTING" "raw value logged" || return 1
+}
+test_ar2_590_unknown_not_cleared_counter_unchanged() {
+  ar2_590_case UNKNOWN 0
+  assert_eq "$AR590_N" "0" "UNKNOWN -> no relaunch" || return 1
+  assert_eq "$AR590_CTR" "ABSENT" "no retry consumed" || return 1
+  case "$AR590_CALLS" in *"auto-retry"*) echo "FAIL: auto-retry NOTE posted for UNKNOWN"; return 1 ;; esac
+  assert_contains "$AR590_LOG" "autoretry merge_conflict pr=7 mergeable=UNKNOWN" "raw value logged" || return 1
+}
+test_ar2_590_empty_not_cleared_counter_unchanged() {
+  ar2_590_case "" 0
+  assert_eq "$AR590_N" "0" "empty -> no relaunch" || return 1
+  assert_eq "$AR590_CTR" "ABSENT" "no retry consumed" || return 1
+  case "$AR590_CALLS" in *"auto-retry"*) echo "FAIL: auto-retry NOTE posted for empty"; return 1 ;; esac
+  assert_contains "$AR590_LOG" "autoretry merge_conflict pr=7 mergeable=" "empty value logged" || return 1
+}
+
 run_test test_ar2_ci_red_checks_green_relaunches_once
 run_test test_ar2_ci_pending_relaunches_when_checks_pass
 run_test test_ar2_merge_conflict_relaunches_when_mergeable
@@ -567,3 +601,7 @@ run_test test_ar2_269_extra_carried_over_to_relaunch
 run_test test_ar2_269_non_blocked_alert_skips_issue_view
 run_test test_ar2_269_blocked_alert_still_reads_issue_and_retries
 run_test test_ar2_293_missing_autoretry_file_no_stderr
+run_test test_ar2_590_mergeable_clears_and_logs
+run_test test_ar2_590_conflicting_not_cleared_and_logs
+run_test test_ar2_590_unknown_not_cleared_counter_unchanged
+run_test test_ar2_590_empty_not_cleared_counter_unchanged

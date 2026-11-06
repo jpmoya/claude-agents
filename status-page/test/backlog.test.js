@@ -1,7 +1,8 @@
 // backlog[] — the "Backlog priority" reorder view (standalone, non-goal agent-go tickets; JP's
 // stored priority rank, lowest first). Covers validate.js sanitisation, group.js's cross-host
-// merge/sort and the no-JS render.js section (this page never emits <script>; grouped-render.test.js
-// pins that for the whole page).
+// merge/sort, render.js's up/down reorder controls and inline same-origin <script>, and the
+// POST /backlog-priority route (routes.test.js carries the full auth-gated request/response
+// cases; this file only checks the keys this page would submit and its validation).
 
 import { describe, it, expect } from 'vitest';
 import { validateBeatPayload } from '../src/validate.js';
@@ -93,7 +94,7 @@ describe('group.js — buildBacklog: cross-host merge and order', () => {
   });
 });
 
-describe('render.js — Backlog priority section (no JS)', () => {
+describe('render.js — Backlog priority section', () => {
   it('renders a heading with the row count and a row per ticket', () => {
     const mac = hostRecord({
       backlog: [bi(11, { title: 'First', rank: 0 }), bi(12, { title: 'Second', rank: 1 })],
@@ -126,10 +127,36 @@ describe('render.js — Backlog priority section (no JS)', () => {
     expect(html).not.toContain('class="backlog-cmd"');
   });
 
-  it('never emits <script>, and escapes a hostile title', () => {
+  it('escapes a hostile title (the page ships its own trusted reorder <script>, but never reflects data into one)', () => {
     const mac = hostRecord({ backlog: [validBacklogItem({ title: '<script>alert(1)</script>' })] });
     const html = renderPage({ mac, vm: null }, thresholds, NOW);
-    expect(html).not.toMatch(/<script/i);
+    expect(html).not.toContain('<script>alert(1)</script>');
     expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+  });
+
+  it('a row with a parsable key gets up/down reorder buttons and a data-key attribute', () => {
+    const mac = hostRecord({
+      backlog: [bi(30, { rank: 0 }), bi(20, { rank: 1 }), bi(10, { rank: 2 })],
+    });
+    const html = renderPage({ mac, vm: null }, thresholds, NOW);
+    expect(html).toContain('data-key="example-owner/project-a#30"');
+    expect(html).toContain('data-key="example-owner/project-a#20"');
+    expect(html).toContain('data-key="example-owner/project-a#10"');
+    // first row's "up" button and last row's "down" button are disabled, the rest aren't
+    expect(html).toMatch(/data-key="example-owner\/project-a#30"[^]*?class="bp-up" data-dir="up"[^>]*\sdisabled/);
+    expect(html).toMatch(/data-key="example-owner\/project-a#10"[^]*?class="bp-down" data-dir="down"[^>]*\sdisabled/);
+  });
+
+  it('ships one inline, same-origin <script> (the reorder control) when there is a reorderable row', () => {
+    const mac = hostRecord({ backlog: [bi(30, { rank: 0 })] });
+    const html = renderPage({ mac, vm: null }, thresholds, NOW);
+    expect(html).toMatch(/<script>/);
+    expect(html).not.toMatch(/<script[^>]+\ssrc=/i);
+    expect(html).toContain('/backlog-priority');
+  });
+
+  it('an empty backlog ships no <script> at all', () => {
+    const html = renderPage({ mac: hostRecord({}), vm: null }, thresholds, NOW);
+    expect(html).not.toMatch(/<script/i);
   });
 });

@@ -10,7 +10,7 @@
 #   5. shared dispatch: launch one agent-go issue from DISPATCH_REPOS after winning a claim
 #   3d. goal step (#195): keep-alive, pacing, parking, completion of goal-bound delivery leads pinned to this host
 #   7. status reconcile: refresh listed tickets from GitHub (backgrounded, throttled to once per 600 s; issue #51)
-#   8. PM Slack DM poll: record JP's replies to project-manager asks (backgrounded, no-op without PM_SLACK_BOT_TOKEN; issue #117)
+#   8. PM Slack DM poll: record JP's replies to delivery-lead asks (backgrounded, no-op without PM_SLACK_BOT_TOKEN; issue #117)
 #   9. stale-work digest: log (never act on) stale agent-go, stuck ci_red/ci_pending/merge_conflict holds, disk
 #      pressure >= 85% (throttled to once per 600 s; issue #491)
 # One launch per tick max. All state is local (~/.claude/pipeline/state); the only shared state is the issue's markers and labels.
@@ -142,7 +142,7 @@ autoretry_alert() {  # <issue> <what> [step, default auto-retry] — Slack webho
     --data "$(jq -nc --arg t "$msg" '{text:$t}')" "$SLACK_WEBHOOK_URL" >/dev/null 2>&1 || true
 }
 
-# issue_info_rest <checkout> <issue> → JSON {state, body, comments:[{body,createdAt}]} over REST (the old `gh issue view --json
+# issue_info_rest <checkout> <issue> → JSON {state, body, comments:[{id,body,createdAt}]} over REST (the old `gh issue view --json
 # state,body,comments` shape, #388). On failure returns 1 and prints a one-line, token-free reason instead.
 issue_info_rest() {
   local repo=$1 issue=$2 slug errf iss com rc=0
@@ -156,7 +156,7 @@ issue_info_rest() {
     printf '%s' "$com" | jq -s '{c: (map(if type == "array" then .[] else . end))}' 2>>"$errf" | jq -c --argjson i "$iss" \
       '{state: (($i.state // "") | ascii_upcase), body: ($i.body // ""), updatedAt: $i.updated_at,
         author: (if ($i.user.login | type) == "string" then {login: $i.user.login} else null end),
-        comments: [.c[] | {body: .body, createdAt: .created_at, author: (if (.user.login | type) == "string" then {login: .user.login} else null end)}]}' 2>>"$errf" \
+        comments: [.c[] | {id: .id, body: .body, createdAt: .created_at, author: (if (.user.login | type) == "string" then {login: .user.login} else null end)}]}' 2>>"$errf" \
       && { rm -f "$errf"; return 0; }
     rc=1
   fi
@@ -585,8 +585,11 @@ do_launch() {  # <repo> <issue> <extra> <restart_n> <reason> <queue_wait_s> <run
   owner_repo=$(cd "$repo" && gh api repos/{owner}/{repo} --jq .full_name 2>/dev/null || true)
   [ -n "$owner_repo" ] || owner_repo=$(git -C "$repo" remote get-url origin 2>/dev/null | sed -E 's#^.*github\.com[:/]##; s#\.git$##')
   [ -n "$owner_repo" ] || owner_repo=unknown
-  gh api "repos/$owner_repo/issues/$issue/comments" -f body="**[supervisor] NOTE** claim: $HOST $(date -u +%FT%TZ)" >/dev/null 2>&1 \
-    || { slog "[launch] #$issue — claim comment failed; not launching (will retry)"; return 2; }
+  local claim_err claim_rc
+  claim_err=$(mktemp "${TMPDIR:-/tmp}/claim-err.XXXXXX")
+  gh api "repos/$owner_repo/issues/$issue/comments" -f body="**[supervisor] NOTE** claim: $HOST $(date -u +%FT%TZ)" >/dev/null 2>"$claim_err" \
+    || { claim_rc=$?; slog "[launch] #$issue — claim comment failed rc=$claim_rc: $(gh_err_line "$claim_err"); not launching (will retry)"; rm -f "$claim_err"; return 2; }
+  rm -f "$claim_err"
   sleep "$CLAIM_SETTLE_SECS"
   claim_win=$(claim_winner_rest "$owner_repo" "$issue") \
     || { slog "[launch] #$issue — claim lookup failed; not launching (will retry)"; return 2; }
@@ -1110,7 +1113,9 @@ autoretry_cleared() {
       [ -n "$pr" ] || return 1
       mergeable=${pr#* }; pr=${pr%% *}
       if [ "$cls" = merge_conflict ]; then
-        [ "$mergeable" != "CONFLICTING" ]; return $?
+        # #590: only a literal MERGEABLE clears; UNKNOWN (GitHub still recomputing) / empty is re-checked next tick
+        slog "autoretry merge_conflict pr=$pr mergeable=$mergeable"
+        [ "$mergeable" = "MERGEABLE" ]; return $?
       fi
       (cd "$repo" && gh pr checks "$pr" >/dev/null 2>&1 </dev/null); rc=$?
       case "$rc" in
@@ -1234,13 +1239,19 @@ for f in "$PIPE"/orch-*.held; do
     || { slog "[auto-retry] #$issue — issue read failed: ${info:-no error text}"; autoretry_alert "$issue" "issue read"; continue; }
   [ "$(printf '%s' "$info" | jq -r '.state // empty')" = "OPEN" ] || continue
   if [ "$is_lc" -eq 1 ]; then
-    # Resume only on a delegated decision posted AFTER the hold: [delivery-lead] DECISION / JP CONFIRMED (legacy [project-manager] spelling).
-    # The relaunched orchestrator validates it (Resolves: line); if it refuses, the new hold is later than the decision, so no loop.
-    held_at=$(file_mtime "$f")
-    if [ -n "$held_at" ] && printf '%s' "$info" | jq -e --argjson t "$held_at" '[.comments[]
-        | select((.body | split("\n")[0] | rtrimstr("\r")) as $l | ($l == "**[delivery-lead] DECISION**" or $l == "**[delivery-lead] JP CONFIRMED**"
-            or $l == "**[project-manager] DECISION**" or $l == "**[project-manager] JP CONFIRMED**")
-          and (.createdAt | fromdateiso8601) > $t)] | length > 0' >/dev/null 2>&1; then
+    # Resume only on a delegated decision ([delivery-lead] DECISION / JP CONFIRMED, legacy [project-manager] spelling) with a higher
+    # issuecomment id than the baseline: the newest "loop-cap hold resumed" NOTE, else the newest loop-cap gate comment (BLOCKED / TEST DEFECT / FAIL / TESTS FAIL / IMPLEMENTED; later non-gate comments never move it).
+    # Invariant (#560): ordering is by issuecomment id, never createdAt/mtime (GitHub stamps can be skewed). A refused decision is
+    # followed by a new resumed NOTE with a higher id, so it cannot resume twice; the orchestrator still checks Resolves:.
+    if printf '%s' "$info" | jq -e '
+        def l1: (.body | select(type == "string") | split("\n")[0] | rtrimstr("\r")) // "";
+        def isdec: l1 as $l | ($l == "**[delivery-lead] DECISION**" or $l == "**[delivery-lead] JP CONFIRMED**"
+            or $l == "**[project-manager] DECISION**" or $l == "**[project-manager] JP CONFIRMED**");
+        [.comments[] | select((.id | type) == "number")] as $cs
+        | ([$cs[] | select(l1 | startswith("**[supervisor] NOTE** loop-cap hold resumed")) | .id] | max) as $rn
+        | (if $rn != null then $rn
+           else ([$cs[] | select((l1 | test("^\\*\\*\\[[^]]+\\] (BLOCKED|TEST DEFECT|FAIL|TESTS FAIL|IMPLEMENTED)")) and (isdec | not)) | .id] | max) // 0 end) as $base
+        | [$cs[] | select(isdec and .id > $base)] | length > 0' >/dev/null 2>&1; then
       if ! (cd "$repo" && gh issue comment "$issue" --body "**[supervisor] NOTE** loop-cap hold resumed: a delegated decision was posted after the stop" >/dev/null 2>&1 </dev/null); then
         slog "[loopcap-resume] #$issue — NOTE post failed, staying held"
         continue
@@ -1783,7 +1794,7 @@ gh_class optional
 #    or failing pass never delays or fails the tick.
 [ "$T_OPT" = 1 ] && { ( "$HERE/reconcile-status.sh" >/dev/null 2>&1 & ) 9>&- || true; }
 
-# 8. PM Slack DM poll (issue #117) — copy JP's DM replies onto the tickets the project-manager asked about.
+# 8. PM Slack DM poll (issue #117) — copy JP's DM replies onto the tickets the delivery-lead asked about.
 #    No-op unless PM_SLACK_BOT_TOKEN is set on this host; backgrounded with fd 9 closed so it never delays or fails the tick.
 ( "$HERE/pm-slack.sh" poll >/dev/null 2>&1 & ) 9>&- || true
 
