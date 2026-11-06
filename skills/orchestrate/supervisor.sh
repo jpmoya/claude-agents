@@ -1620,9 +1620,9 @@ if [ "${#DISPATCH_REPOS[@]}" -gt 0 ] && gh_tick_due label-reconcile "${GH_LABEL_
       # Check marker staleness — only clear if no movement for STALE_LABEL_SECS
       # Same call also yields the latest "claim: <host>" comment: a claim naming another machine means it owns the run.
       info=$(issue_info_rest "$local_path" "$num") || { slog "[reconcile] $owner_repo#$num — issue read failed: ${info:-no error text}, skipped"; autoretry_alert "$num" "issue read" reconcile; continue; }
-      view=$(printf '%s' "$info" | jq -r '((.comments[-1].createdAt // .updatedAt) // ""), ([.comments[] | select(.body | startswith("**[supervisor] NOTE** claim: "))] | last | .body // "" | split(" ") | .[3] // "")' 2>/dev/null) || { slog "[reconcile] $owner_repo#$num — issue read failed (unparseable), skipped"; continue; }
+      view=$(printf '%s' "$info" | jq -r '((.comments[-1].createdAt // .updatedAt) // ""), ([.comments[] | select(.body | startswith("**[supervisor] NOTE** claim: ")) | {b: .body, t: .createdAt}] | tojson)' 2>/dev/null) || { slog "[reconcile] $owner_repo#$num — issue read failed (unparseable), skipped"; continue; }
       last_comment_age=$(printf '%s\n' "$view" | sed -n 1p)
-      claim_host=$(printf '%s\n' "$view" | sed -n 2p)
+      claim_host=$(printf '%s\n' "$view" | sed -n 2p | claim_foreign_owner "$HOST")   # #587: shared ownership rule (label is on here)
       [ -n "$claim_host" ] && [ "$claim_host" != "$HOST" ] && continue
       [ -n "$last_comment_age" ] || continue   # #326: no timestamp to judge staleness by — never clear on a blind read
       comment_epoch=$(to_epoch "$last_comment_age")

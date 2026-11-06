@@ -224,7 +224,8 @@ case "$*" in
         # the issue author: the fixture has no separate field, so it is the first comment's author (the old GraphQL fake gave no top-level author either)
         ia=$(jq -r '.[0].author.login? // empty' "$(pick gh-issue-comments-json)" 2>/dev/null)
         jq -nc --arg s "$state" --arg u "$(cat "$(pick gh-issue-updated-at)" 2>/dev/null || echo 2026-01-01T00:00:00Z)" --arg ia "$ia" \
-          '{state: ($s | ascii_downcase), body: "", updated_at: $u} + (if $ia == "" then {} else {user: {login: $ia}} end)'
+          --argjson lb "$(cat "$HERE/gh-issue-labels-json" 2>/dev/null || echo '[]')" \
+          '{state: ($s | ascii_downcase), body: "", updated_at: $u, labels: $lb} + (if $ia == "" then {} else {user: {login: $ia}} end)'
         exit 0 ;;
     esac
     ;;
