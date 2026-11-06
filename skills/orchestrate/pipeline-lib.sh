@@ -202,7 +202,7 @@ log_run_launch() {
 claim_alert() {
   [ -n "${SLACK_WEBHOOK_URL:-}" ] || return 0
   curl -s --max-time 10 -X POST -H 'Content-Type: application/json' \
-    --data "{\"text\":\"claim lookup failed (#${1:-0}, stage $2, host $(hostname -s)); launch refused\"}" \
+    --data "{\"text\":\"claim lookup failed (#${1:-0}, stage $2, host $(hostname -s), route claim-arbitration, release $(git -C "$_CLAIM_LIB_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)); launch refused\"}" \
     "$SLACK_WEBHOOK_URL" >/dev/null 2>&1 </dev/null || true
 }
 
@@ -451,29 +451,88 @@ worktree_sweep_alert() {
     "$SLACK_WEBHOOK_URL" >/dev/null 2>&1 </dev/null || true
 }
 
-# claim_winner <local_path> <issue> [owner/repo] — the optional repo reads a claim on an issue of a repo other than the
-# checkout's (the goal registry issue, #320); same comment shape, same window, same fail-closed behaviour.
+# claim_foreign_owner <self-host> [before-ts] — #587: the ONE ownership rule. stdin is a JSON array of claim comments
+# [{b: body, t: createdAt}]; prints the host of the latest claim posted before [before-ts] (default: all) when that host is not
+# <self-host>, else nothing. Callers apply it only while agent-in-progress is on: then that host owns the run, whatever the
+# claim's age (a run's claim is posted once at launch, so a time window would hand a live run to the other machine).
+# Used by reconcile (supervisor.sh) and by claim_winner / claim_winner_rest.
+claim_foreign_owner() {
+  jq -r --arg self "$1" --arg before "${2:-}" \
+    '[.[] | select($before == "" or .t < $before)] | sort_by(.t) | last | (.b // "" | split(" ") | .[3] // "") | select(. != "" and . != $self)'
+}
+
+# claim_pick <label_on 0|1> <window-cutoff-ts> — #587: stdin as above; prints the winning host (empty if none).
+# Label on and the latest claim before this host's own claim names another host: that host wins, whatever its age.
+# Otherwise (fresh race, own restart, no label) the earliest claim inside the window wins, unchanged. A dead owner with the
+# label left on is NOT auto-taken-over: the takeover path is `orchestrate.sh --force`, which skips arbitration.
+claim_pick() {
+  local data own_t owner self; data=$(cat); self=$(hostname -s)
+  if [ "$1" = 1 ]; then
+    own_t=$(printf '%s' "$data" | jq -r --arg self "$self" '[.[] | select((.b | split(" ") | .[3]) == $self)] | sort_by(.t) | last | .t // ""') || return 1
+    owner=$(printf '%s' "$data" | claim_foreign_owner "$self" "$own_t") || return 1
+    if [ -n "$owner" ]; then printf '%s\n' "$owner"; return 0; fi
+  fi
+  printf '%s' "$data" | jq -r --arg c "$2" '[.[] | select(.t > $c)] | sort_by(.t) | first | .b // "" | split(" ") | .[3] // ""'
+}
+
+# claim_fail <issue> <stage> — records claim_lookup_failed (issue, stage, release=<lib SHA>, environment=<host>,
+# route=claim-arbitration) and sends the Slack alert. Never fails the caller.
+_CLAIM_LIB_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)
+claim_fail() {
+  pipeline_event claim_lookup_failed --argjson issue "${1:-0}" --arg stage "$2" \
+    --arg release "$(git -C "$_CLAIM_LIB_DIR" rev-parse HEAD 2>/dev/null || echo unknown)" \
+    --arg environment "$(pipeline_host)" --arg route claim-arbitration
+  claim_alert "$1" "$2"
+  return 0
+}
+
+# claim_withdraw <claims json on stdin> <winner> — a host that lost arbitration deletes its own latest claim comment, so a
+# loser never stays in the history: the owner's later restart then sees its own claim as the latest prior one (#587).
+# Best-effort (a failed delete only leaves the old behaviour). Records are {b, t, u: comment URL}.
+claim_withdraw() {
+  local self u repo id; self=$(hostname -s)
+  [ -n "$1" ] && [ "$1" != "$self" ] || return 0
+  u=$(jq -r --arg self "$self" '[.[] | select((.b | split(" ") | .[3]) == $self)] | sort_by(.t) | last | .u // ""' 2>/dev/null) || return 0
+  repo=$(printf '%s' "$u" | sed -n 's|^https://[^/]*/\([^/]*/[^/]*\)/.*#issuecomment-[0-9]*$|\1|p')
+  id=$(printf '%s' "$u" | sed -n 's|.*#issuecomment-\([0-9]*\)$|\1|p')
+  [ -n "$repo" ] && [ -n "$id" ] || return 0
+  GH_NOCACHE=1 gh api -X DELETE "repos/$repo/issues/comments/$id" >/dev/null 2>&1 </dev/null || true
+}
+
+# claim_winner <local_path> <issue> [owner/repo] — prints the winning host (see claim_pick); empty if no claim. Shared by
+# dispatch and hand launch (#217). The optional repo reads a claim on an issue of a repo other than the checkout's (the goal
+# registry issue, #320): it carries no label, so the window rule applies unchanged. A failed comment/label read returns 1,
+# prints nothing and records claim_lookup_failed, so callers fail closed. A losing host withdraws its own claim (claim_withdraw).
+# `orchestrate.sh --force` skips arbitration entirely: it is the only takeover of a run whose owner died with the label on.
 claim_winner() {
-  local path=$1 issue=$2 repo_arg="" cutoff out
+  local path=$1 issue=$2 repo_arg="" cutoff out lab=0 win
   [ -z "${3:-}" ] || repo_arg="--repo $3"
   cutoff=$(python3 -c "import datetime,sys; print((datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(seconds=int(sys.argv[1]))).strftime('%Y-%m-%dT%H:%M:%SZ'))" "${CLAIM_WINDOW_SECS:-600}") \
-    || { pipeline_event claim_lookup_failed --argjson issue "${issue:-0}" --arg stage cutoff; claim_alert "$issue" cutoff; return 1; }
-  out=$(cd "$path" && GH_NOCACHE=1 gh issue view "$issue" $repo_arg --json comments \
-    --jq "[.comments[] | select(.body | startswith(\"**[supervisor] NOTE** claim: \")) | select(.createdAt > \"$cutoff\")] | sort_by(.createdAt) | first | .body // \"\"" 2>/dev/null) \
-    || { pipeline_event claim_lookup_failed --argjson issue "${issue:-0}" --arg stage gh; claim_alert "$issue" gh; return 1; }
-  printf '%s\n' "$out" | awk '{print $4}'
+    || { claim_fail "$issue" cutoff; return 1; }
+  out=$(cd "$path" && GH_NOCACHE=1 gh issue view "$issue" $repo_arg --json comments,labels \
+    --jq "{lab: ([.labels[]?.name] | index(\"${LABEL_IN_PROGRESS:-agent-in-progress}\") != null), claims: [.comments[] | select(.body | startswith(\"**[supervisor] NOTE** claim: \")) | {b: .body, t: .createdAt, u: .url}]}" 2>/dev/null) \
+    || { claim_fail "$issue" gh; return 1; }
+  [ -n "${3:-}" ] || [ "$(printf '%s' "$out" | jq -r '.lab' 2>/dev/null)" != true ] || lab=1
+  win=$(printf '%s' "$out" | jq -c '.claims' | claim_pick "$lab" "$cutoff") || { claim_fail "$issue" pick; return 1; }
+  printf '%s' "$out" | jq -c '.claims' | claim_withdraw "$win"
+  printf '%s\n' "$win"
 }
 
 # claim_winner_rest <owner/repo> <issue> — #438: claim_winner over REST (the supervisor's launch funnel must keep working while GraphQL
-# is exhausted, #387). Same comment shape, same CLAIM_WINDOW_SECS window, same fail-closed return 1 on an unreadable list.
+# is exhausted, #387). Same rule (#587), same fail-closed return 1 on an unreadable comment list or label read, same withdraw.
 claim_winner_rest() {
-  local cutoff out
+  local cutoff out labels lab=0 win
   cutoff=$(python3 -c "import datetime,sys; print((datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(seconds=int(sys.argv[1]))).strftime('%Y-%m-%dT%H:%M:%SZ'))" "${CLAIM_WINDOW_SECS:-600}") \
-    || { pipeline_event claim_lookup_failed --argjson issue "${2:-0}" --arg stage cutoff; claim_alert "$2" cutoff; return 1; }
-  out=$(set -o pipefail; GH_NOCACHE=1 gh api "repos/$1/issues/$2/comments?per_page=100" --paginate 2>/dev/null | jq -rs --arg c "$cutoff" \
-    '[.[][] | select(.body | startswith("**[supervisor] NOTE** claim: ")) | select((.created_at // .createdAt) > $c)] | sort_by(.created_at // .createdAt) | first | .body // ""') \
-    || { pipeline_event claim_lookup_failed --argjson issue "${2:-0}" --arg stage gh; claim_alert "$2" gh; return 1; }
-  printf '%s\n' "$out" | awk '{print $4}'
+    || { claim_fail "$2" cutoff; return 1; }
+  out=$(set -o pipefail; GH_NOCACHE=1 gh api "repos/$1/issues/$2/comments?per_page=100" --paginate 2>/dev/null | jq -cs \
+    '[.[][] | select(.body | startswith("**[supervisor] NOTE** claim: ")) | {b: .body, t: (.created_at // .createdAt), u: .html_url}]') \
+    || { claim_fail "$2" gh; return 1; }
+  labels=$(set -o pipefail; GH_NOCACHE=1 gh api "repos/$1/issues/$2" 2>/dev/null | jq -r '[.labels[]?.name] | join(",")') \
+    || { claim_fail "$2" label; return 1; }
+  case ",$labels," in *",${LABEL_IN_PROGRESS:-agent-in-progress},"*) lab=1 ;; esac
+  win=$(printf '%s' "$out" | claim_pick "$lab" "$cutoff") || { claim_fail "$2" pick; return 1; }
+  printf '%s' "$out" | claim_withdraw "$win"
+  printf '%s\n' "$win"
 }
 
 # canonicalize_repo_lists — a repo renamed on GitHub keeps redirecting for `gh repo view` but `gh issue list -R <old>` returns []
