@@ -140,7 +140,7 @@ test_dcp_skip_allowlist_is_shipped_and_deny_list_gone() {
   assert_not_contains "$gate" "anything under \`scripts/lib/\` (its imports live there)" "linter deny list removed" || return 1
   assert_contains "$gate" "\`Blocked on: needs_jp — destructive-migration-approval skipped while this PR changes migrations plus <path>" "unlicensed destructive skip goes to JP" || return 1
   assert_contains "$gate" "\`<check> skipped, but this PR changes <path>, which is not on its skip allowlist; the job must run\`" "unlicensed path-gated skip is ci_red" || return 1
-  assert_contains "$gate" "A job gated on another job's output gets a skip licence only from a base-only rule named here" "future output-gated jobs get no free licence" || return 1
+  assert_contains "$gate" "Any other job gated on another job's output gets no skip licence" "future output-gated jobs get no free licence" || return 1
 }
 
 # The three round-3 vectors: each touches only a file the job reads that the old deny lists did not name.

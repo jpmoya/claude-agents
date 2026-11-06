@@ -171,11 +171,7 @@ test_ja_ac4_orchestrator_has_no_second_word_list() {
       fail "AC4: the jp_go block in orchestrator.md contains the word-list literal [$w]; use the shared matcher"; return 1
     fi
   done
-  for w in 'lgtm' 'ok to proceed' 'approved|approve'; do
-    if grep -qiF -- "$w" "$ORCH_JA"; then
-      fail "AC4: agents/orchestrator.md contains the word-list literal [$w]; the word set lives only in hooks"; return 1
-    fi
-  done
+  # Prose may name the approval words since #338 (docs list them at every JP gate); only the jp_go code block must not carry a second list.
 }
 
 # agreement: hooks matcher and the orchestrator's jp_go accept/reject the same probes (author, after stamp)

@@ -208,7 +208,7 @@ test_rh_o_queue_path_posts_one_claim_line() {
   assert_eq "$ok" "ok" "#119/AC1: queue claim in dispatch format — got: $line" || return 1
 }
 
-test_rh_o_failed_claim_comment_never_blocks_launch() {
+test_rh_o_failed_claim_comment_refuses_unforced_launch() {
   rh_o_env open
   mv "$RO_BIN/gh" "$RO_BIN/gh-real"
   cat > "$RO_BIN/gh" <<'GH_EOF'
@@ -222,9 +222,11 @@ GH_EOF
   local out="$RO_OUT" rc="$RO_RC" started=no
   [ -f "$(rkp "$RO_PIPE/orch-43.pid")" ] && started=yes
   rh_o_cleanup
-  assert_exit0 "$rc" "#119/AC1: launch still exits 0 when the claim comment fails" || return 1
-  assert_contains "$out" "launched orchestrator" "#119/AC1: still launched" || return 1
-  assert_eq "$started" "yes" "#119/AC1: pid file written" || return 1
+  # #442: since #217 a hand launch arbitrates on the claims it can read; with its own claim comment failing there is none, so it refuses
+  # (fail closed, labels untouched) instead of launching. A forced launch (dispatch already arbitrated) is the takeover path.
+  assert_eq "$rc" "1" "#217: launch refuses when the claim comment fails and no claim is visible" || return 1
+  assert_contains "$out" "could not see our own claim" "#217: refused with a no-visible-claim message (not a phantom winner)" || return 1
+  assert_eq "$started" "no" "#217: pid file not written" || return 1
 }
 
 run_test test_rh_a_other_host_claim_2h_old_keeps_label
@@ -241,4 +243,4 @@ run_test test_rh_g_failed_issue_read_keeps_label_and_logs_skip
 run_test test_rh_h_empty_line1_keeps_label
 run_test test_rh_o_launch_path_posts_one_claim_line
 run_test test_rh_o_queue_path_posts_one_claim_line
-run_test test_rh_o_failed_claim_comment_never_blocks_launch
+run_test test_rh_o_failed_claim_comment_refuses_unforced_launch

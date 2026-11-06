@@ -83,8 +83,9 @@ EOF
   end=$(date +%s)
   dur=$((end - start))
 
-  sleep 1  # give the backgrounded (or not-yet-implemented) reporter a moment
-  local attempted=absent; [ -e "$marker" ] && attempted=present
+  # #442: the backgrounded reporter builds the payload before it connects; on a loaded Mac that takes longer than 1 s, so poll (<= 10 s)
+  local attempted=absent tries=0
+  while [ $tries -lt 50 ]; do [ -e "$marker" ] && { attempted=present; break; }; sleep 0.2; tries=$((tries + 1)); done
   kill "$pid" 2>/dev/null
   rm -rf "$pipe" "$home"; rm -f "$marker"
 

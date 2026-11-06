@@ -810,9 +810,10 @@ test_glb_no_graphql_no_project_scope_in_goal_scripts() {
 }
 
 test_glb_no_delivery_lead_marker_emitted_from_shell() {
+  # #442: goal-lib.sh may READ the lead's BLOCKED marker (jq == comparison); it must never emit one
   local rc=0 f
   for f in goal-lib.sh deliver.sh; do
-    grep -vE '^[[:space:]]*#' "$DG_SKILL/$f" | grep -qF '[delivery-lead]' && { fail "$f emits a [delivery-lead] marker"; rc=1; }
+    grep -vE '^[[:space:]]*#' "$DG_SKILL/$f" | grep -vF '== "**[delivery-lead] BLOCKED**"' | grep -qF '[delivery-lead]' && { fail "$f emits a [delivery-lead] marker"; rc=1; }
   done
   grep -qF '[supervisor] NOTE' "$DG_SKILL/deliver.sh" "$DG_SKILL/goal-lib.sh" || { fail "no **[supervisor] NOTE** emitter in deliver.sh/goal-lib.sh"; rc=1; }
   return $rc

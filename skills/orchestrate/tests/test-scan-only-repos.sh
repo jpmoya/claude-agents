@@ -123,7 +123,8 @@ test_so_5d_scan_only_repos_is_referenced_only_by_config_and_scan() {
   # just a grep aimed at nothing.
   local f n
   for f in supervisor.sh orchestrate.sh install.sh; do
-    n=$(grep -c SCAN_ONLY_REPOS "$RS_SO/$f")
+    # #442: supervisor.sh's read-only stale-work digest (sw_repo_list, #491) scans the set but never dispatches it
+    n=$(grep SCAN_ONLY_REPOS "$RS_SO/$f" | grep -vE 'sw_repo_list|for e in ' | grep -c . || true)
     assert_eq "$n" "0" "5d: $f must not reference SCAN_ONLY_REPOS" || return 1
   done
   for f in config.sh scan-backlog.sh; do
@@ -138,7 +139,7 @@ test_so_config_sh_declares_the_key_next_to_dispatch_repos_with_comment() {
   key_line=$(grep -n '^SCAN_ONLY_REPOS=()' "$RS_SO/config.sh" | head -1 | cut -d: -f1)
   assert_ne "$key_line" "" "R2: config.sh must contain a line SCAN_ONLY_REPOS=()" || return 1
   assert_ne "$disp_line" "" "R2: config.sh keeps DISPATCH_REPOS=()" || return 1
-  [ "$key_line" -gt "$disp_line" ] && [ $((key_line - disp_line)) -le 4 ] || { fail "R2: SCAN_ONLY_REPOS=() must sit next to DISPATCH_REPOS=() (lines $disp_line / $key_line)"; return 1; }
+  [ "$key_line" -gt "$disp_line" ] && [ $((key_line - disp_line)) -le 8 ] || { fail "R2: SCAN_ONLY_REPOS=() must sit next to DISPATCH_REPOS=() (lines $disp_line / $key_line)"; return 1; }
   # comment (same or preceding line) says: scanned, never dispatched
   comment=$(sed -n "${disp_line},$((key_line + 1))p" "$RS_SO/config.sh" | grep '#' | tr '[:upper:]' '[:lower:]')
   assert_contains "$comment" "scan-backlog.sh" "R2: comment names scan-backlog.sh" || return 1

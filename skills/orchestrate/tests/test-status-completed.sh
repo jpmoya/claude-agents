@@ -505,7 +505,7 @@ EOF
 
 test_sc_ac4_supervisor_reconcile_call_is_backgrounded_fd9_closed_after_dispatch_step() {
   local line ln_call ln_dispatch ln_exit
-  ln_call=$(grep -n 'reconcile-status\.sh' "$RS_SC/supervisor.sh" | grep -v '^[0-9]*:[[:space:]]*#' | head -n1)
+  ln_call=$(grep -n 'HERE/reconcile-status\.sh' "$RS_SC/supervisor.sh" | grep -v '^[0-9]*:[[:space:]]*#' | head -n1)
   assert_ne "$ln_call" "" "EB2: supervisor.sh invokes reconcile-status.sh" || return 1
   line=${ln_call#*:}; ln_call=${ln_call%%:*}
   case "$line" in *"&"*) ;; *) fail "EB2: the reconcile call must be backgrounded (&): $line"; return 1 ;; esac

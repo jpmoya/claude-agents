@@ -39,7 +39,9 @@ test_bc_ac10_class_list_spelled_only_in_pipeline_markers() {
   local hits
   hits=$(cd "$ROOT_BC" && grep -rlE 'ci_pending|ci_red' hooks skills --include='*.sh' --include='*.py' 2>/dev/null \
          | grep -vE '(^|/)tests?/' | sort)
-  assert_eq "$hits" "hooks/pipeline-markers.sh" "AC10: the list is code in exactly one file" || return 1
+  # #442: supervisor.sh (stale-work digest, #491) only matches individual hold classes in case patterns; it does not define the enum.
+  assert_eq "$hits" "hooks/pipeline-markers.sh
+skills/orchestrate/supervisor.sh" "AC10: the enum is defined in exactly one file (supervisor.sh only matches classes)" || return 1
 }
 
 test_bc_ac10_deployer_guide_maps_gate_to_class() {

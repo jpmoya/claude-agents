@@ -370,6 +370,10 @@ EOF
   assert_eq "$(printf '%s' "$out" | jq -r '.runs[]|select(.issue==202)|.state')" "running" "AC5: the running record stays running" || return 1
 }
 
+# sg_deployed <n> — #442: since #471 an OPEN issue with a release milestone counts as released only when the deployer also
+# posted its DEPLOYED marker; give ticket <n> that comment (written to the fake gh's per-issue comments file).
+sg_deployed() { printf '[{"body":"**[deployer] DEPLOYED**","createdAt":"2026-01-01T00:00:00Z"}]' > "$SG_BIN/gh-issue-comments-json-$1"; }
+
 # =================================================================================================
 # AC6 — released-but-open
 # =================================================================================================
@@ -378,7 +382,7 @@ test_sg_ac6_open_issue_with_release_milestone_becomes_done_with_release() {
   sg_env
   mk_held "$SG_PIPE" 401 "$SG_REPO"; touch "$(rkp "$SG_PIPE/orch-401.alert")"
   printf 'Title of 401\n' > "$(rkp "$SG_PIPE/orch-401.title")"
-  echo "v1.3.0" > "$SG_BIN/gh-issue-milestone-401"
+  echo "v1.3.0" > "$SG_BIN/gh-issue-milestone-401"; sg_deployed 401
   local before; before=$(sg_print)
   # .stopped outranks .held in derive_runs, so add it only after the held-row control snapshot
   touch "$(rkp "$SG_PIPE/orch-401.stopped")"
@@ -407,7 +411,7 @@ print(int(abs((datetime.datetime.now(datetime.timezone.utc) - t).total_seconds()
 test_sg_ac6_open_release_queued_ticket_drops_its_queue_entry() {
   sg_env
   mk_queued "$SG_PIPE" 402 "$SG_REPO"; printf 'Title of 402\n' > "$(rkp "$SG_PIPE/orch-402.title")"
-  echo "v2.0.1" > "$SG_BIN/gh-issue-milestone-402"
+  echo "v2.0.1" > "$SG_BIN/gh-issue-milestone-402"; sg_deployed 402
   sg_reconcile --force
   local out; out=$(sg_print)
   local q; q=$(sg_present "$(rkp "$SG_PIPE/queue/orch-402.json")")
@@ -441,7 +445,7 @@ test_sg_ac6_non_release_milestone_titles_do_nothing() {
     mk_held "$SG_PIPE" "$issue" "$SG_REPO"; printf 'Title %s\n' "$issue" > "$(rkp "$SG_PIPE/orch-$issue.title")"
     printf '%s\n' "$t" > "$SG_BIN/gh-issue-milestone-$issue"
   done
-  mk_held "$SG_PIPE" 520 "$SG_REPO"; echo "v9.9.9" > "$SG_BIN/gh-issue-milestone-520"   # positive control
+  mk_held "$SG_PIPE" 520 "$SG_REPO"; echo "v9.9.9" > "$SG_BIN/gh-issue-milestone-520"; sg_deployed 520   # positive control
   sg_reconcile --force
   local out; out=$(sg_print)
   local files; files=$(ls "$SG_PIPE" | grep -c '\.release$' | tr -d ' ')
@@ -456,7 +460,7 @@ test_sg_ac6_non_release_milestone_titles_do_nothing() {
 test_sg_ac6_null_milestone_leaves_open_ticket_alone() {
   sg_env
   mk_held "$SG_PIPE" 510 "$SG_REPO"                        # gh answers milestone: null
-  mk_held "$SG_PIPE" 511 "$SG_REPO"; echo "v1.0.0" > "$SG_BIN/gh-issue-milestone-511"   # positive control
+  mk_held "$SG_PIPE" 511 "$SG_REPO"; echo "v1.0.0" > "$SG_BIN/gh-issue-milestone-511"; sg_deployed 511   # positive control
   sg_reconcile --force
   local out; out=$(sg_print)
   local r; r=$(sg_present "$(rkp "$SG_PIPE/orch-510.release")")
@@ -481,7 +485,7 @@ test_sg_ac7_one_issue_view_per_ticket_with_milestone_field() {
   calls=$(gh_calls "$SG_BIN" | grep 'issue view 601 ')
   sg_cleanup
   assert_eq "$c1:$c2" "1:1" "AC7: exactly one issue view per in-scope ticket" || return 1
-  assert_contains "$calls" "--json state,closedAt,comments,milestone" "AC7: the call asks for milestone too" || return 1
+  assert_contains "$calls" "--json state,closedAt,author,comments,milestone" "AC7: the call asks for milestone too (re-pinned for #442: author added)" || return 1
 }
 
 test_sg_ac7_throttle_covers_list_calls() {

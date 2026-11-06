@@ -5,6 +5,16 @@
 
 GJ_SKILL=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
+# #442: this file is sourced BEFORE test-status-goals.sh (glob order: "goal-" sorts before "goals."), so the gl_* helpers are not
+# defined yet; define the ones used here (identical to test-status-goals.sh, which redefines them harmlessly when it loads).
+RS_GL="$GJ_SKILL"
+gl_env() { GL_PIPE=$(new_pipe); GL_HOME=$(new_home); }
+gl_cleanup() { cleanup_running; rm -rf "$GL_PIPE" "$GL_HOME"; return 0; }
+gl_live_pid() { sleep 300 & RUNNING_PIDS="$RUNNING_PIDS $!"; echo "$!" > "$GL_PIPE/goal-$1.pid"; }
+gl_mode() {  # direct call of the `goals` mode, no stdin
+  PATH="$PATH" python3 "$RS_GL/build-runs-json.py" "" "$GL_HOME/.claude/pipeline/runs.jsonl" "$GL_PIPE" goals </dev/null 2>/dev/null
+}
+
 # gj_queue <waiting> <active> [total] — a goalqueue.json with one open "active" goal that carries needs_jp (or none: waiting=-)
 gj_queue() {
   local nj='null'

@@ -49,7 +49,7 @@ fd_run() {
 fd_search_arg() {
   # the logged `gh issue list --label agent-go ...` call (the one dispatch step 5 makes); $* loses
   # exact argument boundaries, but the label:"user-feedback" substring survives either way.
-  grep "issue list.*--label agent-go" "$FD_GH/gh-calls.log" 2>/dev/null | tail -1
+  grep "issue list.*--label agent-go.*--search" "$FD_GH/gh-calls.log" 2>/dev/null | tail -1
 }
 
 test_fd_1_shared_dispatch_disabled_requires_feedback_label() {
