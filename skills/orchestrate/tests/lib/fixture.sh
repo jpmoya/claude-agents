@@ -217,9 +217,11 @@ case "$*" in
           arr=$(jq -n --arg body "$(cat "$(pick gh-issue-latest-marker)")" '[{body: $body, createdAt: "2026-01-01T00:00:00Z"}]')
         else arr='[]'; fi
         if [ -s "$HERE/gh-claims.jsonl" ]; then arr=$(printf '%s' "$arr" | jq --slurpfile c "$HERE/gh-claims.jsonl" '. + $c'); fi
-        printf '%s' "$arr" | jq -c 'map({body: .body, created_at: (.createdAt // .created_at)} + (if ((.author // null) | if type == "object" then .login else null end | type) == "string" then {user: {login: .author.login}} else {} end))'
+        printf '%s' "$arr" | jq -c 'map({body: .body, created_at: (.createdAt // .created_at)} + (if .url then {html_url: .url} else {} end) + (if ((.author // null) | if type == "object" then .login else null end | type) == "string" then {user: {login: .author.login}} else {} end))'
         exit 0 ;;
       *)
+        lrc=$(cat "$(pick gh-issue-labels-rc)" 2>/dev/null || echo 0)   # #587: fail only the label/issue read, not the comments read
+        [ "$lrc" -eq 0 ] || exit "$lrc"
         state=$(cat "$(pick gh-issue-state)" 2>/dev/null || echo "OPEN")
         # the issue author: the fixture has no separate field, so it is the first comment's author (the old GraphQL fake gave no top-level author either)
         ia=$(jq -r '.[0].author.login? // empty' "$(pick gh-issue-comments-json)" 2>/dev/null)
@@ -232,6 +234,14 @@ case "$*" in
   "api repos/{owner}/{repo}"*|"api repos/"[!/]*"/"[!/]*" --jq .full_name")
     # #387: the repo name over REST (`gh api repos/{owner}/{repo} --jq .full_name`), same fixture as the old `repo view`
     cat "$HERE/gh-name-with-owner" 2>/dev/null || echo "unknown/unknown"
+    exit 0
+    ;;
+  "api -X DELETE repos/"*"/issues/comments/"[0-9]*)
+    # #587: a losing host withdraws its claim — drop the claim whose url ends #issuecomment-<id>, log is the call line
+    id=$(printf '%s' "$*" | sed 's|.*/comments/||')
+    if [ -f "$HERE/gh-claims.jsonl" ]; then
+      jq -c --arg id "$id" 'select((.url // "") | endswith("#issuecomment-" + $id) | not)' "$HERE/gh-claims.jsonl" > "$HERE/gh-claims.tmp" && mv "$HERE/gh-claims.tmp" "$HERE/gh-claims.jsonl"
+    fi
     exit 0
     ;;
   "issue comment"*)
