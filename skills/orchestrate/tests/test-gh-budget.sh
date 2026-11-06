@@ -127,6 +127,21 @@ test_gb_write_flushes_cache_and_nocache_bypasses() {
   rm -rf "$GB"
 }
 
+test_gb_cache_clear_spares_in_flight_reads() {
+  gb_env 5000
+  printf '#!/bin/bash\nif [ "$1 $2" = "api rate_limit" ]; then cat "%s/rl"; exit 0; fi\necho "$*" >> "%s/calls"\nsleep 1\necho "SLOW:$*"\n' "$GB" "$GB" > "$GB/bin/gh"
+  gb_run '(gh issue view 77 > "$PIPE/out") & sleep 0.4; gh_cache_clear; wait'
+  assert_eq "$(cat "$GB/pipe/out")" "SLOW:issue view 77" "read in flight during a clear still returns its full output" || return 1
+  rm -rf "$GB"
+}
+
+test_gb_cache_clear_removes_finished_keeps_in_flight() {
+  gb_env 5000
+  gb_run 'gh issue view 3 >/dev/null; touch "$GH_CACHE_DIR/123.4567" "$GH_CACHE_DIR/123.w4567"; gh_cache_clear'
+  assert_eq "$(ls "$GB/pipe/gh-cache" | sort | tr '\n' ' ')" "123.4567 123.w4567 " "finished entry gone, in-flight files survive" || return 1
+  rm -rf "$GB"
+}
+
 test_gb_failed_read_not_cached() {
   gb_env 5000
   printf '#!/bin/bash\nif [ "$1 $2" = "api rate_limit" ]; then cat "%s/rl"; exit 0; fi\necho "$*" >> "%s/calls"; exit 1\n' "$GB" "$GB" > "$GB/bin/gh"
@@ -170,6 +185,7 @@ test_gb_log_cap_stops_logging() {
 for t in test_gb_log_line_format test_gb_tiers test_gb_exhausted_skips_with_one_quiet_line test_gb_graphql_bucket_is_separate \
          test_gb_quota_read_cached_60s test_gb_quota_line_madrid test_gb_unreadable_rate_limit_does_not_block \
          test_gb_cache_hit_within_ttl_and_expiry test_gb_cache_key_includes_args_and_cwd test_gb_write_flushes_cache_and_nocache_bypasses \
+         test_gb_cache_clear_spares_in_flight_reads test_gb_cache_clear_removes_finished_keeps_in_flight \
          test_gb_failed_read_not_cached test_gb_ttl_zero_disables_cache test_gb_disabled_is_passthrough test_gb_tick_due \
          test_gb_log_cap_stops_logging; do
   run_test "$t"
