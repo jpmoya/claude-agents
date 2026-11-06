@@ -1,7 +1,8 @@
 // src/index.js — router, bearer auth, Google sign-in, rate limiting, response headers.
 //
-// Routes: POST /beat, GET /status.json, GET /, GET /pipelines, GET /robots.txt, GET /login,
-// GET /auth/callback, else 404. X-Robots-Tag: noindex is applied in one place to every response.
+// Routes: POST /beat, GET /status.json, GET /, GET /pipelines, POST /backlog-priority,
+// GET /robots.txt, GET /login, GET /auth/callback, else 404. X-Robots-Tag: noindex is applied in
+// one place to every response.
 //
 // POST /beat auth is unchanged: a pure-JS constant-time compare (XOR-accumulate, no early
 // return — crypto.subtle.timingSafeEqual doesn't exist in the Node test runtime) against both
@@ -20,6 +21,7 @@ import { validateBeatPayload } from "./validate.js";
 import { renderPage, renderPipelines } from "./render.js";
 import { captureError } from "./capture.js";
 import { KEEPALIVE_SECS, computeThresholds } from "./vocab.js";
+import { setBacklogPriority, isValidKeyList } from "./backlog-priority.js";
 import {
   requireSession,
   isConfiguredSecret as isConfiguredAuthSecret,
@@ -220,6 +222,50 @@ async function handlePipelines(env) {
   }
 }
 
+/**
+ * POST /backlog-priority — the authenticated write path the page's &uarr;/&darr; buttons call
+ * (src/render.js's BACKLOG_REORDER_SCRIPT). Body: {"keys": ["owner/repo#issue", ...]}, highest
+ * priority first (same order the page displays and the `backlog-priority.sh set` command
+ * prints). Writes straight to the backlog-priority-registry GitHub issue via the REST API
+ * (src/backlog-priority.js) — this Worker can't shell out to `gh`, so it is the second writer of
+ * that same issue, not a new primitive. Gated by the same requireSession check as every other
+ * human-facing route (checked by the caller in the router below, same as /, /pipelines, /status.json).
+ */
+async function handleBacklogPriority(request, env) {
+  if (!isConfiguredAuthSecret(env.GITHUB_TOKEN)) {
+    return noindexResponse("Backlog reorder is not configured yet", {
+      status: 503,
+      headers: { "Content-Type": "text/plain" },
+    });
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(await request.text());
+  } catch {
+    return noindexResponse(null, { status: 400 });
+  }
+
+  const keys = parsed && parsed.keys;
+  if (!isValidKeyList(keys)) return noindexResponse(null, { status: 400 });
+
+  try {
+    await setBacklogPriority(env.GITHUB_TOKEN, keys);
+    return noindexResponse(null, { status: 204 });
+  } catch (err) {
+    const tags = {
+      release: env.RELEASE,
+      environment: env.ENVIRONMENT,
+      route: "/backlog-priority",
+    };
+    await captureError(err, tags, env);
+    return noindexResponse("Could not save the new order", {
+      status: 502,
+      headers: { "Content-Type": "text/plain" },
+    });
+  }
+}
+
 function handleRobots() {
   return noindexResponse("User-agent: *\nDisallow: /\n", {
     status: 200,
@@ -385,6 +431,13 @@ export default {
         return noindexResponse(null, { status: 405 });
       if (!(await requireSession(request, env))) return redirectTo("/login");
       return handlePipelines(env);
+    }
+
+    if (url.pathname === "/backlog-priority") {
+      if (request.method !== "POST")
+        return noindexResponse(null, { status: 405 });
+      if (!(await requireSession(request, env))) return redirectTo("/login");
+      return handleBacklogPriority(request, env);
     }
 
     if (url.pathname === "/login") {

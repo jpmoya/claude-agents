@@ -420,6 +420,11 @@ describe("existing status view unchanged (AC3)", () => {
   .backlog-help { font-size: 0.85rem; color: var(--muted); margin: 0 0 0.75rem; }
   .backlog-cmd { white-space: pre-wrap; word-break: break-all; font-size: 0.78rem; background: var(--gray-soft);
     border-radius: 0.375rem; padding: 0.6rem 0.75rem; margin: 0.75rem 0 0; }
+  .bp-controls { white-space: nowrap; }
+  .bp-up, .bp-down { font-size: 0.85rem; line-height: 1; padding: 0.25rem 0.5rem; margin-left: 0.3rem;
+    border-radius: 0.3rem; border: 1px solid var(--border); background: var(--surface); color: var(--text);
+    cursor: pointer; }
+  .bp-up:disabled, .bp-down:disabled { opacity: 0.35; cursor: default; }
   .legend h3 { font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin: 1em 0 0.5em; }
   .legend dt { font-weight: 600; margin-top: 0.6em; font-size: 0.85rem; }
   .legend dd { margin: 0.1em 0 0 0; color: var(--muted); font-size: 0.85rem; }
