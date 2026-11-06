@@ -39,7 +39,7 @@ if [ "$1" = pr ]; then
   case "$2" in
     list)
       case "$*" in
-        *"--state merged"*) [ -f "$HERE/gh-pr-merged" ] && emit "[{\"number\":7,\"headRefName\":\"issue-42-x\"}]" || emit "[]" ;;
+        *"--state merged"*) [ -f "$HERE/gh-pr-merged" ] && emit "[{\"number\":7,\"headRefName\":\"$(grep . "$HERE/gh-pr-merged" 2>/dev/null || echo issue-42-x)\"}]" || emit "[]" ;;
         *) [ -f "$HERE/gh-pr-none-open" ] && emit "[]" || emit "[{\"number\":7,\"state\":\"OPEN\",\"headRefName\":\"issue-42-x\",\"mergeable\":\"$mg\"}]" ;;
       esac ;;
     view) emit "{\"number\":7,\"state\":\"OPEN\",\"mergeable\":\"$mg\",\"headRefName\":\"issue-42-x\"}" ;;
@@ -64,6 +64,7 @@ if [ "$1" = api ]; then
   esac
   exit 0
 fi
+[ -f "$HERE/gh-issue-fail" ] && [ "$n" != 42 ] && { echo "token=ghp_FAKESECRET123" >&2; exit 1; }
 state=$(cat "$HERE/gh-issue-state-$n" 2>/dev/null || echo OPEN)
 body=$(cat "$HERE/gh-issue-body-$n" 2>/dev/null || echo "")
 comments=$(cat "$HERE/gh-issue-comments-json-$n" 2>/dev/null || echo '[]')
@@ -437,36 +438,70 @@ test_ar2_269_monthly_spend_held_run_is_not_retried() {
   assert_not_contains "$calls" "auto-retry" "269 item1: no NOTE posted" || return 1
 }
 
-# AC4 item 2: every #N on a `Depends on` line counts
-test_ar2_269_multi_dependency_line_one_open_not_cleared() {
+# #573: only the first ref right after "Depends on" gates; later #N on the line are ignored. MERGED counts as cleared.
+test_ar2_573_first_ref_only_ignores_overlap_and_merged_pr() {
   ar2_fixture 'Blocked on: dependency — waits'
-  printf 'Why\nDepends on #77, #78 and #79\n' > "$SQ_GH/gh-issue-body-42"
-  echo CLOSED > "$SQ_GH/gh-issue-state-77"; echo OPEN > "$SQ_GH/gh-issue-state-78"; echo CLOSED > "$SQ_GH/gh-issue-state-79"
-  ar2_tick
-  local n; n=$(ar2_no_launch)
-  sq_cleanup
-  assert_eq "$n" "0" "269 item2: #78 (2nd on the line) still open -> not cleared" || return 1
-}
-
-test_ar2_269_multi_dependency_last_one_open_not_cleared() {
-  ar2_fixture 'Blocked on: dependency — waits'
-  printf 'Depends on #77 and #78 for merging\n' > "$SQ_GH/gh-issue-body-42"
-  echo CLOSED > "$SQ_GH/gh-issue-state-77"; echo OPEN > "$SQ_GH/gh-issue-state-78"
-  ar2_tick
-  local n; n=$(ar2_no_launch)
-  sq_cleanup
-  assert_eq "$n" "0" "269 item2: '#77 and #78 for merging' with #78 open -> not cleared" || return 1
-}
-
-test_ar2_269_multi_dependency_all_closed_cleared() {
-  ar2_fixture 'Blocked on: dependency — waits'
-  printf 'Why\nDepends on #77, #78 and #79\n' > "$SQ_GH/gh-issue-body-42"
-  echo CLOSED > "$SQ_GH/gh-issue-state-77"; echo CLOSED > "$SQ_GH/gh-issue-state-78"; echo CLOSED > "$SQ_GH/gh-issue-state-79"
+  printf 'Why\nDepends on #77 for merging (open PR #78 ...); also overlaps #79\n' > "$SQ_GH/gh-issue-body-42"
+  echo CLOSED > "$SQ_GH/gh-issue-state-77"; echo MERGED > "$SQ_GH/gh-issue-state-78"; echo OPEN > "$SQ_GH/gh-issue-state-79"
   ar2_tick
   local n calls; n=$(ar2_launches); calls=$(gh_calls "$SQ_GH")
   sq_cleanup
-  assert_eq "$n" "1" "269 item2: all three closed -> cleared, relaunched" || return 1
-  assert_contains "$calls" "issue view 79" "269 item2: the 3rd dependency was actually checked" || return 1
+  assert_eq "$n" "1" "573: only #77 gates -> cleared" || return 1
+  assert_not_contains "$calls" "issue view 79" "573: overlap ref never read" || return 1
+}
+
+test_ar2_573_gated_on_wording_and_capitalised_depends_on() {
+  ar2_fixture 'Blocked on: dependency — waits'
+  printf 'Why\nThis was gated on #77 for merging (open PR #78)\nDepends On #79\n' > "$SQ_GH/gh-issue-body-42"
+  echo CLOSED > "$SQ_GH/gh-issue-state-77"; echo CLOSED > "$SQ_GH/gh-issue-state-79"; echo OPEN > "$SQ_GH/gh-issue-state-78"
+  ar2_tick
+  local n calls; n=$(ar2_launches); calls=$(gh_calls "$SQ_GH")
+  sq_cleanup
+  assert_eq "$n" "1" "573: 'gated on #77' and 'Depends On #79' both read, cleared" || return 1
+  assert_contains "$calls" "issue view 79" "573: capitalised Depends On parsed" || return 1
+  assert_not_contains "$calls" "issue view 78" "573: PR ref after the gate ignored" || return 1
+}
+
+test_ar2_573_open_dep_with_merged_issue_pr_cleared() {
+  ar2_fixture 'Blocked on: dependency — waits'
+  printf 'Depends on #77\n' > "$SQ_GH/gh-issue-body-42"
+  echo OPEN > "$SQ_GH/gh-issue-state-77"; echo issue-77-thing > "$SQ_GH/gh-pr-merged"
+  ar2_tick
+  local n; n=$(ar2_launches)
+  sq_cleanup
+  assert_eq "$n" "1" "573: OPEN dep with merged issue-77- PR -> cleared" || return 1
+}
+
+test_ar2_573_open_dep_without_merged_pr_not_cleared() {
+  ar2_fixture 'Blocked on: dependency — waits'
+  printf 'Depends on #77\n' > "$SQ_GH/gh-issue-body-42"
+  echo OPEN > "$SQ_GH/gh-issue-state-77"; echo issue-99-other > "$SQ_GH/gh-pr-merged"
+  ar2_tick
+  local n; n=$(ar2_no_launch)
+  sq_cleanup
+  assert_eq "$n" "0" "573: OPEN dep, no merged issue-77- PR -> not cleared" || return 1
+}
+
+test_ar2_573_cross_repo_dep_read_in_that_repo() {
+  ar2_fixture 'Blocked on: dependency — waits'
+  printf 'Depends on other/repo#77\n' > "$SQ_GH/gh-issue-body-42"
+  echo CLOSED > "$SQ_GH/gh-issue-state-77"
+  ar2_tick
+  local n calls; n=$(ar2_launches); calls=$(gh_calls "$SQ_GH")
+  sq_cleanup
+  assert_eq "$n" "1" "573: cross-repo closed dep -> cleared" || return 1
+  assert_contains "$calls" "-R other/repo" "573: read in the dependency's repo" || return 1
+}
+
+test_ar2_573_dependency_read_failure_errors() {
+  ar2_fixture 'Blocked on: dependency — waits'
+  printf 'Depends on #77\n' > "$SQ_GH/gh-issue-body-42"
+  : > "$SQ_GH/gh-issue-fail"
+  ar2_tick
+  local n log; n=$(ar2_no_launch); log=$(sq_log)
+  sq_cleanup
+  assert_eq "$n" "0" "573: failed dependency read -> no relaunch" || return 1
+  assert_contains "$log" "dependency read" "573: AR_ERR names the failed read" || return 1
 }
 
 # AC4 item 3: the auto-retry relaunch carries the run's saved .extra (observable in the launch prompt)
@@ -522,9 +557,12 @@ run_test test_ar2_269_failed_note_post_does_not_requeue
 run_test test_ar2_269_comment_failure_alerts_slack_with_tags
 run_test test_ar2_269_issue_read_failure_alerts_slack_with_tags
 run_test test_ar2_269_monthly_spend_held_run_is_not_retried
-run_test test_ar2_269_multi_dependency_line_one_open_not_cleared
-run_test test_ar2_269_multi_dependency_last_one_open_not_cleared
-run_test test_ar2_269_multi_dependency_all_closed_cleared
+run_test test_ar2_573_first_ref_only_ignores_overlap_and_merged_pr
+run_test test_ar2_573_gated_on_wording_and_capitalised_depends_on
+run_test test_ar2_573_open_dep_with_merged_issue_pr_cleared
+run_test test_ar2_573_open_dep_without_merged_pr_not_cleared
+run_test test_ar2_573_cross_repo_dep_read_in_that_repo
+run_test test_ar2_573_dependency_read_failure_errors
 run_test test_ar2_269_extra_carried_over_to_relaunch
 run_test test_ar2_269_non_blocked_alert_skips_issue_view
 run_test test_ar2_269_blocked_alert_still_reads_issue_and_retries

@@ -1063,10 +1063,20 @@ autoretry_cleared() {
   AR_ERR=""
   case "$cls" in
     dependency)
-      deps=$(printf '%s' "$info" | jq -r '.body // ""' | grep -iE '^[[:space:]]*([-*][[:space:]]+)?depends on ' | grep -oE '#[0-9]+' | tr -d '#')
+      # #573: only the first ref right after "Depends on" / "gated on" is the gate (PR numbers / "overlaps #N" later on the line are not);
+      # cleared = issue CLOSED or MERGED, or a merged issue-<N>- PR (the #439 lookup). owner/repo#N is read in that repo.
+      deps=$(printf '%s' "$info" | jq -r '.body // ""' | grep -iE '(depends on|gated on)[[:space:]]+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#[0-9]+' \
+        | while IFS= read -r line; do printf '%s\n' "$line" | grep -ioE '(depends on|gated on)[[:space:]]+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#[0-9]+' | head -n1 | grep -oE '([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#[0-9]+' | head -n1; done)
       [ -n "$deps" ] || return 1
       for dep in $deps; do
-        [ "$(cd "$repo" && gh issue view "$dep" --json state --jq .state 2>/dev/null </dev/null)" = "CLOSED" ] || return 1
+        local drepo=() dnum=${dep##*#} dstate
+        [ "${dep%%#*}" != "" ] && drepo=(-R "${dep%%#*}")
+        dstate=$(cd "$repo" && gh issue view "$dnum" ${drepo[@]+"${drepo[@]}"} --json state --jq .state 2>/dev/null </dev/null) \
+          || { AR_ERR="dependency read $dep"; return 2; }
+        case "$dstate" in CLOSED|MERGED) continue ;; esac
+        prs=$(cd "$repo" && gh pr list ${drepo[@]+"${drepo[@]}"} --state merged --limit 100 --json number,headRefName 2>/dev/null </dev/null) \
+          || { AR_ERR="dependency pr list $dep"; return 2; }
+        printf '%s' "$prs" | jq -e --arg p "issue-$dnum-" '[.[] | select(.headRefName | startswith($p))] | length > 0' >/dev/null 2>&1 || return 1
       done
       return 0 ;;
     ci_*|merge_conflict)
