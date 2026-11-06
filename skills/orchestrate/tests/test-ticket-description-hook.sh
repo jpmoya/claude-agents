@@ -155,6 +155,23 @@ test_td_pipeline_agent_set_always_skips() {
   assert_eq "$?" "0" "with PIPELINE_AGENT set (a real pipeline-stage process), the hook must not check at all" || return 1
 }
 
+test_td_self_heal_line_old_template_still_blocks() {
+  td_run "SELF-HEAL TICKETS: jpmoya/claude-agents #543 — queued"
+  assert_eq "$?" "2" "old template wording (no description slot) must still be flagged" || return 1
+}
+
+test_td_self_heal_line_new_template_passes() {
+  td_run "SELF-HEAL TICKETS: jpmoya/claude-agents #543 (ticket-description Stop hook) — queued"
+  assert_eq "$?" "0" "SELF-HEAL line filled per the new template (description slot) must pass" || return 1
+}
+
+test_td_claude_md_card_template_has_description_slot() {
+  local line
+  line=$(grep -m1 '^SELF-HEAL TICKETS:' "$ROOT_TD/CLAUDE.md")
+  case "$line" in *"(3-5 word description)"*) line=has-slot ;; *) line=missing-slot ;; esac
+  assert_eq "$line" "has-slot" "CLAUDE.md status-card SELF-HEAL line must carry the description slot" || return 1
+}
+
 run_test test_td_bare_ticket_numbers_block
 run_test test_td_paren_after_description_passes
 run_test test_td_colon_after_description_passes
@@ -173,3 +190,6 @@ run_test test_td_card_with_apostrophe_label_passes
 run_test test_td_same_ref_repeated_later_in_message_inherits_coverage
 run_test test_td_different_uncovered_ref_on_another_line_still_blocks
 run_test test_td_pipeline_agent_set_always_skips
+run_test test_td_self_heal_line_old_template_still_blocks
+run_test test_td_self_heal_line_new_template_passes
+run_test test_td_claude_md_card_template_has_description_slot
