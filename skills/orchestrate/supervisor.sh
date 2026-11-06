@@ -1110,7 +1110,9 @@ autoretry_cleared() {
       [ -n "$pr" ] || return 1
       mergeable=${pr#* }; pr=${pr%% *}
       if [ "$cls" = merge_conflict ]; then
-        [ "$mergeable" != "CONFLICTING" ]; return $?
+        # #590: only a literal MERGEABLE clears; UNKNOWN (GitHub still recomputing) / empty is re-checked next tick
+        slog "autoretry merge_conflict pr=$pr mergeable=$mergeable"
+        [ "$mergeable" = "MERGEABLE" ]; return $?
       fi
       (cd "$repo" && gh pr checks "$pr" >/dev/null 2>&1 </dev/null); rc=$?
       case "$rc" in
