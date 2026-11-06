@@ -4,7 +4,8 @@
 # decision that is not JP-only, or while a run launched in the last 10 minutes is already dead. Exit 2 + stderr makes
 # the session continue. LOCAL STATE ONLY (no gh, no network); fails open (exit 0) and logs to
 # ~/logs/pipeline/blocked-chain-stop.log. Not keyed on session identity: any run launched manually (any launcher) counts.
-# Applies to every interactive session on the host; skipped for pipeline stage processes (PIPELINE_AGENT) and, when the
+# Applies to every interactive session on the host; skipped for pipeline stage processes (PIPELINE_AGENT), for the headless
+# orchestrator (transcript line 1 has agentSetting "orchestrator"; it carries no PIPELINE_AGENT) and, when the
 # session cwd is a git checkout of some unrelated product, for that session.
 # Env (tests): BCS_NOW (epoch), BCS_RUN_RE (run key filter), BCS_SCOPE_RE (cwd repo filter).
 [ -n "${PIPELINE_AGENT:-}" ] && exit 0
@@ -24,6 +25,11 @@ main() {
   IN=$(cat)
   CWD=$(printf '%s' "$IN" | jq -r '.cwd // empty') || return 3
   T=$(printf '%s' "$IN" | jq -r '.transcript_path // empty') || return 3
+  # The headless orchestrator is not an interactive session: it must never be told to act as delivery lead (#578).
+  if [ -n "$T" ]; then
+    if [ ! -r "$T" ]; then elog "fail-open: transcript_path unreadable"; return 0; fi
+    head -n 1 "$T" 2>/dev/null | jq -e '.agentSetting=="orchestrator"' >/dev/null 2>&1 && return 0
+  fi
   # Scope: a cwd that is a git checkout of an unrelated product is left alone; an undetectable cwd applies everywhere.
   if [ -n "$CWD" ] && [ -d "$CWD" ]; then
     URL=$(git -C "$CWD" config --get remote.origin.url 2>/dev/null)

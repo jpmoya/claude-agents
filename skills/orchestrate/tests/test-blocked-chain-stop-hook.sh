@@ -148,6 +148,33 @@ test_bcs_stop_hook_active_never_traps_twice() {
   bcs_cleanup
 }
 
+test_bcs_orchestrator_transcript_exits_0() {
+  bcs_setup 3600 "**[orchestrator] BLOCKED** needs a delivery-lead decision on the failing check"
+  local tr="$BCS_H/t.jsonl"
+  printf '{"type":"agent-setting","agentSetting":"orchestrator"}\n{"type":"user","message":{"content":"go"}}\n' > "$tr"
+  bcs_run "{\"transcript_path\":\"$tr\"}"; local rc=$?
+  assert_eq "$rc" "0" "headless orchestrator must be allowed to stop" || { bcs_cleanup; return 1; }
+  assert_eq "$BCS_OUT" "" "no stderr" || { bcs_cleanup; return 1; }
+  bcs_cleanup
+}
+
+test_bcs_non_orchestrator_agent_setting_still_blocks() {
+  bcs_setup 3600 "**[orchestrator] BLOCKED** needs a delivery-lead decision on the failing check"
+  local tr="$BCS_H/t.jsonl"
+  printf '{"type":"user","message":{"content":"go"}}\n' > "$tr"
+  bcs_run "{\"transcript_path\":\"$tr\"}"; local rc=$?
+  assert_eq "$rc" "2" "interactive transcript still blocked" || { bcs_cleanup; return 1; }
+  bcs_cleanup
+}
+
+test_bcs_unreadable_transcript_fails_open_and_logs() {
+  bcs_setup 3600 "**[orchestrator] BLOCKED** needs a delivery-lead decision on the failing check"
+  bcs_run "{\"transcript_path\":\"$BCS_H/missing.jsonl\"}"; local rc=$?
+  assert_eq "$rc" "0" "unreadable transcript fails open" || { bcs_cleanup; return 1; }
+  assert_eq "$(grep -c 'transcript_path unreadable' "$BCS_H/logs/pipeline/blocked-chain-stop.log")" "1" "logged" || { bcs_cleanup; return 1; }
+  bcs_cleanup
+}
+
 test_bcs_settings_registers_hook() {
   assert_contains "$(cat "$ROOT_BCS/settings.json")" 'hooks/blocked-chain-stop.sh' "registered as a Stop hook" || return 1
   bash -n "$HOOK_BCS" || return 1
@@ -168,3 +195,6 @@ run_test test_bcs_garbage_input_fails_open_and_logs
 run_test test_bcs_settings_registers_hook
 run_test test_bcs_prod_and_risky_list_blocks_are_jp_only
 run_test test_bcs_stop_hook_active_never_traps_twice
+run_test test_bcs_orchestrator_transcript_exits_0
+run_test test_bcs_non_orchestrator_agent_setting_still_blocks
+run_test test_bcs_unreadable_transcript_fails_open_and_logs
