@@ -10,7 +10,7 @@
 #   5. shared dispatch: launch one agent-go issue from DISPATCH_REPOS after winning a claim
 #   3d. goal step (#195): keep-alive, pacing, parking, completion of goal-bound delivery leads pinned to this host
 #   7. status reconcile: refresh listed tickets from GitHub (backgrounded, throttled to once per 600 s; issue #51)
-#   8. PM Slack DM poll: record JP's replies to project-manager asks (backgrounded, no-op without PM_SLACK_BOT_TOKEN; issue #117)
+#   8. PM Slack DM poll: record JP's replies to delivery-lead asks (backgrounded, no-op without PM_SLACK_BOT_TOKEN; issue #117)
 #   9. stale-work digest: log (never act on) stale agent-go, stuck ci_red/ci_pending/merge_conflict holds, disk
 #      pressure >= 85% (throttled to once per 600 s; issue #491)
 # One launch per tick max. All state is local (~/.claude/pipeline/state); the only shared state is the issue's markers and labels.
@@ -1783,7 +1783,7 @@ gh_class optional
 #    or failing pass never delays or fails the tick.
 [ "$T_OPT" = 1 ] && { ( "$HERE/reconcile-status.sh" >/dev/null 2>&1 & ) 9>&- || true; }
 
-# 8. PM Slack DM poll (issue #117) — copy JP's DM replies onto the tickets the project-manager asked about.
+# 8. PM Slack DM poll (issue #117) — copy JP's DM replies onto the tickets the delivery-lead asked about.
 #    No-op unless PM_SLACK_BOT_TOKEN is set on this host; backgrounded with fd 9 closed so it never delays or fails the tick.
 ( "$HERE/pm-slack.sh" poll >/dev/null 2>&1 & ) 9>&- || true
 
