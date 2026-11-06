@@ -59,7 +59,7 @@ n=$(printf '%s' "$*" | sed -n -e 's/.*issue view \([0-9][0-9]*\).*/\1/p' -e 's|^
 if [ "$1" = api ]; then
   [ -f "$HERE/gh-api-fail" ] && { echo "token=ghp_FAKESECRET123" >&2; exit 1; }
   case "$*" in
-    *"/comments"*) jq -c 'map({body: .body, created_at: .createdAt})' "$HERE/gh-issue-comments-json-$n" 2>/dev/null || echo '[]' ;;
+    *"/comments"*) jq -c 'map({id: .id, body: .body, created_at: .createdAt})' "$HERE/gh-issue-comments-json-$n" 2>/dev/null || echo '[]' ;;
     *) jq -nc --arg s "$(cat "$HERE/gh-issue-state-$n" 2>/dev/null || echo OPEN)" --arg b "$(cat "$HERE/gh-issue-body-$n" 2>/dev/null)" '{state:($s|ascii_downcase), body:$b, updated_at:"2026-01-01T00:00:00Z"}' ;;
   esac
   exit 0
