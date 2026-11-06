@@ -254,27 +254,80 @@ function backlogKeyOf(row) {
   return m ? `${m[1]}#${m[2]}` : null;
 }
 
+// The one <script> this page ships (grouped-render.test.js's "no third-party script" assertion
+// was narrowed, not removed, to allow exactly this — see that test). Same-origin only, no
+// external src. Reorders the rows in the DOM (mouse click on the &uarr;/&darr; buttons, or Tab +
+// Enter for keyboard-only use — simpler and more robust on a small ops page than HTML5
+// drag-and-drop), then POSTs the new order to POST /backlog-priority (same session-cookie gate
+// as this page — see src/index.js) and reloads on success so the page reflects the saved order.
+// A failed save never silently drops: it alerts and leaves the row order unsaved-but-displayed,
+// which the reload-on-success (not reload-always) makes safe to retry.
+const BACKLOG_REORDER_SCRIPT = `<script>
+(function () {
+  var body = document.getElementById("backlog-body");
+  if (!body) return;
+  function rows() { return Array.prototype.slice.call(body.querySelectorAll("tr[data-key]")); }
+  function renumber() {
+    var all = rows();
+    all.forEach(function (tr, i) {
+      var rank = tr.querySelector(".bp-rank");
+      if (rank) rank.textContent = String(i + 1);
+      var up = tr.querySelector(".bp-up");
+      var down = tr.querySelector(".bp-down");
+      if (up) up.disabled = i === 0;
+      if (down) down.disabled = i === all.length - 1;
+    });
+  }
+  function save(order) {
+    fetch("/backlog-priority", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ keys: order }),
+    }).then(function (res) {
+      if (res.ok) { location.reload(); return; }
+      alert("Could not save the new order (status " + res.status + "). Nothing changed yet.");
+    }, function () {
+      alert("Could not reach the server to save the new order. Nothing changed yet.");
+    });
+  }
+  body.addEventListener("click", function (ev) {
+    var btn = ev.target.closest ? ev.target.closest("button[data-dir]") : null;
+    if (!btn || btn.disabled) return;
+    var tr = btn.closest("tr");
+    if (!tr) return;
+    var sib = btn.getAttribute("data-dir") === "up" ? tr.previousElementSibling : tr.nextElementSibling;
+    if (!sib) return;
+    if (btn.getAttribute("data-dir") === "up") body.insertBefore(tr, sib);
+    else body.insertBefore(sib, tr);
+    renumber();
+    save(rows().map(function (r) { return r.getAttribute("data-key"); }));
+  });
+})();
+</script>`;
+
 /**
- * Backlog priority (reorder view, no JS on this page — grouped-render.test.js pins that): lists
- * every standalone (non-goal) open `agent-go` ticket in today's dispatch order (JP's stored rank
- * first, lowest rank first; unranked tickets after, by issue number) and prints the
- * `backlog-priority.sh set` command pre-filled with that same order. JP edits the order of the
- * quoted keys in the command (cut/paste in a text editor, or by hand) and runs it on either host;
- * the next supervisor tick on both hosts picks up the new order (reconcile-status.sh pulls the
- * registry issue the command writes to). There is no drag-and-drop here: the page emits no
- * `<script>` and this Worker has no authenticated write path for a browser to call directly.
+ * Backlog priority (reorder view): lists every standalone (non-goal) open `agent-go` ticket in
+ * today's dispatch order (JP's stored rank first, lowest rank first; unranked tickets after, by
+ * issue number). Each row carries &uarr;/&darr; buttons (BACKLOG_REORDER_SCRIPT) that reorder in
+ * the browser and save immediately via POST /backlog-priority. The `backlog-priority.sh set`
+ * command below is kept as a terminal fallback (same order the buttons would save) for when JS or
+ * the Worker's GitHub token is unavailable.
  */
 function renderBacklogSection(hosts) {
   const rows = buildBacklog(hosts);
   const keys = rows.map(backlogKeyOf).filter((k) => k !== null);
   const body = rows.length
     ? rows
-        .map(
-          (row, i) =>
-            `<tr><td data-label="#">${i + 1}</td><td data-label="Issue">#${esc(row.issue)}</td><td data-label="Ticket">${renderTicketCell(row)}</td></tr>`,
-        )
+        .map((row, i) => {
+          const key = backlogKeyOf(row);
+          const controls = key
+            ? `<button type="button" class="bp-up" data-dir="up" aria-label="Move up"${i === 0 ? " disabled" : ""}>&uarr;</button><button type="button" class="bp-down" data-dir="down" aria-label="Move down"${i === rows.length - 1 ? " disabled" : ""}>&darr;</button>`
+            : "";
+          return `<tr${key ? ` data-key="${esc(key)}"` : ""}><td data-label="#" class="bp-rank">${i + 1}</td><td data-label="Issue">#${esc(row.issue)}</td><td data-label="Ticket">${renderTicketCell(row)}</td><td data-label="Reorder" class="bp-controls">${controls}</td></tr>`;
+        })
         .join("")
-    : `<tr><td colspan="3">none</td></tr>`;
+    : `<tr><td colspan="4">none</td></tr>`;
   const cmd = keys.length
     ? `~/.claude/skills/orchestrate/backlog-priority.sh set ${keys.map((k) => `'${esc(k)}'`).join(" ")}`
     : "";
@@ -282,12 +335,14 @@ function renderBacklogSection(hosts) {
     <h2>Backlog priority (${rows.length})</h2>
     <p class="backlog-help">Standalone (non-goal) <code>agent-go</code> tickets, in today's dispatch order. Dispatch picks
       one repo at a time (config order), so this order only matters between tickets of the <strong>same</strong> repo.
-      To set your own order: reorder the quoted keys below, then run the command on either host.</p>
+      Use the &uarr;/&darr; buttons to reorder a row — it saves right away. The equivalent terminal command (same
+      order), in case you'd rather run it by hand:</p>
     <div class="table-scroll"><table>
-      <tr class="cols"><th>#</th><th>Issue</th><th>Ticket</th></tr>
-      <tbody>${body}</tbody>
+      <tr class="cols"><th>#</th><th>Issue</th><th>Ticket</th><th></th></tr>
+      <tbody id="backlog-body">${body}</tbody>
     </table></div>
     ${cmd ? `<pre class="backlog-cmd">${esc(cmd)}</pre>` : ""}
+    ${keys.length > 0 ? BACKLOG_REORDER_SCRIPT : ""}
   </section>`;
 }
 
@@ -538,6 +593,11 @@ ${ROOT_VARS_CSS}
   .backlog-help { font-size: 0.85rem; color: var(--muted); margin: 0 0 0.75rem; }
   .backlog-cmd { white-space: pre-wrap; word-break: break-all; font-size: 0.78rem; background: var(--gray-soft);
     border-radius: 0.375rem; padding: 0.6rem 0.75rem; margin: 0.75rem 0 0; }
+  .bp-controls { white-space: nowrap; }
+  .bp-up, .bp-down { font-size: 0.85rem; line-height: 1; padding: 0.25rem 0.5rem; margin-left: 0.3rem;
+    border-radius: 0.3rem; border: 1px solid var(--border); background: var(--surface); color: var(--text);
+    cursor: pointer; }
+  .bp-up:disabled, .bp-down:disabled { opacity: 0.35; cursor: default; }
   .legend h3 { font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin: 1em 0 0.5em; }
   .legend dt { font-weight: 600; margin-top: 0.6em; font-size: 0.85rem; }
   .legend dd { margin: 0.1em 0 0 0; color: var(--muted); font-size: 0.85rem; }

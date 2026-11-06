@@ -142,11 +142,15 @@ the goals-first-then-fill-with-standalone-tickets dispatch logic, `MAX_CONCURREN
   backlog`) turns that plus the local priority cache into the payload's `backlog[]`: `{repo, issue,
   title?, url?, rank?}` (cap 100; `rank` omitted when the ticket is untracked), ordered the same
   way as the dispatch side. The page merges both hosts' `backlog[]` by key (a repo in both hosts'
-  scope can publish the same ticket twice) and renders a numbered table plus the exact
-  `backlog-priority.sh set` command for that order — **no `<script>`, no drag-and-drop**: this page
-  emits no JS (`grouped-render.test.js` pins that for the whole page), and the Worker has no
-  authenticated write path a browser could call directly without a new secret and extra KV-write
-  budget. JP reorders the printed keys by hand and runs the command on either host.
+  scope can publish the same ticket twice) and renders a numbered table with &uarr;/&darr;
+  reorder buttons on each row (mouse click, or Tab + Enter from the keyboard), plus the exact
+  `backlog-priority.sh set` command for that order as a terminal fallback. The buttons reorder in
+  the browser and POST the new order straight to `POST /backlog-priority` (same Google-SSO gate
+  as every other human-facing route), which writes the registry issue via the GitHub REST API
+  (`src/backlog-priority.js` — the Worker can't shell out to `gh`, so this is a second writer of
+  the same issue `backlog-priority.sh`'s `set` writes, never a new primitive) and reloads the
+  page on success. This needs the `GITHUB_TOKEN` secret (below); without it the buttons still
+  render but a save 503s and JP falls back to the printed command.
 
 ## Infra hand-off contract (companion `infra` issue's job, not this one's)
 
@@ -222,6 +226,26 @@ the deploy note at the end):
 
 A misconfigured or not-yet-set `GOOGLE_CLIENT_ID`/`SESSION_SECRET` makes `/login` and
 `/auth/callback` fail closed with `503` rather than redirect with an empty `client_id`.
+
+## Backlog reorder write path (`GITHUB_TOKEN` secret, needed for the &uarr;/&darr; buttons)
+
+`POST /backlog-priority` (behind the same session-cookie gate as `/`, `/pipelines`,
+`/status.json`) needs a GitHub token with permission to read and write issues on
+`jpmoya/claude-agents` (the registry repo `backlog-priority.sh` also writes to). **JP needs to
+set this — this PR does not and cannot create or see the token value:**
+
+1. Create a fine-grained personal access token (GitHub → Settings → Developer settings →
+   Personal access tokens → Fine-grained tokens) scoped to **only** the `jpmoya/claude-agents`
+   repository, with repository permission **Issues: Read and write** and nothing else.
+2. From this directory:
+   ```
+   wrangler secret put GITHUB_TOKEN
+   ```
+   (never paste the token as a CLI argument — use the interactive prompt).
+
+Without this secret, the reorder buttons still render but a save fails with `503` and the page
+falls back to the printed `backlog-priority.sh set` command; nothing else on the page is
+affected.
 
 ## Pipelines tab (issue #273)
 
