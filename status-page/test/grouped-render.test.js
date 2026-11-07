@@ -253,8 +253,8 @@ const runningRow = (o = {}) => run(42, { state: 'running', title: undefined, url
 
 describe('re-homed #29 — privacy: repo alias and started_at never shown', () => {
   const html = render(hostRecord({ runs: [runningRow({ repo: 'zz-alias', started_at: '2026-01-02T03:04:05Z', title: 'T', url: GOOD_URL })] }), null);
-  it('no Repo / Started header', () => {
-    expect(html).not.toContain('<th>Repo</th>');
+  it('no Repo / Started header on the run row itself (the unrelated Backlog priority section has its own Repo column)', () => {
+    expect(section(html, 'Running')).not.toContain('<th>Repo</th>');
     expect(html).not.toContain('<th>Started</th>');
   });
   it('the alias and started_at (raw or CET-formatted) appear nowhere; the row has 8 cells', () => {

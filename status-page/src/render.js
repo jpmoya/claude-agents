@@ -357,10 +357,10 @@ function renderBacklogSection(hosts) {
           const handle = key
             ? `<span class="bp-handle" tabindex="0" role="button" aria-label="Reorder this row; press Arrow Up or Arrow Down to move it">⠿</span>`
             : "";
-          return `<tr${key ? ` draggable="true" data-key="${esc(key)}"` : ""}><td data-label="#" class="bp-rank">${i + 1}</td><td data-label="Issue">#${esc(row.issue)}</td><td data-label="Ticket">${renderTicketCell(row)}</td><td data-label="Reorder" class="bp-controls">${handle}</td></tr>`;
+          return `<tr${key ? ` draggable="true" data-key="${esc(key)}"` : ""}><td data-label="#" class="bp-rank">${i + 1}</td><td data-label="Issue">#${esc(row.issue)}</td><td data-label="Repo">${esc(row.repo ?? "")}</td><td data-label="Ticket">${renderTicketCell(row)}</td><td data-label="Reorder" class="bp-controls">${handle}</td></tr>`;
         })
         .join("")
-    : `<tr><td colspan="4">none</td></tr>`;
+    : `<tr><td colspan="5">none</td></tr>`;
   const hasKeys = rows.some((row) => backlogKeyOf(row) !== null);
   return `<section class="group backlog">
     <h2>Backlog priority (${rows.length})</h2>
@@ -368,7 +368,7 @@ function renderBacklogSection(hosts) {
       one repo at a time (config order), so this order only matters between tickets of the <strong>same</strong> repo.
       Drag a row by its handle to reorder it (or focus the handle and press Arrow Up/Down) — it saves right away.</p>
     <div class="table-scroll"><table>
-      <tr class="cols"><th>#</th><th>Issue</th><th>Ticket</th><th></th></tr>
+      <tr class="cols"><th>#</th><th>Issue</th><th>Repo</th><th>Ticket</th><th></th></tr>
       <tbody id="backlog-body">${body}</tbody>
     </table></div>
     ${hasKeys ? BACKLOG_REORDER_SCRIPT : ""}

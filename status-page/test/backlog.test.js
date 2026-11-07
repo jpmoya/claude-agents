@@ -97,20 +97,26 @@ describe('group.js — buildBacklog: cross-host merge and order', () => {
 describe('render.js — Backlog priority section', () => {
   it('renders a heading with the row count and a row per ticket', () => {
     const mac = hostRecord({
-      backlog: [bi(11, { title: 'First', rank: 0 }), bi(12, { title: 'Second', rank: 1 })],
+      backlog: [
+        bi(11, { title: 'First', rank: 0, repo: 'project-a' }),
+        bi(12, { title: 'Second', rank: 1, repo: 'project-b' }),
+      ],
     });
     const html = renderPage({ mac, vm: null }, thresholds, NOW);
     expect(html).toMatch(/<h2[^>]*>\s*Backlog priority \(2\)\s*<\/h2>/);
+    expect(html).toContain('<th>Repo</th>');
     expect(html).toContain('#11');
     expect(html).toContain('First');
+    expect(html).toContain('data-label="Repo">project-a<');
     expect(html).toContain('#12');
     expect(html).toContain('Second');
+    expect(html).toContain('data-label="Repo">project-b<');
   });
 
   it('an empty backlog renders "(0)" and "none"', () => {
     const html = renderPage({ mac: hostRecord({}), vm: null }, thresholds, NOW);
     expect(html).toMatch(/<h2[^>]*>\s*Backlog priority \(0\)\s*<\/h2>/);
-    expect(html).toContain('<td colspan="4">none</td>');
+    expect(html).toContain('<td colspan="5">none</td>');
   });
 
   it('escapes a hostile title (the page ships its own trusted reorder <script>, but never reflects data into one)', () => {
