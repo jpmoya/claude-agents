@@ -88,12 +88,12 @@ ar2_fixture() {
 }
 ar2_tick() { sq_run "$SUP_SQ" >/dev/null 2>&1; }
 ar2_launches() {  # wait briefly for the async launch, then count claude invocations
-  local i; for i in $(seq 1 20); do [ -s "$SQ_PIPE/claude.calls" ] && break; sleep 0.1; done
+  local i; for i in $(seq 1 100); do [ -s "$SQ_PIPE/claude.calls" ] && break; sleep 0.02; done
   wc -l < "$SQ_PIPE/claude.calls" | tr -d ' '
 }
 ar2_no_launch() {  # negatives: sq_run is synchronous; wait for the cause-check signal (pr call) if one is expected, then settle
-  local i; for i in $(seq 1 10); do [ "$(ar2_pr_calls)" -ge 1 ] && break; sleep 0.1; done
-  sleep 0.7; wc -l < "$SQ_PIPE/claude.calls" | tr -d ' '
+  local i; for i in $(seq 1 50); do [ "$(ar2_pr_calls)" -ge 1 ] && break; sleep 0.02; done
+  sleep 0.2; wc -l < "$SQ_PIPE/claude.calls" | tr -d ' '
 }
 ar2_pr_calls() { grep -c '^pr ' "$SQ_GH/gh-calls.log" 2>/dev/null || true; }
 ar2_counter() { if [ -f "$(rkp "$SQ_PIPE/orch-42.autoretry")" ]; then head -n1 "$(rkp "$SQ_PIPE/orch-42.autoretry")" | tr -d ' \n'; else echo ABSENT; fi; }

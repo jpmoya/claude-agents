@@ -92,7 +92,7 @@ sp_comment() {
 sp_tick() { HOME="$SP_HOME" PATH="$SP_D:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$SP_PIPE" QUEUE="$SP_PIPE/queue" LOGDIR="$SP_HOME/logs/pipeline" \
   SLACK_BOT_TOKEN="" SLACK_ENGINEERING_CHANNEL="" /bin/bash "$SUP_SP" >/dev/null 2>&1
   # poll (max ~15 s) until the detached stub claude has exited, instead of a fixed sleep
-  local i; for i in $(seq 1 150); do pgrep -f "$SP_D/claude" >/dev/null 2>&1 || break; sleep 0.1; done; sleep 0.2; }
+  local i; for i in $(seq 1 750); do pgrep -f "$SP_D/claude" >/dev/null 2>&1 || break; sleep 0.02; done; sleep 0.04; }
 sp_pm_launches() { grep -c -- '--agent product-manager' "$SP_D/claude.log"; }
 sp_labels() { jq -r --argjson n "$1" '.[]|select(.number==$n)|[.labels[].name]|sort|join(",")' "$SP_D/issues.json"; }
 sp_edits_with() { grep '^issue edit' "$SP_D/gh-calls.log" | grep -c -- "$1"; }

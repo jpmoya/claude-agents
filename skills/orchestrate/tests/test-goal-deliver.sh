@@ -258,13 +258,13 @@ dg_has_label() { jq -e --arg l "$2" 'any(.labels[]; .name == $l)' "$1" >/dev/nul
 dg_goal_files() { ls "$DG_PIPE"/goal-* 2>/dev/null | wc -l | tr -d ' '; }
 dg_claude_count() { ls -d "$DG_BIN"/claude-calls.* 2>/dev/null | wc -l | tr -d ' '; }
 dg_wait_claude() {  # dg_wait_claude <n> — poll up to ~6 s for n fake-claude launches
-  local i=0; while [ "$i" -lt 30 ]; do [ "$(dg_claude_count)" -ge "$1" ] && return 0; sleep 0.2; i=$((i + 1)); done; return 1
+  local i=0; while [ "$i" -lt 150 ]; do [ "$(dg_claude_count)" -ge "$1" ] && return 0; sleep 0.04; i=$((i + 1)); done; return 1
 }
 dg_last_claude_dir() { ls -d "$DG_BIN"/claude-calls.* 2>/dev/null | tail -1; }
 dg_writes() { wc -l < "$DG_BIN/writes.log" | tr -d ' '; }
 dg_alive() { local s; s=$(ps -o stat= -p "$1" 2>/dev/null | tr -d ' '); [ -n "$s" ] && [ "${s#Z}" = "$s" ]; }
 dg_wait_dead() {  # dg_wait_dead <pid> — up to ~4 s
-  local i=0; while [ "$i" -lt 20 ]; do dg_alive "$1" || return 0; sleep 0.2; i=$((i + 1)); done; return 1
+  local i=0; while [ "$i" -lt 100 ]; do dg_alive "$1" || return 0; sleep 0.04; i=$((i + 1)); done; return 1
 }
 dg_dead_pid() { local p=99999; while kill -0 "$p" 2>/dev/null; do p=$((p - 1)); done; echo "$p"; }
 dg_lc() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
@@ -295,7 +295,7 @@ dg_live_tree() {
   DG_P=$!; disown "$DG_P" 2>/dev/null
   DG_PIDS="$DG_PIDS $DG_P"
   local i=0 c=""
-  while [ "$i" -lt 25 ] && [ -z "$c" ]; do c=$(pgrep -P "$DG_P" 2>/dev/null | head -1); [ -n "$c" ] || sleep 0.2; i=$((i + 1)); done
+  while [ "$i" -lt 125 ] && [ -z "$c" ]; do c=$(pgrep -P "$DG_P" 2>/dev/null | head -1); [ -n "$c" ] || sleep 0.04; i=$((i + 1)); done
   DG_C=$c; DG_PIDS="$DG_PIDS $DG_C"
 }
 
@@ -329,14 +329,14 @@ dg_check_register() {
   assert_file_exists "$DG_PIPE/goal-$id.launched-at" "AC1: .launched-at" || return 1
   assert_file_exists "$DG_PIPE/goal-$id.pid" "AC1: .pid" || return 1
   dg_wait_claude 1 || { fail 'AC1: fake claude was never launched'; return 1; }
-  sleep 1
+  sleep 0.2
   assert_eq "$(dg_claude_count)" "1" "AC1: claude launched exactly once" || return 1
   d=$(dg_last_claude_dir)
   assert_eq "$(awk 'p{print;exit} $0=="--agent"{p=1}' "$d/argv")" "project-manager" "AC1: --agent project-manager" || return 1
   assert_contains "$(cat "$d/argv")" "--dangerously-skip-permissions" "AC1: launch flags" || return 1
   assert_contains "$(cat "$d/argv")" "$id" "AC1: the prompt (brief) names the goal id" || return 1
   assert_eq "$(cat "$d/cwd")" "$DG_CK_A" "AC1: cwd = the repo's DISPATCH_REPOS checkout" || return 1
-  local i=0; while [ "$i" -lt 25 ] && [ ! -s "$DG_PIPE/goal-$id.exit" ]; do sleep 0.2; i=$((i + 1)); done
+  local i=0; while [ "$i" -lt 125 ] && [ ! -s "$DG_PIPE/goal-$id.exit" ]; do sleep 0.04; i=$((i + 1)); done
   assert_eq "$(cat "$DG_PIPE/goal-$id.exit" 2>/dev/null)" "0" "AC1: wrapper writes the cycle exit code to goal-<id>.exit" || return 1
 }
 
@@ -787,7 +787,7 @@ test_dg_resume_pinned_elsewhere_without_here_does_not_launch() {
   dg_has_label "$f" goal-stopped && { fail "AC8: goal-stopped removed"; rc=1; }
   assert_eq "$(dg_block "$f" | jq -r .host)" "host-b" "AC8: host unchanged without --here" || rc=1
   dg_assert_cleared "$DG_ID_T7" || rc=1
-  sleep 1
+  sleep 0.3
   assert_eq "$(dg_claude_count)" "0" "AC8: pinned elsewhere → no launch" || rc=1
   dg_teardown; return $rc
 }

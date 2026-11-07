@@ -53,7 +53,7 @@ WRAP
 rq_tick() {
   printf '#!/bin/bash\necho "$*" >> "%s/curl.log"\necho "{\\"ok\\":true}"\n' "$SI_D" > "$SI_D/curl"; chmod +x "$SI_D/curl"
   HOME="$SI_HOME" PATH="$SI_D:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$SI_PIPE" QUEUE="$SI_PIPE/queue" LOGDIR="$SI_HOME/logs/pipeline" \
-    SLACK_BOT_TOKEN="x" SLACK_ENGINEERING_CHANNEL="C1" /bin/bash "$SUP_SI" >/dev/null 2>&1; sleep 1.5
+    SLACK_BOT_TOKEN="x" SLACK_ENGINEERING_CHANNEL="C1" /bin/bash "$SUP_SI" >/dev/null 2>&1; sleep 0.3
 }
 rq_bulk() {  # rq_bulk <count> <start> <milestone> [label...] — many issues in one jq pass
   local c=$1 st=$2 m=$3; shift 3; local l=("$@"); [ ${#l[@]} -eq 0 ] && l=(agent-go)

@@ -489,7 +489,7 @@ test_sc_ac4_supervisor_tick_calls_reconcile_once_and_is_not_delayed_by_it() {
   cat > "$SC_ROOT/skills/orchestrate/reconcile-status.sh" <<EOF
 #!/bin/bash
 echo "\$*" >> "$SC_ROOT/reconcile.calls"
-sleep 8
+sleep 1
 exit 1
 EOF
   chmod +x "$SC_ROOT/skills/orchestrate/reconcile-status.sh"

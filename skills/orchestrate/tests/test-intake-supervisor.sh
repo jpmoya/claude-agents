@@ -64,7 +64,7 @@ si_issue() {
     '. + [{number:$n,repo:$r,labels:$l}]' "$SI_D/issues.json" > "$SI_D/i.tmp" && mv "$SI_D/i.tmp" "$SI_D/issues.json"
 }
 si_tick() { HOME="$SI_HOME" PATH="$SI_D:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$SI_PIPE" QUEUE="$SI_PIPE/queue" LOGDIR="$SI_HOME/logs/pipeline" \
-  SLACK_BOT_TOKEN="" SLACK_ENGINEERING_CHANNEL="" /bin/bash "$SUP_SI" >/dev/null 2>&1; sleep 1.5; }
+  SLACK_BOT_TOKEN="" SLACK_ENGINEERING_CHANNEL="" /bin/bash "$SUP_SI" >/dev/null 2>&1; sleep 0.3; }
 si_launches() { grep -c -- '--agent intake' "$SI_D/claude.log"; }
 si_labels() { jq -r --argjson n "$1" '.[]|select(.number==$n)|[.labels[].name]|sort|join(",")' "$SI_D/issues.json"; }
 si_cleanup() { cleanup_running; rm -rf "$SI_PIPE" "$SI_HOME"; }

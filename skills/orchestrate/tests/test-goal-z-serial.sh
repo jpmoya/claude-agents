@@ -116,7 +116,7 @@ zs_tick_b() {
   ( cd "$ZS_HOME_B" && env HOME="$ZS_HOME_B" PATH="$ZS_BIN_B:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$ZS_PIPE_B" QUEUE="$ZS_PIPE_B/queue" \
       LOGDIR="$ZS_HOME_B/logs/pipeline" GS_RS_LOG="$GS_RS_LOG" SLACK_BOT_TOKEN="" SLACK_ENGINEERING_CHANNEL="" STATUS_PUSH_URL="" STATUS_PUSH_TOKEN="" \
       bash "$GS_TREE/skills/orchestrate/supervisor.sh" >"$ZS_HOME_B/tick.out" 2>&1 </dev/null ) || true
-  sleep 0.4
+  sleep 0.1
 }
 zs_claude_count_b() { ls -d "$ZS_BIN_B"/claude-calls.* 2>/dev/null | wc -l | tr -d ' '; }
 zs_cleanup_b() {
@@ -372,7 +372,7 @@ test_zs_s6_slot_taken_during_the_settle_wait() {
   zq_env; zs_mode 1
   echo "CLAIM_SETTLE_SECS=2" >> "$GS_HOME/.claude/pipeline/config.local.sh"
   zq_reg 51 "$ZQ_B" "$ZQ_SPEC_B" queued 1 ""
-  ( i=0; while [ "$i" -lt 100 ] && [ "$(zq_claims 51)" -lt 1 ]; do sleep 0.1; i=$((i + 1)); done
+  ( i=0; while [ "$i" -lt 500 ] && [ "$(zq_claims 51)" -lt 1 ]; do sleep 0.02; i=$((i + 1)); done
     zq_reg 50 "$ZQ_A" "$ZQ_SPEC_A" active 3 host-b ) &
   local bg=$!
   gs_tick; wait "$bg" 2>/dev/null; gs_settle

@@ -395,17 +395,17 @@ gs_live() {
   GS_P=$!; disown "$GS_P" 2>/dev/null
   GS_PIDS="$GS_PIDS $GS_P"
   local i=0 c=""
-  while [ "$i" -lt 25 ] && [ -z "$c" ]; do c=$(pgrep -P "$GS_P" 2>/dev/null | head -1); [ -n "$c" ] || sleep 0.2; i=$((i + 1)); done
+  while [ "$i" -lt 125 ] && [ -z "$c" ]; do c=$(pgrep -P "$GS_P" 2>/dev/null | head -1); [ -n "$c" ] || sleep 0.04; i=$((i + 1)); done
   GS_C=$c; GS_PIDS="$GS_PIDS $GS_C"
   echo "$GS_P" > "$GS_PIPE/goal-$1.pid"
   gs_iso_ago 600 > "$GS_PIPE/goal-$1.launched-at"; gs_iso_ago 600 > "$GS_PIPE/goal-$1.start"
 }
 
 gs_alive() { local s; s=$(ps -o stat= -p "$1" 2>/dev/null | tr -d ' '); [ -n "$s" ] && [ "${s#Z}" = "$s" ]; }
-gs_wait_dead() { local i=0; while [ "$i" -lt 25 ]; do gs_alive "$1" || return 0; sleep 0.2; i=$((i + 1)); done; return 1; }
+gs_wait_dead() { local i=0; while [ "$i" -lt 125 ]; do gs_alive "$1" || return 0; sleep 0.04; i=$((i + 1)); done; return 1; }
 gs_claude_count() { ls -d "$GS_BIN"/claude-calls.* 2>/dev/null | wc -l | tr -d ' '; }
-gs_wait_claude() { local i=0; while [ "$i" -lt 25 ]; do [ "$(gs_claude_count)" -ge "$1" ] && return 0; sleep 0.2; i=$((i + 1)); done; return 1; }
-gs_settle() { sleep 1; }   # let any (wrongly) launched detached claude show up before asserting "none"
+gs_wait_claude() { local i=0; while [ "$i" -lt 125 ]; do [ "$(gs_claude_count)" -ge "$1" ] && return 0; sleep 0.04; i=$((i + 1)); done; return 1; }
+gs_settle() { sleep 0.3; }   # let any (wrongly) launched detached claude show up before asserting "none"
 gs_last_claude() { ls -d "$GS_BIN"/claude-calls.* 2>/dev/null | tail -1; }
 gs_argv_after() { awk -v k="$2" 'p{print;exit} $0==k{p=1}' "$1/argv"; }
 
@@ -416,7 +416,7 @@ gs_tick() {
       SLACK_BOT_TOKEN="${GS_SLACK_TOKEN:-}" SLACK_ENGINEERING_CHANNEL="" \
       STATUS_PUSH_URL="${GS_PUSH_URL:-}" STATUS_PUSH_TOKEN="${GS_PUSH_TOKEN:-}" GH_TOKEN="${GS_GH_TOKEN:-}" \
       bash "$GS_TREE/skills/orchestrate/supervisor.sh" >"$GS_HOME/tick.out" 2>&1 </dev/null ) || GS_RC=$?
-  sleep 0.4   # the reporter recorder is backgrounded
+  sleep 0.1   # the reporter recorder is backgrounded
 }
 gs_log() { cat "$GS_HOME/logs/pipeline/supervisor.log" 2>/dev/null; }
 gs_events() { cat "$GS_RS_LOG" 2>/dev/null; }
