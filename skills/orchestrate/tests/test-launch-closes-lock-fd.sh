@@ -70,3 +70,30 @@ test_lfd_launch_without_fd9_is_unchanged() {
 
 run_test test_lfd_launch_closes_inherited_fd9
 run_test test_lfd_launch_without_fd9_is_unchanged
+
+# Regression for #603 — keep_awake's caffeinate inherited fd 9 and held the lock for 300 s. Every
+# backgrounded launch in supervisor.sh (line ending/continuing with a lone `&`) must carry 9>&-.
+test_lfd_every_supervisor_background_launch_closes_fd9() {
+  local sup="$HERE_LFD/../supervisor.sh" bad
+  bad=$(grep -nE '[^&>|]&( |$)' "$sup" | grep -vE '^[0-9]+:[[:space:]]*#' | grep -vE '&&' | grep -vF '9>&-')
+  assert_eq "$bad" "" "#603: backgrounded launches in supervisor.sh missing 9>&-" || return 1
+}
+
+# Behavioural: run keep_awake with fd 9 held; the caffeinate it starts must not have fd 9 open.
+test_lfd_keep_awake_caffeinate_does_not_inherit_fd9() {
+  local t out state=missing
+  t=$(mktemp -d "${TMPDIR:-/tmp}/orch-test-lfd603.XXXXXX")
+  mkdir -p "$t/bin"
+  printf '#!/bin/bash\nif { : >&9; } 2>/dev/null; then echo open; else echo closed; fi > "%s/state"\n' "$t" > "$t/bin/caffeinate"
+  chmod +x "$t/bin/caffeinate"
+  mkdir -p "$t/q"; echo '{}' > "$t/q/orch-1.json"
+  # extract keep_awake and run it with fd 9 open
+  ( sed -n '/^keep_awake()/,/^}/p' "$HERE_LFD/../supervisor.sh" > "$t/fn.sh"
+    QUEUE="$t/q" PIPE="$t/p" PATH="$t/bin:$PATH" bash -c 'slog(){ :; }; uname(){ echo Darwin; }; . "$1"; keep_awake; sleep 0.5' _ "$t/fn.sh" ) 9>"$t/lock" >/dev/null 2>&1
+  lfd_wait_for "$t/state" && state=$(cat "$t/state")
+  rm -rf "$t"
+  assert_eq "$state" "closed" "#603: caffeinate launched by keep_awake must not inherit fd 9" || return 1
+}
+
+run_test test_lfd_every_supervisor_background_launch_closes_fd9
+run_test test_lfd_keep_awake_caffeinate_does_not_inherit_fd9
