@@ -16,7 +16,7 @@ const HOST_ORDER = ['mac', 'vm']; // tie -> Mac
 const HEADINGS = {
   running: 'Running',
   queued: 'Queued',
-  approved: 'Approved, waiting for a slot',
+  approved: 'Approved, waiting for a slot', // goal-bound tickets only — standalone ones are deduped into Backlog priority below (see groupTickets)
   needsJp: 'Needs JP',
   staging: 'On staging (awaiting production)',
   parked: 'Parked',
@@ -157,6 +157,12 @@ export function groupTickets(hosts, nowEpochSecs) {
   for (const hostKey of HOST_ORDER) for (const item of listOf(hosts[hostKey], 'completed')) closedKeys.add(keyOf(item));
   const approved = mergeList(hosts, 'approved', 'updated_at');
   const staging = mergeList(hosts, 'staging', 'updated_at');
+  // #??? dedup: "Approved, waiting for a slot" reads every open agent-go ticket (goal-bound
+  // included), while the "Backlog priority" section (buildBacklog) reads the same list minus
+  // goal-bound/in-progress tickets — so nearly every approved ticket was also rendered in the
+  // reorderable priority list below it, twice on the page. A ticket buildBacklog already covers
+  // is excluded here: approved then shows only goal-bound tickets, which backlog deliberately omits.
+  const backlogKeys = new Set(buildBacklog(hosts).map(keyOf));
 
   const groups = { running: [], queued: [], approved: [], needsJp: [], staging: [], parked: [], done: [] };
   const seenKeys = new Set([...winners.keys(), ...done.keys(), ...approved.keys(), ...staging.keys()]);
@@ -165,7 +171,9 @@ export function groupTickets(hosts, nowEpochSecs) {
     const run = winners.get(key);
     if (run && run.state === 'running') groups.running.push(run);
     else if (done.has(key)) groups.done.push(done.get(key));
-    else if (approved.has(key)) groups.approved.push(approved.get(key));
+    else if (approved.has(key)) {
+      if (!backlogKeys.has(key)) groups.approved.push(approved.get(key));
+    }
     else if (run && run.state === 'queued') groups.queued.push(run);
     else if (staging.has(key)) groups.staging.push(staging.get(key));
     else if (run && run.state === 'restarting') groups.running.push(run);

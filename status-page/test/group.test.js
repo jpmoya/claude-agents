@@ -4,7 +4,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { groupTickets } from '../src/group.js';
-import { validRun, validCompleted, validStagingItem, validApprovedItem, hostRecord } from './fixtures.js';
+import { validRun, validCompleted, validStagingItem, validApprovedItem, validBacklogItem, hostRecord } from './fixtures.js';
 
 const NOW = Date.parse('2026-09-21T12:00:00Z') / 1000;
 const ago = (hours) => new Date((NOW - hours * 3600) * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
@@ -23,6 +23,7 @@ const H = {
 const run = (issue, o = {}) => validRun({ issue, url: urlOf(issue), title: `T${issue}`, last_activity_at: ago(1), ...o });
 const staged = (issue, o = {}) => validStagingItem({ issue, url: urlOf(issue), ...o });
 const approvedItem = (issue, o = {}) => validApprovedItem({ issue, url: urlOf(issue), ...o });
+const backlogItem = (issue, o = {}) => validBacklogItem({ issue, url: urlOf(issue), ...o });
 const done = (issue, o = {}) => validCompleted({ issue, url: urlOf(issue), closed_at: ago(2), ...o });
 
 const group = (hosts) => groupTickets({ mac: null, vm: null, ...hosts }, NOW);
@@ -335,6 +336,38 @@ describe('groupTickets — Needs JP by (repo, milestone) (#140)', () => {
       run(3, { state: 'held', marker: 'TESTS FAIL', repo: 'b', last_activity_at: ago(2), milestone: 'X' }),
     ];
     expect(issuesOf(group({ mac: hostRecord({ runs }) }), H.parked)).toEqual([2, 3, 1]);
+  });
+});
+
+describe('groupTickets — approved/backlog dedup (standalone tickets show only in Backlog priority)', () => {
+  it('a standalone ticket present in both approved[] and backlog[] is excluded from Approved entirely', () => {
+    const g = group({
+      mac: hostRecord({ approved: [approvedItem(3)], backlog: [backlogItem(3)] }),
+    });
+    expect(issuesOf(g, H.approved)).toEqual([]);
+    expect(g.some((group_) => group_.rows.some((r) => r.issue === 3))).toBe(false);
+  });
+
+  it('a goal-bound approved ticket (never in backlog[]) still shows in Approved', () => {
+    const g = group({
+      mac: hostRecord({ approved: [approvedItem(3)], backlog: [backlogItem(4)] }),
+    });
+    expect(where(g, 3)).toBe(H.approved);
+  });
+
+  it('backlog[] on the other host still dedupes an approved ticket from this host', () => {
+    const g = group({
+      mac: hostRecord({ approved: [approvedItem(3)] }),
+      vm: hostRecord({ backlog: [backlogItem(3)] }),
+    });
+    expect(issuesOf(g, H.approved)).toEqual([]);
+  });
+
+  it('a mix of standalone and goal-bound approved tickets keeps only the goal-bound ones', () => {
+    const g = group({
+      mac: hostRecord({ approved: [approvedItem(3), approvedItem(4)], backlog: [backlogItem(3)] }),
+    });
+    expect(issuesOf(g, H.approved)).toEqual([4]);
   });
 });
 

@@ -256,26 +256,24 @@ function backlogKeyOf(row) {
 
 // The one <script> this page ships (grouped-render.test.js's "no third-party script" assertion
 // was narrowed, not removed, to allow exactly this — see that test). Same-origin only, no
-// external src. Reorders the rows in the DOM (mouse click on the &uarr;/&darr; buttons, or Tab +
-// Enter for keyboard-only use — simpler and more robust on a small ops page than HTML5
-// drag-and-drop), then POSTs the new order to POST /backlog-priority (same session-cookie gate
-// as this page — see src/index.js) and reloads on success so the page reflects the saved order.
-// A failed save never silently drops: it alerts and leaves the row order unsaved-but-displayed,
-// which the reload-on-success (not reload-always) makes safe to retry.
+// external src. Each row is a native HTML5 drag source (plain draggable="true" + dragstart/
+// dragover/drop, no library): dragging over another row moves the dragged row to that spot in
+// the DOM live, so the row's own new position *is* the drop-landing indicator. A focusable
+// per-row handle (.bp-handle) gives the same keyboard-only path dropped buttons used to: Arrow
+// Up/Down while the handle has focus moves that row. Either path then POSTs the new order to
+// POST /backlog-priority (same session-cookie gate as this page — see src/index.js) and reloads
+// on success so the page reflects the saved order. A failed save never silently drops: it alerts
+// and leaves the row order unsaved-but-displayed, which the reload-on-success (not
+// reload-always) makes safe to retry.
 const BACKLOG_REORDER_SCRIPT = `<script>
 (function () {
   var body = document.getElementById("backlog-body");
   if (!body) return;
   function rows() { return Array.prototype.slice.call(body.querySelectorAll("tr[data-key]")); }
   function renumber() {
-    var all = rows();
-    all.forEach(function (tr, i) {
+    rows().forEach(function (tr, i) {
       var rank = tr.querySelector(".bp-rank");
       if (rank) rank.textContent = String(i + 1);
-      var up = tr.querySelector(".bp-up");
-      var down = tr.querySelector(".bp-down");
-      if (up) up.disabled = i === 0;
-      if (down) down.disabled = i === all.length - 1;
     });
   }
   function save(order) {
@@ -291,17 +289,54 @@ const BACKLOG_REORDER_SCRIPT = `<script>
       alert("Could not reach the server to save the new order. Nothing changed yet.");
     });
   }
-  body.addEventListener("click", function (ev) {
-    var btn = ev.target.closest ? ev.target.closest("button[data-dir]") : null;
-    if (!btn || btn.disabled) return;
-    var tr = btn.closest("tr");
-    if (!tr) return;
-    var sib = btn.getAttribute("data-dir") === "up" ? tr.previousElementSibling : tr.nextElementSibling;
-    if (!sib) return;
-    if (btn.getAttribute("data-dir") === "up") body.insertBefore(tr, sib);
-    else body.insertBefore(sib, tr);
+  function commit() {
     renumber();
     save(rows().map(function (r) { return r.getAttribute("data-key"); }));
+  }
+  var dragging = null;
+  body.addEventListener("dragstart", function (ev) {
+    var tr = ev.target.closest ? ev.target.closest("tr[data-key]") : null;
+    if (!tr) return;
+    dragging = tr;
+    tr.classList.add("bp-dragging");
+    if (ev.dataTransfer) {
+      ev.dataTransfer.effectAllowed = "move";
+      try { ev.dataTransfer.setData("text/plain", tr.getAttribute("data-key") || ""); } catch (e) {}
+    }
+  });
+  body.addEventListener("dragover", function (ev) {
+    if (!dragging) return;
+    ev.preventDefault();
+    var tr = ev.target.closest ? ev.target.closest("tr[data-key]") : null;
+    if (!tr || tr === dragging) return;
+    var rect = tr.getBoundingClientRect();
+    var before = ev.clientY - rect.top < rect.height / 2;
+    if (before) body.insertBefore(dragging, tr);
+    else body.insertBefore(dragging, tr.nextElementSibling);
+  });
+  body.addEventListener("drop", function (ev) {
+    if (!dragging) return;
+    ev.preventDefault();
+    dragging.classList.remove("bp-dragging");
+    dragging = null;
+    commit();
+  });
+  body.addEventListener("dragend", function () {
+    if (dragging) { dragging.classList.remove("bp-dragging"); dragging = null; }
+  });
+  body.addEventListener("keydown", function (ev) {
+    if (ev.key !== "ArrowUp" && ev.key !== "ArrowDown") return;
+    var handle = ev.target.closest ? ev.target.closest(".bp-handle") : null;
+    if (!handle) return;
+    var tr = handle.closest("tr[data-key]");
+    if (!tr) return;
+    var sib = ev.key === "ArrowUp" ? tr.previousElementSibling : tr.nextElementSibling;
+    if (!sib) return;
+    ev.preventDefault();
+    if (ev.key === "ArrowUp") body.insertBefore(tr, sib);
+    else body.insertBefore(sib, tr);
+    commit();
+    handle.focus();
   });
 })();
 </script>`;
@@ -309,40 +344,34 @@ const BACKLOG_REORDER_SCRIPT = `<script>
 /**
  * Backlog priority (reorder view): lists every standalone (non-goal) open `agent-go` ticket in
  * today's dispatch order (JP's stored rank first, lowest rank first; unranked tickets after, by
- * issue number). Each row carries &uarr;/&darr; buttons (BACKLOG_REORDER_SCRIPT) that reorder in
- * the browser and save immediately via POST /backlog-priority. The `backlog-priority.sh set`
- * command below is kept as a terminal fallback (same order the buttons would save) for when JS or
- * the Worker's GitHub token is unavailable.
+ * issue number). Each row is a drag-and-drop source with a focusable handle (BACKLOG_REORDER_SCRIPT)
+ * that reorders in the browser (mouse drag, or Arrow Up/Down with the handle focused) and saves
+ * immediately via POST /backlog-priority.
  */
 function renderBacklogSection(hosts) {
   const rows = buildBacklog(hosts);
-  const keys = rows.map(backlogKeyOf).filter((k) => k !== null);
   const body = rows.length
     ? rows
         .map((row, i) => {
           const key = backlogKeyOf(row);
-          const controls = key
-            ? `<button type="button" class="bp-up" data-dir="up" aria-label="Move up"${i === 0 ? " disabled" : ""}>&uarr;</button><button type="button" class="bp-down" data-dir="down" aria-label="Move down"${i === rows.length - 1 ? " disabled" : ""}>&darr;</button>`
+          const handle = key
+            ? `<span class="bp-handle" tabindex="0" role="button" aria-label="Reorder this row; press Arrow Up or Arrow Down to move it">⠿</span>`
             : "";
-          return `<tr${key ? ` data-key="${esc(key)}"` : ""}><td data-label="#" class="bp-rank">${i + 1}</td><td data-label="Issue">#${esc(row.issue)}</td><td data-label="Ticket">${renderTicketCell(row)}</td><td data-label="Reorder" class="bp-controls">${controls}</td></tr>`;
+          return `<tr${key ? ` draggable="true" data-key="${esc(key)}"` : ""}><td data-label="#" class="bp-rank">${i + 1}</td><td data-label="Issue">#${esc(row.issue)}</td><td data-label="Ticket">${renderTicketCell(row)}</td><td data-label="Reorder" class="bp-controls">${handle}</td></tr>`;
         })
         .join("")
     : `<tr><td colspan="4">none</td></tr>`;
-  const cmd = keys.length
-    ? `~/.claude/skills/orchestrate/backlog-priority.sh set ${keys.map((k) => `'${esc(k)}'`).join(" ")}`
-    : "";
+  const hasKeys = rows.some((row) => backlogKeyOf(row) !== null);
   return `<section class="group backlog">
     <h2>Backlog priority (${rows.length})</h2>
     <p class="backlog-help">Standalone (non-goal) <code>agent-go</code> tickets, in today's dispatch order. Dispatch picks
       one repo at a time (config order), so this order only matters between tickets of the <strong>same</strong> repo.
-      Use the &uarr;/&darr; buttons to reorder a row — it saves right away. The equivalent terminal command (same
-      order), in case you'd rather run it by hand:</p>
+      Drag a row by its handle to reorder it (or focus the handle and press Arrow Up/Down) — it saves right away.</p>
     <div class="table-scroll"><table>
       <tr class="cols"><th>#</th><th>Issue</th><th>Ticket</th><th></th></tr>
       <tbody id="backlog-body">${body}</tbody>
     </table></div>
-    ${cmd ? `<pre class="backlog-cmd">${esc(cmd)}</pre>` : ""}
-    ${keys.length > 0 ? BACKLOG_REORDER_SCRIPT : ""}
+    ${hasKeys ? BACKLOG_REORDER_SCRIPT : ""}
   </section>`;
 }
 
@@ -563,7 +592,7 @@ export function renderPage(hosts, thresholds, nowEpochSecs) {
 
   const body = bothEmpty
     ? '<p class="empty">no data from either host yet</p>'
-    : `${renderHostSection("mac", hosts.mac, thresholds, nowEpochSecs)}${renderHostSection("vm", hosts.vm, thresholds, nowEpochSecs)}${renderGoalsSection(hosts)}${renderBacklogSection(hosts)}${renderLegend()}${groupTickets(hosts, nowEpochSecs).map(renderGroupSection).join("")}`;
+    : `${renderHostSection("mac", hosts.mac, thresholds, nowEpochSecs)}${renderHostSection("vm", hosts.vm, thresholds, nowEpochSecs)}${renderGoalsSection(hosts)}${renderBacklogSection(hosts)}${groupTickets(hosts, nowEpochSecs).map(renderGroupSection).join("")}`;
 
   return `<!doctype html>
 <html lang="en">
@@ -591,16 +620,12 @@ ${ROOT_VARS_CSS}
   .badge.goal-delivered { background: var(--green-soft); color: var(--green); }
   .badge.goal-stopped { background: var(--gray-soft); color: var(--gray); }
   .backlog-help { font-size: 0.85rem; color: var(--muted); margin: 0 0 0.75rem; }
-  .backlog-cmd { white-space: pre-wrap; word-break: break-all; font-size: 0.78rem; background: var(--gray-soft);
-    border-radius: 0.375rem; padding: 0.6rem 0.75rem; margin: 0.75rem 0 0; }
-  .bp-controls { white-space: nowrap; }
-  .bp-up, .bp-down { font-size: 0.85rem; line-height: 1; padding: 0.25rem 0.5rem; margin-left: 0.3rem;
-    border-radius: 0.3rem; border: 1px solid var(--border); background: var(--surface); color: var(--text);
-    cursor: pointer; }
-  .bp-up:disabled, .bp-down:disabled { opacity: 0.35; cursor: default; }
-  .legend h3 { font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin: 1em 0 0.5em; }
-  .legend dt { font-weight: 600; margin-top: 0.6em; font-size: 0.85rem; }
-  .legend dd { margin: 0.1em 0 0 0; color: var(--muted); font-size: 0.85rem; }
+  .bp-controls { white-space: nowrap; text-align: center; }
+  tr[draggable="true"] { cursor: grab; }
+  tr[draggable="true"].bp-dragging { opacity: 0.4; cursor: grabbing; }
+  .bp-handle { display: inline-block; padding: 0.15rem 0.4rem; border-radius: 0.3rem; color: var(--muted);
+    font-size: 0.95rem; line-height: 1; cursor: grab; }
+  .bp-handle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .goals-closed h3 { font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin: 1.25em 0 0.5em; }
   .goals-closed ul { margin: 0; padding-left: 1.1em; font-size: 0.85rem; color: var(--muted); }
   a { color: var(--accent); }
@@ -654,6 +679,9 @@ ${NAV_CSS}
   .intake-docs ul { margin: 0 0 0.5rem; padding-left: 1.3rem; font-size: 0.85rem; color: var(--text); line-height: 1.5; }
   .intake-docs code { background: var(--bg); border: 1px solid var(--border); border-radius: 0.25rem; padding: 0.05rem 0.3rem; font-size: 0.82em; }
   .intake-docs li strong { color: var(--accent); }
+  .legend h3 { font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin: 1em 0 0.5em; }
+  .legend dt { font-weight: 600; margin-top: 0.6em; font-size: 0.85rem; }
+  .legend dd { margin: 0.1em 0 0 0; color: var(--muted); font-size: 0.85rem; }
   .story p { margin: 0 0 0.6rem; font-size: 0.88rem; color: var(--text); line-height: 1.55; }
   .story ol { margin: 0 0 0.5rem; padding-left: 1.4rem; font-size: 0.85rem; color: var(--text); line-height: 1.6; }
   .story li { margin-bottom: 0.3rem; }
@@ -803,6 +831,7 @@ ${renderNav("pipelines")}
 ${renderStory()}
 ${renderIntakeDocs()}
 ${renderGroupedTracks(data)}
+${renderLegend()}
 </body>
 </html>`;
 }
