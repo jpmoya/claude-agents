@@ -98,8 +98,8 @@ describe('render.js — Backlog priority section', () => {
   it('renders a heading with the row count and a row per ticket', () => {
     const mac = hostRecord({
       backlog: [
-        bi(11, { title: 'First', rank: 0, repo: 'project-a' }),
-        bi(12, { title: 'Second', rank: 1, repo: 'project-b' }),
+        bi(11, { title: 'First', rank: 0 }),
+        bi(12, { title: 'Second', rank: 1, url: 'https://github.com/example-owner/project-b/issues/12' }),
       ],
     });
     const html = renderPage({ mac, vm: null }, thresholds, NOW);
@@ -107,10 +107,20 @@ describe('render.js — Backlog priority section', () => {
     expect(html).toContain('<th>Repo</th>');
     expect(html).toContain('#11');
     expect(html).toContain('First');
-    expect(html).toContain('data-label="Repo">project-a<');
+    expect(html).toContain('data-label="Repo">example-owner/project-a<');
     expect(html).toContain('#12');
     expect(html).toContain('Second');
-    expect(html).toContain('data-label="Repo">project-b<');
+    expect(html).toContain('data-label="Repo">example-owner/project-b<');
+  });
+
+  it('the Repo column shows the real owner/repo from the url, never the sanitised alias (or "other")', () => {
+    const mac = hostRecord({
+      backlog: [bi(13, { repo: 'zz-alias', rank: 0 })],
+    });
+    const html = renderPage({ mac, vm: null }, thresholds, NOW);
+    expect(html).toContain('data-label="Repo">example-owner/project-a<');
+    expect(html).not.toContain('zz-alias');
+    expect(html).not.toContain('data-label="Repo">other<');
   });
 
   it('an empty backlog renders "(0)" and "none"', () => {

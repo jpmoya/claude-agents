@@ -254,6 +254,14 @@ function backlogKeyOf(row) {
   return m ? `${m[1]}#${m[2]}` : null;
 }
 
+// The real "owner/repo" for display, parsed from the same validated URL backlogKeyOf uses — never
+// row.repo, which validate.js already collapsed to the published alias (or "other"). Falls back to
+// that alias when the URL doesn't parse (no url, or not a github.com issue link).
+function backlogRepoOf(row) {
+  const key = backlogKeyOf(row);
+  return key ? key.slice(0, key.indexOf("#")) : row.repo;
+}
+
 // The one <script> this page ships (grouped-render.test.js's "no third-party script" assertion
 // was narrowed, not removed, to allow exactly this — see that test). Same-origin only, no
 // external src. Each row is a native HTML5 drag source (plain draggable="true" + dragstart/
@@ -357,7 +365,7 @@ function renderBacklogSection(hosts) {
           const handle = key
             ? `<span class="bp-handle" tabindex="0" role="button" aria-label="Reorder this row; press Arrow Up or Arrow Down to move it">⠿</span>`
             : "";
-          return `<tr${key ? ` draggable="true" data-key="${esc(key)}"` : ""}><td data-label="#" class="bp-rank">${i + 1}</td><td data-label="Issue">#${esc(row.issue)}</td><td data-label="Repo">${esc(row.repo ?? "")}</td><td data-label="Ticket">${renderTicketCell(row)}</td><td data-label="Reorder" class="bp-controls">${handle}</td></tr>`;
+          return `<tr${key ? ` draggable="true" data-key="${esc(key)}"` : ""}><td data-label="#" class="bp-rank">${i + 1}</td><td data-label="Issue">#${esc(row.issue)}</td><td data-label="Repo">${esc(backlogRepoOf(row))}</td><td data-label="Ticket">${renderTicketCell(row)}</td><td data-label="Reorder" class="bp-controls">${handle}</td></tr>`;
         })
         .join("")
     : `<tr><td colspan="5">none</td></tr>`;
