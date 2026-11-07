@@ -418,16 +418,12 @@ describe("existing status view unchanged (AC3)", () => {
   .badge.goal-delivered { background: var(--green-soft); color: var(--green); }
   .badge.goal-stopped { background: var(--gray-soft); color: var(--gray); }
   .backlog-help { font-size: 0.85rem; color: var(--muted); margin: 0 0 0.75rem; }
-  .backlog-cmd { white-space: pre-wrap; word-break: break-all; font-size: 0.78rem; background: var(--gray-soft);
-    border-radius: 0.375rem; padding: 0.6rem 0.75rem; margin: 0.75rem 0 0; }
-  .bp-controls { white-space: nowrap; }
-  .bp-up, .bp-down { font-size: 0.85rem; line-height: 1; padding: 0.25rem 0.5rem; margin-left: 0.3rem;
-    border-radius: 0.3rem; border: 1px solid var(--border); background: var(--surface); color: var(--text);
-    cursor: pointer; }
-  .bp-up:disabled, .bp-down:disabled { opacity: 0.35; cursor: default; }
-  .legend h3 { font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin: 1em 0 0.5em; }
-  .legend dt { font-weight: 600; margin-top: 0.6em; font-size: 0.85rem; }
-  .legend dd { margin: 0.1em 0 0 0; color: var(--muted); font-size: 0.85rem; }
+  .bp-controls { white-space: nowrap; text-align: center; }
+  tr[draggable="true"] { cursor: grab; }
+  tr[draggable="true"].bp-dragging { opacity: 0.4; cursor: grabbing; }
+  .bp-handle { display: inline-block; padding: 0.15rem 0.4rem; border-radius: 0.3rem; color: var(--muted);
+    font-size: 0.95rem; line-height: 1; cursor: grab; }
+  .bp-handle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .goals-closed h3 { font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin: 1.25em 0 0.5em; }
   .goals-closed ul { margin: 0; padding-left: 1.1em; font-size: 0.85rem; color: var(--muted); }
   a { color: var(--accent); }

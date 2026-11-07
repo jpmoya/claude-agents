@@ -142,15 +142,16 @@ the goals-first-then-fill-with-standalone-tickets dispatch logic, `MAX_CONCURREN
   backlog`) turns that plus the local priority cache into the payload's `backlog[]`: `{repo, issue,
   title?, url?, rank?}` (cap 100; `rank` omitted when the ticket is untracked), ordered the same
   way as the dispatch side. The page merges both hosts' `backlog[]` by key (a repo in both hosts'
-  scope can publish the same ticket twice) and renders a numbered table with &uarr;/&darr;
-  reorder buttons on each row (mouse click, or Tab + Enter from the keyboard), plus the exact
-  `backlog-priority.sh set` command for that order as a terminal fallback. The buttons reorder in
-  the browser and POST the new order straight to `POST /backlog-priority` (same Google-SSO gate
-  as every other human-facing route), which writes the registry issue via the GitHub REST API
-  (`src/backlog-priority.js` — the Worker can't shell out to `gh`, so this is a second writer of
-  the same issue `backlog-priority.sh`'s `set` writes, never a new primitive) and reloads the
-  page on success. This needs the `GITHUB_TOKEN` secret (below); without it the buttons still
-  render but a save 503s and JP falls back to the printed command.
+  scope can publish the same ticket twice) and renders a numbered table where each row is a native
+  HTML5 drag source: drag a row by its handle to reorder it live in the table, or focus the handle
+  (Tab) and press Arrow Up/Down to move it without a mouse. Either path POSTs the new order
+  straight to `POST /backlog-priority` (same Google-SSO gate as every other human-facing route),
+  which writes the registry issue via the GitHub REST API (`src/backlog-priority.js` — the Worker
+  can't shell out to `gh`, so this is a second writer of the same issue `backlog-priority.sh`'s
+  `set` writes, never a new primitive) and reloads the page on success. This needs the
+  `GITHUB_TOKEN` secret (below); without it the drag/keyboard controls still render but a save
+  503s. "Approved, waiting for a slot" excludes any ticket already shown here (see `group.js`'s
+  dedup) so a standalone ticket never renders twice on the page.
 
 ## Infra hand-off contract (companion `infra` issue's job, not this one's)
 
@@ -227,7 +228,7 @@ the deploy note at the end):
 A misconfigured or not-yet-set `GOOGLE_CLIENT_ID`/`SESSION_SECRET` makes `/login` and
 `/auth/callback` fail closed with `503` rather than redirect with an empty `client_id`.
 
-## Backlog reorder write path (`GITHUB_TOKEN` secret, needed for the &uarr;/&darr; buttons)
+## Backlog reorder write path (`GITHUB_TOKEN` secret, needed for drag-and-drop reorder)
 
 `POST /backlog-priority` (behind the same session-cookie gate as `/`, `/pipelines`,
 `/status.json`) needs a GitHub token with permission to read and write issues on
@@ -243,8 +244,8 @@ set this — this PR does not and cannot create or see the token value:**
    ```
    (never paste the token as a CLI argument — use the interactive prompt).
 
-Without this secret, the reorder buttons still render but a save fails with `503` and the page
-falls back to the printed `backlog-priority.sh set` command; nothing else on the page is
+Without this secret, the drag/keyboard reorder controls still render but a save fails with `503`
+(JP falls back to the terminal `backlog-priority.sh set` command); nothing else on the page is
 affected.
 
 ## Pipelines tab (issue #273)
