@@ -181,10 +181,6 @@
           },
           {
             "type": "command",
-            "command": "~/.claude/hooks/ticket-description-check.sh"
-          },
-          {
-            "type": "command",
             "command": "~/.claude/hooks/blocked-chain-stop.sh"
           }
         ]
