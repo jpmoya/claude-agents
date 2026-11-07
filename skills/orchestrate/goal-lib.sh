@@ -1492,7 +1492,7 @@ goal_queue_save() {
        candidate: (.candidate.id // null),
        recent: (.recent | map({id, issue, spec, title: (.block.title // ""), label: (.block.label // ""), repos: (.block.repos // []), st, closed_at, priority: (.block.priority? // null), project_url: (.block.project?.url? // "")})),
        open: (.open | map({id, issue, spec, title: (.block.title // ""), label: (.block.label // ""), repos: (.block.repos // []),
-                           st, host: (.host // ""), priority: (.block.priority? // null), hosts: (.block.hosts? // "both"), project_url: (.block.project?.url? // "")})),
+                           st, host: (.host // ""), priority: (.block.priority? // null), hosts: (.block.hosts? // "both"), host_pref: (.block.host_pref // ""), project_url: (.block.project?.url? // "")})),
        queued: (.queued | map({id, issue, spec, title: (.block.title // ""), label: (.block.label // ""), priority: (.block.priority? // null),
                                repos: (.block.repos // []), order: (.block.order? // .issue), host_pref: (.block.host_pref // ""),
                                hosts: (.block.hosts? // "both"), project_url: (.block.project?.url? // "")}))}' 2>/dev/null) \
@@ -1615,11 +1615,37 @@ goal_queue_fail() {
   return 0
 }
 
+# _goal_confined_here <goal json> — the goal may run only on this host (host_pref names it, or hosts is this machine's role)
+_goal_confined_here() {
+  printf '%s' "$1" | jq -e --arg h "$GOAL_THIS_HOST" --arg r "$(goal_role)" \
+    '((.block.host_pref // "") | ascii_downcase) == $h or (.block.hosts // "both") == $r' >/dev/null 2>&1
+}
+
+# _goal_queue_unhold — a queued goal held because only this host may run it and its repo is not in DISPATCH_REPOS here
+# goes back to the queue once this host can start it, or once it is confined to no host (same writes as deliver.sh resume)
+_goal_queue_unhold() {
+  local e g issue id
+  while IFS= read -r e; do
+    [ -n "$e" ] || continue
+    g=$(printf '%s' "$e" | jq -c '{id, issue, spec, block: {repos, host_pref, hosts}}')
+    if _goal_confined_here "$g"; then _goal_checkout "$(_goal_primary_repo "$g")" >/dev/null 2>&1 || continue
+    else printf '%s' "$g" | jq -e '(.block.host_pref // "") == "" and (.block.hosts // "both") == "both"' >/dev/null 2>&1 || continue; fi
+    id=$(printf '%s' "$g" | jq -r .id); issue=$(printf '%s' "$g" | jq -r .issue)
+    _goal_label_add "$issue" goal-queued || { goal_err "cannot return $id to the queue (label goal-queued)"; continue; }
+    _goal_label_del "$issue" goal-held
+    _goal_note "$issue" "**[deliver] NOTE** unheld: this host can start it now; back in the queue" || goal_err "cannot post the unheld note of $id"
+    rm -f "$PIPE/goalq-lost-$id" "$PIPE/goalq-alerted-$id"
+    slog "[goal] $id unheld — startable here again; back in the queue"
+  done <<< "$(jq -c '.open[]? | select(.st == "held" and (.host // "") == "")' "$PIPE/$GOAL_QUEUE_FILE_NAME" 2>/dev/null)"
+  return 0
+}
+
 # goal_queue_step — called from goal_step once per tick, after the live goals were ticked.
 goal_queue_step() {
-  local qf="$PIPE/$GOAL_QUEUE_FILE_NAME" cand pin hosts n fresh g id issue winner rc ts lost now g2 body
+  local qf="$PIPE/$GOAL_QUEUE_FILE_NAME" cand pin hosts n fresh g id issue winner rc ts lost now g2 body why
   rm -f "$PIPE/goal-paused"
   [ -f "$qf" ] || return 0
+  _goal_queue_unhold
   cand=$(jq -r '.candidate // empty' "$qf" 2>/dev/null)
   if [ -z "$cand" ]; then _goal_queue_wait_reset; return 0; fi
   pin=$(jq -r --arg c "$cand" '[.queued[] | select(.id == $c)][0].host_pref // "" | ascii_downcase' "$qf" 2>/dev/null)
@@ -1661,7 +1687,16 @@ goal_queue_step() {
   if goal_serial && kill -0 "$(cat "$PIPE/goal-$id.pid" 2>/dev/null)" 2>/dev/null; then
     goal_err "$id is queued in the registry but its lead is alive here; not starting a second one"; return 0
   fi
-  _goal_checkout "$(_goal_primary_repo "$g")" >/dev/null 2>&1 || { goal_err "$id: its repo is not in DISPATCH_REPOS on this host"; return 0; }
+  if ! _goal_checkout "$(_goal_primary_repo "$g")" >/dev/null 2>&1; then
+    _goal_confined_here "$g" || { goal_err "$id: its repo is not in DISPATCH_REPOS on this host"; return 0; }
+    # only this host may run it and it cannot: held (goal-queued kept), else it holds the serial queue for every goal behind it (2026-11-07 deadlock)
+    why="only $GOAL_THIS_HOST may run it and its repo $(_goal_primary_repo "$g") is not in DISPATCH_REPOS there"
+    _goal_label_add "$issue" goal-held || { goal_queue_fail "$issue" "$id" "cannot hold $id ($why)"; return 0; }
+    _goal_note "$issue" "**[deliver] NOTE** held: $why" || goal_err "cannot post the held note of $id"
+    goal_queue_fail "$issue" "$id" "$id held: $why"
+    report_status_async "held"
+    return 0
+  fi
 
   # two-host race: post a claim on the registry issue and go on only if claim_winner names this host
   ts=$(date -u +%FT%TZ)
