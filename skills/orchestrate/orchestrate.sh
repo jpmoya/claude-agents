@@ -95,7 +95,7 @@ case "${1:-}" in
         # 2026-09-18: #151 and #183 were reported as still needing JP days after being closed).
         [ "$gh_state" = "CLOSED" ] && state="done (issue closed)"
         echo "#$n  $state  repo=$repo  latest marker: $last  log=$PIPE/orch-$k.log"
-      done <<< "$(derive_runs)"
+      done <<< "$(derive_runs "$FILTER_KEY")"
     fi
     # Reporter health (design #10 §4.2): >=3 consecutive push failures earn one extra line so a
     # broken reporter (bad token, typo'd URL) doesn't render identically to a genuinely dead host.

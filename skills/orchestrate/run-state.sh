@@ -29,6 +29,12 @@ except OSError: pass" "$1" 2>/dev/null
 }
 
 _rs_ps_lines() {  # live claude processes: <start_epoch> TAB <PIPELINE_ISSUE> TAB <command line> [TAB <pid>]; RS_PS_CMD overrides (tests)
+  # inside derive_runs the scan is taken once and replayed (#598); outside it every call scans fresh
+  if [ "${_RS_PS_CACHED:-0}" = 1 ]; then printf '%s' "$_RS_PS_CACHE"; [ -z "$_RS_PS_CACHE" ] || echo; return 0; fi
+  _rs_ps_scan
+}
+
+_rs_ps_scan() {
   if [ -n "${RS_PS_CMD:-}" ]; then bash -c "$RS_PS_CMD" 2>/dev/null; return 0; fi
   if [ "$(uname)" = "Linux" ]; then
     python3 - <<'PY' 2>/dev/null
@@ -88,10 +94,12 @@ _rs_last_activity_for() {  # _rs_last_activity_for <run_key> -> newest epoch amo
   printf '%s' "$best"
 }
 
-derive_runs() {
-  local f key issue pid repo state_code started restarts stage last_activity
+derive_runs() {  # derive_runs [run_key] — with a key, only that run's pid record (no queued rows)
+  local only=${1:-} f key issue pid repo state_code started restarts stage last_activity
+  _RS_PS_CACHE=$(_rs_ps_scan); _RS_PS_CACHED=1
   for f in "$PIPE"/orch-*.pid; do
     [ -e "$f" ] || break
+    [ -z "$only" ] || [ "$f" = "$PIPE/orch-$only.pid" ] || continue
     key=$(basename "$f" .pid); key=${key#orch-}
     issue=${key##*-}   # <owner>_<repo>-<N> -> N; a legacy orch-<N> name has no dash and is read as is (#318 read-both)
     pid=$(cat "$f" 2>/dev/null)
@@ -118,6 +126,7 @@ derive_runs() {
   done
 
   for f in "$QUEUE"/orch-*.json; do
+    [ -z "$only" ] || break   # status skips queued rows anyway
     [ -e "$f" ] || break
     issue=$(python3 -c "import json; print(json.load(open('$f'))['issue'])" 2>/dev/null)
     [ -n "$issue" ] || continue
@@ -134,12 +143,14 @@ derive_runs() {
   for f in "$PIPE"/orch-*.closed; do
     [ -e "$f" ] || break
     key=$(basename "$f" .closed); key=${key#orch-}
+    [ -z "$only" ] || [ "$key" = "$only" ] || continue
     issue=${key##*-}
     [ -e "$PIPE/orch-$key.pid" ] && continue
     [ -e "$QUEUE/orch-$key.json" ] && continue
     repo=$(cat "$PIPE/orch-$key.repo" 2>/dev/null || echo "?")
     printf '%s\t%s\tclosed\t\t\t\t0\t\n' "$issue" "$repo"
   done
+  _RS_PS_CACHED=0; _RS_PS_CACHE=""
 }
 
 # report_status_async — the one fire-and-forget call pattern used by all three call sites
