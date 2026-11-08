@@ -266,6 +266,33 @@ describe("GET /login", () => {
     expect(location.searchParams.get("state")).toBeTruthy();
   });
 
+  it("redirect_uri uses PUBLIC_ORIGIN when set (the Vercel front), not the request origin", async () => {
+    const env = { ...makeEnv(), PUBLIC_ORIGIN: "https://pipeline-status-jp.vercel.app/" };
+    const res = await worker.fetch(
+      getRequest("/login", { cookie: null }),
+      env,
+      {},
+    );
+    expect(res.status).toBe(302);
+    const location = new URL(res.headers.get("Location"));
+    expect(location.searchParams.get("redirect_uri")).toBe(
+      "https://pipeline-status-jp.vercel.app/auth/callback",
+    );
+  });
+
+  it("an empty PUBLIC_ORIGIN falls back to the request origin", async () => {
+    const env = { ...makeEnv(), PUBLIC_ORIGIN: "  " };
+    const res = await worker.fetch(
+      getRequest("/login", { cookie: null }),
+      env,
+      {},
+    );
+    const location = new URL(res.headers.get("Location"));
+    expect(location.searchParams.get("redirect_uri")).toBe(
+      "https://status.example.workers.dev/auth/callback",
+    );
+  });
+
   it("sets an httpOnly, Secure, SameSite=Lax state cookie", async () => {
     const env = makeEnv();
     const res = await worker.fetch(
