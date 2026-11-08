@@ -124,7 +124,8 @@ keep_awake() {
     [ -f "$f" ] && kill -0 "$(cat "$f" 2>/dev/null)" 2>/dev/null && busy=1
   done
   [ "$busy" -eq 1 ] || return 0
-  nohup caffeinate -i -t 300 >/dev/null 2>&1 &
+  # 9>&-: caffeinate outlives the tick; with the lock fd inherited it kept the lock 300 s and later ticks exited silently (#603)
+  nohup caffeinate -i -t 300 >/dev/null 2>&1 9>&- &
   slog "[keep-awake] caffeinate -i -t 300 (pid $!)"
 }
 
