@@ -60,7 +60,7 @@ gj_derive() {  # <waiting> <active> <total> [live] -> prints the goalqueue open[
     PIPE="$GL_PIPE"
     latest_marker() { :; }
     goal_err() { :; }
-    goal_eval() { GE_TOTAL=$t; GE_WAITING=$w; GE_ACTIVE=$a; GE_DELIVERED=$((t - w - a)); [ -z "${3:-}" ] || GJ_ROWS=$3; [ -n "${3:-}" ] || [ -z "${GJ_EMPTY:-}" ] || GE_TOTAL=0; return 0; }
+    goal_eval() { GE_TOTAL=$t; GE_WAITING=$w; GE_ACTIVE=$a; GE_DELIVERED=$((t - w - a)); if [ -n "${GJ_EMPTY:-}" ] && { [ -z "${4:-}" ] || [ "$4" = "[]" ]; }; then GE_TOTAL=0; fi; return 0; }   # #605: goal_eval itself falls back to the granted list passed as $4
     reg=${GJ_REG:-}; [ -n "$reg" ] || reg='[{"id":"label-goal__X","spec":"label:goal: X","st":"active"}]'
     goal_queue_derive "$reg"
     jq -c '.open[0].needs_jp // null' "$GL_PIPE/goalqueue.json"
