@@ -57,12 +57,11 @@ fi
 RELEASE=$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)
 total=$((10 * SLOT_GB * SLOTS))   # tenths of GiB: SLOT_GB per slot (CI job containers are 4G; 5G on a shared host)
 if [ $((total % 10)) -eq 0 ]; then MEMMAX="$((total / 10))G"; else MEMMAX="$((total / 10)).$((total % 10))G"; fi
-MEMHIGH="$((900 * SLOT_GB * SLOTS))M"
 
 render() {
   local s; s=$(cat)
   s=${s//@VERSION@/$VERSION}; s=${s//@RELEASE@/$RELEASE}
-  s=${s//@MEMMAX@/$MEMMAX}; s=${s//@MEMHIGH@/$MEMHIGH}
+  s=${s//@MEMMAX@/$MEMMAX}
   printf '%s\n' "$s"
 }
 
@@ -334,7 +333,6 @@ step_cgroup() {
   put_unit "$ROOT/etc/systemd/system/user-$UID_GHA.slice.d/50-gha-limits.conf" 644 "$(render <<'EOF'
 [Slice]
 MemoryMax=@MEMMAX@
-MemoryHigh=@MEMHIGH@
 MemorySwapMax=0
 CPUWeight=50
 IOWeight=50
