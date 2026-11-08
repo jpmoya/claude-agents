@@ -194,9 +194,11 @@ the deploy note at the end):
 1. **Create the OAuth client** — Google Cloud Console → APIs & Services → Credentials → Create
    Credentials → OAuth client ID → Application type **Web application**.
    - **Authorized redirect URI** (exact match, no trailing slash):
-     `https://status-page.jpmoya.workers.dev/auth/callback`
-     (the deployed Worker's `workers.dev` subdomain is `jpmoya`, from the root `README.md`
-     "Status board" paragraph — this PR does not change it).
+     `https://pipeline-status-jp.vercel.app/auth/callback` — the Vercel front in
+     `vercel-proxy/`, which is the URL humans open and the Worker's `PUBLIC_ORIGIN`
+     (`wrangler.jsonc`). The Worker's own `https://status-page.jpmoya.workers.dev/auth/callback`
+     is registered too, but JP's ISP blocks the IPs `workers.dev` resolves to, so sign-in
+     always returns to the Vercel host (2026-11-08, #614). Both are on the client now.
    - If prompted to configure the **OAuth consent screen** first: User type **External**,
      publish it to **Production** (not "Testing" — Testing restricts sign-in to a hand-picked
      test-user list, which defeats "adding a second viewer is a one-line secret change"). Scopes
@@ -222,7 +224,7 @@ the deploy note at the end):
    independently of a deploy, so setting them first means the human-facing routes work the moment
    this merges; merging first would lock out `/`, `/status.json` and `/pipelines` (not `/beat`)
    until the secrets are set.
-5. Sign in once at `https://status-page.jpmoya.workers.dev/login` to confirm the redirect URI and
+5. Sign in once at `https://pipeline-status-jp.vercel.app/login` to confirm the redirect URI and
    the allowlist are both right.
 
 A misconfigured or not-yet-set `GOOGLE_CLIENT_ID`/`SESSION_SECRET` makes `/login` and
