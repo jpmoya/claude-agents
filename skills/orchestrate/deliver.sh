@@ -586,7 +586,12 @@ cmd_resume() {
   set_state "$issue" open
   del_label "$issue" goal-stopped; del_label "$issue" goal-held
   rm -f "$PIPE/goal-$id".stopped "$PIPE/goal-$id".held "$PIPE/goal-$id".restarts "$PIPE/goal-$id".np "$PIPE/goal-$id".snap "$PIPE/goal-$id".launchfails "$PIPE/goal-$id".launch-failed \
-    "$PIPE/goal-$id".yielded "$PIPE/goal-$id".launch-scope
+    "$PIPE/goal-$id".yielded "$PIPE/goal-$id".launch-scope "$PIPE/goal-$id".idle
+  if [ "$(printf '%s' "$block" | jq -r '.deferred_at // ""')" != "" ]; then   # #627: a hand-off deferral does not outlive a resume
+    block=$(printf '%s' "$block" | jq -c 'del(.deferred_at)')
+    api_json PATCH "repos/$GOAL_REGISTRY_REPO/issues/$issue" \
+      "$(jq -nc --arg b "$(body_for "$spec" "$block")" '{body:$b}')" >/dev/null
+  fi
   [ "$(goal_parse "$spec" 2>/dev/null | cut -f2)" = fb ] || fb_yield_here   # #527: live again, the feedback goal yields now
   if [ -z "$host" ] && [ "$here" != 1 ]; then   # stopped while still queued (#320): back in the queue, no host yet
     add_label "$issue" goal-queued

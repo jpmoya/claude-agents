@@ -1304,9 +1304,11 @@ goal_tick_one() {  # <id>
   fi
   if [ -f "$PIPE/goal-$id.idle" ]; then   # #627: the lead found nothing it may dispatch: hand the slot to the next queued goal
     if goal_serial && ! goal_slot_exempt "$spec"; then
-      local qn
-      qn=$(_goal_registry_json 2>/dev/null | _goal_queue_jq ' | .queued | map(.id) | .[]' 2>/dev/null | tr -d '"' | grep -vxF -e "$id" | grep -c . ; [ "${PIPESTATUS[0]}" = 0 ] || echo x)
-      case "$qn" in ''|*[!0-9]*) goal_err "goal $id: cannot read the registry to hand off the slot; retrying next tick"; return 0 ;; esac
+      local qn qids
+      # fail closed on the read AND on the queue jq: never hand off (or keep the slot) on a guess
+      qids=$(_goal_registry_json 2>/dev/null | _goal_queue_jq ' | .queued | map(.id) | .[]' 2>/dev/null; [ "${PIPESTATUS[0]}${PIPESTATUS[1]}" = 00 ]) \
+        || { goal_err "goal $id: cannot read the registry to hand off the slot; retrying next tick"; return 0; }
+      qn=$(printf '%s\n' "$qids" | tr -d '"' | grep -vxF -e "$id" | grep -c .)
       if [ "$qn" -ge 1 ]; then
         if goal_requeue "$id" "$issue" "no dispatchable work: slot handed to the queue" defer; then
           _goal_note "$issue" "**[deliver] NOTE** slot handed off: no dispatchable work; back in the queue behind $qn goal(s)" || goal_err "goal $id: cannot post the hand-off note"
@@ -1423,13 +1425,17 @@ _GOAL_QUEUE_JQ='def okey: [((.block.priority? // .block.order? // .issue) | if t
 # while no goal holds the slot and no registry entry is unreadable ANYWHERE in the order (fail closed: an unreadable entry
 # could be an active goal; goal_sync logs an error for each one so it gets fixed). With $fbfree (GOAL_SERIAL_FEEDBACK=0)
 # a running feedback goal never holds the slot, but a queued one still waits for its turn like any goal. Needs --argjson fbfree.
+# #627: a goal that handed the slot off (block.deferred_at) sorts behind every other queued goal and is not a candidate
+# again within $cool seconds (GOAL_CYCLE_SECS) of the hand-off: several idle goals cost one lead cycle each per cycle
+# instead of rotating back-to-back. Needs --argjson now (epoch seconds) and --argjson cool.
 _GOAL_QUEUE_SERIAL_JQ='def okey: [(if (.block.deferred_at? // "") != "" then 1 else 0 end), ((.block.priority? // .block.order? // .issue) | if type == "number" then . else 1e12 end), .issue];
   def exempt: $fbfree and ((.spec // "") | test(":feedback$"));
+  def cooling: .st == "queued" and ((.block.deferred_at? // "") != "") and (((.block.deferred_at | try fromdateiso8601 catch 0) + $cool) > $now);
   sort_by(okey) as $all
   | ($all | map(select(.st == "queued"))) as $q
   | ($all | map(select(.st == "active" and (exempt | not))) | first // null) as $h
   | (($h != null) or any($all[]; .st == "unreadable")) as $busy
-  | ($all | map(select(.st == "unreadable" or .st == "queued")) | first // null) as $f
+  | ($all | map(select(.st == "unreadable" or (.st == "queued" and (cooling | not)))) | first // null) as $f
   | {queued: $q, candidate: (if ($busy | not) and $f != null and $f.st == "queued" then $f else null end), serial: true, slot: ($h.id // null),
      recent: ($all | map(select(.st == "delivered" or .st == "stopped")) | sort_by(.closed_at // "") | reverse | .[:5]),
      open: ($all | map(select(.st == "active" or .st == "held" or .st == "waiting_jp")))}'
@@ -1439,9 +1445,10 @@ goal_serial() { case "${GOAL_SERIAL:-1}" in 0|false|no|off) return 1 ;; esac; re
 
 # _goal_queue_jq <filter suffix> — the queue jq for the current mode, applied to the registry JSON on stdin
 _goal_queue_jq() {
-  local fbfree=true
+  local fbfree=true cool=${GOAL_CYCLE_SECS:-1200}
   [ "${GOAL_SERIAL_FEEDBACK:-0}" = 1 ] && fbfree=false
-  if goal_serial; then jq -c --argjson fbfree "$fbfree" "$_GOAL_QUEUE_SERIAL_JQ$1"
+  case "$cool" in ''|*[!0-9]*) cool=1200 ;; esac
+  if goal_serial; then jq -c --argjson fbfree "$fbfree" --argjson now "$(date +%s)" --argjson cool "$cool" "$_GOAL_QUEUE_SERIAL_JQ$1"
   else jq -c "$_GOAL_QUEUE_JQ$1"; fi
 }
 
