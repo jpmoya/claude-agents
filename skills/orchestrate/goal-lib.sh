@@ -587,6 +587,35 @@ goal_milestone_approved() {
 # file_mtime, latest_marker, terminal_kind and $HOST defined there. REST (`gh api`) for every read of ours, like above.
 
 # _goal_ticket_eval <owner/repo> <issue> -> "<delivered|waiting_jp|active>\t<issue state>\t<latest marker first line>\t<reason>"
+# _goal_closed_eval <repo> <n> <state_reason> -> "class<TAB>CLOSED<TAB>-<TAB>why" for a CLOSED ticket (#619; the one copy of #557's rule).
+# completed / unknown reason: delivered. not_planned: the newest pipeline closing comment (PM/developer REJECTED with a closing
+# Reason:, [intake] DUPLICATE|NOISE, [delivery-lead or its legacy alias] DECISION|JP CONFIRMED) means the pipeline decided it, so it
+# counts as done ("closed, not planned — decided by <agent>"); none of those, or a failed comments read (goal_err), stays
+# waiting_jp for JP (#557). Only a not_planned row costs a comments read.
+_goal_closed_eval() {
+  local repo="$1" n="$2" sr="$3" slug all_c who errf
+  if [ "$sr" != not_planned ]; then printf 'delivered\tCLOSED\t-\t-\n'; return 0; fi
+  slug=$(_goal_rest_slug "$repo")
+  errf="${TMPDIR:-/tmp}/goal-cc.$$"
+  if all_c=$(_goal_get_all "repos/$slug/issues/$n/comments?per_page=100" 2>"$errf"); then
+    who=$(printf '%s' "$all_c" | jq -r '
+      [.[] | (.body // "" | split("\n")) as $l | ($l[0] // "" | rtrimstr("\r")) as $f | ($l[1] // "" | rtrimstr("\r")) as $r
+        | ($f | capture("^\\*\\*\\[(?<a>[a-z-]+)\\] (?<m>[A-Z ]+)") // empty) as $c
+        | select(
+            (($c.a == "product-manager" or $c.a == "fullstack-developer") and ($c.m | test("^REJECTED"))
+               and ($r | test("^Reason: (not-a-bug|cannot-reproduce|duplicate of #[0-9]+)")))
+            or ($c.a == "intake" and ($c.m | test("^(DUPLICATE|NOISE)")))
+            or (($c.a == "delivery-lead" or ($c.a != "product-manager" and ($c.a | test("^project-m")))) and ($c.m | test("^(DECISION|JP CONFIRMED)"))))
+        | $c.a] | last // empty' 2>/dev/null) || who=""
+  else
+    goal_err "cannot evaluate $repo#$n: comments read failed $(head -1 "$errf" 2>/dev/null)"
+    who=""
+  fi
+  rm -f "$errf"
+  if [ -n "$who" ]; then printf 'delivered\tCLOSED\t-\tclosed, not planned — decided by %s\n' "$who"
+  else printf 'waiting_jp\tCLOSED\t-\tclosed without shipping (not planned) — check it before the goal can finish\n'; fi
+}
+
 # #548: one comments fetch per open ticket, shared by latest_marker, the BLOCKED check and the #456 block. State, labels,
 # author, start-gate refs, state_reason and milestone come from the scope row when the caller has it (args 3-8, as goal_eval
 # passes them); only a
@@ -623,11 +652,7 @@ _goal_ticket_eval() {
   [ -n "$st" ] || return 1
   if [ "$st" = CLOSED ]; then
     # #557: same rule as goal_eval — closed "not planned" never shipped, so it is not "delivered" on its own.
-    if [ "$sr" = not_planned ]; then
-      printf 'waiting_jp\tCLOSED\t-\tclosed without shipping (not planned) — check it before the goal can finish\n'
-    else
-      printf 'delivered\tCLOSED\t-\t-\n'
-    fi
+    _goal_closed_eval "$repo" "$n" "$sr"
     return 0
   fi
   checkout=$(_goal_checkout "$repo") || { goal_err "cannot evaluate $repo#$n: repo not in DISPATCH_REPOS on this host"; return 1; }
@@ -1085,11 +1110,8 @@ goal_eval() {
       # as a duplicate, wontfix, or by mistake while still in the goal's scope) never shipped anything, so it must not
       # let the goal close silently — surface it to JP instead. An unknown/missing state_reason (explicit fallback rows
       # with no 6th column, or an older API shape) keeps the old fail-open behavior: delivered.
-      if [ "$sr" = not_planned ]; then
-        cls=waiting_jp; istate=CLOSED; marker="-"; why="closed without shipping (not planned) — check it before the goal can finish"
-      else
-        cls=delivered; istate=CLOSED; marker="-"; why="-"
-      fi
+      r=$(_goal_closed_eval "${ref%%#*}" "${ref##*#}" "$sr")
+      IFS=$'\t' read -r cls istate marker why <<< "$r"
     else
       repo=${ref%%#*}; n=${ref##*#}
       r=$(_goal_ticket_eval "$repo" "$n" "$st" "$lbl" "$au" "$gates" "$sr" "$ms") || return 1
@@ -1124,7 +1146,7 @@ goal_cards() {  # <delivered|waiting_jp> — one card block per ticket of that c
     title=$(gh api "repos/$repo/issues/$n" --jq .title 2>/dev/null | head -1)
     [ -n "$title" ] || title="ticket"
     if [ "$want" = delivered ]; then
-      goal_card "$title ($repo #$n)" "DONE" "Delivered." "Nothing"
+      goal_card "$title ($repo #$n)" "DONE" "$([ "$why" = - ] && echo Delivered. || echo "${why}.")" "Nothing"
     elif [[ "$why" == *"(nothing needed from you)" ]]; then   # non-blocking park: nothing here is JP's to act on
       goal_card "$title ($repo #$n)" "DEPLOYED" "$why." "Nothing"
     else
