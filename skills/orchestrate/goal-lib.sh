@@ -1050,13 +1050,34 @@ goal_sync() {  # registry -> local: rebuild missing caches, propagate stop/close
   goal_project_tick "$reg" || true   # per-goal GitHub Project mirror, background and throttled; never blocks or fails the sync
 }
 
+# _goal_granted_rows <id> [granted json array] -> full-shape scope rows of the go-granted tickets (empty when none)
+_goal_granted_rows() {
+  local g=${2:-} refs ref repo n info
+  [ -n "$g" ] || g=$(jq -c '.granted // []' "$PIPE/goal-$1.json" 2>/dev/null)
+  refs=$(printf '%s' "${g:-[]}" | jq -r '.[]?' 2>/dev/null)
+  while IFS= read -r ref; do
+    [ -n "$ref" ] || continue
+    repo=${ref%%#*}; n=${ref##*#}
+    if ! info=$(gh api "repos/$(_goal_rest_slug "$repo")/issues/$n" 2>/dev/null) || [ -z "$info" ]; then
+      goal_err "goal $1: cannot read granted ticket $ref"; return 1
+    fi
+    printf '%s' "$info" | jq -r --arg r "$repo" --argjson l 0 --argjson full 1 "$_GOAL_ROW_JQ"'row' || return 1
+  done <<< "$refs"
+}
+
 # goal_eval <id> <spec> — live scope + ticket classes into GE_* (current shell); exit 1 on any failed read
 goal_eval() {
   local rows ref st repo n r cls istate marker why lbl au gates sr ms
   GE_TOTAL=0; GE_DELIVERED=0; GE_ACTIVE=0; GE_WAITING=0; GE_SNAP=""; GE_REFS=""
   # $3: explicit "ref<TAB>state" rows. Live rows carry labels, author, start-gate refs and state_reason too (#548/#557: no
   # per-ticket issue read).
-  if [ -n "${3:-}" ]; then rows=$3; else rows=$(GOAL_SCOPE_FULL=1 _goal_scope_rows "$2" "$1") || return 1; fi
+  if [ -n "${3:-}" ]; then rows=$3; else
+    rows=$(GOAL_SCOPE_FULL=1 _goal_scope_rows "$2" "$1") || return 1
+    # #605: a scope that reads empty (release automation moved the shipped tickets out of the milestone, or the label is
+    # gone) falls back to the go-granted list, read as real tickets so a shipped one counts as delivered. $4 = granted
+    # JSON array (registry block); default the local goal cache. A failed read fails closed, never "empty".
+    if [ -z "$rows" ]; then rows=$(_goal_granted_rows "$1" "${4:-}") || return 1; fi
+  fi
   while IFS=$'\t' read -r ref st lbl au gates sr ms; do
     [ -n "$ref" ] || continue
     if [ "$st" = closed ]; then
@@ -1508,7 +1529,7 @@ goal_queue_save() {
 # and, when none is progressable and at least one waits on JP, add needs_jp {waiting, active, total} to its row in
 # goalqueue.json; build-runs-json.py shows such a goal as waiting on JP. Needs the supervisor's latest_marker; best effort.
 goal_queue_derive() {
-  local f="$PIPE/$GOAL_QUEUE_FILE_NAME" ids g id spec pid out="{}" tmp rows
+  local f="$PIPE/$GOAL_QUEUE_FILE_NAME" ids g id spec pid out="{}" tmp
   declare -F latest_marker >/dev/null 2>&1 || return 0
   [ -f "$f" ] || return 0
   ids=$(printf '%s' "$1" | jq -c '.[] | select(.st == "active") | {id, spec, granted: (.block.granted // [])}' 2>/dev/null) || return 0
@@ -1518,12 +1539,7 @@ goal_queue_derive() {
     [ -n "$id" ] && [ -n "$spec" ] || continue
     pid=$(cat "$PIPE/goal-$id.pid" 2>/dev/null)
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then continue; fi   # a live lead mirrors its own state
-    goal_eval "$id" "$spec" || continue
-    if [ "$GE_TOTAL" -eq 0 ]; then   # the label can be gone from the tickets (stripped by an earlier goal's close): fall back to the go-granted list
-      rows=$(printf '%s' "$g" | jq -r '(.granted // [])[] | "\(.)\topen"')
-      [ -n "$rows" ] || continue
-      goal_eval "$id" "$spec" "$rows" || continue
-    fi
+    goal_eval "$id" "$spec" "" "$(printf '%s' "$g" | jq -c '.granted // []')" || continue   # empty scope falls back to the granted list inside goal_eval
     [ "$GE_TOTAL" -gt 0 ] && [ "$GE_WAITING" -gt 0 ] || continue
     out=$(printf '%s' "$out" | jq -c --arg id "$id" --argjson w "$GE_WAITING" --argjson a "$GE_ACTIVE" --argjson t "$GE_TOTAL" \
       '. + {($id): {waiting: $w, active: $a, total: $t}}') || continue
