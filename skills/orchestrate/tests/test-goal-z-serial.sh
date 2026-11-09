@@ -14,11 +14,7 @@
 
 ZS_HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ZS_SKILL=$(cd "$ZS_HERE/.." && pwd)
-if ! type gs_env >/dev/null 2>&1; then
-  sed '/^echo "-- goal supervisor (#195)"/,$d' "$ZS_HERE/test-goal-supervisor.sh" > "$ZS_HERE/.zs-gs-lib.$$.sh"
-  . "$ZS_HERE/.zs-gs-lib.$$.sh"
-  rm -f "$ZS_HERE/.zs-gs-lib.$$.sh"
-fi
+. "$(dirname "${BASH_SOURCE[0]}")/lib/goal-sandbox.sh"
 if ! type zq_env >/dev/null 2>&1; then
   sed '/^run_test /,$d' "$ZS_HERE/test-goal-z-queue.sh" > "$ZS_HERE/.zs-zq-lib.$$.sh"
   . "$ZS_HERE/.zs-zq-lib.$$.sh"

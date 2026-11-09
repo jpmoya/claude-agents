@@ -6,11 +6,7 @@
 # Clock anchors: RATE_LIMIT_BACKOFF_SECS=3600, BACKOFF=(120 300 900 1800), MIN_RUN_SECS=180.
 
 GL_HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-if ! type gs_env >/dev/null 2>&1; then
-  sed '/^echo "-- goal supervisor (#195)"/,$d' "$GL_HERE/test-goal-supervisor.sh" > "$GL_HERE/.gl-gs-lib.$$.sh"
-  . "$GL_HERE/.gl-gs-lib.$$.sh"
-  rm -f "$GL_HERE/.gl-gs-lib.$$.sh"
-fi
+. "$(dirname "${BASH_SOURCE[0]}")/lib/goal-sandbox.sh"
 
 # gl_log <kind: limit|crash> — append one LAUNCH segment to the goal log
 gl_log() {
@@ -108,3 +104,4 @@ run_test test_gl_ac1_waits_the_rate_limit_backoff
 run_test test_gl_ac2_only_last_segment_counts
 run_test test_gl_ac3_plain_exits_still_park
 run_test test_gl_ac4_logs_one_rate_limited_line
+gs_tree_cleanup

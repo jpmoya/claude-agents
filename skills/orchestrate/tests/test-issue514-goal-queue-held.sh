@@ -18,11 +18,7 @@
 
 T514_HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 T514_SKILL=$(cd "$T514_HERE/.." && pwd)
-if ! type gs_env >/dev/null 2>&1; then
-  sed '/^echo "-- goal supervisor (#195)"/,$d' "$T514_HERE/test-goal-supervisor.sh" > "$T514_HERE/.t514-gs-lib.$$.sh"
-  . "$T514_HERE/.t514-gs-lib.$$.sh"
-  rm -f "$T514_HERE/.t514-gs-lib.$$.sh"
-fi
+. "$(dirname "${BASH_SOURCE[0]}")/lib/goal-sandbox.sh"
 if ! type zq_env >/dev/null 2>&1; then
   sed '/^run_test /,$d' "$T514_HERE/test-goal-z-queue.sh" > "$T514_HERE/.t514-zq-lib.$$.sh"
   . "$T514_HERE/.t514-zq-lib.$$.sh"

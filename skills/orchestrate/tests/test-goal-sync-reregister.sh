@@ -3,6 +3,8 @@
 # a goal re-registered after a stop/delivery shares its id with the old closed registry issue; sync must act
 # only on the issue the cache tracks, so the old closed issue never kills the new lead.
 
+. "$(dirname "${BASH_SOURCE[0]}")/lib/goal-sandbox.sh"
+
 test_gs_sync_old_closed_issue_with_same_id_does_not_kill_new_lead() {
   gs_env
   gs_reg 10 "$GS_SPEC_MS12" "$GS_ID_MS12" host-a stopped
@@ -34,3 +36,4 @@ test_gs_sync_closed_tracked_issue_still_kills_lead() {
 
 run_test test_gs_sync_old_closed_issue_with_same_id_does_not_kill_new_lead
 run_test test_gs_sync_closed_tracked_issue_still_kills_lead
+gs_tree_cleanup
