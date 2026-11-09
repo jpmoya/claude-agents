@@ -2,6 +2,8 @@
 # Sourced by run-tests.sh AFTER the goal-supervisor suite (reuses its gs_* fixtures). Issue #195 fix cycle 1:
 # a goal re-pinned to another host must not keep a lead running here, and a non-owner resume must unfreeze the owner.
 
+. "$(dirname "${BASH_SOURCE[0]}")/lib/goal-sandbox.sh"
+
 test_gs_sync_repinned_goal_drops_local_lead_and_cache() {
   gs_env
   gs_reg 50 "$GS_SPEC_MS12" "$GS_ID_MS12" host-b active
@@ -67,3 +69,4 @@ run_test test_gs_sync_repinned_goal_drops_local_lead_and_cache
 run_test test_gs_sync_active_registry_goal_clears_stale_held_and_stopped
 run_test test_gs_sync_unconfirmed_local_stop_survives_active_registry
 run_test test_gs_sync_old_closed_ticket_of_other_host_does_not_repin_open_goal
+gs_tree_cleanup
