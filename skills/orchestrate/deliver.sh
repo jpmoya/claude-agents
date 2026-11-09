@@ -139,7 +139,7 @@ check_overlap() {
 
 clear_stale_goal_state() {  # <id>: drop local stop/held/retry state left by an earlier goal of the same id (#224)
   rm -f "$PIPE/goal-$1".stopped "$PIPE/goal-$1".held "$PIPE/goal-$1".restarts "$PIPE/goal-$1".np "$PIPE/goal-$1".snap "$PIPE/goal-$1".launchfails "$PIPE/goal-$1".launch-failed \
-    "$PIPE/goal-$1".yielded "$PIPE/goal-$1".launch-scope
+    "$PIPE/goal-$1".yielded "$PIPE/goal-$1".launch-scope "$PIPE/goal-$1".idle
 }
 
 write_cache() {  # <id> <block json> <issue number>
