@@ -227,7 +227,7 @@ test_aw_ac2_no_sole_exact_form_text_left_in_agents_and_hooks() {
     -e 'whose first line is exactly `go`' \
     -e 'first line, exact' -e 'first-line exact' -e 'exact-form go' -e 'in that exact form' \
     -e 'no other wording counts' -e 'reply with exactly' -e 'exact text JP should reply' \
-    "$ROOT_AW/agents" "$ROOT_AW/hooks" 2>/dev/null | cut -c1-160)
+    "$ROOT_AW/agents" "$ROOT_AW/hooks" 2>/dev/null | grep -v 'interactive-session relay of JP' | cut -c1-160)   # #620: the session relay of JP's own in-chat words legitimately names the exact two-line form
   assert_eq "$hits" "" "AC2: sole-accepted-form wording still present" || return 1
 }
 

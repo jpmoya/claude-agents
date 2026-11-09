@@ -20,7 +20,7 @@ if [ "${PIPE_LEGACY:-}" = "/tmp/pipeline" ]; then
   echo "refusing to run: PIPE_LEGACY=/tmp/pipeline (the host's real pipeline state) — unset PIPE_LEGACY and re-run" >&2
   exit 2
 fi
-unset PIPE QUEUE LOGDIR
+unset PIPE QUEUE LOGDIR GH_CLASS   # GH_CLASS leaks in from pipeline-agent shells (gh-budget.sh tiers calls by it) and skews call-count/log pins
 PIPE_LEGACY="$(mktemp -d "${TMPDIR:-/tmp}/orch-test-legacy.XXXXXX")/legacy"   # fresh path that does not exist
 if [ "$PIPE_LEGACY" = "/tmp/pipeline" ]; then echo "refusing to run: PIPE_LEGACY resolves to /tmp/pipeline" >&2; exit 2; fi
 export PIPE_LEGACY
