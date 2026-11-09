@@ -193,7 +193,7 @@ latest_marker() {  # the GATE marker: newest real routing marker whose agent is 
   if [ "$rc" -eq 0 ]; then
     raw=$(printf '%s' "$raw" | jq -s '{comments: (map(if type == "array" then .[] else . end))}' 2>>"$errf") || rc=1
   fi
-  if [ "$rc" -eq 0 ] && printf '%s' "$raw" | grep -q 'SKIP MOCKUPS'; then
+  if [ "$rc" -eq 0 ] && printf '%s' "$raw" | grep -qE 'SKIP MOCKUPS|\[jp\] (MOCKUPS APPROVED|GO)'; then
     [ -n "$author" ] || author=$(cd "$repo" 2>/dev/null && gh api "repos/$slug/issues/$issue" 2>/dev/null </dev/null | jq -r '.user.login // empty' 2>/dev/null) || author=""   # failure => no author => the skip is ignored, the gate stays
     [ -z "$author" ] || raw=$(printf '%s' "$raw" | jq -c --arg a "$author" '. + {author: {login: $a}}')
   fi
