@@ -1,6 +1,6 @@
 # Regression for claude-agents#603 (same class as #56) — supervisor.sh holds its single-flight lock as fd 9 for the whole
 # tick. Any command it backgrounds (`... &`) inherits that fd unless the launch closes it (9>&-), and then the lock stays
-# held after the tick for as long as the child lives: every launchd firing in that window exits silently at `flock -n 9`.
+# held after the tick for as long as the child lives: every launchd firing in that window exits silently at the lock-acquire call.
 # #56 fixed one launch line and tested only that line; #603 was the keep-awake caffeinate, added later without 9>&-.
 # This test reads every backgrounded command in supervisor.sh and the files it sources (continuation lines joined) and requires 9>&- on each.
 

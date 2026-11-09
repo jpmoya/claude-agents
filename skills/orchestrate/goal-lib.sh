@@ -687,7 +687,8 @@ _goal_ticket_eval() {
   elif [[ "$mk" =~ \]\ BLOCKED ]]; then
     l2=$(printf '%s' "$all_c" \
       | jq -r --arg f "$first" '[.[] | select((.body | split("\n")[0] | rtrimstr("\r")) == $f)] | last | .body | split("\n")[1] // "" | rtrimstr("\r")' 2>/dev/null) || l2=""
-    if [ "$l2" = "Blocked on: needs_jp" ]; then cls=waiting_jp; why="blocked on a decision only you can make"; fi
+    # #621: same prefix rule as supervisor.sh blocked_class_of (^Blocked on: <class>( |$)) — "needs_jp — <reason>" counts
+    if [[ "$l2" =~ ^Blocked\ on:\ needs_jp(\ |$) ]]; then cls=waiting_jp; why="blocked on a decision only you can make"; fi
   else
     tk=$(terminal_kind "$first" "$n" "" "$checkout")
     case "$tk" in
@@ -721,7 +722,7 @@ _goal_ticket_eval() {
       | jq -r --arg f "$first" '[.[] | select((.body | split("\n")[0] | rtrimstr("\r")) == $f)] | last | .created_at // empty')
     lead_blocked_at=$(printf '%s' "$all_c" \
       | jq -r '[.[] | select((.body | split("\n")[0] | rtrimstr("\r")) == "**[delivery-lead] BLOCKED**")
-                     | select((.body | split("\n")[1] // "" | rtrimstr("\r")) == "Blocked on: needs_jp")]
+                     | select((.body | split("\n")[1] // "" | rtrimstr("\r")) | test("^Blocked on: needs_jp( |$)"))]
                | last | .created_at // empty')
     jp_answer_at=""
     [ -n "$author" ] && jp_answer_at=$(printf '%s' "$all_c" \
