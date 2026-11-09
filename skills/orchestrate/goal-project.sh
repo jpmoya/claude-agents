@@ -317,7 +317,12 @@ goal_project_tick() {
   if [ $((now - last)) -ge "$GOAL_PROJECT_SECS" ]; then dosync=1; fi
   if kill -0 "$(cat "$pf" 2>/dev/null)" 2>/dev/null; then return 0; fi
   [ "$dosync" = 0 ] || echo "$now" > "$PIPE/goal-project.last" 2>/dev/null
-  ( goal_project_refresh_list; [ "$dosync" = 0 ] || goal_project_sync_all "$1" ) >>"$PIPE/goal-project.log" 2>&1 </dev/null 9>&- &   # 9>&-: never inherit the supervisor lock (fd 9) past the tick (#624)
+  ( rc=0; goal_project_refresh_list || rc=$?; [ "$dosync" = 0 ] || goal_project_sync_all "$1" || rc=$?
+    if [ "$rc" != 0 ]; then   # a dead job must not be silent: log line plus the supervisor's existing Slack alert (#624)
+      echo "[goal-project-failed] backgrounded project job exited rc=$rc"
+      type autoretry_alert >/dev/null 2>&1 && autoretry_alert goal-project "project job rc=$rc" goal-project
+    fi
+  ) >>"$PIPE/goal-project.log" 2>&1 </dev/null 9>&- &   # 9>&-: never inherit the supervisor lock (fd 9) past the tick (#624)
   echo $! > "$pf" 2>/dev/null
   disown 2>/dev/null || true
   return 0

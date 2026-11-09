@@ -138,7 +138,8 @@ autoretry_alert() {  # <issue> <what> [step, default auto-retry] — Slack webho
   [ -n "${SLACK_WEBHOOK_URL:-}" ] || return 0
   local rel msg step=${3:-auto-retry}
   rel=$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --short HEAD 2>/dev/null || echo unknown)
-  msg="supervisor read failed for #$1 ($2): release=$rel environment=$(hostname -s 2>/dev/null || echo unknown) route=supervisor/$step"
+  local ref="#$1"; case "$1" in ''|*[!0-9]*) ref="$1" ;; esac   # a non-numeric first arg is a label, not an issue (#624)
+  msg="supervisor read failed for $ref ($2): release=$rel environment=$(hostname -s 2>/dev/null || echo unknown) route=supervisor/$step"
   curl -s --max-time 10 -X POST -H 'Content-type: application/json' \
     --data "$(jq -nc --arg t "$msg" '{text:$t}')" "$SLACK_WEBHOOK_URL" >/dev/null 2>&1 || true
 }
