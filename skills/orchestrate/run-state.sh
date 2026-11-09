@@ -31,11 +31,11 @@ except OSError: pass" "$1" 2>/dev/null
 _rs_ps_lines() {  # live claude processes: <start_epoch> TAB <PIPELINE_ISSUE> TAB <command line> [TAB <pid>]; RS_PS_CMD overrides (tests)
   # inside derive_runs the scan is taken once and replayed (#598); outside it every call scans fresh
   if [ "${_RS_PS_CACHED:-0}" = 1 ]; then printf '%s' "$_RS_PS_CACHE"; [ -z "$_RS_PS_CACHE" ] || echo; return 0; fi
-  _rs_ps_scan
+  _rs_ps_scan || true
 }
 
 _rs_ps_scan() {
-  if [ -n "${RS_PS_CMD:-}" ]; then bash -c "$RS_PS_CMD" 2>/dev/null; return 0; fi
+  if [ -n "${RS_PS_CMD:-}" ]; then bash -c "$RS_PS_CMD" 2>/dev/null; return $?; fi   # rc = the scan's own status (#624: step 1 alerts on a failed scan); callers that only read the lines ignore it
   if [ "$(uname)" = "Linux" ]; then
     python3 - <<'PY' 2>/dev/null
 import os, re

@@ -317,7 +317,7 @@ goal_project_tick() {
   if [ $((now - last)) -ge "$GOAL_PROJECT_SECS" ]; then dosync=1; fi
   if kill -0 "$(cat "$pf" 2>/dev/null)" 2>/dev/null; then return 0; fi
   [ "$dosync" = 0 ] || echo "$now" > "$PIPE/goal-project.last" 2>/dev/null
-  ( goal_project_refresh_list; [ "$dosync" = 0 ] || goal_project_sync_all "$1" ) >>"$PIPE/goal-project.log" 2>&1 </dev/null &
+  ( goal_project_refresh_list; [ "$dosync" = 0 ] || goal_project_sync_all "$1" ) >>"$PIPE/goal-project.log" 2>&1 </dev/null 9>&- &   # 9>&-: never inherit the supervisor lock (fd 9) past the tick (#624)
   echo $! > "$pf" 2>/dev/null
   disown 2>/dev/null || true
   return 0
