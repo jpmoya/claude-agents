@@ -63,6 +63,39 @@ test_rl_jp_marker_before_the_gate_does_not_count() {
   assert_eq "$out" "waiting_jp" "an approval older than the gate answers nothing"
 }
 
+# Decisive for AC3 (#620 review finding 1): an author comment whose first line starts `**[jp]` but is NOT a routing marker
+# (off-vocabulary, so latest_marker ignores it and the gate stays MOCKUPS PENDING / the lead's needs_jp BLOCKED). Only
+# jp_answer_at can turn the goal active. Unfixed jp_answer_at drops every `**[` comment -> waiting_jp (red today).
+RL_JP_FREE=$'**[jp] looks good, ship it**\nJP said: "Approve all"'
+
+test_rl_jp_free_form_answer_after_pending_counts_via_jp_answer_at() {
+  assert_eq "$(rl_class "$RL_MOCK" jpmoya "$RL_JP_FREE")" "active" "author **[jp] comment after MOCKUPS PENDING"
+}
+
+test_rl_jp_free_form_answer_after_lead_needs_jp_blocked_counts_via_jp_answer_at() {
+  assert_eq "$(rl_class "$RL_MOCK" jpmoya "$RL_JP_FREE" "$RL_BLOCKED")" "active" "author **[jp] comment after needs_jp BLOCKED"
+}
+
+test_rl_jp_free_form_answer_from_non_author_does_not_count() {
+  assert_eq "$(rl_class "$RL_MOCK" someone-else "$RL_JP_FREE")" "waiting_jp" "non-author **[jp] comment is not an answer"
+}
+
+test_rl_jp_lookalike_agent_tag_does_not_count() {  # `**[jp-bot]` is not `**[jp]`
+  assert_eq "$(rl_class "$RL_MOCK" jpmoya $'**[jp-bot] approved**\nJP said: "yes"')" "waiting_jp" "**[jp-bot] is another agent tag"
+}
+
+test_rl_jp_answer_at_same_second_as_gate_does_not_count() {  # strict > : answer stamped equal to the gate answers nothing
+  local out
+  ro_setup
+  jq -n --arg g "$RL_MOCK" --arg a "$RL_JP_FREE" '
+    [{created_at:"2026-10-01T12:00:00Z",user:{login:"jpmoya"},body:$g},
+     {created_at:"2026-10-01T12:00:00Z",user:{login:"jpmoya"},body:$a}]' > "$RO_DIR/comments-proj_repo-a-2.json"
+  ro_run "goal_eval $RO_MS_ID $RO_MS_SPEC; printf '%s' \"\$GE_REFS\" | grep -F 'proj/repo-a#2'"
+  out=$(printf '%s' "$RO_OUT" | awk -F'\t' '{print $2}')
+  ro_teardown
+  assert_eq "$out" "waiting_jp" "answer at the gate's own timestamp is not newer"
+}
+
 # Observability: a failed comments read must surface as an evaluation error, never classify the goal active/waiting.
 test_rl_failed_comments_read_is_surfaced_not_classified() {
   ro_setup; local rc=0 ev
@@ -88,14 +121,17 @@ rl_has_line() {  # <file> <needle>... — ONE line holds every needle
   fail "$f: no single line holds all of [$*]"; return 1
 }
 
+rl_has_all() {  # <file> <needle>... — every needle appears somewhere in the file (wrapping-independent)
+  local f=$1 n; shift
+  for n in "$@"; do grep -qF -- "$n" "$f" || { fail "$f: missing [$n]"; return 1; }; done
+}
+
 test_rl_doc_claude_md_states_relay_form() {
-  rl_has_line "$RL_ROOT/CLAUDE.md" '**[jp] MOCKUPS APPROVED**' '**[jp] GO**' 'JP said:' 'JP CONFIRMED' 'never' || return 1
-  rl_has_line "$RL_ROOT/CLAUDE.md" 'brief' 'Slack' 'label' 'issue body' 'MOCKUPS APPROVED' || return 1
+  rl_has_all "$RL_ROOT/CLAUDE.md" '**[jp] MOCKUPS APPROVED**' '**[jp] GO**' 'JP said:' 'JP CONFIRMED' 'never' 'Slack' 'issue body' || return 1
 }
 
 test_rl_doc_skill_md_states_relay_form() {
-  rl_has_line "$RL_ROOT/skills/orchestrate/SKILL.md" '**[jp] MOCKUPS APPROVED**' '**[jp] GO**' 'JP said:' 'JP CONFIRMED' 'never' || return 1
-  rl_has_line "$RL_ROOT/skills/orchestrate/SKILL.md" 'brief' 'Slack' 'label' 'issue body' 'MOCKUPS APPROVED' || return 1
+  rl_has_all "$RL_ROOT/skills/orchestrate/SKILL.md" '**[jp] MOCKUPS APPROVED**' '**[jp] GO**' 'JP said:' 'JP CONFIRMED' 'never' 'Slack' 'issue body' || return 1
 }
 
 test_rl_doc_delivery_lead_points_at_relay_rule() {
@@ -115,6 +151,11 @@ for t in test_rl_jp_mockups_approved_after_pending_is_active \
          test_rl_supervisor_note_does_not_count \
          test_rl_jp_marker_from_non_author_does_not_count \
          test_rl_jp_marker_before_the_gate_does_not_count \
+         test_rl_jp_free_form_answer_after_pending_counts_via_jp_answer_at \
+         test_rl_jp_free_form_answer_after_lead_needs_jp_blocked_counts_via_jp_answer_at \
+         test_rl_jp_free_form_answer_from_non_author_does_not_count \
+         test_rl_jp_lookalike_agent_tag_does_not_count \
+         test_rl_jp_answer_at_same_second_as_gate_does_not_count \
          test_rl_failed_comments_read_is_surfaced_not_classified \
          test_rl_doc_claude_md_states_relay_form \
          test_rl_doc_skill_md_states_relay_form \
