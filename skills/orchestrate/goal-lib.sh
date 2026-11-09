@@ -712,7 +712,7 @@ _goal_ticket_eval() {
   # clears it by relaunching the pipeline, which only happens once the goal reads active), so without this check a
   # goal can sit held, re-evaluate every sync, and never unhold even after JP answers (#390, 2026-10-23). One extra
   # comments read, author-checked (an agent-tag comment, "**[...] ...**", never counts, so this cannot loop on the
-  # pipeline's own supervisor/claim notes — #427 AC4).
+  # pipeline's own supervisor/claim notes — #427 AC4).  #620: an issue-author `**[jp] ` relay (MOCKUPS APPROVED / GO) counts, like jp_go.
   # A staging merge is not a gate JP answers by commenting: only the release moves it, so it skips this block.
   if [ "$cls" != delivered ] && [ "$staged" = 0 ]; then
     local gate_at lead_blocked_at jp_answer_at newest
@@ -725,7 +725,7 @@ _goal_ticket_eval() {
                | last | .created_at // empty')
     jp_answer_at=""
     [ -n "$author" ] && jp_answer_at=$(printf '%s' "$all_c" \
-      | jq -r --arg a "$author" '[.[] | select(.user.login == $a) | select((.body | startswith("**[")) | not)]
+      | jq -r --arg a "$author" '[.[] | select(.user.login == $a) | select(((.body | startswith("**[")) | not) or (.body | split("\n")[0] | rtrimstr("\r") | test("^\\*\\*\\[jp\\] ")))]
                | last | .created_at // empty')
     if [ -n "$lead_blocked_at" ] && { [ -z "$gate_at" ] || [[ "$lead_blocked_at" > "$gate_at" ]]; } \
        && { [ -z "$jp_answer_at" ] || [[ "$lead_blocked_at" > "$jp_answer_at" ]]; }; then
