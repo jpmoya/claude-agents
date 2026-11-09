@@ -138,7 +138,8 @@ autoretry_alert() {  # <issue> <what> [step, default auto-retry] — Slack webho
   [ -n "${SLACK_WEBHOOK_URL:-}" ] || return 0
   local rel msg step=${3:-auto-retry}
   rel=$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --short HEAD 2>/dev/null || echo unknown)
-  msg="supervisor read failed for #$1 ($2): release=$rel environment=$(hostname -s 2>/dev/null || echo unknown) route=supervisor/$step"
+  local ref="#$1"; case "$1" in ''|*[!0-9]*) ref="$1" ;; esac   # a non-numeric first arg is a label, not an issue (#624)
+  msg="supervisor read failed for $ref ($2): release=$rel environment=$(hostname -s 2>/dev/null || echo unknown) route=supervisor/$step"
   curl -s --max-time 10 -X POST -H 'Content-type: application/json' \
     --data "$(jq -nc --arg t "$msg" '{text:$t}')" "$SLACK_WEBHOOK_URL" >/dev/null 2>&1 || true
 }
@@ -778,6 +779,15 @@ unset _wts_prev
 keep_awake   # Mac: hold the machine awake while runs exist (stall cause A)
 
 # 1. Check each recorded orchestrator
+# One process-table scan for the whole loop (#624): _rs_live_stage / _rs_live_stage_proc replay run-state.sh's cache
+# (#598) instead of scanning once per recorded pid file. Cleared after the loop so later steps scan fresh.
+_ps_out=$(_rs_ps_scan; echo "rc=$?"); _ps_rc=${_ps_out##*rc=}
+_RS_PS_CACHE=$(printf '%s' "${_ps_out%rc=*}"); _RS_PS_CACHED=1
+if [ "$_ps_rc" != 0 ]; then   # failed scan: same as an empty table (no live stage), but surfaced, not silent
+  slog "[ps-scan-failed] step 1 process-table scan exited rc=$_ps_rc; live stages unknown this tick"
+  autoretry_alert step-1 "process scan rc=$_ps_rc" ps-scan
+fi
+unset _ps_out _ps_rc
 for f in "$PIPE"/orch-*.pid; do
   [ -e "$f" ] || break
   rk=$(basename "$f" .pid); rk=${rk#orch-}; issue=${rk##*-}   # <owner>_<repo>-<N>; an unmigrated legacy bare <N> reads as is
@@ -1066,6 +1076,7 @@ json.dump(d, open('$restarts_file','w'))
   fi
   report_status_async "queue-restart"   # event push: run exited -> requeued (design #10 §4.4)
 done
+_RS_PS_CACHED=0; _RS_PS_CACHE=""   # step 1 scan done (#624): later steps scan fresh
 
 # 1b. Auto-retry (#250): a .held run whose latest gate is a BLOCKED of a machine-clearable class
 # (autoretry_classes in hooks/pipeline-markers.sh) is requeued once the cause has cleared. At most
