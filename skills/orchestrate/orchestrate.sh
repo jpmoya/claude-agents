@@ -187,6 +187,10 @@ except Exception: print('?')
     if [ -f "$PIPE/orch-$RK.pid" ] && kill -0 "$(cat "$PIPE/orch-$RK.pid")" 2>/dev/null; then
       echo "orchestrator for #$ISSUE already running (pid $(cat "$PIPE/orch-$RK.pid")); use 'stop' first" >&2; exit 1
     fi
+    # #451: reserve the pid file now so the claim-settle wait below is covered by the liveness check above; every exit
+    # before the spawn puts the earlier content back.
+    pid_reserve "$RK"
+    trap 'pid_reserve_restore "$RK"' EXIT
     # Cross-machine guard: agent-in-progress on an issue this machine does not own (never launched here, or launched
     # here but already released via .label-cleared) means another machine is driving it.
     if [ "$FORCE" -eq 0 ] && { [ ! -f "$PIPE/orch-$RK.repo" ] || [ -f "$PIPE/orch-$RK.label-cleared" ]; } \
@@ -218,21 +222,26 @@ except Exception: print('?')
     # too; the status reporter only ever reads the file. A failed or empty fetch leaves no title file and never blocks
     # the launch.
     write_title_marker "$REPO" "$ISSUE" 1 "$RK"
-    if ! has_capacity; then
+    if ! has_capacity "$RK"; then
       python3 -c "
 import json, datetime, time
 with open('$QUEUE/orch-$RK.json', 'w') as f:
     json.dump({'issue': '$ISSUE', 'repo': '$REPO', 'extra': '''$EXTRA''', 'reason': 'queued',
                'queued_at': datetime.datetime.utcnow().strftime('%FT%TZ'), 'not_before': int(time.time())}, f)
 "
-      echo "queued #$ISSUE ($(count_running)/$MAX_CONCURRENT slots full, $(mem_available_mb)MB avail) — supervisor will auto-launch when a slot opens"
+      echo "queued #$ISSUE ($(count_running "$RK")/$MAX_CONCURRENT slots full, $(mem_available_mb)MB avail) — supervisor will auto-launch when a slot opens"
       echo "check: ~/.claude/skills/orchestrate/orchestrate.sh queue"
-      rm -f "$PIPE/orch-$RK.pid"   # queued, not running: a stale dead pid makes the supervisor read this as a run that just ended (#22)
+      PID_RES_ACTIVE=0; rm -f "$PIPE/orch-$RK.pid"   # queued, not running: a stale dead pid makes the supervisor read this as a run that just ended (#22)
       exit 0
     fi
     # The headless session IS the orchestrator (--agent), not a wrapper that calls Agent(orchestrator):
     # a prompt arguing "you are the exception to the CLAUDE.md rule" reads as a prompt injection and
     # was intermittently refused (#217, #151, #637 — 2026-09-17).
+    # #451: another launcher overwrote the reservation during the wait — it owns the run, we exit without spawning (also on --force).
+    if ! pid_reserve_held "$RK"; then
+      launch_skip "$ISSUE" orchestrate
+      echo "#$ISSUE another launcher holds the pid file — not launching" >&2; exit 1
+    fi
     PROMPT="Drive $OWNER_REPO#$ISSUE through the pipeline. Repo: $REPO. Read the latest marker on the issue and continue from there. $EXTRA"
     printf '\n===== [%s] LAUNCH issue=%s reason=manual ppid=%s cmd=%s =====\n' "$(date -u +%FT%TZ)" "$ISSUE" "$PPID" "$(ps -o args= -p "$PPID" 2>/dev/null | tr -d '\n' | cut -c1-200)" >> "$PIPE/orch-$RK.log"
     cd "$REPO"
@@ -241,6 +250,7 @@ with open('$QUEUE/orch-$RK.json', 'w') as f:
       claude --dangerously-skip-permissions --agent orchestrator -p "$1"
       echo $? > "$2"
     ' _ "$PROMPT" "$PIPE/orch-$RK.exit" >> "$PIPE/orch-$RK.log" 2>&1 9>&- &
+    PID_RES_ACTIVE=0
     echo $! > "$PIPE/orch-$RK.pid"; echo "$REPO" > "$PIPE/orch-$RK.repo"
     date -u +%FT%TZ > "$PIPE/orch-$RK.start"; date -u +%FT%TZ > "$PIPE/orch-$RK.launched-at"
     log_run_launch "$OWNER_REPO" "$ISSUE" "${LAUNCH_REASON:-manual}" 0 "" "$RK"

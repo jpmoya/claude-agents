@@ -587,17 +587,23 @@ do_launch() {  # <repo> <issue> <extra> <restart_n> <reason> <queue_wait_s> <run
   owner_repo=$(cd "$repo" && gh api repos/{owner}/{repo} --jq .full_name 2>/dev/null || true)
   [ -n "$owner_repo" ] || owner_repo=$(git -C "$repo" remote get-url origin 2>/dev/null | sed -E 's#^.*github\.com[:/]##; s#\.git$##')
   [ -n "$owner_repo" ] || owner_repo=unknown
+  # #451: reserve the pid file before the claim wait; a live pid that is not ours means another launcher already holds it.
+  local held_pid; held_pid=$(cat "$PIPE/orch-$rk.pid" 2>/dev/null || true)
+  if [ -n "$held_pid" ] && [ "$held_pid" != "$$" ] && kill -0 "$held_pid" 2>/dev/null; then
+    slog "[launch-skip] #$issue — another launcher holds the pid file"; launch_skip "$issue" supervisor; return 1
+  fi
+  pid_reserve "$rk"
   local claim_err claim_rc
   claim_err=$(mktemp "${TMPDIR:-/tmp}/claim-err.XXXXXX")
   gh api "repos/$owner_repo/issues/$issue/comments" -f body="**[supervisor] NOTE** claim: $HOST $(date -u +%FT%TZ)" >/dev/null 2>"$claim_err" \
-    || { claim_rc=$?; slog "[launch] #$issue — claim comment failed rc=$claim_rc: $(gh_err_line "$claim_err"); not launching (will retry)"; rm -f "$claim_err"; return 2; }
+    || { claim_rc=$?; slog "[launch] #$issue — claim comment failed rc=$claim_rc: $(gh_err_line "$claim_err"); not launching (will retry)"; rm -f "$claim_err"; pid_reserve_restore "$rk"; return 2; }
   rm -f "$claim_err"
   sleep "$CLAIM_SETTLE_SECS"
   claim_win=$(claim_winner_rest "$owner_repo" "$issue") \
-    || { slog "[launch] #$issue — claim lookup failed; not launching (will retry)"; return 2; }
+    || { slog "[launch] #$issue — claim lookup failed; not launching (will retry)"; pid_reserve_restore "$rk"; return 2; }
   if [ -n "$claim_win" ] && [ "$claim_win" != "$HOST" ]; then
     slog "[launch] #$issue — lost claim to $claim_win; not launching (running there)"
-    return 1
+    pid_reserve_restore "$rk"; return 1
   fi
 
   # Ticket title for the status board (#29): orchestrate.sh normally wrote it at launch and restarts reuse that
@@ -623,6 +629,9 @@ do_launch() {  # <repo> <issue> <extra> <restart_n> <reason> <queue_wait_s> <run
   # Same launch shape as orchestrate.sh: the headless session IS the orchestrator (--agent), no Agent() call.
   prompt="Drive $owner_repo#$issue through the pipeline. Repo: $repo. Read the latest marker on the issue and continue from there. ${preamble}${extra}"
 
+  if ! pid_reserve_held "$rk"; then
+    slog "[launch-skip] #$issue — another launcher holds the pid file"; launch_skip "$issue" supervisor; PID_RES_ACTIVE=0; return 1
+  fi
   printf '\n===== [%s] LAUNCH issue=%s reason=%s restart=%s =====\n' "$(date -u +%FT%TZ)" "$issue" "$reason" "$restart_n" >> "$PIPE/orch-$rk.log"
   rm -f "$PIPE/orch-$rk.exit"   # a killed run never writes it; a stale value would be reported as this run's (#38)
   cd "$repo"
@@ -632,6 +641,7 @@ do_launch() {  # <repo> <issue> <extra> <restart_n> <reason> <queue_wait_s> <run
     echo $? > "$2"
   ' _ "$prompt" "$PIPE/orch-$rk.exit" >> "$PIPE/orch-$rk.log" 2>&1 9>&- &
 
+  PID_RES_ACTIVE=0
   echo $! > "$PIPE/orch-$rk.pid"
   echo "$repo" > "$PIPE/orch-$rk.repo"
   [ -f "$PIPE/orch-$rk.start" ] || date -u +%FT%TZ > "$PIPE/orch-$rk.start"

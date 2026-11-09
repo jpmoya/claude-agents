@@ -94,10 +94,11 @@ migrate_legacy_runs() {
   done
 }
 
-count_running() {
+count_running() {  # [own run key] — a launcher's own pid reservation (#451) is not a running slot
   local n=0
   for f in "$PIPE"/orch-*.pid "$PIPE"/intake-*.pid; do   # intake runs (#114) count against MAX_CONCURRENT too
     [ -e "$f" ] || continue
+    [ -n "${1:-}" ] && [ "$f" = "$PIPE/orch-$1.pid" ] && continue
     kill -0 "$(cat "$f")" 2>/dev/null && n=$((n + 1))
   done
   echo "$n"
@@ -109,8 +110,8 @@ mem_available_mb() {
   fi
 }
 
-has_capacity() {
-  [ "$(count_running)" -lt "$MAX_CONCURRENT" ] && [ "$(mem_available_mb)" -ge "$MEM_FLOOR_MB" ]
+has_capacity() {  # [own run key]
+  [ "$(count_running "${1:-}")" -lt "$MAX_CONCURRENT" ] && [ "$(mem_available_mb)" -ge "$MEM_FLOOR_MB" ]
 }
 
 marker_last_jq() {  # prints (no gh call) the jq expression yielding the newest real routing marker first line, or "none"; NOTEs and off-vocabulary lines are inert
@@ -192,6 +193,36 @@ log_run_launch() {
   pipeline_event run_launch --arg run_id "$run_id" --arg repo "$repo" --argjson issue "$issue" --arg reason "$reason" \
     --argjson restart_n "${restart_n:-0}" --argjson queue_wait_s "$qw"
   return 0
+}
+
+# Issue #451 — pid reservation: a launcher writes its own pid to orch-<key>.pid right after the liveness check, so the
+# claim-settle wait is covered by the same guard a running orchestrator uses. pid_reserve_restore puts the earlier content
+# back (or removes the file) only while the file still holds our pid, so a loser never clobbers the winner's reservation.
+PID_RES_PREV=""; PID_RES_HAD=0; PID_RES_ACTIVE=0
+pid_reserve() {  # <run key> — call only after the liveness check passed
+  local f="$PIPE/orch-$1.pid"
+  if [ -f "$f" ]; then PID_RES_HAD=1; PID_RES_PREV=$(cat "$f" 2>/dev/null || true); else PID_RES_HAD=0; PID_RES_PREV=""; fi
+  echo "$$" > "$f"; PID_RES_ACTIVE=1
+}
+pid_reserve_held() {  # <run key> — true while the pid file still holds our pid
+  [ "$(cat "$PIPE/orch-$1.pid" 2>/dev/null)" = "$$" ]
+}
+pid_reserve_restore() {  # <run key> — undo a reservation that did not end in a spawn
+  [ "$PID_RES_ACTIVE" = 1 ] || return 0
+  PID_RES_ACTIVE=0
+  pid_reserve_held "$1" || return 0
+  if [ "$PID_RES_HAD" = 1 ]; then printf '%s\n' "$PID_RES_PREV" > "$PIPE/orch-$1.pid"; else rm -f "$PIPE/orch-$1.pid"; fi
+}
+# launch_skip <issue> <route orchestrate|supervisor> — a lost pid verify: events row (reason pid-held; release, environment,
+# route tags) plus the existing Slack webhook. Issue number only. Never fails the caller.
+launch_skip() {
+  pipeline_event launch_skip --argjson issue "${1:-0}" --arg reason pid-held \
+    --arg release "$(git -C "$_CLAIM_LIB_DIR" rev-parse HEAD 2>/dev/null || echo unknown)" \
+    --arg environment "$(pipeline_host)" --arg route "$2"
+  [ -n "${SLACK_WEBHOOK_URL:-}" ] || return 0
+  curl -s --max-time 10 -X POST -H 'Content-Type: application/json' \
+    --data "{\"text\":\"launch skipped (#${1:-0}, reason pid-held, host $(hostname -s), route $2, release $(git -C "$_CLAIM_LIB_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown))\"}" \
+    "$SLACK_WEBHOOK_URL" >/dev/null 2>&1 </dev/null || true
 }
 
 # claim_winner <local_path> <issue> — prints the host of the earliest "**[supervisor] NOTE** claim: <host> <ts>" comment
