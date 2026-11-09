@@ -14,6 +14,15 @@ test_gs_621_other_classes_stay_active() {
   gs_check_class active "ci_red — reason" open "" $'**[fullstack-developer] BLOCKED**\nBlocked on: ci_red — red\ndetails' || return 1
 }
 
+test_gs_621_delivery_lead_needs_jp_is_waiting_jp() {
+  # delivery-lead BLOCKED is read by the lead_blocked_at lookup, not the latest-marker path
+  # (fixture comments share one timestamp, so no earlier gate comment: the lead BLOCKED is the only marker)
+  gs_check_class waiting_jp "lead bare needs_jp" open "" $'**[delivery-lead] BLOCKED**\nBlocked on: needs_jp\ndetails' || return 1
+  gs_check_class waiting_jp "lead needs_jp — reason" open "" $'**[delivery-lead] BLOCKED**\nBlocked on: needs_jp — set the secret\ndetails' || return 1
+  gs_check_class active "lead needs_jpx" open "" $'**[delivery-lead] BLOCKED**\nBlocked on: needs_jpx — nope\ndetails' || return 1
+}
+
 run_test test_gs_621_needs_jp_forms_are_waiting_jp
+run_test test_gs_621_delivery_lead_needs_jp_is_waiting_jp
 run_test test_gs_621_other_classes_stay_active
 gs_tree_cleanup
