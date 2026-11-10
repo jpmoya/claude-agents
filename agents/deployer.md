@@ -94,7 +94,7 @@ The repo holds the agent definitions, hooks and orchestrate skill. Integration b
                payroll-sync-tests|payroll-scrape-tests)
                  case "$p" in
                    .github/workflows/ci.yml) ;;
-                   .github/dependabot.yml|.github/migration-policy/shared-tables.txt|vercel.json|vitest.config.ts) continue ;;
+                   .github/dependabot.yml|.github/migration-policy/shared-tables.txt|vercel.json|vitest.config.ts|middleware.ts) continue ;;
                    src/*|scripts/*|e2e/*|tests/*|docs/*|public/*|supabase/*|android/*|ios/*|.github/workflows/*) continue ;;
                    */*) ;;
                    *.md) continue ;;
