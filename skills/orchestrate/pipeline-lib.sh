@@ -198,18 +198,26 @@ log_run_launch() {
 # Issue #451 — pid reservation: a launcher writes its own pid to orch-<key>.pid right after the liveness check, so the
 # claim-settle wait is covered by the same guard a running orchestrator uses. pid_reserve_restore puts the earlier content
 # back (or removes the file) only while the file still holds our pid, so a loser never clobbers the winner's reservation.
-PID_RES_PREV=""; PID_RES_HAD=0; PID_RES_ACTIVE=0
+PID_RES_PREV=""; PID_RES_HAD=0; PID_RES_ACTIVE=0; PID_RES_TRAP=0
 pid_reserve() {  # <run key> — call only after the liveness check passed
   local f="$PIPE/orch-$1.pid"
   if [ -f "$f" ]; then PID_RES_HAD=1; PID_RES_PREV=$(cat "$f" 2>/dev/null || true); else PID_RES_HAD=0; PID_RES_PREV=""; fi
   echo "$$" > "$f"; PID_RES_ACTIVE=1
 }
+pid_reserve_trap() {  # <run key> <exit code> — an EXIT trap does not run on an unhandled INT/TERM/HUP: restore, then exit
+  trap "pid_reserve_restore '$1'; exit $2" INT TERM HUP; PID_RES_TRAP=1
+}
 pid_reserve_held() {  # <run key> — true while the pid file still holds our pid
   [ "$(cat "$PIPE/orch-$1.pid" 2>/dev/null)" = "$$" ]
 }
+pid_reserve_done() {  # the reservation ended (spawned, or handed over): drop the signal trap, nothing left to restore
+  PID_RES_ACTIVE=0
+  [ "$PID_RES_TRAP" = 1 ] && { trap - INT TERM HUP; PID_RES_TRAP=0; }
+  return 0
+}
 pid_reserve_restore() {  # <run key> — undo a reservation that did not end in a spawn
   [ "$PID_RES_ACTIVE" = 1 ] || return 0
-  PID_RES_ACTIVE=0
+  pid_reserve_done
   pid_reserve_held "$1" || return 0
   if [ "$PID_RES_HAD" = 1 ]; then printf '%s\n' "$PID_RES_PREV" > "$PIPE/orch-$1.pid"; else rm -f "$PIPE/orch-$1.pid"; fi
 }

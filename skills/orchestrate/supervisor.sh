@@ -593,6 +593,7 @@ do_launch() {  # <repo> <issue> <extra> <restart_n> <reason> <queue_wait_s> <run
     slog "[launch-skip] #$issue — another launcher holds the pid file"; launch_skip "$issue" supervisor; return 1
   fi
   pid_reserve "$rk"
+  pid_reserve_trap "$rk" 143   # a TERM during the settle wait must not leave the supervisor's dead pid behind (#22)
   local claim_err claim_rc
   claim_err=$(mktemp "${TMPDIR:-/tmp}/claim-err.XXXXXX")
   gh api "repos/$owner_repo/issues/$issue/comments" -f body="**[supervisor] NOTE** claim: $HOST $(date -u +%FT%TZ)" >/dev/null 2>"$claim_err" \
@@ -630,7 +631,7 @@ do_launch() {  # <repo> <issue> <extra> <restart_n> <reason> <queue_wait_s> <run
   prompt="Drive $owner_repo#$issue through the pipeline. Repo: $repo. Read the latest marker on the issue and continue from there. ${preamble}${extra}"
 
   if ! pid_reserve_held "$rk"; then
-    slog "[launch-skip] #$issue — another launcher holds the pid file"; launch_skip "$issue" supervisor; PID_RES_ACTIVE=0; return 1
+    slog "[launch-skip] #$issue — another launcher holds the pid file"; launch_skip "$issue" supervisor; pid_reserve_done; return 1
   fi
   printf '\n===== [%s] LAUNCH issue=%s reason=%s restart=%s =====\n' "$(date -u +%FT%TZ)" "$issue" "$reason" "$restart_n" >> "$PIPE/orch-$rk.log"
   rm -f "$PIPE/orch-$rk.exit"   # a killed run never writes it; a stale value would be reported as this run's (#38)
@@ -641,7 +642,7 @@ do_launch() {  # <repo> <issue> <extra> <restart_n> <reason> <queue_wait_s> <run
     echo $? > "$2"
   ' _ "$prompt" "$PIPE/orch-$rk.exit" >> "$PIPE/orch-$rk.log" 2>&1 9>&- &
 
-  PID_RES_ACTIVE=0
+  pid_reserve_done
   echo $! > "$PIPE/orch-$rk.pid"
   echo "$repo" > "$PIPE/orch-$rk.repo"
   [ -f "$PIPE/orch-$rk.start" ] || date -u +%FT%TZ > "$PIPE/orch-$rk.start"

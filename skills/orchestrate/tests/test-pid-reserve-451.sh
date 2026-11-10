@@ -45,6 +45,16 @@ pr_launch() {  # pr_launch <issue> [args] — the hand launcher under test
   HOME="$HC_HOME" PATH="$HC_BIN:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$HC_PIPE" QUEUE="$HC_PIPE/queue" LOGDIR="$HC_HOME/logs/pipeline" \
     "$RS_PR/orchestrate.sh" "$@" "$HC_REPO" "$n" 2>&1
 }
+pr_launch_bg() {  # pr_launch_bg <issue> — same launcher in the background; PR_BG_PID is orchestrate.sh's own pid (exec'd)
+  local n=$1; shift
+  ( HOME="$HC_HOME" PATH="$HC_BIN:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$HC_PIPE" QUEUE="$HC_PIPE/queue" LOGDIR="$HC_HOME/logs/pipeline" \
+    exec "$RS_PR/orchestrate.sh" "$@" "$HC_REPO" "$n" ) >/dev/null 2>&1 &
+  PR_BG_PID=$!
+}
+pr_stop() {  # pr_stop <issue>
+  HOME="$HC_HOME" PATH="$HC_BIN:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$HC_PIPE" QUEUE="$HC_PIPE/queue" LOGDIR="$HC_HOME/logs/pipeline" \
+    "$RS_PR/orchestrate.sh" stop "project-a/repo-a#$1" 2>&1
+}
 pr_tick() {  # one supervisor tick (drains the queue -> do_launch)
   HOME="$HC_HOME" PATH="$HC_BIN:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$HC_PIPE" QUEUE="$HC_PIPE/queue" LOGDIR="$HC_HOME/logs/pipeline" \
     "$RS_PR/supervisor.sh" >/dev/null 2>&1
@@ -62,6 +72,11 @@ echo \$\$ > "$HC_BIN/launcher.pid"
 do_launch "$HC_REPO" 42 "" 0 queued ""
 DL_EOF
   chmod +x "$HC_BIN/do-launch"
+  if [ "${1:-}" = bg ]; then   # PR_BG_PID is the harness's own pid (exec'd), i.e. the pid do_launch reserves with
+    ( HOME="$HC_HOME" PATH="$HC_BIN:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$HC_PIPE" QUEUE="$HC_PIPE/queue" LOGDIR="$HC_HOME/logs/pipeline" \
+      exec "$HC_BIN/do-launch" ) >/dev/null 2>&1 &
+    PR_BG_PID=$!; return 0
+  fi
   HOME="$HC_HOME" PATH="$HC_BIN:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$HC_PIPE" QUEUE="$HC_PIPE/queue" LOGDIR="$HC_HOME/logs/pipeline" \
     "$HC_BIN/do-launch" >/dev/null 2>&1
 }
@@ -250,6 +265,55 @@ test_pr451_do_launch_lost_reservation_skips_spawn() {  # the file no longer hold
   assert_eq "$content" "$other" "#451: the holder's pid is left in place, not restored over" || return 1
 }
 
+# --- stop and signals during a reservation ------------------------------------------------------------------------
+
+test_pr451_stop_refuses_supervisor_reservation() {  # the pid file holds a supervisor's pid: stop must not kill it
+  pr_env
+  printf '#!/bin/bash\n/bin/sleep 20\n' > "$HC_HOME/supervisor.sh"   # command line "bash .../supervisor.sh", like the real tick
+  bash "$HC_HOME/supervisor.sh" >/dev/null 2>&1 & local sup=$!
+  echo "$sup" > "$PR_PIDF"
+  local out rc; out=$(pr_stop 42); rc=$?
+  /bin/sleep 0.2
+  local alive=no tomb=no content; kill -0 "$sup" 2>/dev/null && alive=yes; [ -f "$HC_PIPE/orch-$PR_RK.stopped" ] && tomb=yes; content=$(pr_pidf)
+  hc_cleanup
+  assert_eq "$alive" "yes" "#451: stop leaves the supervisor's reservation pid alive" || return 1
+  assert_eq "$rc" "1" "#451: stop exits 1 during a supervisor reservation" || return 1
+  assert_contains "$out" "launch in progress (supervisor reservation), retry in a moment" "#451: stop says to retry" || return 1
+  assert_eq "$tomb" "no" "#451: no tombstone written for a refused stop" || return 1
+  assert_eq "$content" "$sup" "#451: the reservation is left in place" || return 1
+}
+
+test_pr451_term_during_manual_wait_restores_pid() {  # TERM inside the claim wait: earlier content back (EXIT trap alone would not run)
+  pr_env
+  echo 999999 > "$PR_PIDF"
+  pr_launch_bg 42
+  pr_wait_until 100 pr_in_settle
+  local held; held=$(pr_held_at_settle)
+  kill -TERM "$PR_BG_PID"; pr_release          # the trap runs once the settle sleep returns
+  wait "$PR_BG_PID"; local rc=$?
+  local content n; content=$(pr_pidf); n=$(pr_spawns)
+  hc_cleanup
+  assert_eq "$held" "held" "#451: launcher held the file during its wait" || return 1
+  assert_eq "$rc" "130" "#451: TERM during the wait exits 130" || return 1
+  assert_eq "$content" "999999" "#451: TERM during the wait puts the earlier pid content back" || return 1
+  assert_eq "$n" "0" "#451: nothing spawned" || return 1
+}
+
+test_pr451_term_during_do_launch_wait_restores_pid() {  # same for the supervisor's do_launch; no earlier file -> none left
+  pr_env
+  pr_do_launch bg
+  pr_wait_until 100 pr_in_settle
+  local held; held=$(pr_held_at_settle)
+  kill -TERM "$PR_BG_PID"; pr_release
+  wait "$PR_BG_PID"; local rc=$?
+  local content n; content=$(pr_pidf); n=$(pr_spawns)
+  hc_cleanup
+  assert_eq "$held" "held" "#451: do_launch held the file during its wait" || return 1
+  assert_eq "$rc" "143" "#451: TERM during do_launch's wait exits 143" || return 1
+  assert_eq "$content" "ABSENT" "#451: no supervisor pid left behind after a TERM" || return 1
+  assert_eq "$n" "0" "#451: nothing spawned" || return 1
+}
+
 # --- shared helpers --------------------------------------------------------------------------------------------------
 
 test_pr451_count_running_skips_own_key() {
@@ -289,5 +353,8 @@ run_test test_pr451_do_launch_refuses_live_pid_and_logs_skip
 run_test test_pr451_do_launch_lost_claim_restores_pid
 run_test test_pr451_do_launch_claim_failures_restore_pid
 run_test test_pr451_do_launch_lost_reservation_skips_spawn
+run_test test_pr451_stop_refuses_supervisor_reservation
+run_test test_pr451_term_during_manual_wait_restores_pid
+run_test test_pr451_term_during_do_launch_wait_restores_pid
 run_test test_pr451_count_running_skips_own_key
 run_test test_pr451_launch_skip_event_tags
