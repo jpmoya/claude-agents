@@ -73,7 +73,7 @@ test_ciqueue_just_inside_staleness_cutoff_is_included() {
 }
 
 test_ciqueue_garbage_file_never_breaks_the_rest_of_the_beat() {
-  local pipe home out running has
+  local pipe home out running has repo
   pipe=$(new_pipe); home=$(new_home)
   repo="$pipe/repo-project-a"; fixture_repo "$repo" "example-owner/project-a"
   mk_running "$pipe" 301 "$repo"

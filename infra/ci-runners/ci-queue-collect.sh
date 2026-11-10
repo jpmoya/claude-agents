@@ -9,10 +9,13 @@
 #
 # Usage: ci-queue-collect.sh          run one collection cycle (or skip it, throttled); always exit 0
 #
-# On any API failure (including a simulated 403/429 or a curl failure), the PREVIOUS
+# On any API failure — including a simulated 403/429, a curl failure, or a 200 response that
+# parses but is missing its expected top-level key (malformed/unexpected shape) — the PREVIOUS
 # $PIPE/status-ci.json is left byte-for-byte untouched — this script never writes a
 # partial/zeroed snapshot. A single failure is reported to Sentry only; a Slack post (existing
-# webhook, no new one) fires once a failure streak reaches 3 consecutive cycles.
+# webhook, no new one) fires once a failure streak reaches 3 consecutive cycles. A mkdir-based
+# lock (same stale-reclaim pattern as report-status.sh's own) keeps two near-simultaneous
+# invocations from both slipping past the throttle and doubling the real API calls.
 #
 # API calls per cycle (bounded, #637): 2 runner-list calls (org + jpmoya/claude-agents repo-level)
 # + 2 run-list calls per repo (status=queued, status=in_progress) + up to
@@ -27,8 +30,8 @@
 # Env (tests): CI_QUEUE_FIXTURE_DIR (canned `gh api` JSON responses instead of a live call — see
 #   _ciq_call below; mirrors ci-report.sh's CI_REPORT_JOBS_FILE seam), CI_QUEUE_FIXTURE_FAIL=1
 #   (simulate every API call failing), CI_QUEUE_FORCE=1 (skip the throttle), CI_QUEUE_OUT /
-#   CI_QUEUE_ATTEMPT_FILE / CI_QUEUE_STATE_FILE (relocate the written files), CI_QUEUE_CALL_LOG
-#   (dump the total API call count to this path, for the AC6 bound test).
+#   CI_QUEUE_ATTEMPT_FILE / CI_QUEUE_STATE_FILE / CI_QUEUE_LOCKDIR (relocate the written files),
+#   CI_QUEUE_CALL_LOG (dump the total API call count to this path, for the AC6 bound test).
 set -uo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -67,6 +70,18 @@ _ciq_call() {
   fi
 }
 
+# _ciq_call_shaped <api-path> <fixture-basename> <required-key> -> JSON on stdout; returns 1 on
+# any failure OR when the response parses but is missing <required-key> (a malformed/unexpected
+# 200 body). Without this, a malformed response would silently look like "zero runners/jobs" and
+# get written as a false snapshot instead of aborting the cycle — the ticket treats a malformed
+# response the same as an API failure (previous snapshot kept, never a partial/zeroed write).
+_ciq_call_shaped() {
+  local body
+  body=$(_ciq_call "$1" "$2") || return 1
+  printf '%s' "$body" | jq -e --arg k "$3" 'has($k)' >/dev/null 2>&1 || return 1
+  printf '%s' "$body"
+}
+
 # _ciq_categorize — reads one workflow_run JSON object on stdin, prints exactly one
 # CI_QUEUE_CATEGORY_VOCAB key. Precedence: dependabot actor, then a deploy/release workflow name,
 # then a pull_request(_target)-triggered run, else "other" (never silently dropped).
@@ -83,8 +98,8 @@ _ciq_categorize() {
 _ciq_collect_repo() {
   local repo=$1 safe qjson pjson n=0 run id cat jobsjson
   safe=${repo//\//__}
-  qjson=$(_ciq_call "repos/$repo/actions/runs?status=queued&per_page=$PER_PAGE" "runs-${safe}-queued.json") || return 1
-  pjson=$(_ciq_call "repos/$repo/actions/runs?status=in_progress&per_page=$PER_PAGE" "runs-${safe}-in_progress.json") || return 1
+  qjson=$(_ciq_call_shaped "repos/$repo/actions/runs?status=queued&per_page=$PER_PAGE" "runs-${safe}-queued.json" workflow_runs) || return 1
+  pjson=$(_ciq_call_shaped "repos/$repo/actions/runs?status=in_progress&per_page=$PER_PAGE" "runs-${safe}-in_progress.json" workflow_runs) || return 1
   { printf '%s' "$qjson" | jq -c '.workflow_runs[]?' 2>/dev/null
     printf '%s' "$pjson" | jq -c '.workflow_runs[]?' 2>/dev/null
   } | jq -s -c 'unique_by(.id) | .[]' > "$WORK/$safe.runs.jsonl" 2>/dev/null
@@ -95,7 +110,7 @@ _ciq_collect_repo() {
     [ "$n" -le "$MAX_RUN_LOOKUPS_PER_REPO" ] || break
     id=$(printf '%s' "$run" | jq -r '.id')
     cat=$(printf '%s' "$run" | _ciq_categorize)
-    jobsjson=$(_ciq_call "repos/$repo/actions/runs/$id/jobs?filter=latest&per_page=100" "jobs-${id}.json") || return 1
+    jobsjson=$(_ciq_call_shaped "repos/$repo/actions/runs/$id/jobs?filter=latest&per_page=100" "jobs-${id}.json" jobs) || return 1
     printf '%s' "$jobsjson" | jq -c --arg cat "$cat" '
       .jobs[]? | select(.status=="queued")
       | {cat: $cat, queued_at: (.created_at | sub("\\.[0-9]+Z$"; "Z"))}
@@ -108,8 +123,8 @@ _ciq_collect_repo() {
 # final ci_queue JSON written atomically to $OUT. Returns 1 (no write) on any API failure.
 collect_once() {
   local org_json repo_json busy total as_of final repo
-  org_json=$(_ciq_call "orgs/$ORG/actions/runners?per_page=100" "runners-org.json") || return 1
-  repo_json=$(_ciq_call "repos/$SELF_REPO/actions/runners?per_page=100" "runners-repo.json") || return 1
+  org_json=$(_ciq_call_shaped "orgs/$ORG/actions/runners?per_page=100" "runners-org.json" runners) || return 1
+  repo_json=$(_ciq_call_shaped "repos/$SELF_REPO/actions/runners?per_page=100" "runners-repo.json" runners) || return 1
   busy=$(printf '%s\n%s\n' "$org_json" "$repo_json" | jq -s '[.[].runners[]?] | map(select(.busy==true)) | length') || return 1
   total=$(printf '%s\n%s\n' "$org_json" "$repo_json" | jq -s '[.[].runners[]?] | length') || return 1
 
@@ -219,10 +234,26 @@ slack_post() {  # <text> — only on a failure streak (gated by the caller), nev
 main() {
   mkdir -p "$PIPE" 2>/dev/null || true
   if [ "${CI_QUEUE_FORCE:-0}" != "1" ] && _ciq_throttled; then exit 0; fi
+
+  # mkdir-based lock, same stale-reclaim pattern as report-status.sh's own LOCKDIR: report-status.sh
+  # fires this in the background on every beat event (several per minute across concurrent
+  # orchestrator runs), so without a lock two near-simultaneous invocations can both pass the
+  # throttle check before either touches $ATTEMPT_FILE and double the real API calls against the
+  # shared budget this script exists to protect (#637).
+  LOCKDIR=${CI_QUEUE_LOCKDIR:-$PIPE/ci-queue-collect.lockdir}
+  if ! mkdir "$LOCKDIR" 2>/dev/null; then
+    local lock_age
+    lock_age=$(_ciq_age "$LOCKDIR")
+    if [ -n "$lock_age" ] && [ "$lock_age" -gt 60 ] 2>/dev/null && rmdir "$LOCKDIR" 2>/dev/null && mkdir "$LOCKDIR" 2>/dev/null; then
+      :  # stale lock reclaimed
+    else
+      exit 0
+    fi
+  fi
   touch "$ATTEMPT_FILE" 2>/dev/null || true
 
-  WORK=$(mktemp -d) || exit 0
-  trap 'rm -rf "$WORK"' EXIT
+  WORK=$(mktemp -d) || { rmdir "$LOCKDIR" 2>/dev/null; exit 0; }
+  trap 'rm -rf "$WORK"; rmdir "$LOCKDIR" 2>/dev/null' EXIT
   : > "$WORK/queued-jobs.jsonl"
   : > "$WORK/calls.count"
 
