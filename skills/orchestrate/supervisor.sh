@@ -45,6 +45,9 @@ PY
 slog() { printf '[%s] %s\n' "$(date -u +%FT%TZ)" "$*" >> "$SLOG"; }
 # #341: every .held creation logs its path and caller (log line only, no behaviour change)
 touch_held() { touch "$1"; slog "[held-touch] path=$1 caller=${FUNCNAME[1]:-main}:${BASH_LINENO[0]}"; }
+# #632: config.sh dropped these direct-route repos from both repo lists at load (a host config that still names one is
+# harmless; every step below iterates the filtered arrays). One line per drop so the stale entry gets cleaned up.
+while read -r dr_list dr_repo; do [ -n "$dr_repo" ] && slog "[config] dropped direct-route repo $dr_repo from $dr_list"; done <<< "${DIRECT_ROUTE_DROPPED:-}"
 # A GitHub rename must never silently blind the scan: resolve canonical names, WARN loudly on rename/unresolvable.
 canonicalize_repo_lists
 
@@ -138,7 +141,8 @@ autoretry_alert() {  # <issue> <what> [step, default auto-retry] — Slack webho
   [ -n "${SLACK_WEBHOOK_URL:-}" ] || return 0
   local rel msg step=${3:-auto-retry}
   rel=$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --short HEAD 2>/dev/null || echo unknown)
-  msg="supervisor read failed for #$1 ($2): release=$rel environment=$(hostname -s 2>/dev/null || echo unknown) route=supervisor/$step"
+  local ref="#$1"; case "$1" in ''|*[!0-9]*) ref="$1" ;; esac   # a non-numeric first arg is a label, not an issue (#624)
+  msg="supervisor read failed for $ref ($2): release=$rel environment=$(hostname -s 2>/dev/null || echo unknown) route=supervisor/$step"
   curl -s --max-time 10 -X POST -H 'Content-type: application/json' \
     --data "$(jq -nc --arg t "$msg" '{text:$t}')" "$SLACK_WEBHOOK_URL" >/dev/null 2>&1 || true
 }
@@ -193,7 +197,7 @@ latest_marker() {  # the GATE marker: newest real routing marker whose agent is 
   if [ "$rc" -eq 0 ]; then
     raw=$(printf '%s' "$raw" | jq -s '{comments: (map(if type == "array" then .[] else . end))}' 2>>"$errf") || rc=1
   fi
-  if [ "$rc" -eq 0 ] && printf '%s' "$raw" | grep -q 'SKIP MOCKUPS'; then
+  if [ "$rc" -eq 0 ] && printf '%s' "$raw" | grep -qE 'SKIP MOCKUPS|\[jp\] (MOCKUPS APPROVED|GO)'; then
     [ -n "$author" ] || author=$(cd "$repo" 2>/dev/null && gh api "repos/$slug/issues/$issue" 2>/dev/null </dev/null | jq -r '.user.login // empty' 2>/dev/null) || author=""   # failure => no author => the skip is ignored, the gate stays
     [ -z "$author" ] || raw=$(printf '%s' "$raw" | jq -c --arg a "$author" '. + {author: {login: $a}}')
   fi
@@ -586,17 +590,24 @@ do_launch() {  # <repo> <issue> <extra> <restart_n> <reason> <queue_wait_s> <run
   owner_repo=$(cd "$repo" && gh api repos/{owner}/{repo} --jq .full_name 2>/dev/null || true)
   [ -n "$owner_repo" ] || owner_repo=$(git -C "$repo" remote get-url origin 2>/dev/null | sed -E 's#^.*github\.com[:/]##; s#\.git$##')
   [ -n "$owner_repo" ] || owner_repo=unknown
+  # #451: reserve the pid file before the claim wait; a live pid that is not ours means another launcher already holds it.
+  local held_pid; held_pid=$(cat "$PIPE/orch-$rk.pid" 2>/dev/null || true)
+  if [ -n "$held_pid" ] && [ "$held_pid" != "$$" ] && kill -0 "$held_pid" 2>/dev/null; then
+    slog "[launch-skip] #$issue — another launcher holds the pid file"; launch_skip "$issue" supervisor; return 1
+  fi
+  pid_reserve "$rk"
+  pid_reserve_trap "$rk" 143   # a TERM during the settle wait must not leave the supervisor's dead pid behind (#22)
   local claim_err claim_rc
   claim_err=$(mktemp "${TMPDIR:-/tmp}/claim-err.XXXXXX")
   gh api "repos/$owner_repo/issues/$issue/comments" -f body="**[supervisor] NOTE** claim: $HOST $(date -u +%FT%TZ)" >/dev/null 2>"$claim_err" \
-    || { claim_rc=$?; slog "[launch] #$issue — claim comment failed rc=$claim_rc: $(gh_err_line "$claim_err"); not launching (will retry)"; rm -f "$claim_err"; return 2; }
+    || { claim_rc=$?; slog "[launch] #$issue — claim comment failed rc=$claim_rc: $(gh_err_line "$claim_err"); not launching (will retry)"; rm -f "$claim_err"; pid_reserve_restore "$rk"; return 2; }
   rm -f "$claim_err"
   sleep "$CLAIM_SETTLE_SECS"
   claim_win=$(claim_winner_rest "$owner_repo" "$issue") \
-    || { slog "[launch] #$issue — claim lookup failed; not launching (will retry)"; return 2; }
+    || { slog "[launch] #$issue — claim lookup failed; not launching (will retry)"; pid_reserve_restore "$rk"; return 2; }
   if [ -n "$claim_win" ] && [ "$claim_win" != "$HOST" ]; then
     slog "[launch] #$issue — lost claim to $claim_win; not launching (running there)"
-    return 1
+    pid_reserve_restore "$rk"; return 1
   fi
 
   # Ticket title for the status board (#29): orchestrate.sh normally wrote it at launch and restarts reuse that
@@ -622,6 +633,9 @@ do_launch() {  # <repo> <issue> <extra> <restart_n> <reason> <queue_wait_s> <run
   # Same launch shape as orchestrate.sh: the headless session IS the orchestrator (--agent), no Agent() call.
   prompt="Drive $owner_repo#$issue through the pipeline. Repo: $repo. Read the latest marker on the issue and continue from there. ${preamble}${extra}"
 
+  if ! pid_reserve_held "$rk"; then
+    slog "[launch-skip] #$issue — another launcher holds the pid file"; launch_skip "$issue" supervisor; pid_reserve_done; return 1
+  fi
   printf '\n===== [%s] LAUNCH issue=%s reason=%s restart=%s =====\n' "$(date -u +%FT%TZ)" "$issue" "$reason" "$restart_n" >> "$PIPE/orch-$rk.log"
   rm -f "$PIPE/orch-$rk.exit"   # a killed run never writes it; a stale value would be reported as this run's (#38)
   cd "$repo"
@@ -631,6 +645,7 @@ do_launch() {  # <repo> <issue> <extra> <restart_n> <reason> <queue_wait_s> <run
     echo $? > "$2"
   ' _ "$prompt" "$PIPE/orch-$rk.exit" >> "$PIPE/orch-$rk.log" 2>&1 9>&- &
 
+  pid_reserve_done
   echo $! > "$PIPE/orch-$rk.pid"
   echo "$repo" > "$PIPE/orch-$rk.repo"
   [ -f "$PIPE/orch-$rk.start" ] || date -u +%FT%TZ > "$PIPE/orch-$rk.start"
@@ -742,10 +757,9 @@ PY
 # #178 end
 # --- Main tick ---
 
-# GitHub API budget (gh-budget.sh): one quota line per tick (times in Europe/Madrid), a fresh read cache per tick, and the tier flags
-# the steps below consult. Core (REST) at 0 = nothing can be read or written until the reset, so the tick ends quietly instead of
+# GitHub API budget (gh-budget.sh): one quota line per tick (times in Europe/Madrid) and the tier flags the steps
+# below consult. Core (REST) at 0 = nothing can be read or written until the reset, so the tick ends quietly instead of
 # failing hundreds of calls (2026-10-29..11-03: 550-2753 "API rate limit exceeded" lines a day).
-gh_cache_clear
 if [ "$GH_BUDGET_ENABLED" = 1 ]; then
   slog "$(gh_quota_line)"
   if ! gh_tier_allows essential; then
@@ -753,10 +767,16 @@ if [ "$GH_BUDGET_ENABLED" = 1 ]; then
     exit 0
   fi
 fi
+gh_class essential
+# #637: per-repo incremental sync replaces the old blanket gh_cache_clear here — one issues?since=<last read> list
+# call per in-scope repo tells us which tickets changed; everything else is served from the previous tick's cached
+# per-ticket reads (issue_info_rest, latest_marker, goal-lib's comments fetches) instead of re-fetching unconditionally.
+while IFS= read -r _sw_repo; do
+  [ -n "$_sw_repo" ] && gh_since_sync "$_sw_repo"
+done <<< "$(sw_repo_list)"
 T_NORMAL=1; gh_tier_allows normal || T_NORMAL=0       # below GH_QUOTA_ESSENTIAL_BELOW: only restarts and already-queued launches
 T_OPT=1; gh_tier_allows optional || T_OPT=0           # below GH_QUOTA_OPTIONAL_BELOW: no optional work
 [ "$T_NORMAL" = 1 ] && [ "$T_OPT" = 1 ] || slog "[gh-quota] reduced tier: normal=$T_NORMAL optional=$T_OPT"
-gh_class essential
 
 launched=0
 
@@ -778,6 +798,15 @@ unset _wts_prev
 keep_awake   # Mac: hold the machine awake while runs exist (stall cause A)
 
 # 1. Check each recorded orchestrator
+# One process-table scan for the whole loop (#624): _rs_live_stage / _rs_live_stage_proc replay run-state.sh's cache
+# (#598) instead of scanning once per recorded pid file. Cleared after the loop so later steps scan fresh.
+_ps_out=$(_rs_ps_scan; echo "rc=$?"); _ps_rc=${_ps_out##*rc=}
+_RS_PS_CACHE=$(printf '%s' "${_ps_out%rc=*}"); _RS_PS_CACHED=1
+if [ "$_ps_rc" != 0 ]; then   # failed scan: same as an empty table (no live stage), but surfaced, not silent
+  slog "[ps-scan-failed] step 1 process-table scan exited rc=$_ps_rc; live stages unknown this tick"
+  autoretry_alert step-1 "process scan rc=$_ps_rc" ps-scan
+fi
+unset _ps_out _ps_rc
 for f in "$PIPE"/orch-*.pid; do
   [ -e "$f" ] || break
   rk=$(basename "$f" .pid); rk=${rk#orch-}; issue=${rk##*-}   # <owner>_<repo>-<N>; an unmigrated legacy bare <N> reads as is
@@ -1066,6 +1095,7 @@ json.dump(d, open('$restarts_file','w'))
   fi
   report_status_async "queue-restart"   # event push: run exited -> requeued (design #10 §4.4)
 done
+_RS_PS_CACHED=0; _RS_PS_CACHE=""   # step 1 scan done (#624): later steps scan fresh
 
 # 1b. Auto-retry (#250): a .held run whose latest gate is a BLOCKED of a machine-clearable class
 # (autoretry_classes in hooks/pipeline-markers.sh) is requeued once the cause has cleared. At most

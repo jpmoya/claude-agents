@@ -10,9 +10,12 @@
 #                     < GH_QUOTA_ESSENTIAL_BELOW skips normal too (only essential runs), 0 skips every call until the reset.
 #                     A skipped call returns 1 with one stderr line, like a failed call, without touching GitHub.
 #   3. a read cache : GETs of issues/comments/milestones/labels/`issue view|list`/`repo view` are cached GH_CACHE_TTL_SECS in
-#                     $PIPE/gh-cache (key: cwd + args); only rc 0 output is stored; any write call empties the cache;
-#                     supervisor.sh empties it at the start of every tick so decisions never use a previous tick's read.
-#                     GH_NOCACHE=1 gh ... bypasses it (claim reads do).
+#                     $PIPE/gh-cache (key: cwd + args); only rc 0 output is stored; any write call empties the cache.
+#                     GH_NOCACHE=1 gh ... bypasses it (claim reads do). A single issue (`repos/<r>/issues/<n>`) and its
+#                     comments are the one exception: they are kept with no TTL and survive across supervisor ticks,
+#                     valid until gh_since_sync (#637, below) finds that issue changed — supervisor.sh calls it once
+#                     per in-scope repo per tick instead of wiping the whole cache, so a tick where nothing changed
+#                     re-reads nothing per-ticket, only that one list call per repo.
 # GH_BUDGET_ENABLED=0 turns all three off (the test runner does; tests of this file turn it on). Bash 3.2 safe (macOS).
 
 GH_BUDGET_ENABLED="${GH_BUDGET_ENABLED:-1}"
@@ -44,7 +47,7 @@ _gh_madrid() {
 # _gh_scan <gh args...> — classify one call into globals (no subshell, so it is cheap):
 #   _GH_SUB (log text), _GH_BUCKET (core|graphql|none), _GH_WRITE (0|1), _GH_CACHEABLE (0|1)
 _gh_scan() {
-  _GH_SUB=""; _GH_BUCKET=graphql; _GH_WRITE=0; _GH_CACHEABLE=0
+  _GH_SUB=""; _GH_BUCKET=graphql; _GH_WRITE=0; _GH_CACHEABLE=0; _GH_ISSUE_REPO=""; _GH_ISSUE_NUM=""; _GH_LIST_REPO=""
   local first="${1:-}" second="${2:-}" a prev="" method=GET payload=0 path=""
   case "$first" in
     api)
@@ -77,6 +80,19 @@ _gh_scan() {
       if [ "$_GH_WRITE" = 0 ]; then
         case "$path" in
           repos/*/issues|repos/*/issues/*|repos/*/milestones|repos/*/milestones/*|repos/*/labels|repos/*/labels/*|'repos/{owner}/{repo}') _GH_CACHEABLE=1 ;;
+        esac
+        # #637: a single issue (or its comments), or a repo's issues? scope list, is cached with no wall-clock
+        # expiry below (in a process that synced it) — gh_since_sync is what invalidates it, regardless of which
+        # cwd/arg shape read it. Not `.../milestones`: a milestone edit does not bump any issue's updated_at.
+        case "$path" in
+          repos/*/issues/[0-9]*)
+            _GH_ISSUE_REPO="${path#repos/}"; _GH_ISSUE_REPO="${_GH_ISSUE_REPO%%/issues/*}"
+            _GH_ISSUE_NUM="${path#*/issues/}"; _GH_ISSUE_NUM="${_GH_ISSUE_NUM%%/*}"
+            case "$_GH_ISSUE_NUM" in ''|*[!0-9]*) _GH_ISSUE_REPO=""; _GH_ISSUE_NUM="" ;; esac
+            ;;
+          repos/*/issues)
+            _GH_LIST_REPO="${path#repos/}"; _GH_LIST_REPO="${_GH_LIST_REPO%%/issues}"
+            ;;
         esac
       fi ;;
     auth|config|alias|extension|completion|help|version|--version|status|browse) _GH_SUB="$first"; _GH_BUCKET=none ;;
@@ -172,6 +188,8 @@ gh_tier_allows() {
 }
 
 # Finished entries only (all-digit names): another process's in-flight <key>.<pid> / <key>.w<pid> files must survive (#582).
+# The #637 since-sync bookkeeping (dot-named: .since.* and .since-idx/) is untouched here — a write flushing the data
+# it points at just makes the next lookup a cache miss (and a real re-read), never a stale hit.
 gh_cache_clear() {
   _gh_budget_paths
   local f
@@ -179,6 +197,122 @@ gh_cache_clear() {
     case "${f##*/}" in *[!0-9]*) continue ;; esac
     rm -f "$f" 2>/dev/null
   done
+  return 0
+}
+
+# --- #637: per-repo incremental sync for single-issue / its-comments / its-list reads --------------------------------
+# repos/<r>/issues/<n>, repos/<r>/issues/<n>/comments... and repos/<r>/issues (list/scope calls, e.g. ?milestone=,
+# ?labels=, ?state=open — NOT ?.../milestones, which isn't driven by an issue's updated_at) are cached above with no
+# wall-clock expiry IN A PROCESS THAT HAS SYNCED THIS REPO: once read, an entry is trusted until gh_since_sync finds
+# the repo changed. "Synced" is deliberately per-process (the in-memory _GH_SYNCED set below, never written to disk):
+# a process that never calls gh_since_sync for a repo (deliver.sh, a goal repo outside sw_repo_list, the literal
+# `repos/{owner}/{repo}` placeholder, a case/slug mismatch) gets the plain TTL-governed cache exactly as before —
+# never the no-expiry exemption on data nothing in this process ever validated. supervisor.sh calls gh_since_sync once
+# per repo near the top of its tick, before the per-ticket reads later in that same process.
+# The on-disk index (one tiny file per owner/repo/issue, plus one per owner/repo for list calls, living in
+# $GH_CACHE_DIR like everything else here — no separate state file) maps a resource back to the cache key(s) that
+# hold it, so invalidation does not depend on which cwd / arg order a caller used to read it.
+
+_gh_since_lc() { printf '%s' "$1" | tr 'A-Z' 'a-z'; }
+
+_gh_since_mark_synced() {  # <owner/repo> — this process trusts the no-TTL cache for it from now on
+  local r; r=$(_gh_since_lc "$1")
+  case "${_GH_SYNCED:- }" in *" $r "*) ;; *) _GH_SYNCED="${_GH_SYNCED:- } $r " ;; esac
+}
+_gh_since_unmark_synced() {  # <owner/repo> — a failed sync must never leave it trusted
+  local r; r=$(_gh_since_lc "$1")
+  _GH_SYNCED=$(printf '%s' "${_GH_SYNCED:- }" | sed "s/ $r / /")
+}
+_gh_since_synced() {  # <owner/repo> — 0 if this process has successfully synced it
+  case "${_GH_SYNCED:- }" in *" $(_gh_since_lc "$1") "*) return 0 ;; esac
+  return 1
+}
+
+_gh_since_idx_dir() { printf '%s/.since-idx/%s\n' "$GH_CACHE_DIR" "$(printf '%s' "$1" | tr '/' '_')"; }
+_gh_since_list_idx_file() { printf '%s/.since-list-idx.%s\n' "$GH_CACHE_DIR" "$(printf '%s' "$1" | tr '/' '_')"; }
+
+_gh_since_index_add() {  # <owner/repo> <issue> <cache key>
+  local f; f="$(_gh_since_idx_dir "$1")/$2"
+  mkdir -p "${f%/*}" 2>/dev/null
+  grep -qxF "$3" "$f" 2>/dev/null || printf '%s\n' "$3" >> "$f" 2>/dev/null
+}
+_gh_since_list_index_add() {  # <owner/repo> <cache key>
+  local f; f=$(_gh_since_list_idx_file "$1")
+  grep -qxF "$2" "$f" 2>/dev/null || printf '%s\n' "$2" >> "$f" 2>/dev/null
+}
+
+_gh_since_invalidate_issue() {  # <owner/repo> <issue>
+  local f k; f="$(_gh_since_idx_dir "$1")/$2"
+  [ -f "$f" ] || return 0
+  while IFS= read -r k; do [ -n "$k" ] && rm -f "$GH_CACHE_DIR/$k" 2>/dev/null; done < "$f"
+  rm -f "$f" 2>/dev/null
+}
+
+_gh_since_invalidate_repo() {  # <owner/repo> — every issue this cache currently holds for it
+  local d f; d=$(_gh_since_idx_dir "$1")
+  [ -d "$d" ] || return 0
+  for f in "$d"/[0-9]*; do
+    [ -f "$f" ] || continue
+    _gh_since_invalidate_issue "$1" "${f##*/}"
+  done
+}
+
+_gh_since_invalidate_lists() {  # <owner/repo> — every repo-level issues? list entry cached for it (membership may have changed)
+  local f k; f=$(_gh_since_list_idx_file "$1")
+  [ -f "$f" ] || return 0
+  while IFS= read -r k; do [ -n "$k" ] && rm -f "$GH_CACHE_DIR/$k" 2>/dev/null; done < "$f"
+  rm -f "$f" 2>/dev/null
+}
+
+# _gh_since_iso <epoch> -> UTC ISO-8601 (GNU date, then BSD date); "" on failure
+_gh_since_iso() {
+  local e="$1" out
+  case "$e" in ''|*[!0-9-]*) printf ''; return 1 ;; esac
+  out=$(TZ=UTC date -u -d "@$e" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null) || out=$(TZ=UTC date -u -r "$e" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null) || out=""
+  printf '%s' "$out"
+}
+
+# gh_since_sync <owner/repo> — one `issues?state=all&since=<last>` list call (never cached itself: the since= value
+# changes every call), telling us which tickets changed since the last successful sync of this repo. Invalidates
+# exactly their cached issues/<n> and issues/<n>/comments entries, and (only when something did change — list
+# membership may have moved) every cached issues? scope-list entry too, so the next read of everything else in this
+# process is served from the kept previous result instead of hitting GitHub again (#637). The stored timestamp lives
+# in $GH_CACHE_DIR, the same directory as the read cache it governs.
+# First sync for a repo (no stored timestamp): treated as cold — any leftover cache for the repo is invalidated
+# instead of trusted, and no list call is made (nothing to compare against yet). A failed list call falls back to a
+# full invalidation for the repo, never marks it synced, and does not advance the timestamp, so the next attempt
+# retries from the same point rather than ever serving stale data as fresh. No-op when the budget guard itself is off.
+gh_since_sync() {
+  [ "${GH_BUDGET_ENABLED:-1}" = 1 ] || return 0
+  _gh_budget_paths
+  local repo="$1" sf prev start_epoch start out rc=0 new_since numbers
+  [ -n "$repo" ] || return 1
+  mkdir -p "$GH_CACHE_DIR" 2>/dev/null
+  sf="$GH_CACHE_DIR/.since.$(printf '%s' "$repo" | tr '/' '_')"
+  prev=$(cat "$sf" 2>/dev/null) || prev=""
+  start_epoch=$(date +%s); start=$(_gh_since_iso "$start_epoch"); [ -n "$start" ] || start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  if [ -z "$prev" ]; then
+    _gh_since_invalidate_repo "$repo"; _gh_since_invalidate_lists "$repo"
+    printf '%s\n' "$start" > "$sf.$$" 2>/dev/null && mv "$sf.$$" "$sf" 2>/dev/null
+    _gh_since_mark_synced "$repo"
+    return 0
+  fi
+  out=$(GH_NOCACHE=1 gh api --paginate "repos/$repo/issues?state=all&since=$prev&per_page=100" 2>/dev/null) || rc=$?
+  if [ "$rc" -ne 0 ] || ! out=$(printf '%s' "$out" | jq -s 'add // []' 2>/dev/null); then
+    _gh_since_invalidate_repo "$repo"; _gh_since_invalidate_lists "$repo"
+    _gh_since_unmark_synced "$repo"
+    return 1
+  fi
+  numbers=$(printf '%s' "$out" | jq -r '.[].number' 2>/dev/null)
+  if [ -n "$numbers" ]; then
+    while IFS= read -r n; do [ -n "$n" ] && _gh_since_invalidate_issue "$repo" "$n"; done <<< "$numbers"
+    _gh_since_invalidate_lists "$repo"
+  fi
+  # a one-tick overlap tolerates clock skew between this host and GitHub: re-flagging an already-fresh issue costs
+  # nothing until it is next read; missing a real change would not.
+  new_since=$(_gh_since_iso $(( start_epoch - 120 ))); [ -n "$new_since" ] || new_since="$start"
+  printf '%s\n' "$new_since" > "$sf.$$" 2>/dev/null && mv "$sf.$$" "$sf" 2>/dev/null
+  _gh_since_mark_synced "$repo"
   return 0
 }
 
@@ -191,6 +325,14 @@ gh() {
   if [ "$_GH_CACHEABLE" = 1 ] && [ -z "${GH_NOCACHE:-}" ] && [ "$GH_CACHE_TTL_SECS" -gt 0 ] 2>/dev/null; then
     key=$(printf '%s\037%s' "$PWD" "$*" | cksum | tr -d ' '); cf="$GH_CACHE_DIR/$key"
     if [ -f "$cf" ]; then
+      # #637: a single issue / its comments / a repo's issues? scope list has no wall-clock TTL in a process that
+      # has gh_since_sync'd this repo — trusted until that finds it changed (or a write flushes the cache), so it
+      # survives across ticks instead of expiring inside one. Never exempt in a process that never synced the repo
+      # (deliver.sh, a goal repo outside sw_repo_list, the literal `repos/{owner}/{repo}` placeholder, a slug
+      # mismatch) — those fall straight through to the ordinary TTL check below, same as before #637.
+      if { [ -n "$_GH_ISSUE_REPO" ] && _gh_since_synced "$_GH_ISSUE_REPO"; } || { [ -n "$_GH_LIST_REPO" ] && _gh_since_synced "$_GH_LIST_REPO"; }; then
+        _gh_log "$class" hit; tail -n +2 "$cf"; return 0
+      fi
       IFS= read -r t < "$cf" 2>/dev/null || t=0
       case "$t" in ''|*[!0-9]*) t=0 ;; esac
       now=$(date +%s)
@@ -217,6 +359,8 @@ gh() {
     command gh "$@" > "$tmp"; rc=$?
     if [ "$rc" -eq 0 ]; then
       { date +%s; cat "$tmp"; } > "$cf.w$$" 2>/dev/null && mv "$cf.w$$" "$cf" 2>/dev/null
+      [ -n "$_GH_ISSUE_REPO" ] && _gh_since_index_add "$_GH_ISSUE_REPO" "$_GH_ISSUE_NUM" "$key"
+      [ -n "$_GH_LIST_REPO" ] && _gh_since_list_index_add "$_GH_LIST_REPO" "$key"
     fi
     cat "$tmp" 2>/dev/null; rm -f "$tmp" "$cf.w$$" 2>/dev/null
     return $rc

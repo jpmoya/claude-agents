@@ -234,13 +234,8 @@ test_sm_orchestrate_skill_says_main_session_posts_only_when_quoting_jp() {
 }
 
 # ------------------------------------------------------------------ goal-lib classification (AC7, goal-lib.sh:256)
-# Reuses the goal-supervisor harness (gs_*). When this file runs on its own (not after test-goal-supervisor.sh in
-# the shared shell) load only that file's definitions — everything before its first run_test line.
-if ! type gs_env >/dev/null 2>&1; then
-  . <(sed '/^echo "-- goal supervisor/,$d' "$HERE_MG/test-goal-supervisor.sh")
-  GS_SKILL=$(cd "$HERE_MG/.." && pwd)   # the sourced copy derived these from /dev/fd/N
-  GS_ROOT=$(cd "$GS_SKILL/../.." && pwd)
-fi
+# Reuses the goal-supervisor harness (gs_*), loaded from lib/goal-sandbox.sh (works standalone and in the shared shell).
+. "$(dirname "${BASH_SOURCE[0]}")/lib/goal-sandbox.sh"
 # CONTRACT: the goal step reads through REST (`gh api repos/<r>/issues/<n>` .user.login and .../comments .user.login),
 # as _goal_ticket_eval already does; the issue author and the marker author are `jpmoya`.
 # sm_goal_class <author> <body of the comment posted after MOCKUPS PENDING APPROVAL, or "" for none>

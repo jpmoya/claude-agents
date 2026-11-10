@@ -9,8 +9,8 @@ built by `step_image`/`dockerfile_text`) includes the `gh` CLI.
   `CI_RUNNER_JSON` is the switch: `"benjis-ci"` sends the job to any of our self-hosted slots, unset sends it to GitHub-hosted.
   Nothing in the agent pipeline chooses a runner; GitHub hands each job to whichever `benjis-ci` slot is free, on any host.
 - Hosts (each runs `setup.sh`; slots from every host share the one `benjis-ci` label):
-  - Clog VM (`claude@178.156.187.130`, Hetzner, 8 vCPU / 16 GB, also runs the agent pipeline): 3 slots.
-  - CI host `CI-ubuntu-8gb-ash-2` (`root@178.156.204.167`, Hetzner CPX31-class, 4 vCPU / 8 GB, CI only): 2 slots.
+  - Clog VM (`claude@178.156.187.130`, Hetzner, 8 vCPU / 16 GB, also runs the agent pipeline): 1 slot.
+  - CI host `CI-ubuntu-8gb-ash-2` (`root@178.156.204.167`, Hetzner CPX31-class, 4 vCPU / 16 GB, CI only): 3 slots.
 - Today the variable is scoped to the scheduler repo only; the quoting tool stays on GitHub-hosted until its container-mode
   workflow is on its `main` branch (#205).
 - `setup.sh` is installed from one pinned commit into `/opt/gha-ci` (SHA in `/opt/gha-ci/SHA`); update by re-extracting
@@ -33,7 +33,7 @@ Docker (with `dockerd-rootless-setuptool.sh`), `uidmap`, `curl`, `jq`, systemd. 
 sudo infra/ci-runners/setup.sh [--slots N] [--runner-version X.Y.Z] [--check] [--mint-from-stdin] [--probe]
 ```
 - `--slots N` (1..16, default 2; 3 only after a measured gate). Shrinking disables and stops the higher slots.
-  Per-user `MemoryMax` is 4G x slots (CI job containers are capped at 4G).
+  Per-user `MemoryMax` is 4G x slots (CI job containers are capped at 4G). It is a hard limit with no soft `MemoryHigh` throttle: an over-limit job is killed (rc 137) instead of freezing the slot (#615).
 - `--runner-version` pins actions/runner (default 2.338.0); image is built locally as `gha-runner:<version>`.
 - `--check` changes nothing, prints `WOULD CHANGE:` / `OK:` per step, exits 0 (nothing to do) or 3 (changes pending). No root needed.
 - `--mint-from-stdin` stores the registration token root-only in `/etc/gha/mint.env` (0600); never echoed or put in argv.

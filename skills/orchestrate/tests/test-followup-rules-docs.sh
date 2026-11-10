@@ -149,14 +149,15 @@ test_fu_ac6_no_new_hook_daemon_timer_or_state_file_and_single_config_key() {
   hooks=$(ls "$ROOT_FU/hooks" | tr '\n' ' ')
   # Extended 2026-10-31 (JP rule: duplicate check before every ticket): dedupe-ticket-guard.sh.
   # ticket-description-check.sh removed 2026-11-07 (JP: remove this hook).
-  assert_eq "$hooks" "block-orchestrator-agent.sh brevity-reminder.sh brevity-stop.sh bug-fix-skill-reminder.sh cap-heavy-commands.py dedupe-ticket-guard.sh email-send-guard.sh enforce-tests-before-commit.sh limit-shells.sh no-duplicate-stage.sh pipeline-markers.sh protect-locked-tests.sh report-status-hook.sh require-handoff-marker.sh require-question-justification.sh sync-agents.sh " "AC6: no new hook" || return 1
+  assert_eq "$hooks" "block-orchestrator-agent.sh blocked-chain-stop.sh brevity-reminder.sh brevity-stop.sh bug-fix-skill-reminder.sh cap-heavy-commands.py dedupe-ticket-guard.sh email-send-guard.sh enforce-tests-before-commit.sh limit-shells.sh no-duplicate-stage.sh pipeline-markers.sh protect-locked-tests.sh report-status-hook.sh require-handoff-marker.sh require-question-justification.sh sync-agents.sh " "AC6: no new hook" || return 1
   top=$(ls "$ROOT_FU/skills/orchestrate" | tr '\n' ' ')
-  assert_eq "$top" "SKILL.md build-runs-json.py ci-classify.sh code-sync.sh config.local.example.sh config.sh deliver.sh find-duplicates.sh gh-budget.sh goal-lib.sh goal-project.sh install.sh intake-labels.sh orchestrate.sh pipeline-bridge-dispatch.sh pipeline-bridge-prompt.md pipeline-lib.sh pipeline-report.sh pm-slack.sh reconcile-status.sh report-status.sh rotate-logs.sh run-state.sh scan-backlog.sh session-backfill.sh stage-run.sh supervisor.sh test tests " "AC6: no new daemon/timer/state-file script under skills/orchestrate" || return 1
+  assert_eq "$top" "SKILL.md backlog-priority.sh build-runs-json.py ci-classify.sh code-sync.sh config.local.example.sh config.sh deliver.sh find-duplicates.sh gh-budget.sh goal-lib.sh goal-project.sh install.sh intake-labels.sh lib orchestrate.sh pipeline-bridge-dispatch.sh pipeline-bridge-prompt.md pipeline-lib.sh pipeline-report.sh pm-slack.sh reconcile-status.sh report-status.sh rotate-logs.sh run-state.sh scan-backlog.sh session-backfill.sh stage-run.sh supervisor.sh test tests " "AC6: no new daemon/timer/state-file script under skills/orchestrate" || return 1
   # the one allowed config key exists and defaults to today's behaviour (empty)
   assert_eq "$(grep -c '^SCAN_ONLY_REPOS=()' "$ROOT_FU/skills/orchestrate/config.sh")" "1" "AC6: config.sh carries the single new key, defaulting to empty" || return 1
   # ...and it is the only new key: no other *_REPOS / SCAN_* assignment beyond the baseline
+  # (re-pinned for #632: DIRECT_ROUTE_REPOS, the tracked direct-route list, joins the baseline)
   keys=$(grep -oE '^[A-Z_]*(REPOS|SCAN)[A-Z_]*=' "$ROOT_FU/skills/orchestrate/config.sh" | sort | tr '\n' ' ')
-  assert_eq "$keys" "DISPATCH_REPOS= SCAN_ONLY_REPOS= " "AC6: exactly one new config key" || return 1
+  assert_eq "$keys" "DIRECT_ROUTE_REPOS= DISPATCH_REPOS= SCAN_ONLY_REPOS= " "AC6: exactly one new config key" || return 1
 }
 
 run_test test_fu_ac1_claude_md_forbids_general_purpose_ticket_writing

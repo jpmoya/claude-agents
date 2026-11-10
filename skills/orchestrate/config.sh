@@ -74,6 +74,36 @@ STALE_WORK_HOURS=4
 
 [ -f "$HOME/.claude/pipeline/config.local.sh" ] && source "$HOME/.claude/pipeline/config.local.sh"
 
+# Direct-route repos (#632): the pipeline never runs them — orchestrate.sh refuses the launch (exit 2, no --force), the
+# supervisor and the goal machinery ignore their tickets. Set AFTER the host override so no config.local.sh can clear it.
+# Changed only by an interactive session with subagents — never orchestrate.sh, agent-go, a goal or the supervisor (#632).
+DIRECT_ROUTE_REPOS=("jpmoya/claude-agents")
+# direct_route_repo <owner/repo[:path]> -> 0 when the repo is in DIRECT_ROUTE_REPOS, 1 otherwise. Case-insensitive (GitHub
+# owner/repo is); only the part before the first ":" is compared, so a DISPATCH_REPOS-shaped "owner/repo:/path" entry works.
+direct_route_repo() {
+  local want=$1 e
+  want=$(printf '%s' "${want%%:*}" | tr '[:upper:]' '[:lower:]')
+  [ -n "$want" ] || return 1
+  for e in ${DIRECT_ROUTE_REPOS[@]+"${DIRECT_ROUTE_REPOS[@]}"}; do
+    [ "$(printf '%s' "${e%%:*}" | tr '[:upper:]' '[:lower:]')" = "$want" ] && return 0
+  done
+  return 1
+}
+# direct_route_drop <array name> — rebuilds that repo list in the current shell without its direct-route entries. Each drop is
+# appended to DIRECT_ROUTE_DROPPED as "<array name> <owner/repo>" (one per line) so the supervisor can log it: a re-added
+# config.local.sh entry is harmless, every consumer of the lists (dispatch, intake, spec, sweep, reconcile, scan, goals) sees
+# the filtered arrays.
+DIRECT_ROUTE_DROPPED=""
+direct_route_drop() {
+  local _n=$1 _e; local -a _kept=()
+  eval "set -- \${$_n[@]+\"\${$_n[@]}\"}"
+  for _e in "$@"; do
+    if direct_route_repo "$_e"; then DIRECT_ROUTE_DROPPED="$DIRECT_ROUTE_DROPPED$_n ${_e%%:*}"$'\n'; else _kept+=("$_e"); fi
+  done
+  eval "$_n=(\${_kept[@]+\"\${_kept[@]}\"})"
+}
+for _n in DISPATCH_REPOS SCAN_ONLY_REPOS; do direct_route_drop "$_n"; done; unset _n
+
 # #332: one-time move of the old /tmp run state to the durable path (only when the new path is absent), leaving a symlink so
 # processes started before the move, and agent docs that still name /tmp/pipeline, keep writing to the same place.
 # PIPE_LEGACY is pinned away from the real /tmp/pipeline by tests/run-tests.sh (#341).
@@ -123,8 +153,8 @@ unset _nd
 GH_QUOTA_OPTIONAL_BELOW="${GH_QUOTA_OPTIONAL_BELOW:-1500}"   # below this, optional work (status push, stale digest, scan-backlog, held-goal evaluation, worktree sweep, status reconcile) is skipped
 GH_QUOTA_ESSENTIAL_BELOW="${GH_QUOTA_ESSENTIAL_BELOW:-300}"  # below this, only essential work (restarting live runs, draining already-queued launches) runs; 0 = no gh call until the reset
 GH_QUOTA_TTL_SECS="${GH_QUOTA_TTL_SECS:-60}"                 # `gh api rate_limit` is read at most this often (cached in $PIPE/gh-quota)
-GH_CACHE_TTL_SECS="${GH_CACHE_TTL_SECS:-60}"                 # issue/comment/milestone/registry reads are reused this long (0 = off); flushed by any write and at each supervisor tick
+GH_CACHE_TTL_SECS="${GH_CACHE_TTL_SECS:-60}"                 # milestone/label/registry reads are reused this long (0 = off); a single issue/its comments has no TTL, see #637; all flushed by any write
 if [ -f "$(dirname "${BASH_SOURCE[0]}")/gh-budget.sh" ]; then . "$(dirname "${BASH_SOURCE[0]}")/gh-budget.sh"
 else   # config.sh copied without its siblings (a test fixture): the budget guard is simply absent
-  GH_BUDGET_ENABLED=0; gh_class() { :; }; gh_tier_allows() { return 0; }; gh_tick_due() { return 0; }; gh_cache_clear() { :; }
+  GH_BUDGET_ENABLED=0; gh_class() { :; }; gh_tier_allows() { return 0; }; gh_tick_due() { return 0; }; gh_cache_clear() { :; }; gh_since_sync() { return 0; }
 fi

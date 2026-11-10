@@ -95,6 +95,7 @@ JP's rule (2026-09-19): "A follow-up to a ticket that I've already approved inhe
 - **Gates are unchanged.** Inheritance starts the child's run; it never skips a gate inside it: prod `go` on infra steps, mockup approval, `EFFORT APPROVAL NEEDED`, JP's staging→main promotion on the staging route.
 - **Never write or imply the skip marker.** `**[jp] SKIP MOCKUPS**` is JP's alone (issue author, exact first line, `JP said:` line); never write it, never put "mockups skipped" in a READY comment, and never treat inheritance, a brief or a body line as a skip. Keep `UI change: yes` truthful; the orchestrator reads the marker itself.
 - **Never for `Business-Intelligence`.** JP's standing rule: no Business-Intelligence pipeline work is ever queued automatically. A child in that repo gets the `Parent:` line but never `agent-go` from you.
+- **Never for a direct-route repo** (`DIRECT_ROUTE_REPOS` in `skills/orchestrate/config.sh`, today `jpmoya/claude-agents`): file the ticket for history and the dup-check, never add `agent-go`; the interactive session implements it with subagents (JP, 2026-11-09; `orchestrate.sh` refuses the repo).
 
 **Worked example.** Benjis-Plants/benjis-quoting-tool#216's spec said "#216-B tracks dropping `pricing_users`" and filed nothing; #229 was hand-written two days later and reached JP as a decision request. Under this rule the PM stage of #216 files #229 itself:
 
@@ -107,14 +108,14 @@ JP's rule (2026-09-19): "A follow-up to a ticket that I've already approved inhe
 
 A ticket you create or refine into a milestone that is the scope of a registered goal with the go recorded in the goal block (`go:true`, written by `deliver.sh register`) is a *child of an approved goal*: it gets `agent-go` plus the comment `**[product-manager] NOTE** approval inherited from goal <registry issue URL>`. Resolve it with `goal_milestone_approved <owner/repo> <milestone number>` (skills/orchestrate/goal-lib.sh; prints the registry issue URL, rc 0 approved, rc 1 not approved, rc 2 registry unreadable = fail closed, no label). This also covers a new requirement JP adds to an in-progress goal (a new ticket or a revised spec inside the milestone).
 
-- **Exclusions unchanged.** Business-Intelligence: never. `source:sentry` tickets: never, unless the goal carries `--include-sentry`. A ticket with an open start-gate gets the deferral NOTE (`agent-go deferred: start-gate #N open`) and no label; B3 promotes it when the gate closes. A ticket moved out of the goal milestone loses nothing it already has.
+- **Exclusions unchanged.** Business-Intelligence: never. Never for a direct-route repo (`DIRECT_ROUTE_REPOS`, today `jpmoya/claude-agents`): file it, no `agent-go`, the interactive session implements it. `source:sentry` tickets: never, unless the goal carries `--include-sentry`. A ticket with an open start-gate gets the deferral NOTE (`agent-go deferred: start-gate #N open`) and no label; B3 promotes it when the gate closes. A ticket moved out of the goal milestone loses nothing it already has.
 - **Plan change.** An SA/architect-driven plan change inside an approved ticket needs no new approval.
 - **Launch permission only.** The goal grants launch permission (`agent-go`); it never answers a JP-only gate: production (merge, deploy, promotion), spending money, third-party systems of record, deleting data, external communications, where a private artefact is stored / who gets access, every infra prod go, mockup approvals, risky-list database changes.
 
 ### Goal-label inheritance (cross-repo goals, #319)
 
 A cross-repo goal is a GitHub label `goal: <short title>` present in each of its repos. When you file a ticket for an approved goal, apply that label; `goal_sync` then gives a new ticket carrying the `goal: ` label of an approved goal (go granted at registration) `agent-go` in any of the goal's repos. You never add `agent-go` for it yourself.
-- Excluded: `Business-Intelligence` (never), `source:sentry` tickets (unless the goal was registered with `--include-sentry`), and closed tickets.
+- Excluded: `Business-Intelligence` (never), a direct-route repo (`DIRECT_ROUTE_REPOS`, today `jpmoya/claude-agents`: never — `goal_sync` skips it, and you never add `agent-go` there), `source:sentry` tickets (unless the goal was registered with `--include-sentry`), and closed tickets.
 - Loop guard: the grant is applied once per ticket and recorded in the registry's `Go-granted:` list. An `agent-go` that JP removed is never re-added.
 - A goal registered without a non-empty requirements ticket has no go: its labelled tickets inherit nothing.
 - Milestone-bound goals keep the dependency-follow-up rule above.

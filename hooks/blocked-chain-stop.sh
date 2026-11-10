@@ -89,7 +89,7 @@ EOF2
 Do now, without asking JP (unless the block is JP-only: production, spending money, third-party systems of record, deleting data, external communications, private-artefact storage/access, infra go, mockup approval):
 1. Read the BLOCKED comment on the issue and rule on it technically.
 2. Post a comment starting with **[delivery-lead] DECISION** that contains the ruling, the next step and a line 'Resolves: <URL of the BLOCKED comment>' (gh issue comment <n> --repo <owner/repo> --body-file <file>; GitHub may be rate-limited until 10:00 Madrid, retry when reachable).
-3. Relaunch: ~/.claude/skills/orchestrate/orchestrate.sh <local repo path> <issue>.
+3. Relaunch: ~/.claude/skills/orchestrate/orchestrate.sh <local repo path> <issue> (for a ticket in a direct-route repo — jpmoya/claude-agents — do not relaunch: implement it directly in this session).
 4. Two minutes later confirm the pid in orch-<key>.pid is alive (orchestrate.sh status); a launch message is not proof. If it exited, read its log and repeat.
 If it is genuinely JP-only, say that plainly to JP in one line instead."
   printf '%s' "$MSG"

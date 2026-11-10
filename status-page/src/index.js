@@ -279,8 +279,19 @@ function redirectTo(location) {
   return noindexResponse(null, { status: 302, headers });
 }
 
-function callbackRedirectUri(url) {
-  return `${url.origin}/auth/callback`;
+/**
+ * Where Google sends the browser back. PUBLIC_ORIGIN (wrangler.jsonc vars) is the
+ * host humans use — the Vercel front in vercel-proxy/ — because some ISPs block the
+ * IPs *.workers.dev resolves to; through that front the worker only ever sees its own
+ * workers.dev URL, so url.origin would send the browser straight back to the blocked
+ * host. Falls back to the request origin when the var is unset.
+ */
+function callbackRedirectUri(url, env) {
+  const origin =
+    typeof env?.PUBLIC_ORIGIN === "string" && env.PUBLIC_ORIGIN.trim() !== ""
+      ? env.PUBLIC_ORIGIN.trim().replace(/\/+$/, "")
+      : url.origin;
+  return `${origin}/auth/callback`;
 }
 
 /** GET /login — starts the Google OAuth flow for the human-facing routes. */
@@ -305,7 +316,7 @@ function handleLogin(request, env) {
   );
   headers.set(
     "Location",
-    buildGoogleAuthUrl(env, callbackRedirectUri(url), state),
+    buildGoogleAuthUrl(env, callbackRedirectUri(url, env), state),
   );
   return noindexResponse(null, { status: 302, headers });
 }
@@ -352,7 +363,7 @@ async function handleAuthCallback(request, env) {
     const tokens = await exchangeCodeForTokens(
       code,
       env,
-      callbackRedirectUri(url),
+      callbackRedirectUri(url, env),
     );
     const profile = await fetchGoogleUserinfo(tokens.access_token);
     const email = typeof profile.email === "string" ? profile.email : null;

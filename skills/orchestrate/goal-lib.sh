@@ -31,6 +31,8 @@ goal_label_name() {
 
 _goal_uri() { jq -rn --arg s "$1" '$s | @uri'; }
 _goal_is_bi() { case "$1" in */Business-Intelligence) return 0 ;; esac; return 1; }
+# direct_route_repo (#632) comes from config.sh, which every entry point sources first; a harness that sources this file alone gets the empty rule
+type direct_route_repo >/dev/null 2>&1 || direct_route_repo() { return 1; }
 
 # goal_parse <spec> -> "repo<TAB>kind<TAB>ref" (kind: ms | msall | t | fb | label); exit 1 when malformed.
 # owner/repo:feedback (kind fb) is the standing staff-feedback goal (#472): scope = the repo's user-feedback tickets that are
@@ -413,19 +415,26 @@ _goal_checkout() {
 
 _goal_have_marker_re() { type marker_re >/dev/null 2>&1 || . "$_GOAL_LIB_DIR/../../hooks/pipeline-markers.sh" 2>/dev/null || . "$HOME/.claude/hooks/pipeline-markers.sh"; }
 
-# _goal_primary_repo <goal json> -> the repo whose checkout hosts the lead (a label goal: the first of its repos)
+# _goal_primary_repo <goal json> -> the repo whose checkout hosts the lead (a label goal: the first of its repos that is not
+# direct-route (#632) — a goal spanning jpmoya/claude-agents and app repos runs from an app repo; else its first repo)
 _goal_primary_repo() {
-  local spec line
+  local spec line r first=""
   spec=$(printf '%s' "$1" | jq -r .spec)
   line=$(goal_parse "$spec") || return 1
-  if [ "$(printf '%s' "$line" | cut -f2)" = label ]; then printf '%s' "$1" | jq -r '(.block.repos // [])[0] // empty'
+  if [ "$(printf '%s' "$line" | cut -f2)" = label ]; then
+    while IFS= read -r r; do
+      [ -n "$r" ] || continue
+      [ -n "$first" ] || first=$r
+      direct_route_repo "$r" || { printf '%s\n' "$r"; return 0; }
+    done <<< "$(printf '%s' "$1" | jq -r '(.block.repos // [])[]')"
+    printf '%s\n' "$first"
   else printf '%s' "$line" | cut -f1; fi
 }
 
 # goal_brief <id> [goal-json] [scope file] -> the delivery-lead launch prompt, generated from live registry + ticket state
 # (never the cache). With a scope file, the open refs the brief hands the lead are written there, one per line (#527).
 goal_brief() {
-  local id="$1" g spec instr repo checkout rows row ref st n owner_repo cm last proj ia
+  local id="$1" g spec instr repo checkout rows row ref st n owner_repo cm last proj ia direct
   if [ $# -ge 2 ] && [ -n "$2" ]; then g=$2; else g=$(_goal_find "$id") || { echo "goal $id not found in the registry" >&2; return 1; }; fi
   spec=$(printf '%s' "$g" | jq -r .spec); instr=$(printf '%s' "$g" | jq -r .instructions)
   repo=$(_goal_primary_repo "$g")
@@ -453,9 +462,13 @@ goal_brief() {
   fi
   printf 'Instructions: %s\n' "${instr:-(none)}"
   printf 'Your memory (read first, append to it): %s/goals/%s.md\n' "$LOGDIR" "$id"
+  printf 'No dispatchable work this cycle: run `touch %s/goal-%s.idle` before ending the turn (headless only).\n' "$PIPE" "$id"
   printf '\nScope (live from GitHub):\n'
+  direct=""
   while IFS=$'\t' read -r ref st; do
     [ -n "$ref" ] || continue
+    # #632: a direct-route ticket is listed apart, never as work for the lead (no marker read either)
+    if direct_route_repo "${ref%%#*}"; then direct="$direct$ref  $st"$'\n'; continue; fi
     last="-"
     if [ "$st" = open ]; then
       owner_repo="${ref%%#*}"; n="${ref##*#}"
@@ -465,6 +478,9 @@ goal_brief() {
     fi
     printf '%s  %s  latest marker: %s\n' "$ref" "$st" "$last"
   done <<< "$rows"
+  if [ -n "$direct" ]; then
+    printf '\nDirect route — needs the interactive session (not your work: never dispatch, label or relaunch these; list them under this heading in your report, ticket number + 3-5 word description each):\n%s' "$direct"
+  fi
   cat <<RULES
 
 Rules:
@@ -472,6 +488,7 @@ Rules:
 - Completion is decided by the supervisor from GitHub state, never by you. Never unload, create or edit launchd/cron/loop schedulers.
 - JP-only items (a prod go, spending money, external communications, private-artefact access) park the ticket and are reported, never decided.
 - Goals only run on repos listed in DISPATCH_REPOS; never act outside the scope above.
+- A ticket in a direct-route repo (DIRECT_ROUTE_REPOS in config.sh, today jpmoya/claude-agents) is never dispatched, labelled or relaunched by you: the interactive session implements it with subagents, and orchestrate.sh refuses it. Report it under "Direct route — needs the interactive session".
 RULES
 }
 
@@ -492,9 +509,13 @@ goal_launch() {
   local id="$1" g="${2:-}" repo checkout brief
   [ -n "$g" ] || g=$(_goal_find "$id") || { echo "goal $id not found in the registry" >&2; return 1; }
   repo=$(_goal_primary_repo "$g")
+  if direct_route_repo "$repo"; then   # #632: nothing of the pipeline runs a direct-route repo, a lead included
+    slog "[goal] $id: $repo is a direct-route repo — launch skipped (its changes are made by the interactive session, see CLAUDE.md)"
+    return 1
+  fi
   checkout=$(_goal_checkout "$repo") || { echo "$repo is not in DISPATCH_REPOS" >&2; return 1; }
   mkdir -p "$PIPE" "$LOGDIR/goals"
-  rm -f "$PIPE/goal-$id.launch-scope" "$PIPE/goal-$id.yielded"
+  rm -f "$PIPE/goal-$id.launch-scope" "$PIPE/goal-$id.yielded" "$PIPE/goal-$id.idle"
   # #527: a feedback lead's launch scope is kept so goal_fb_yield can end the cycle when another goal takes a ticket over
   if [ "$(goal_parse "$(printf '%s' "$g" | jq -r .spec)" 2>/dev/null | cut -f2)" = fb ]; then
     brief=$(goal_brief "$id" "$g" "$PIPE/goal-$id.launch-scope") || return 1
@@ -587,6 +608,35 @@ goal_milestone_approved() {
 # file_mtime, latest_marker, terminal_kind and $HOST defined there. REST (`gh api`) for every read of ours, like above.
 
 # _goal_ticket_eval <owner/repo> <issue> -> "<delivered|waiting_jp|active>\t<issue state>\t<latest marker first line>\t<reason>"
+# _goal_closed_eval <repo> <n> <state_reason> -> "class<TAB>CLOSED<TAB>-<TAB>why" for a CLOSED ticket (#619; the one copy of #557's rule).
+# completed / unknown reason: delivered. not_planned: the newest pipeline closing comment (PM/developer REJECTED with a closing
+# Reason:, [intake] DUPLICATE|NOISE, [delivery-lead or its legacy alias] DECISION|JP CONFIRMED) means the pipeline decided it, so it
+# counts as done ("closed, not planned — decided by <agent>"); none of those, or a failed comments read (goal_err), stays
+# waiting_jp for JP (#557). Only a not_planned row costs a comments read.
+_goal_closed_eval() {
+  local repo="$1" n="$2" sr="$3" slug all_c who errf
+  if [ "$sr" != not_planned ]; then printf 'delivered\tCLOSED\t-\t-\n'; return 0; fi
+  slug=$(_goal_rest_slug "$repo")
+  errf="${TMPDIR:-/tmp}/goal-cc.$$"
+  if all_c=$(_goal_get_all "repos/$slug/issues/$n/comments?per_page=100" 2>"$errf"); then
+    who=$(printf '%s' "$all_c" | jq -r '
+      [.[] | (.body // "" | split("\n")) as $l | ($l[0] // "" | rtrimstr("\r")) as $f | ($l[1] // "" | rtrimstr("\r")) as $r
+        | ($f | capture("^\\*\\*\\[(?<a>[a-z-]+)\\] (?<m>[A-Z ]+)") // empty) as $c
+        | select(
+            (($c.a == "product-manager" or $c.a == "fullstack-developer") and ($c.m | test("^REJECTED"))
+               and ($r | test("^Reason: (not-a-bug|cannot-reproduce|duplicate of #[0-9]+)")))
+            or ($c.a == "intake" and ($c.m | test("^(DUPLICATE|NOISE)")))
+            or (($c.a == "delivery-lead" or ($c.a != "product-manager" and ($c.a | test("^project-m")))) and ($c.m | test("^(DECISION|JP CONFIRMED)"))))
+        | $c.a] | last // empty' 2>/dev/null) || who=""
+  else
+    goal_err "cannot evaluate $repo#$n: comments read failed $(head -1 "$errf" 2>/dev/null)"
+    who=""
+  fi
+  rm -f "$errf"
+  if [ -n "$who" ]; then printf 'delivered\tCLOSED\t-\tclosed, not planned — decided by %s\n' "$who"
+  else printf 'waiting_jp\tCLOSED\t-\tclosed without shipping (not planned) — check it before the goal can finish\n'; fi
+}
+
 # #548: one comments fetch per open ticket, shared by latest_marker, the BLOCKED check and the #456 block. State, labels,
 # author, start-gate refs, state_reason and milestone come from the scope row when the caller has it (args 3-8, as goal_eval
 # passes them); only a
@@ -623,11 +673,7 @@ _goal_ticket_eval() {
   [ -n "$st" ] || return 1
   if [ "$st" = CLOSED ]; then
     # #557: same rule as goal_eval — closed "not planned" never shipped, so it is not "delivered" on its own.
-    if [ "$sr" = not_planned ]; then
-      printf 'waiting_jp\tCLOSED\t-\tclosed without shipping (not planned) — check it before the goal can finish\n'
-    else
-      printf 'delivered\tCLOSED\t-\t-\n'
-    fi
+    _goal_closed_eval "$repo" "$n" "$sr"
     return 0
   fi
   checkout=$(_goal_checkout "$repo") || { goal_err "cannot evaluate $repo#$n: repo not in DISPATCH_REPOS on this host"; return 1; }
@@ -662,7 +708,8 @@ _goal_ticket_eval() {
   elif [[ "$mk" =~ \]\ BLOCKED ]]; then
     l2=$(printf '%s' "$all_c" \
       | jq -r --arg f "$first" '[.[] | select((.body | split("\n")[0] | rtrimstr("\r")) == $f)] | last | .body | split("\n")[1] // "" | rtrimstr("\r")' 2>/dev/null) || l2=""
-    if [ "$l2" = "Blocked on: needs_jp" ]; then cls=waiting_jp; why="blocked on a decision only you can make"; fi
+    # #621: same prefix rule as supervisor.sh blocked_class_of (^Blocked on: <class>( |$)) — "needs_jp — <reason>" counts
+    if [[ "$l2" =~ ^Blocked\ on:\ needs_jp(\ |$) ]]; then cls=waiting_jp; why="blocked on a decision only you can make"; fi
   else
     tk=$(terminal_kind "$first" "$n" "" "$checkout")
     case "$tk" in
@@ -687,7 +734,7 @@ _goal_ticket_eval() {
   # clears it by relaunching the pipeline, which only happens once the goal reads active), so without this check a
   # goal can sit held, re-evaluate every sync, and never unhold even after JP answers (#390, 2026-10-23). One extra
   # comments read, author-checked (an agent-tag comment, "**[...] ...**", never counts, so this cannot loop on the
-  # pipeline's own supervisor/claim notes — #427 AC4).
+  # pipeline's own supervisor/claim notes — #427 AC4).  #620: an issue-author `**[jp] ` relay (MOCKUPS APPROVED / GO) counts, like jp_go.
   # A staging merge is not a gate JP answers by commenting: only the release moves it, so it skips this block.
   if [ "$cls" != delivered ] && [ "$staged" = 0 ]; then
     local gate_at lead_blocked_at jp_answer_at newest
@@ -696,11 +743,11 @@ _goal_ticket_eval() {
       | jq -r --arg f "$first" '[.[] | select((.body | split("\n")[0] | rtrimstr("\r")) == $f)] | last | .created_at // empty')
     lead_blocked_at=$(printf '%s' "$all_c" \
       | jq -r '[.[] | select((.body | split("\n")[0] | rtrimstr("\r")) == "**[delivery-lead] BLOCKED**")
-                     | select((.body | split("\n")[1] // "" | rtrimstr("\r")) == "Blocked on: needs_jp")]
+                     | select((.body | split("\n")[1] // "" | rtrimstr("\r")) | test("^Blocked on: needs_jp( |$)"))]
                | last | .created_at // empty')
     jp_answer_at=""
     [ -n "$author" ] && jp_answer_at=$(printf '%s' "$all_c" \
-      | jq -r --arg a "$author" '[.[] | select(.user.login == $a) | select((.body | startswith("**[")) | not)]
+      | jq -r --arg a "$author" '[.[] | select(.user.login == $a) | select(((.body | startswith("**[")) | not) or (.body | split("\n")[0] | rtrimstr("\r") | test("^\\*\\*\\[jp\\] ")))]
                | last | .created_at // empty')
     if [ -n "$lead_blocked_at" ] && { [ -z "$gate_at" ] || [[ "$lead_blocked_at" > "$gate_at" ]]; } \
        && { [ -z "$jp_answer_at" ] || [[ "$lead_blocked_at" > "$jp_answer_at" ]]; }; then
@@ -821,6 +868,7 @@ _goal_grant_rows() {
     ref="$r#$n"
     if printf '%s' "$granted" | jq -e --arg x "$ref" 'index($x) != null' >/dev/null; then continue; fi
     if _goal_is_bi "$r"; then slog "repo=$r issue=$n reason=Business-Intelligence is never part of a goal, no agent-go"; continue; fi
+    if direct_route_repo "$r"; then slog "repo=$r issue=$n reason=direct-route repo, never agent-go (#632)"; continue; fi
     case ",$labels," in *",source:sentry,"*) [ "$sentry" = 1 ] || { slog "repo=$r issue=$n reason=source:sentry ticket skipped (goal has no --include-sentry)"; continue; } ;; esac
     case ",$labels," in
       *",agent-go,"*) ;;
@@ -841,6 +889,7 @@ _goal_grant_go() {
   shift 3
   for r in "$@"; do
     _goal_is_bi "$r" && continue
+    if direct_route_repo "$r"; then slog "repo=$r reason=direct-route repo, its labelled tickets are never granted agent-go (#632)"; continue; fi
     js=$(_goal_label_issues "$r" "$label" open) || return 1
     rows+=$(printf '%s' "$js" | jq -r --arg r "$r" '.[] | "\($r)\t\(.number)\topen\t\([.labels[].name] | join(","))"')$'\n'
   done
@@ -1050,25 +1099,46 @@ goal_sync() {  # registry -> local: rebuild missing caches, propagate stop/close
   goal_project_tick "$reg" || true   # per-goal GitHub Project mirror, background and throttled; never blocks or fails the sync
 }
 
+# _goal_granted_rows <id> [granted json array] -> full-shape scope rows of the go-granted tickets (empty when none)
+_goal_granted_rows() {
+  local g=${2:-} refs ref repo n info
+  [ -n "$g" ] || g=$(jq -c '.granted // []' "$PIPE/goal-$1.json" 2>/dev/null)
+  refs=$(printf '%s' "${g:-[]}" | jq -r '.[]?' 2>/dev/null)
+  while IFS= read -r ref; do
+    [ -n "$ref" ] || continue
+    repo=${ref%%#*}; n=${ref##*#}
+    if ! info=$(gh api "repos/$(_goal_rest_slug "$repo")/issues/$n" 2>/dev/null) || [ -z "$info" ]; then
+      goal_err "goal $1: cannot read granted ticket $ref"; return 1
+    fi
+    printf '%s' "$info" | jq -r --arg r "$repo" --argjson l 0 --argjson full 1 "$_GOAL_ROW_JQ"'row' || return 1
+  done <<< "$refs"
+}
+
 # goal_eval <id> <spec> — live scope + ticket classes into GE_* (current shell); exit 1 on any failed read
 goal_eval() {
   local rows ref st repo n r cls istate marker why lbl au gates sr ms
-  GE_TOTAL=0; GE_DELIVERED=0; GE_ACTIVE=0; GE_WAITING=0; GE_SNAP=""; GE_REFS=""
+  GE_TOTAL=0; GE_DELIVERED=0; GE_ACTIVE=0; GE_WAITING=0; GE_SNAP=""; GE_REFS=""; GE_DIRECT=""
   # $3: explicit "ref<TAB>state" rows. Live rows carry labels, author, start-gate refs and state_reason too (#548/#557: no
   # per-ticket issue read).
-  if [ -n "${3:-}" ]; then rows=$3; else rows=$(GOAL_SCOPE_FULL=1 _goal_scope_rows "$2" "$1") || return 1; fi
+  if [ -n "${3:-}" ]; then rows=$3; else
+    rows=$(GOAL_SCOPE_FULL=1 _goal_scope_rows "$2" "$1") || return 1
+    # #605: a scope that reads empty (release automation moved the shipped tickets out of the milestone, or the label is
+    # gone) falls back to the go-granted list, read as real tickets so a shipped one counts as delivered. $4 = granted
+    # JSON array (registry block); default the local goal cache. A failed read fails closed, never "empty".
+    if [ -z "$rows" ]; then rows=$(_goal_granted_rows "$1" "${4:-}") || return 1; fi
+  fi
   while IFS=$'\t' read -r ref st lbl au gates sr ms; do
     [ -n "$ref" ] || continue
+    # #632: a direct-route ticket is the interactive session's, not the goal's: no total, no class, no read; GE_DIRECT names
+    # it (ref per line) so the lead's brief and report can list it. It can never keep a goal active or block its delivery.
+    if direct_route_repo "${ref%%#*}"; then GE_DIRECT="$GE_DIRECT$ref"$'\n'; continue; fi
     if [ "$st" = closed ]; then
       # #557: a closed issue only counts as delivered when GitHub says it was actually completed. "not_planned" (closed
       # as a duplicate, wontfix, or by mistake while still in the goal's scope) never shipped anything, so it must not
       # let the goal close silently — surface it to JP instead. An unknown/missing state_reason (explicit fallback rows
       # with no 6th column, or an older API shape) keeps the old fail-open behavior: delivered.
-      if [ "$sr" = not_planned ]; then
-        cls=waiting_jp; istate=CLOSED; marker="-"; why="closed without shipping (not planned) — check it before the goal can finish"
-      else
-        cls=delivered; istate=CLOSED; marker="-"; why="-"
-      fi
+      r=$(_goal_closed_eval "${ref%%#*}" "${ref##*#}" "$sr")
+      IFS=$'\t' read -r cls istate marker why <<< "$r"
     else
       repo=${ref%%#*}; n=${ref##*#}
       r=$(_goal_ticket_eval "$repo" "$n" "$st" "$lbl" "$au" "$gates" "$sr" "$ms") || return 1
@@ -1103,7 +1173,7 @@ goal_cards() {  # <delivered|waiting_jp> — one card block per ticket of that c
     title=$(gh api "repos/$repo/issues/$n" --jq .title 2>/dev/null | head -1)
     [ -n "$title" ] || title="ticket"
     if [ "$want" = delivered ]; then
-      goal_card "$title ($repo #$n)" "DONE" "Delivered." "Nothing"
+      goal_card "$title ($repo #$n)" "DONE" "$([ "$why" = - ] && echo Delivered. || echo "${why}.")" "Nothing"
     elif [[ "$why" == *"(nothing needed from you)" ]]; then   # non-blocking park: nothing here is JP's to act on
       goal_card "$title ($repo #$n)" "DEPLOYED" "$why." "Nothing"
     else
@@ -1164,9 +1234,10 @@ _goal_reset_streaks() {
   return 0
 }
 
-goal_park() {  # <id> <issue> [launch] — `launch` (#514): parked by GOAL_MAX_LAUNCH_FAILS, not by GOAL_MAX_NO_PROGRESS
+goal_park() {  # <id> <issue> [launch|idle] — `launch` (#514): parked by GOAL_MAX_LAUNCH_FAILS; `idle` (#627): by GOAL_MAX_NO_PROGRESS idle hand-offs
   local id=$1 issue=$2 why="no progress in $GOAL_MAX_NO_PROGRESS cycles"
   [ "${3:-}" = launch ] && why="could not launch in $GOAL_MAX_LAUNCH_FAILS consecutive attempts"
+  [ "${3:-}" = idle ] && why="no dispatchable work in $GOAL_MAX_NO_PROGRESS consecutive cycles (idle hand-offs, scope unchanged)"
   touch "$PIPE/goal-$id.held"
   if _goal_label_add "$issue" goal-held; then echo registry > "$PIPE/goal-$id.held"   # confirmed: goal_sync reads its lifting as a resume
   else goal_err "cannot label the registry issue of $id held"; fi
@@ -1257,6 +1328,45 @@ goal_tick_one() {  # <id>
       idx=$restarts; [ "$idx" -ge "${#BACKOFF[@]}" ] && idx=$(( ${#BACKOFF[@]} - 1 ))
       wait_secs=${BACKOFF[$idx]}
     fi
+  fi
+  if [ -f "$PIPE/goal-$id.idle" ]; then   # #627: the lead found nothing it may dispatch: hand the slot to the next queued goal
+    if goal_serial && ! goal_slot_exempt "$spec"; then
+      local qn qids icnt isnap
+      # the scope is read first (one evaluation): a delivered goal closes and a goal whose every open ticket waits on JP is
+      # "waiting on JP" (frees the slot, resumes by itself when a ticket moves) — neither rotates through the queue
+      if ! goal_eval "$id" "$spec"; then goal_err "goal $id evaluation failed before the hand-off (see the preceding error); retrying next tick"; return 0; fi
+      if [ "$GE_TOTAL" -gt 0 ] && [ "$GE_DELIVERED" -eq "$GE_TOTAL" ]; then rm -f "$PIPE/goal-$id.idle"; goal_deliver "$id" "$issue" "$spec"; return 0; fi
+      if [ "$GE_TOTAL" -gt 0 ] && [ "$GE_ACTIVE" -eq 0 ] && [ "$GE_WAITING" -gt 0 ]; then
+        rm -f "$PIPE/goal-$id.idle" "$PIPE/goal-$id.launchfails" "$PIPE/goal-$id.launch-failed"
+        goal_mirror "$id" waiting_jp "$GE_TOTAL" "$GE_DELIVERED"
+        goal_waiting "$id" "$issue" "$spec"; return 0
+      fi
+      # fail closed on the read AND on the queue jq: never hand off (or keep the slot) on a guess
+      qids=$(_goal_registry_json 2>/dev/null | _goal_queue_jq ' | .queued | map(.id) | .[]' 2>/dev/null; [ "${PIPESTATUS[0]}${PIPESTATUS[1]}" = 00 ]) \
+        || { goal_err "goal $id: cannot read the registry to hand off the slot; retrying next tick"; return 0; }
+      qn=$(printf '%s\n' "$qids" | tr -d '"' | grep -vxF -e "$id" | grep -c .)
+      if [ "$qn" -ge 1 ]; then
+        # consecutive hand-offs with an unchanged scope snapshot count like no-progress cycles (.np): the count and the
+        # snapshot travel in the registry block (the local state is dropped by the requeue) and the GOAL_MAX_NO_PROGRESS-th
+        # holds the goal exactly as a stalled one; a scope change in between starts the count over
+        new=$(printf '%s' "$GE_SNAP" | goal_snapshot)
+        isnap=$(jq -r '.idle_snap // ""' "$cache" 2>/dev/null); icnt=$(jq -r '.idle_handoffs // 0' "$cache" 2>/dev/null)
+        case "$icnt" in ''|*[!0-9]*) icnt=0 ;; esac
+        if [ "$new" = "$isnap" ]; then icnt=$((icnt + 1)); else icnt=1; fi
+        if [ "$icnt" -ge "$GOAL_MAX_NO_PROGRESS" ]; then
+          rm -f "$PIPE/goal-$id.idle"; echo "$new" > "$PIPE/goal-$id.snap"; echo "$icnt" > "$PIPE/goal-$id.np"   # .snap: the #427 unhold-on-change check
+          goal_park "$id" "$issue" idle; return 0
+        fi
+        if goal_requeue "$id" "$issue" "no dispatchable work: slot handed to the queue" defer "$icnt" "$new"; then
+          _goal_note "$issue" "**[deliver] NOTE** slot handed off: no dispatchable work; back in the queue behind $qn goal(s) (idle cycle $icnt/$GOAL_MAX_NO_PROGRESS)" || goal_err "goal $id: cannot post the hand-off note"
+          # the sync's queue cache was written before this tick: refresh it so the next candidate shows (and starts) now
+          local fresh; fresh=$(_goal_registry_json 2>/dev/null) && goal_queue_save "$fresh"
+        fi
+        return 0
+      fi
+      rm -f "$PIPE/goal-$id.idle"
+      slog "[goal] $id idle but keeps the slot (no goal queued)"
+    else rm -f "$PIPE/goal-$id.idle"; fi
   fi
   lf=$(cat "$PIPE/goal-$id.launchfails" 2>/dev/null); case "$lf" in ''|*[!0-9]*) lf=0 ;; esac
   if [ -f "$PIPE/goal-$id.launch-failed" ]; then
@@ -1362,13 +1472,17 @@ _GOAL_QUEUE_JQ='def okey: [((.block.priority? // .block.order? // .issue) | if t
 # while no goal holds the slot and no registry entry is unreadable ANYWHERE in the order (fail closed: an unreadable entry
 # could be an active goal; goal_sync logs an error for each one so it gets fixed). With $fbfree (GOAL_SERIAL_FEEDBACK=0)
 # a running feedback goal never holds the slot, but a queued one still waits for its turn like any goal. Needs --argjson fbfree.
-_GOAL_QUEUE_SERIAL_JQ='def okey: [((.block.priority? // .block.order? // .issue) | if type == "number" then . else 1e12 end), .issue];
+# #627: a goal that handed the slot off (block.deferred_at) sorts behind every other queued goal and is not a candidate
+# again within $cool seconds (GOAL_CYCLE_SECS) of the hand-off: several idle goals cost one lead cycle each per cycle
+# instead of rotating back-to-back. Needs --argjson now (epoch seconds) and --argjson cool.
+_GOAL_QUEUE_SERIAL_JQ='def okey: [(if (.block.deferred_at? // "") != "" then 1 else 0 end), ((.block.priority? // .block.order? // .issue) | if type == "number" then . else 1e12 end), .issue];
   def exempt: $fbfree and ((.spec // "") | test(":feedback$"));
+  def cooling: .st == "queued" and ((.block.deferred_at? // "") != "") and (((.block.deferred_at | try fromdateiso8601 catch 0) + $cool) > $now);
   sort_by(okey) as $all
   | ($all | map(select(.st == "queued"))) as $q
   | ($all | map(select(.st == "active" and (exempt | not))) | first // null) as $h
   | (($h != null) or any($all[]; .st == "unreadable")) as $busy
-  | ($all | map(select(.st == "unreadable" or .st == "queued")) | first // null) as $f
+  | ($all | map(select(.st == "unreadable" or (.st == "queued" and (cooling | not)))) | first // null) as $f
   | {queued: $q, candidate: (if ($busy | not) and $f != null and $f.st == "queued" then $f else null end), serial: true, slot: ($h.id // null),
      recent: ($all | map(select(.st == "delivered" or .st == "stopped")) | sort_by(.closed_at // "") | reverse | .[:5]),
      open: ($all | map(select(.st == "active" or .st == "held" or .st == "waiting_jp")))}'
@@ -1378,9 +1492,10 @@ goal_serial() { case "${GOAL_SERIAL:-1}" in 0|false|no|off) return 1 ;; esac; re
 
 # _goal_queue_jq <filter suffix> — the queue jq for the current mode, applied to the registry JSON on stdin
 _goal_queue_jq() {
-  local fbfree=true
+  local fbfree=true cool=${GOAL_CYCLE_SECS:-1200}
   [ "${GOAL_SERIAL_FEEDBACK:-0}" = 1 ] && fbfree=false
-  if goal_serial; then jq -c --argjson fbfree "$fbfree" "$_GOAL_QUEUE_SERIAL_JQ$1"
+  case "$cool" in ''|*[!0-9]*) cool=1200 ;; esac
+  if goal_serial; then jq -c --argjson fbfree "$fbfree" --argjson now "$(date +%s)" --argjson cool "$cool" "$_GOAL_QUEUE_SERIAL_JQ$1"
   else jq -c "$_GOAL_QUEUE_JQ$1"; fi
 }
 
@@ -1426,10 +1541,13 @@ _goal_drop_local() {
 # then starts it again in priority order, through the same claim as any queued goal. Exit 1 (nothing local touched) when
 # a registry write fails or the issue does not read "queued" afterwards; the next decision retries.
 goal_requeue() {
-  local id=$1 issue=$2 why=$3 g g2
+  local id=$1 issue=$2 why=$3 defer=${4:-} icnt=${5:-} isnap=${6:-} g g2
   g=$(_goal_find "$id" 2>/dev/null) || { goal_err "cannot read the registry to return $id to the queue"; return 1; }
   [ "$(printf '%s' "$g" | jq -r .issue)" = "$issue" ] || { goal_err "$id: registry issue changed under it; not returned to the queue"; return 1; }
-  g2=$(printf '%s' "$g" | jq -c '.block.host = "" | .host = ""')
+  if [ -n "$defer" ]; then   # #627: handed the slot over: sorts behind the goals already queued; $5/$6 = consecutive idle hand-offs + the scope snapshot they were counted against
+    g2=$(printf '%s' "$g" | jq -c --arg d "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg c "$icnt" --arg s "$isnap" \
+      '.block.host = "" | .host = "" | .block.deferred_at = $d | if $c != "" then .block.idle_handoffs = ($c | tonumber) | .block.idle_snap = $s else . end')
+  else g2=$(printf '%s' "$g" | jq -c '.block.host = "" | .host = ""'); fi
   _goal_patch_body "$issue" "$(_goal_queue_body "$g2")" >/dev/null 2>&1 || { goal_err "cannot return $id to the queue (registry write)"; return 1; }
   _goal_label_add "$issue" goal-queued || { goal_err "cannot label $id goal-queued"; return 1; }
   _goal_label_del "$issue" goal-held; _goal_label_del "$issue" goal-waiting-jp
@@ -1495,7 +1613,8 @@ goal_queue_save() {
                            st, host: (.host // ""), priority: (.block.priority? // null), hosts: (.block.hosts? // "both"), host_pref: (.block.host_pref // ""), project_url: (.block.project?.url? // "")})),
        queued: (.queued | map({id, issue, spec, title: (.block.title // ""), label: (.block.label // ""), priority: (.block.priority? // null),
                                repos: (.block.repos // []), order: (.block.order? // .issue), host_pref: (.block.host_pref // ""),
-                               hosts: (.block.hosts? // "both"), project_url: (.block.project?.url? // "")}))}' 2>/dev/null) \
+                               hosts: (.block.hosts? // "both"), project_url: (.block.project?.url? // ""),
+                               deferred: (.block.deferred_at? // "")}))}' 2>/dev/null) \
     || { goal_err "cannot compute the goal queue"; return 0; }
   mkdir -p "$PIPE" 2>/dev/null
   printf '%s\n' "$v" > "$f.tmp" 2>/dev/null && mv "$f.tmp" "$f" || { rm -f "$f.tmp"; goal_err "cannot write the goal queue cache"; }
@@ -1508,7 +1627,7 @@ goal_queue_save() {
 # and, when none is progressable and at least one waits on JP, add needs_jp {waiting, active, total} to its row in
 # goalqueue.json; build-runs-json.py shows such a goal as waiting on JP. Needs the supervisor's latest_marker; best effort.
 goal_queue_derive() {
-  local f="$PIPE/$GOAL_QUEUE_FILE_NAME" ids g id spec pid out="{}" tmp rows
+  local f="$PIPE/$GOAL_QUEUE_FILE_NAME" ids g id spec pid out="{}" tmp
   declare -F latest_marker >/dev/null 2>&1 || return 0
   [ -f "$f" ] || return 0
   ids=$(printf '%s' "$1" | jq -c '.[] | select(.st == "active") | {id, spec, granted: (.block.granted // [])}' 2>/dev/null) || return 0
@@ -1518,12 +1637,7 @@ goal_queue_derive() {
     [ -n "$id" ] && [ -n "$spec" ] || continue
     pid=$(cat "$PIPE/goal-$id.pid" 2>/dev/null)
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then continue; fi   # a live lead mirrors its own state
-    goal_eval "$id" "$spec" || continue
-    if [ "$GE_TOTAL" -eq 0 ]; then   # the label can be gone from the tickets (stripped by an earlier goal's close): fall back to the go-granted list
-      rows=$(printf '%s' "$g" | jq -r '(.granted // [])[] | "\(.)\topen"')
-      [ -n "$rows" ] || continue
-      goal_eval "$id" "$spec" "$rows" || continue
-    fi
+    goal_eval "$id" "$spec" "" "$(printf '%s' "$g" | jq -c '.granted // []')" || continue   # empty scope falls back to the granted list inside goal_eval
     [ "$GE_TOTAL" -gt 0 ] && [ "$GE_WAITING" -gt 0 ] || continue
     out=$(printf '%s' "$out" | jq -c --arg id "$id" --argjson w "$GE_WAITING" --argjson a "$GE_ACTIVE" --argjson t "$GE_TOTAL" \
       '. + {($id): {waiting: $w, active: $a, total: $t}}') || continue
@@ -1723,7 +1837,7 @@ goal_queue_step() {
   fi
 
   # won: pin the goal here (block host), leave the queue, write the cache and launch
-  g2=$(printf '%s' "$g" | jq -c --arg h "$GOAL_THIS_HOST" '.block.host = $h | .host = $h')
+  g2=$(printf '%s' "$g" | jq -c --arg h "$GOAL_THIS_HOST" '.block.host = $h | .host = $h | del(.block.deferred_at)')
   body=$(_goal_queue_body "$g2")
   _goal_patch_body "$issue" "$body" >/dev/null 2>&1 || { goal_queue_fail "$issue" "$id" "cannot pin $id to $GOAL_THIS_HOST on the registry issue"; return 0; }
   _goal_label_del "$issue" goal-queued

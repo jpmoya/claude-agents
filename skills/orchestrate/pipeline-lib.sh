@@ -94,10 +94,11 @@ migrate_legacy_runs() {
   done
 }
 
-count_running() {
+count_running() {  # [own run key] — a launcher's own pid reservation (#451) is not a running slot
   local n=0
   for f in "$PIPE"/orch-*.pid "$PIPE"/intake-*.pid; do   # intake runs (#114) count against MAX_CONCURRENT too
     [ -e "$f" ] || continue
+    [ -n "${1:-}" ] && [ "$f" = "$PIPE/orch-$1.pid" ] && continue
     kill -0 "$(cat "$f")" 2>/dev/null && n=$((n + 1))
   done
   echo "$n"
@@ -109,15 +110,15 @@ mem_available_mb() {
   fi
 }
 
-has_capacity() {
-  [ "$(count_running)" -lt "$MAX_CONCURRENT" ] && [ "$(mem_available_mb)" -ge "$MEM_FLOOR_MB" ]
+has_capacity() {  # [own run key]
+  [ "$(count_running "${1:-}")" -lt "$MAX_CONCURRENT" ] && [ "$(mem_available_mb)" -ge "$MEM_FLOOR_MB" ]
 }
 
 marker_last_jq() {  # prints (no gh call) the jq expression yielding the newest real routing marker first line, or "none"; NOTEs and off-vocabulary lines are inert
   # #272: a `**[jp] SKIP MOCKUPS**` comment counts only from the issue author (top-level .author.login, else the first comment's author — every gh issue view feeding this now fetches `author`;
-  # REST comments carry .user.login, gh CLI .author.login) AND with a second line `JP said: "<non-empty>"`; any other (incl. malformed author) is dropped.
+  # REST comments carry .user.login, gh CLI .author.login) AND with a second line `JP said: "<non-empty>"`; any other (incl. malformed author) is dropped. #620: a relayed `**[jp] MOCKUPS APPROVED**` / `**[jp] GO**` likewise counts only from the issue author when it is known (the orchestrator's jp_go re-checks it).
   local skip='def lg: ((.author | objects | .login) // (.user | objects | .login)); ((lg // (.comments[0] | lg)) // null) as $ia | '
-  skip="$skip"'[.comments[] | select((.body | type) == "string") | select((.body | split("\n")) as $l | if ($l[0] | rtrimstr("\r") | test("^\\*\\*\\[jp\\] SKIP MOCKUPS\\*\\*[[:space:]]*$")) then (($ia != null) and (lg == $ia) and (($l[1] // "" | rtrimstr("\r")) | test("^JP said: \".+\"$"))) else true end)'
+  skip="$skip"'[.comments[] | select((.body | type) == "string") | select((.body | split("\n")) as $l | if ($l[0] | rtrimstr("\r") | test("^\\*\\*\\[jp\\] SKIP MOCKUPS\\*\\*[[:space:]]*$")) then (($ia != null) and (lg == $ia) and (($l[1] // "" | rtrimstr("\r")) | test("^JP said: \".+\"$"))) elif ($l[0] | rtrimstr("\r") | test("^\\*\\*\\[jp\\] (MOCKUPS APPROVED|GO)\\*\\*[[:space:]]*$")) then (($ia == null) or (lg == $ia)) else true end)'
   # a valid skip posted anywhere (even before the gate comment) supersedes a newest MOCKUPS PENDING APPROVAL
   printf '%s | .body | split("\\n")[0] | select(test(%s))] | if ((last // "") | contains("] MOCKUPS PENDING APPROVAL")) and (map(select(rtrimstr("\\r") | test("^\\\\*\\\\*\\\\[jp\\\\] SKIP MOCKUPS\\\\*\\\\*[[:space:]]*$"))) | length > 0) then . + ["**[jp] SKIP MOCKUPS**"] else . end | last // "none"' "$skip" "$(marker_re | jq -Rs .)"
 }
@@ -192,6 +193,44 @@ log_run_launch() {
   pipeline_event run_launch --arg run_id "$run_id" --arg repo "$repo" --argjson issue "$issue" --arg reason "$reason" \
     --argjson restart_n "${restart_n:-0}" --argjson queue_wait_s "$qw"
   return 0
+}
+
+# Issue #451 — pid reservation: a launcher writes its own pid to orch-<key>.pid right after the liveness check, so the
+# claim-settle wait is covered by the same guard a running orchestrator uses. pid_reserve_restore puts the earlier content
+# back (or removes the file) only while the file still holds our pid, so a loser never clobbers the winner's reservation.
+PID_RES_PREV=""; PID_RES_HAD=0; PID_RES_ACTIVE=0; PID_RES_TRAP=0
+pid_reserve() {  # <run key> — call only after the liveness check passed
+  local f="$PIPE/orch-$1.pid"
+  if [ -f "$f" ]; then PID_RES_HAD=1; PID_RES_PREV=$(cat "$f" 2>/dev/null || true); else PID_RES_HAD=0; PID_RES_PREV=""; fi
+  echo "$$" > "$f"; PID_RES_ACTIVE=1
+}
+pid_reserve_trap() {  # <run key> <exit code> — an EXIT trap does not run on an unhandled INT/TERM/HUP: restore, then exit
+  trap "pid_reserve_restore '$1'; exit $2" INT TERM HUP; PID_RES_TRAP=1
+}
+pid_reserve_held() {  # <run key> — true while the pid file still holds our pid
+  [ "$(cat "$PIPE/orch-$1.pid" 2>/dev/null)" = "$$" ]
+}
+pid_reserve_done() {  # the reservation ended (spawned, or handed over): drop the signal trap, nothing left to restore
+  PID_RES_ACTIVE=0
+  [ "$PID_RES_TRAP" = 1 ] && { trap - INT TERM HUP; PID_RES_TRAP=0; }
+  return 0
+}
+pid_reserve_restore() {  # <run key> — undo a reservation that did not end in a spawn
+  [ "$PID_RES_ACTIVE" = 1 ] || return 0
+  pid_reserve_done
+  pid_reserve_held "$1" || return 0
+  if [ "$PID_RES_HAD" = 1 ]; then printf '%s\n' "$PID_RES_PREV" > "$PIPE/orch-$1.pid"; else rm -f "$PIPE/orch-$1.pid"; fi
+}
+# launch_skip <issue> <route orchestrate|supervisor> — a lost pid verify: events row (reason pid-held; release, environment,
+# route tags) plus the existing Slack webhook. Issue number only. Never fails the caller.
+launch_skip() {
+  pipeline_event launch_skip --argjson issue "${1:-0}" --arg reason pid-held \
+    --arg release "$(git -C "$_CLAIM_LIB_DIR" rev-parse HEAD 2>/dev/null || echo unknown)" \
+    --arg environment "$(pipeline_host)" --arg route "$2"
+  [ -n "${SLACK_WEBHOOK_URL:-}" ] || return 0
+  curl -s --max-time 10 -X POST -H 'Content-Type: application/json' \
+    --data "{\"text\":\"launch skipped (#${1:-0}, reason pid-held, host $(hostname -s), route $2, release $(git -C "$_CLAIM_LIB_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown))\"}" \
+    "$SLACK_WEBHOOK_URL" >/dev/null 2>&1 </dev/null || true
 }
 
 # claim_winner <local_path> <issue> — prints the host of the earliest "**[supervisor] NOTE** claim: <host> <ts>" comment

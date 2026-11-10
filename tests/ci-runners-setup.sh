@@ -176,11 +176,12 @@ t "--slots 1 after 2 disables+stops unit 2 only" test_scale_down
 test_rendered() {
   newenv; bash "$SETUP" --slots 2 >/dev/null 2>&1; local all; all=$(alltext); local s rc=0
   for s in 'OOMScoreAdjust=500' 'MemorySwapMax=0' 'CPUWeight=50' 'IOWeight=50' 'TasksMax=4096' '--rm' \
-           'Restart=always' 'benjis-ci' '2.338.0' 'MemoryHigh=7200M' 'generate-jitconfig' \
+           'Restart=always' 'benjis-ci' '2.338.0' 'generate-jitconfig' \
            'Delegate=' 'data-root' '/srv/gha/docker' 'until=24h' '08:30'; do
     grep -qF -- "$s" <<<"$all" || { echo "missing: $s"; rc=1; }
   done
   grep -Eq 'MemoryMax=(8G|8192M|8589934592)$' <<<"$all" || { echo "MemoryMax != 4G x 2"; rc=1; }
+  ! grep -q 'MemoryHigh' <<<"$all" || { echo "MemoryHigh must not be rendered (#615)"; rc=1; }
   return $rc
 }
 t "rendered files contain limits/units/label/version (2 slots)" test_rendered
@@ -194,10 +195,10 @@ t "MemoryMax scales 4G x slots (3 and 1)" test_memmax_scaled
 test_slot_gb() {
   newenv; bash "$SETUP" --slots 1 --slot-gb 5 >/dev/null 2>&1
   grep -Eq 'MemoryMax=(5G|5120M|5368709120)$' <<<"$(alltext)" || { echo "slot-gb 5: want 5G"; return 1; }
-  grep -q 'MemoryHigh=4500M' <<<"$(alltext)" || { echo "slot-gb 5: want MemoryHigh 4500M"; return 1; }
+  ! grep -q 'MemoryHigh' <<<"$(alltext)" || { echo "slot-gb 5: MemoryHigh must not be rendered"; return 1; }
   newenv; ! bash "$SETUP" --slot-gb 9 >/dev/null 2>&1 || { echo "slot-gb 9 must be rejected"; return 1; }
 }
-t "--slot-gb sets MemoryMax/High per slot and rejects out-of-range" test_slot_gb
+t "--slot-gb sets MemoryMax per slot and rejects out-of-range" test_slot_gb
 test_version_param() {
   newenv; bash "$SETUP" --runner-version 2.340.1 >/dev/null 2>&1; local all; all=$(alltext)
   grep -qF 2.340.1 <<<"$all" && ! grep -qF 2.338.0 <<<"$all"
@@ -215,7 +216,7 @@ has_in() { # has_in <path-glob> <fixed string>...: some file matching the glob c
   return 1; }
 test_user_slice_limits() {
   newenv; bash "$SETUP" --slots 2 >/dev/null 2>&1
-  has_in '*user-1234.slice*' MemoryMax=8G MemoryHigh=7200M MemorySwapMax=0 CPUWeight=50 IOWeight=50 TasksMax=4096 \
+  has_in '*user-1234.slice*' MemoryMax=8G MemorySwapMax=0 CPUWeight=50 IOWeight=50 TasksMax=4096 \
     || { echo "limits not in a user-1234.slice drop-in"; return 1; }
 }
 t "limits sit on user-<uid>.slice (not a runner-unit slice)" test_user_slice_limits

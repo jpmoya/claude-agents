@@ -94,8 +94,10 @@ test_p328_ac7_no_new_marker_or_state_and_supervisor_unchanged() {
   local base diff
   base=$(cd "$ROOT_P328" && git merge-base HEAD origin/main 2>/dev/null)
   assert_ne "$base" "" "#328 AC7: origin/main merge-base must resolve (fetch origin main); cannot verify supervisor.sh unchanged otherwise" || return 1
-  diff=$(cd "$ROOT_P328" && git diff --stat "$base" -- skills/orchestrate/supervisor.sh)
-  assert_eq "$diff" "" "#328 AC7: supervisor.sh unchanged" || return 1
+  # #624: the pin was "supervisor.sh byte-identical to the merge-base", which any later unrelated supervisor change turns red;
+  # what #328 protects is that the plan-fail / jp_go resume logic never moved into the supervisor.
+  diff=$(cd "$ROOT_P328" && git diff -U0 "$base" -- skills/orchestrate/supervisor.sh | grep -E '^[+-][^+-]' | grep -iE 'plan[-_ ]?fail|jp_go' || true)
+  assert_eq "$diff" "" "#328 AC7: supervisor.sh gained no plan-fail / jp_go logic" || return 1
   # the resume clause must name no new marker / counter / state file
   local row; row=$(p328_row)
   assert_contains "$row" 'No new marker' "#328 AC7: row states no new marker/counter/state file" || return 1

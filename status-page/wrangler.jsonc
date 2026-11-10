@@ -7,6 +7,12 @@
   "main": "src/index.js",
   "compatibility_date": "2026-09-01",
 
+  // The URL humans open. vercel-proxy/ fronts the worker because some ISPs block the IPs
+  // *.workers.dev resolves to; the Google sign-in returns to this origin (see callbackRedirectUri).
+  "vars": {
+    "PUBLIC_ORIGIN": "https://pipeline-status-jp.vercel.app"
+  },
+
   "kv_namespaces": [
     {
       "binding": "STATUS",

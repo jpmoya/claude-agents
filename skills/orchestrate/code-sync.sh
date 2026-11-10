@@ -37,7 +37,7 @@ _cs_dirty() { git -C "$1" diff --name-only HEAD -- $(_cs_exclude_specs) 2>/dev/n
 _cs_drift() { [ -n "$CODE_SYNC_IGNORE_DIRTY" ] || return 0; git -C "$1" diff --name-only HEAD -- $(_cs_ignored_specs) 2>/dev/null; }
 
 code_sync_fetch() {  # code_sync_fetch <repo> : fetch origin main, killed after 40 s
-  git -C "$1" fetch -q origin main 2>/dev/null &
+  git -C "$1" fetch -q origin main 2>/dev/null 9>&- &
   local pid=$! i=0
   while kill -0 "$pid" 2>/dev/null; do
     i=$((i+1)); [ "$i" -gt 40 ] && { kill "$pid" 2>/dev/null; echo "code-sync: fetch timed out" >&2; return 1; }

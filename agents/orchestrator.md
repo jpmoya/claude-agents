@@ -369,12 +369,20 @@ count() {  # same count the handoff hook uses: one integer, 0 when none. A faile
   printf '%s' "$hits" | grep -c . || true
 }
 BEFORE=$(count <N> <agent-name>)
-# one Bash call = one chunk of up to 36 × 15s (9 min); repeat chunks until the stage cap below is reached
+# one Bash call = one chunk of up to 36 × 15s (9 min); repeat chunks until the stage cap below is reached.
+# #637: `kill -0` (free, local) runs every 15s, but `count` is a GitHub read — call it only every ~2 min (every
+# 9th iteration) or right after the process exits, never on every 15s tick.
 for i in $(seq 1 36); do
   sleep 15
-  NOW=$(count <N> <agent-name>)
-  if [ "$NOW" -gt "$BEFORE" ]; then echo "MARKER FOUND"; break; fi
-  if ! kill -0 "$PID" 2>/dev/null; then echo "PROCESS EXITED, NO MARKER"; break; fi
+  if ! kill -0 "$PID" 2>/dev/null; then
+    NOW=$(count <N> <agent-name>)
+    if [ "$NOW" -gt "$BEFORE" ]; then echo "MARKER FOUND"; else echo "PROCESS EXITED, NO MARKER"; fi
+    break
+  fi
+  if [ $(( i % 9 )) -eq 0 ]; then   # ~2 min (9, 18, 27, 36 — lands on the chunk's own 9-min boundary)
+    NOW=$(count <N> <agent-name>)
+    if [ "$NOW" -gt "$BEFORE" ]; then echo "MARKER FOUND"; break; fi
+  fi
 done
 ```
 
