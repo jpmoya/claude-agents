@@ -7,11 +7,7 @@
 # Expected values come from the request, never from the code under test. Prefix zu_ / ZU_. Reuses gs_* and zq_* helpers.
 
 ZU_HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-if ! type gs_env >/dev/null 2>&1; then
-  sed '/^echo "-- goal supervisor (#195)"/,$d' "$ZU_HERE/test-goal-supervisor.sh" > "$ZU_HERE/.zu-gs-lib.$$.sh"
-  . "$ZU_HERE/.zu-gs-lib.$$.sh"
-  rm -f "$ZU_HERE/.zu-gs-lib.$$.sh"
-fi
+. "$(dirname "${BASH_SOURCE[0]}")/lib/goal-sandbox.sh"
 if ! type zq_env >/dev/null 2>&1; then
   sed '/^run_test /,$d' "$ZU_HERE/test-goal-z-queue.sh" > "$ZU_HERE/.zu-zq-lib.$$.sh"
   . "$ZU_HERE/.zu-zq-lib.$$.sh"

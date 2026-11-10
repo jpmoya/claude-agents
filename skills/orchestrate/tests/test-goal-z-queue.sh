@@ -12,11 +12,7 @@
 #   goal ids: example-owner_project-a-t-7 (ZQ_A), -t-8 (ZQ_B), -t-9 (ZQ_C). Registry order field is explicit.
 
 ZQ_HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-if ! type gs_env >/dev/null 2>&1; then
-  sed '/^echo "-- goal supervisor (#195)"/,$d' "$ZQ_HERE/test-goal-supervisor.sh" > "$ZQ_HERE/.zq-gs-lib.$$.sh"
-  . "$ZQ_HERE/.zq-gs-lib.$$.sh"
-  rm -f "$ZQ_HERE/.zq-gs-lib.$$.sh"
-fi
+. "$(dirname "${BASH_SOURCE[0]}")/lib/goal-sandbox.sh"
 
 ZQ_A="$GS_ID_T7"; ZQ_B="$GS_ID_T8"; ZQ_C="$GS_ID_T9"
 ZQ_SPEC_A="$GS_SPEC_T7"; ZQ_SPEC_B="$GS_SPEC_T8"; ZQ_SPEC_C="$GS_SPEC_T9"
