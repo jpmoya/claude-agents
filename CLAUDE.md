@@ -54,7 +54,7 @@ The GitHub API rate limit (5000/hr) is a single shared budget across every inter
 
 This is specifically about repeated/polling status checks. Raw `gh`/`gh api` calls remain the right tool for everything else — reading PR diffs or files, posting comments, filing issues, fetching workflow run logs to diagnose a specific failure, one-off lookups, etc.
 
-**Caveat:** `ccd_pr` is an MCP tool family available only inside an interactive Claude Code session. The headless pipeline scripts (`supervisor.sh`, `orchestrate.sh`, and anything launched via `claude --agent <x> -p`) have no such tool and must keep polling with `gh`/`gh api` as they already do — this guidance does not apply to them and is not a reason to change their logic.
+**Caveat:** `ccd_pr` is an MCP tool family available only inside an interactive Claude Code session. The headless pipeline scripts (`supervisor.sh`, `orchestrate.sh`, and anything launched via `claude --agent <x> -p`) have no such tool and must still poll with `gh`/`gh api` — but sparingly (#637): check local state (a PID, a run file, the marker already on disk) first, and read GitHub itself at most every ~2 min, never on every short liveness tick.
 
 ## Google integrations
 
