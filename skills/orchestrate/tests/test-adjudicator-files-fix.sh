@@ -1,5 +1,7 @@
-# Issue #39: the adjudicator files and queues its own zero-mechanism fix ticket; JP is asked only
-# for a new mechanism or a JP-only item. Prose contract, pinned by literal strings in tracked files.
+# Issue #39: the adjudicator files its own zero-mechanism fix ticket; JP is asked only for a new
+# mechanism or a JP-only item. Prose contract, pinned by literal strings in tracked files.
+# #632: claude-agents is direct-route — the ticket is filed but never queued with agent-go (AC1 pin inverted,
+# the Hard-limits command and the CLAUDE.md phrase re-pinned to the new wording).
 ROOT_AF=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 ADJ_AF="$ROOT_AF/agents/pipeline-adjudicator.md"
 CMD_AF="$ROOT_AF/CLAUDE.md"
@@ -9,7 +11,8 @@ af_lacks() { if grep -qiF -- "$2" "$1"; then fail "$(basename "$1"): still conta
 
 test_af_ac1_files_and_labels() {
   af_has "$ADJ_AF" 'gh issue create --repo jpmoya/claude-agents' || return 1
-  af_has "$ADJ_AF" 'gh issue edit <n> --add-label agent-go' || return 1
+  af_lacks "$ADJ_AF" '--add-label agent-go' || return 1   # #632: inverted — the fix ticket is never queued
+  af_has "$ADJ_AF" 'gh issue edit <n> --add-label user-feedback' || return 1
   af_has "$ADJ_AF" 'tells JP the issue number filed' || return 1
   for s in 'You file nothing' 'You file no issue' 'you add no label' 'no write at all'; do
     af_lacks "$ADJ_AF" "$s" || return 1
@@ -32,7 +35,7 @@ test_af_ac5_hard_limits() {
   local hl
   hl=$(awk '/^## Hard limits/ { on = 1; next } on && /^## / { exit } on { print }' "$ADJ_AF")
   for s in '`gh issue comment`' '`gh issue create` (repo `jpmoya/claude-agents` only)' \
-           '`gh issue edit --add-label agent-go --add-label user-feedback` on the issue you just created' 'no `orchestrate.sh`'; do
+           '`gh issue edit --add-label user-feedback` on the issue you just created' 'no `orchestrate.sh`'; do
     case "$hl" in *"$s"*) ;; *) fail "hard limits: missing [$s]"; return 1 ;; esac
   done
 }
@@ -48,7 +51,7 @@ test_af_ac6_description() {
 test_af_ac7_claude_md() {
   af_lacks "$CMD_AF" 'only after JP says yes' || return 1
   af_lacks "$ADJ_AF" 'only after JP says yes' || return 1
-  af_has "$CMD_AF" 'files and queues' || return 1
+  af_has "$CMD_AF" 'files its own fix ticket (no `agent-go`)' || return 1   # #632: was 'files and queues'
   af_has "$CMD_AF" 'DO NOW' || return 1
   af_has "$CMD_AF" 'without asking JP' || return 1
 }

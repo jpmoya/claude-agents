@@ -398,11 +398,12 @@ test_dd_ac18_project_manager_sections_and_untouched_parts_byte_identical() {
   # re-pinned for #106 (tail hash: project-manager.md line 104 only)
   # re-pinned for #168 (promotion-PR exception, §1 only) and #192 (delivery-lead.md: name, intro sentence, DECISION marker spelling)
   # re-pinned 2026-10-31 (JP rule: duplicate check before every ticket; §1 plan-shape sentence only)
-  assert_eq "$head" "57632486c90a0822c0ace2e0184aa8d68e131dd605d15b312376d586753dbafc" "AC18: frontmatter + section 1 (re-pinned for #434 after #437; earlier #117, JP-only paragraph Slack carve-out only)" || return 1
+  assert_eq "$head" "4cafec249b97df8032268aee2c3140f54eb21ec28d598bfac0c4f07a3c1bd0ab" "AC18: frontmatter + section 1 (re-pinned for #434 after #437; earlier #117, JP-only paragraph Slack carve-out only)" || return 1
   # re-pinned for #311 PR: head hash set to origin/main's current delivery-lead.md (#335 changed §1); #311 itself does not touch delivery-lead.md
   # re-pinned for #198 (§3 pacing sentence and §4 headless line) and #192 (status-card sentence rename only)
   # re-pinned for #236 (§5 deployer-merged-no-marker row narrowed; no no-decision relaunch for a deployer BLOCKED)
-  assert_eq "$tail" "2ffe309f76d51693d44b3fb69bd8baa9e7c09e5fb3c0f38f4c49aa9fbc786fbf" "AC18: sections 3-8 (re-pinned for #442 after GOAL_SERIAL #554; earlier #198 + #192, rename only; #236 playbook row; #332 run-state path)" || return 1
+  # re-pinned for #632 (direct-route: §1 self-heal + direct-route bullets, §6/§8 report heading)
+  assert_eq "$tail" "67c09aa028d14d6930a3f7d6eac9bb1a994a652c3864a2caab26af2d2cfc80e0" "AC18: sections 3-8 (re-pinned for #442 after GOAL_SERIAL #554; earlier #198 + #192, rename only; #236 playbook row; #332 run-state path)" || return 1
 }
 
 # ---------------------------------------------------------------------------------------- AC19-AC20 docs
