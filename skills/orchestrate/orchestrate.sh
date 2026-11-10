@@ -182,6 +182,11 @@ except Exception: print('?')
     shift 2; EXTRA="$*"
     REPO=$(cd "$REPO" && pwd)
     OWNER_REPO=$(cd "$REPO" && gh repo view --json nameWithOwner --jq .nameWithOwner)
+    # #632: a direct-route repo (DIRECT_ROUTE_REPOS, config.sh) is never pipelined — refused before any gh write or state
+    # file, and --force is deliberately not consulted. stop/status/tail/queue above still work on its old runs.
+    if direct_route_repo "$OWNER_REPO"; then
+      echo "$OWNER_REPO#$ISSUE is a direct-route repo: implement in the interactive session with subagents (fullstack-developer in a worktree, code-reviewer/test-reviewer, merge when green) — see CLAUDE.md" >&2; exit 2
+    fi
     RK=$(run_key "$OWNER_REPO" "$ISSUE")
     migrate_legacy_runs   # a legacy orch-<N>.* set of this repo moves to its key before the checks below read it
     if [ -f "$PIPE/orch-$RK.pid" ] && kill -0 "$(cat "$PIPE/orch-$RK.pid")" 2>/dev/null; then
