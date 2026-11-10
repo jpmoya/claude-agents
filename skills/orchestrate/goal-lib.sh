@@ -462,6 +462,7 @@ goal_brief() {
   fi
   printf 'Instructions: %s\n' "${instr:-(none)}"
   printf 'Your memory (read first, append to it): %s/goals/%s.md\n' "$LOGDIR" "$id"
+  printf 'No dispatchable work this cycle: run `touch %s/goal-%s.idle` before ending the turn (headless only).\n' "$PIPE" "$id"
   printf '\nScope (live from GitHub):\n'
   direct=""
   while IFS=$'\t' read -r ref st; do
@@ -514,7 +515,7 @@ goal_launch() {
   fi
   checkout=$(_goal_checkout "$repo") || { echo "$repo is not in DISPATCH_REPOS" >&2; return 1; }
   mkdir -p "$PIPE" "$LOGDIR/goals"
-  rm -f "$PIPE/goal-$id.launch-scope" "$PIPE/goal-$id.yielded"
+  rm -f "$PIPE/goal-$id.launch-scope" "$PIPE/goal-$id.yielded" "$PIPE/goal-$id.idle"
   # #527: a feedback lead's launch scope is kept so goal_fb_yield can end the cycle when another goal takes a ticket over
   if [ "$(goal_parse "$(printf '%s' "$g" | jq -r .spec)" 2>/dev/null | cut -f2)" = fb ]; then
     brief=$(goal_brief "$id" "$g" "$PIPE/goal-$id.launch-scope") || return 1
@@ -1233,9 +1234,10 @@ _goal_reset_streaks() {
   return 0
 }
 
-goal_park() {  # <id> <issue> [launch] — `launch` (#514): parked by GOAL_MAX_LAUNCH_FAILS, not by GOAL_MAX_NO_PROGRESS
+goal_park() {  # <id> <issue> [launch|idle] — `launch` (#514): parked by GOAL_MAX_LAUNCH_FAILS; `idle` (#627): by GOAL_MAX_NO_PROGRESS idle hand-offs
   local id=$1 issue=$2 why="no progress in $GOAL_MAX_NO_PROGRESS cycles"
   [ "${3:-}" = launch ] && why="could not launch in $GOAL_MAX_LAUNCH_FAILS consecutive attempts"
+  [ "${3:-}" = idle ] && why="no dispatchable work in $GOAL_MAX_NO_PROGRESS consecutive cycles (idle hand-offs, scope unchanged)"
   touch "$PIPE/goal-$id.held"
   if _goal_label_add "$issue" goal-held; then echo registry > "$PIPE/goal-$id.held"   # confirmed: goal_sync reads its lifting as a resume
   else goal_err "cannot label the registry issue of $id held"; fi
@@ -1326,6 +1328,45 @@ goal_tick_one() {  # <id>
       idx=$restarts; [ "$idx" -ge "${#BACKOFF[@]}" ] && idx=$(( ${#BACKOFF[@]} - 1 ))
       wait_secs=${BACKOFF[$idx]}
     fi
+  fi
+  if [ -f "$PIPE/goal-$id.idle" ]; then   # #627: the lead found nothing it may dispatch: hand the slot to the next queued goal
+    if goal_serial && ! goal_slot_exempt "$spec"; then
+      local qn qids icnt isnap
+      # the scope is read first (one evaluation): a delivered goal closes and a goal whose every open ticket waits on JP is
+      # "waiting on JP" (frees the slot, resumes by itself when a ticket moves) — neither rotates through the queue
+      if ! goal_eval "$id" "$spec"; then goal_err "goal $id evaluation failed before the hand-off (see the preceding error); retrying next tick"; return 0; fi
+      if [ "$GE_TOTAL" -gt 0 ] && [ "$GE_DELIVERED" -eq "$GE_TOTAL" ]; then rm -f "$PIPE/goal-$id.idle"; goal_deliver "$id" "$issue" "$spec"; return 0; fi
+      if [ "$GE_TOTAL" -gt 0 ] && [ "$GE_ACTIVE" -eq 0 ] && [ "$GE_WAITING" -gt 0 ]; then
+        rm -f "$PIPE/goal-$id.idle" "$PIPE/goal-$id.launchfails" "$PIPE/goal-$id.launch-failed"
+        goal_mirror "$id" waiting_jp "$GE_TOTAL" "$GE_DELIVERED"
+        goal_waiting "$id" "$issue" "$spec"; return 0
+      fi
+      # fail closed on the read AND on the queue jq: never hand off (or keep the slot) on a guess
+      qids=$(_goal_registry_json 2>/dev/null | _goal_queue_jq ' | .queued | map(.id) | .[]' 2>/dev/null; [ "${PIPESTATUS[0]}${PIPESTATUS[1]}" = 00 ]) \
+        || { goal_err "goal $id: cannot read the registry to hand off the slot; retrying next tick"; return 0; }
+      qn=$(printf '%s\n' "$qids" | tr -d '"' | grep -vxF -e "$id" | grep -c .)
+      if [ "$qn" -ge 1 ]; then
+        # consecutive hand-offs with an unchanged scope snapshot count like no-progress cycles (.np): the count and the
+        # snapshot travel in the registry block (the local state is dropped by the requeue) and the GOAL_MAX_NO_PROGRESS-th
+        # holds the goal exactly as a stalled one; a scope change in between starts the count over
+        new=$(printf '%s' "$GE_SNAP" | goal_snapshot)
+        isnap=$(jq -r '.idle_snap // ""' "$cache" 2>/dev/null); icnt=$(jq -r '.idle_handoffs // 0' "$cache" 2>/dev/null)
+        case "$icnt" in ''|*[!0-9]*) icnt=0 ;; esac
+        if [ "$new" = "$isnap" ]; then icnt=$((icnt + 1)); else icnt=1; fi
+        if [ "$icnt" -ge "$GOAL_MAX_NO_PROGRESS" ]; then
+          rm -f "$PIPE/goal-$id.idle"; echo "$new" > "$PIPE/goal-$id.snap"; echo "$icnt" > "$PIPE/goal-$id.np"   # .snap: the #427 unhold-on-change check
+          goal_park "$id" "$issue" idle; return 0
+        fi
+        if goal_requeue "$id" "$issue" "no dispatchable work: slot handed to the queue" defer "$icnt" "$new"; then
+          _goal_note "$issue" "**[deliver] NOTE** slot handed off: no dispatchable work; back in the queue behind $qn goal(s) (idle cycle $icnt/$GOAL_MAX_NO_PROGRESS)" || goal_err "goal $id: cannot post the hand-off note"
+          # the sync's queue cache was written before this tick: refresh it so the next candidate shows (and starts) now
+          local fresh; fresh=$(_goal_registry_json 2>/dev/null) && goal_queue_save "$fresh"
+        fi
+        return 0
+      fi
+      rm -f "$PIPE/goal-$id.idle"
+      slog "[goal] $id idle but keeps the slot (no goal queued)"
+    else rm -f "$PIPE/goal-$id.idle"; fi
   fi
   lf=$(cat "$PIPE/goal-$id.launchfails" 2>/dev/null); case "$lf" in ''|*[!0-9]*) lf=0 ;; esac
   if [ -f "$PIPE/goal-$id.launch-failed" ]; then
@@ -1431,13 +1472,17 @@ _GOAL_QUEUE_JQ='def okey: [((.block.priority? // .block.order? // .issue) | if t
 # while no goal holds the slot and no registry entry is unreadable ANYWHERE in the order (fail closed: an unreadable entry
 # could be an active goal; goal_sync logs an error for each one so it gets fixed). With $fbfree (GOAL_SERIAL_FEEDBACK=0)
 # a running feedback goal never holds the slot, but a queued one still waits for its turn like any goal. Needs --argjson fbfree.
-_GOAL_QUEUE_SERIAL_JQ='def okey: [((.block.priority? // .block.order? // .issue) | if type == "number" then . else 1e12 end), .issue];
+# #627: a goal that handed the slot off (block.deferred_at) sorts behind every other queued goal and is not a candidate
+# again within $cool seconds (GOAL_CYCLE_SECS) of the hand-off: several idle goals cost one lead cycle each per cycle
+# instead of rotating back-to-back. Needs --argjson now (epoch seconds) and --argjson cool.
+_GOAL_QUEUE_SERIAL_JQ='def okey: [(if (.block.deferred_at? // "") != "" then 1 else 0 end), ((.block.priority? // .block.order? // .issue) | if type == "number" then . else 1e12 end), .issue];
   def exempt: $fbfree and ((.spec // "") | test(":feedback$"));
+  def cooling: .st == "queued" and ((.block.deferred_at? // "") != "") and (((.block.deferred_at | try fromdateiso8601 catch 0) + $cool) > $now);
   sort_by(okey) as $all
   | ($all | map(select(.st == "queued"))) as $q
   | ($all | map(select(.st == "active" and (exempt | not))) | first // null) as $h
   | (($h != null) or any($all[]; .st == "unreadable")) as $busy
-  | ($all | map(select(.st == "unreadable" or .st == "queued")) | first // null) as $f
+  | ($all | map(select(.st == "unreadable" or (.st == "queued" and (cooling | not)))) | first // null) as $f
   | {queued: $q, candidate: (if ($busy | not) and $f != null and $f.st == "queued" then $f else null end), serial: true, slot: ($h.id // null),
      recent: ($all | map(select(.st == "delivered" or .st == "stopped")) | sort_by(.closed_at // "") | reverse | .[:5]),
      open: ($all | map(select(.st == "active" or .st == "held" or .st == "waiting_jp")))}'
@@ -1447,9 +1492,10 @@ goal_serial() { case "${GOAL_SERIAL:-1}" in 0|false|no|off) return 1 ;; esac; re
 
 # _goal_queue_jq <filter suffix> — the queue jq for the current mode, applied to the registry JSON on stdin
 _goal_queue_jq() {
-  local fbfree=true
+  local fbfree=true cool=${GOAL_CYCLE_SECS:-1200}
   [ "${GOAL_SERIAL_FEEDBACK:-0}" = 1 ] && fbfree=false
-  if goal_serial; then jq -c --argjson fbfree "$fbfree" "$_GOAL_QUEUE_SERIAL_JQ$1"
+  case "$cool" in ''|*[!0-9]*) cool=1200 ;; esac
+  if goal_serial; then jq -c --argjson fbfree "$fbfree" --argjson now "$(date +%s)" --argjson cool "$cool" "$_GOAL_QUEUE_SERIAL_JQ$1"
   else jq -c "$_GOAL_QUEUE_JQ$1"; fi
 }
 
@@ -1495,10 +1541,13 @@ _goal_drop_local() {
 # then starts it again in priority order, through the same claim as any queued goal. Exit 1 (nothing local touched) when
 # a registry write fails or the issue does not read "queued" afterwards; the next decision retries.
 goal_requeue() {
-  local id=$1 issue=$2 why=$3 g g2
+  local id=$1 issue=$2 why=$3 defer=${4:-} icnt=${5:-} isnap=${6:-} g g2
   g=$(_goal_find "$id" 2>/dev/null) || { goal_err "cannot read the registry to return $id to the queue"; return 1; }
   [ "$(printf '%s' "$g" | jq -r .issue)" = "$issue" ] || { goal_err "$id: registry issue changed under it; not returned to the queue"; return 1; }
-  g2=$(printf '%s' "$g" | jq -c '.block.host = "" | .host = ""')
+  if [ -n "$defer" ]; then   # #627: handed the slot over: sorts behind the goals already queued; $5/$6 = consecutive idle hand-offs + the scope snapshot they were counted against
+    g2=$(printf '%s' "$g" | jq -c --arg d "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg c "$icnt" --arg s "$isnap" \
+      '.block.host = "" | .host = "" | .block.deferred_at = $d | if $c != "" then .block.idle_handoffs = ($c | tonumber) | .block.idle_snap = $s else . end')
+  else g2=$(printf '%s' "$g" | jq -c '.block.host = "" | .host = ""'); fi
   _goal_patch_body "$issue" "$(_goal_queue_body "$g2")" >/dev/null 2>&1 || { goal_err "cannot return $id to the queue (registry write)"; return 1; }
   _goal_label_add "$issue" goal-queued || { goal_err "cannot label $id goal-queued"; return 1; }
   _goal_label_del "$issue" goal-held; _goal_label_del "$issue" goal-waiting-jp
@@ -1564,7 +1613,8 @@ goal_queue_save() {
                            st, host: (.host // ""), priority: (.block.priority? // null), hosts: (.block.hosts? // "both"), host_pref: (.block.host_pref // ""), project_url: (.block.project?.url? // "")})),
        queued: (.queued | map({id, issue, spec, title: (.block.title // ""), label: (.block.label // ""), priority: (.block.priority? // null),
                                repos: (.block.repos // []), order: (.block.order? // .issue), host_pref: (.block.host_pref // ""),
-                               hosts: (.block.hosts? // "both"), project_url: (.block.project?.url? // "")}))}' 2>/dev/null) \
+                               hosts: (.block.hosts? // "both"), project_url: (.block.project?.url? // ""),
+                               deferred: (.block.deferred_at? // "")}))}' 2>/dev/null) \
     || { goal_err "cannot compute the goal queue"; return 0; }
   mkdir -p "$PIPE" 2>/dev/null
   printf '%s\n' "$v" > "$f.tmp" 2>/dev/null && mv "$f.tmp" "$f" || { rm -f "$f.tmp"; goal_err "cannot write the goal queue cache"; }
@@ -1787,7 +1837,7 @@ goal_queue_step() {
   fi
 
   # won: pin the goal here (block host), leave the queue, write the cache and launch
-  g2=$(printf '%s' "$g" | jq -c --arg h "$GOAL_THIS_HOST" '.block.host = $h | .host = $h')
+  g2=$(printf '%s' "$g" | jq -c --arg h "$GOAL_THIS_HOST" '.block.host = $h | .host = $h | del(.block.deferred_at)')
   body=$(_goal_queue_body "$g2")
   _goal_patch_body "$issue" "$body" >/dev/null 2>&1 || { goal_queue_fail "$issue" "$id" "cannot pin $id to $GOAL_THIS_HOST on the registry issue"; return 0; }
   _goal_label_del "$issue" goal-queued

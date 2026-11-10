@@ -403,7 +403,8 @@ test_dd_ac18_project_manager_sections_and_untouched_parts_byte_identical() {
   # re-pinned for #198 (§3 pacing sentence and §4 headless line) and #192 (status-card sentence rename only)
   # re-pinned for #236 (§5 deployer-merged-no-marker row narrowed; no no-decision relaunch for a deployer BLOCKED)
   # re-pinned for #632 (direct-route: §1 self-heal + direct-route bullets, §6/§8 report heading)
-  assert_eq "$tail" "67c09aa028d14d6930a3f7d6eac9bb1a994a652c3864a2caab26af2d2cfc80e0" "AC18: sections 3-8 (re-pinned for #442 after GOAL_SERIAL #554; earlier #198 + #192, rename only; #236 playbook row; #332 run-state path)" || return 1
+  # re-pinned for #627 (§4 idle-file rule: lead touches goal-<id>.idle when only waiting on JP)
+  assert_eq "$tail" "ef6e8f6ee28b1c13f653a579cd8f6ab28882608fa6ec68e30e752cad6e703728" "AC18: sections 3-8 (re-pinned for #442 after GOAL_SERIAL #554; earlier #198 + #192, rename only; #236 playbook row; #332 run-state path)" || return 1
 }
 
 # ---------------------------------------------------------------------------------------- AC19-AC20 docs

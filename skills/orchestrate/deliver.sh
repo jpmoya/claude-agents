@@ -139,7 +139,7 @@ check_overlap() {
 
 clear_stale_goal_state() {  # <id>: drop local stop/held/retry state left by an earlier goal of the same id (#224)
   rm -f "$PIPE/goal-$1".stopped "$PIPE/goal-$1".held "$PIPE/goal-$1".restarts "$PIPE/goal-$1".np "$PIPE/goal-$1".snap "$PIPE/goal-$1".launchfails "$PIPE/goal-$1".launch-failed \
-    "$PIPE/goal-$1".yielded "$PIPE/goal-$1".launch-scope
+    "$PIPE/goal-$1".yielded "$PIPE/goal-$1".launch-scope "$PIPE/goal-$1".idle
 }
 
 write_cache() {  # <id> <block json> <issue number>
@@ -593,7 +593,14 @@ cmd_resume() {
   set_state "$issue" open
   del_label "$issue" goal-stopped; del_label "$issue" goal-held
   rm -f "$PIPE/goal-$id".stopped "$PIPE/goal-$id".held "$PIPE/goal-$id".restarts "$PIPE/goal-$id".np "$PIPE/goal-$id".snap "$PIPE/goal-$id".launchfails "$PIPE/goal-$id".launch-failed \
-    "$PIPE/goal-$id".yielded "$PIPE/goal-$id".launch-scope
+    "$PIPE/goal-$id".yielded "$PIPE/goal-$id".launch-scope "$PIPE/goal-$id".idle
+  # #627: a hand-off deferral and its idle hand-off count do not outlive a resume; the body is rebuilt by the shared builder
+  # (_goal_queue_body, as goal_requeue does) so a v2 goal keeps its Go-granted lines
+  if [ "$(printf '%s' "$block" | jq -r '[.deferred_at, .idle_handoffs, .idle_snap] | map(select(. != null)) | length')" != 0 ]; then
+    g=$(printf '%s' "$g" | jq -c 'del(.block.deferred_at, .block.idle_handoffs, .block.idle_snap)'); block=$(printf '%s' "$g" | jq -c .block)
+    api_json PATCH "repos/$GOAL_REGISTRY_REPO/issues/$issue" \
+      "$(jq -nc --arg b "$(_goal_queue_body "$g")" '{body:$b}')" >/dev/null
+  fi
   [ "$(goal_parse "$spec" 2>/dev/null | cut -f2)" = fb ] || fb_yield_here   # #527: live again, the feedback goal yields now
   if [ -z "$host" ] && [ "$here" != 1 ]; then   # stopped while still queued (#320): back in the queue, no host yet
     add_label "$issue" goal-queued
@@ -601,9 +608,9 @@ cmd_resume() {
     return 0
   fi
   if [ "$here" = 1 ] && [ "$host" != "$THIS_HOST" ]; then
-    block=$(printf '%s' "$block" | jq -c --arg h "$THIS_HOST" '.host = $h')
+    g=$(printf '%s' "$g" | jq -c --arg h "$THIS_HOST" '.block.host = $h | .host = $h'); block=$(printf '%s' "$g" | jq -c .block)
     api_json PATCH "repos/$GOAL_REGISTRY_REPO/issues/$issue" \
-      "$(jq -nc --arg b "$(body_for "$spec" "$block")" '{body:$b}')" >/dev/null
+      "$(jq -nc --arg b "$(_goal_queue_body "$g")" '{body:$b}')" >/dev/null
     host="$THIS_HOST"
   fi
   echo "resumed $id (issue #$issue)"
