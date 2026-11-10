@@ -19,7 +19,7 @@ test_gsl_gs_skill_is_the_real_skill_dir() {
 # A copy elsewhere derives from ITS location (two levels up), never "/" — and the test never calls gs_tree_init on it.
 # (No sanity guard, per the ticket: the fix is the in-tree location plus the "do not copy" header note.)
 test_gsl_copy_elsewhere_is_not_root() {
-  local d got; d=$(mktemp -d "${TMPDIR:-/tmp}/orch-test-gslcopy.XXXXXX")
+  local d got; d=$(mktemp -d "${TMPDIR:-/tmp}/orch-test-gslcopy.XXXXXX"); d=$(cd "$d" && pwd)   # pwd-normalised, like GS_SKILL (TMPDIR may end in "/")
   mkdir -p "$d/a/b/lib"; cp "$GSL_LIB" "$d/a/b/lib/goal-sandbox.sh"
   got=$(bash -c '. "$1" 2>/dev/null; echo "$GS_SKILL"' _ "$d/a/b/lib/goal-sandbox.sh")
   rm -rf "$d"
