@@ -238,3 +238,46 @@ export async function fetchGoogleUserinfo(accessToken) {
   if (!res.ok) throw new Error(`Google userinfo failed: ${res.status}`);
   return res.json();
 }
+
+/**
+ * Stateless OAuth `state`: `nonce.expiresAtEpochSecs.hexHmac`. Lets the callback succeed even when
+ * the browser drops the short-lived oauth_state cookie (multiple tabs, cross-site cookie handling).
+ */
+export async function signState(nonce, secret) {
+  const exp = Math.floor(Date.now() / 1000) + STATE_COOKIE_MAX_AGE_SECS;
+  const payload = `${nonce}.${exp}`;
+  const key = await importHmacKey(secret);
+  const sig = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(`state|${payload}`),
+  );
+  return `${payload}.${toHex(sig)}`;
+}
+
+/** @returns {Promise<boolean>} true if `state` is a signed, unexpired value from signState. */
+export async function verifyState(state, secret) {
+  if (typeof state !== "string" || !isConfiguredSecret(secret)) return false;
+  const parts = state.split(".");
+  if (parts.length !== 3) return false;
+  const [nonce, expStr, sigHex] = parts;
+  if (
+    !nonce ||
+    !/^[0-9]+$/.test(expStr) ||
+    !/^[0-9a-f]+$/i.test(sigHex) ||
+    sigHex.length % 2 !== 0
+  )
+    return false;
+  if (Date.now() / 1000 > Number(expStr)) return false;
+  try {
+    const key = await importHmacKey(secret);
+    return await crypto.subtle.verify(
+      "HMAC",
+      key,
+      fromHex(sigHex),
+      new TextEncoder().encode(`state|${nonce}.${expStr}`),
+    );
+  } catch {
+    return false;
+  }
+}

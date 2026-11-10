@@ -30,6 +30,8 @@ import {
   fetchGoogleUserinfo,
   isEmailAllowed,
   signSession,
+  signState,
+  verifyState,
   buildCookie,
   clearCookie,
   parseCookies,
@@ -295,7 +297,7 @@ function callbackRedirectUri(url, env) {
 }
 
 /** GET /login — starts the Google OAuth flow for the human-facing routes. */
-function handleLogin(request, env) {
+async function handleLogin(request, env) {
   if (
     !isConfiguredAuthSecret(env.GOOGLE_CLIENT_ID) ||
     !isConfiguredAuthSecret(env.SESSION_SECRET)
@@ -306,7 +308,7 @@ function handleLogin(request, env) {
     });
   }
   const url = new URL(request.url);
-  const state = crypto.randomUUID();
+  const state = await signState(crypto.randomUUID(), env.SESSION_SECRET);
   const headers = new Headers();
   headers.append(
     "Set-Cookie",
@@ -350,8 +352,10 @@ async function handleAuthCallback(request, env) {
   if (
     !code ||
     !returnedState ||
-    !expectedState ||
-    !constantTimeEqual(returnedState, expectedState)
+    !(
+      (expectedState && constantTimeEqual(returnedState, expectedState)) ||
+      (await verifyState(returnedState, env.SESSION_SECRET))
+    )
   ) {
     return noindexResponse("Sign-in failed", {
       status: 400,
