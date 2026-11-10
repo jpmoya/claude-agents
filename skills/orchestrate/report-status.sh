@@ -94,8 +94,24 @@ _rs_build_backlog_json() {  # the payload's backlog array (backlog reorder view)
   python3 "$RS_HERE/build-runs-json.py" "$(_rs_aliases_arg)" "$HOME/.claude/pipeline/runs.jsonl" "$PIPE" backlog </dev/null
 }
 
+# ---- ci_queue (issue #643): read-only — this reporter never calls GitHub for it. The host-side
+# collector (infra/ci-runners/ci-queue-collect.sh, invoked below) writes $PIPE/status-ci.json on
+# its own throttled cadence; this just reads that local file, local-only, same as goals/backlog.
+# Absent, unreadable, not a JSON object, or older than STATUS_CI_STALE_SECS -> "" (key omitted
+# entirely from the payload — never sent as null/empty, per AC7).
+STATUS_CI_STALE_SECS=${STATUS_CI_STALE_SECS:-1200}   # 20 min default
+_rs_ci_queue_json() {
+  local f="$PIPE/status-ci.json" mtime now
+  [ -e "$f" ] || { printf ''; return; }
+  mtime=$(_rs_mtime "$f")
+  [ -n "$mtime" ] || { printf ''; return; }
+  now=$(date +%s)
+  [ $((now - mtime)) -le "$STATUS_CI_STALE_SECS" ] || { printf ''; return; }
+  jq -ce 'select(type=="object")' "$f" 2>/dev/null || printf ''
+}
+
 build_payload() {
-  local runs_tsv running queued runs_json completed_json staging_json approved_json goals_json backlog_json
+  local runs_tsv running queued runs_json completed_json staging_json approved_json goals_json backlog_json ci_queue_json
   runs_tsv=$(derive_runs)
   running=$(printf '%s\n' "$runs_tsv" | awk -F'\t' '$3=="running"{c++} END{print c+0}')
   queued=$(printf '%s\n' "$runs_tsv" | awk -F'\t' '$3=="queued"{c++} END{print c+0}')
@@ -107,8 +123,10 @@ build_payload() {
   approved_json=$(_rs_build_list_json approved); [ -n "$approved_json" ] || approved_json='[]'
   goals_json=$(_rs_build_goals_json); [ -n "$goals_json" ] || goals_json='[]'
   backlog_json=$(_rs_build_backlog_json); [ -n "$backlog_json" ] || backlog_json='[]'
+  ci_queue_json=$(_rs_ci_queue_json)
   jq -n \
     --argjson goals "$goals_json" \
+    --argjson ci_queue "${ci_queue_json:-null}" \
     --arg sent_at "$SENT_AT" \
     --arg tick "$SUPERVISOR_LAST_TICK" \
     --argjson running "$running" \
@@ -121,7 +139,9 @@ build_payload() {
     --argjson backlog "$backlog_json" \
     '{v: 1, sent_at: $sent_at, supervisor_last_tick: $tick,
       capacity: {running: $running, max: $max, queued: $queued}, runs: $runs, completed: $completed,
-      staging: $staging, approved: $approved, backlog: $backlog} + (if ($goals | length) > 0 then {goals: $goals} else {} end)'
+      staging: $staging, approved: $approved, backlog: $backlog}
+      + (if ($goals | length) > 0 then {goals: $goals} else {} end)
+      + (if $ci_queue != null then {ci_queue: $ci_queue} else {} end)'
 }
 
 SENT_AT=$(python3 -c "import datetime; print(datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))")
@@ -134,12 +154,23 @@ if [ "$EVENT" = "--print" ]; then
   exit 0
 fi
 
+# ---- CI queue collector (issue #643): piggybacks on this heartbeat cycle instead of its own
+# cron — fire-and-forget, backgrounded, never blocks or fails this push. The collector throttles
+# itself (its own mtime check on $PIPE/status-ci.json), so calling this on every event here is
+# harmless. Off by default (CI_QUEUE_COLLECT_ENABLED=0): a dev/test machine on Darwin must not
+# start making live GitHub Actions API calls just by running the test suite. Opt in on exactly
+# one host (default: the Mac) via ~/.claude/pipeline/config.local.sh.
+if [ "${CI_QUEUE_COLLECT_ENABLED:-0}" = "1" ]; then
+  ( "$RS_HERE/../../infra/ci-runners/ci-queue-collect.sh" >/dev/null 2>&1 & ) 9>&- || true
+fi
+
 rs_log() {  # rs_log <line...> — decision + HTTP status only, never the curl command or the token
   mkdir -p "$LOGDIR" 2>/dev/null
   printf '[%s] %s\n' "$(date -u +%FT%TZ)" "$*" >> "$LOGDIR/report-status.log" 2>/dev/null
 }
 
-hash_payload() {  # hash the payload minus sent_at/supervisor_last_tick (else every tick looks new)
+hash_payload() {  # hash the payload minus sent_at/supervisor_last_tick/ci_queue.as_of (else every
+                   # tick, or every collector cycle with identical counts, looks like a change)
   python3 -c "
 import json, hashlib, sys
 try:
@@ -148,6 +179,9 @@ except Exception:
     print(''); raise SystemExit
 d.pop('sent_at', None)
 d.pop('supervisor_last_tick', None)
+ci_queue = d.get('ci_queue')
+if isinstance(ci_queue, dict):
+    ci_queue.pop('as_of', None)
 print(hashlib.sha256(json.dumps(d, sort_keys=True).encode()).hexdigest())
 " "$1" 2>/dev/null
 }

@@ -64,6 +64,11 @@ export const NEEDS_VOCAB = ['Approve mockups', 'Say go', 'Approve effort', 'Miss
 export const PARKED_REASON_VOCAB = ['answered', 'out_of_scope', 'auto_retry'];
 export const BLOCK_CLASS_VOCAB = ['ci_pending', 'ci_red', 'merge_conflict', 'dependency', 'unsupported_project', 'other'];
 
+// `ci_queue.categories[].key` / `ci_queue.oldest.key` (issue #643): a closed vocabulary — no
+// free-text category labels ever reach storage. The Worker/render side maps each key to display
+// text later (ticket #644).
+export const CI_QUEUE_CATEGORY_VOCAB = ['dependabot', 'deploy_release', 'pr', 'other'];
+
 // The `runs[].state` enum (validate.js table) — fixed by the frozen v1 payload contract,
 // not derived from a repo scan the way STAGE_VOCAB/MARKER_VOCAB are.
 export const STATE_VOCAB = ['running', 'restarting', 'queued', 'held'];

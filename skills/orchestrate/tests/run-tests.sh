@@ -30,6 +30,10 @@ export PIPELINE_TEST_CLAIM_SETTLE_SECS=0   # #217: hand launches wait the settle
 # test-code-sync.sh drives code-sync.sh directly and sets its own state.
 export CODE_SYNC_ENABLED=0
 export GH_BUDGET_ENABLED=0   # gh-budget.sh (call log, quota guard, read cache) is off for the suites; test-gh-budget.sh turns it on for itself
+# #643: report-status.sh's opt-in background call to the host-side CI queue collector (real gh/GitHub
+# Actions API calls) must never fire just because the suite ran report-status.sh — explicit, not just
+# relying on the script's own default-off, in case a real ~/.claude/pipeline/config.local.sh enabled it.
+export CI_QUEUE_COLLECT_ENABLED=0
 
 . "$HERE/lib/assert.sh"
 . "$HERE/lib/fixture.sh"
