@@ -757,10 +757,9 @@ PY
 # #178 end
 # --- Main tick ---
 
-# GitHub API budget (gh-budget.sh): one quota line per tick (times in Europe/Madrid), a fresh read cache per tick, and the tier flags
-# the steps below consult. Core (REST) at 0 = nothing can be read or written until the reset, so the tick ends quietly instead of
+# GitHub API budget (gh-budget.sh): one quota line per tick (times in Europe/Madrid) and the tier flags the steps
+# below consult. Core (REST) at 0 = nothing can be read or written until the reset, so the tick ends quietly instead of
 # failing hundreds of calls (2026-10-29..11-03: 550-2753 "API rate limit exceeded" lines a day).
-gh_cache_clear
 if [ "$GH_BUDGET_ENABLED" = 1 ]; then
   slog "$(gh_quota_line)"
   if ! gh_tier_allows essential; then
@@ -768,10 +767,16 @@ if [ "$GH_BUDGET_ENABLED" = 1 ]; then
     exit 0
   fi
 fi
+gh_class essential
+# #637: per-repo incremental sync replaces the old blanket gh_cache_clear here — one issues?since=<last read> list
+# call per in-scope repo tells us which tickets changed; everything else is served from the previous tick's cached
+# per-ticket reads (issue_info_rest, latest_marker, goal-lib's comments fetches) instead of re-fetching unconditionally.
+while IFS= read -r _sw_repo; do
+  [ -n "$_sw_repo" ] && gh_since_sync "$_sw_repo"
+done <<< "$(sw_repo_list)"
 T_NORMAL=1; gh_tier_allows normal || T_NORMAL=0       # below GH_QUOTA_ESSENTIAL_BELOW: only restarts and already-queued launches
 T_OPT=1; gh_tier_allows optional || T_OPT=0           # below GH_QUOTA_OPTIONAL_BELOW: no optional work
 [ "$T_NORMAL" = 1 ] && [ "$T_OPT" = 1 ] || slog "[gh-quota] reduced tier: normal=$T_NORMAL optional=$T_OPT"
-gh_class essential
 
 launched=0
 
