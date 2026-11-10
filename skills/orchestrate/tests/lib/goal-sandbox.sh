@@ -1,6 +1,12 @@
 # Shared goal-supervisor sandbox (gs_* helpers, GS_* vars). Sourced by test-goal-supervisor.sh and every file that reuses gs_*.
-# Lives in lib/ so BASH_SOURCE is always the real in-tree file: GS_SKILL is derived from here, never from a copy (#628).
+# Do not copy this file; source it in place. It lives in lib/ so BASH_SOURCE is always the real in-tree file: GS_SKILL is
+# derived from here, never from a copy (#628: a copy in /tmp derived "/" and gs_tree_init copied the whole disk).
 # Function/variable definitions only; safe to source twice (GS_TREE keeps an already-built tree).
+
+# The helpers below call run_test / assert_* and new_pipe / new_home / fixture_repo. run-tests.sh loads both libs first (and
+# assert.sh resets the pass/fail counters when sourced, so it must not be loaded again); a consumer run on its own gets them here.
+type run_test >/dev/null 2>&1 || . "$(dirname "${BASH_SOURCE[0]}")/assert.sh"
+type new_pipe >/dev/null 2>&1 || . "$(dirname "${BASH_SOURCE[0]}")/fixture.sh"
 
 GS_SKILL=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 GS_ROOT=$(cd "$GS_SKILL/../.." && pwd)
@@ -403,3 +409,104 @@ gs_event_count() { grep -cxF -- "$1" "$GS_RS_LOG" 2>/dev/null; }
 gs_file() { cat "$GS_PIPE/goal-$1.$2" 2>/dev/null || echo "MISSING"; }
 gs_json() { jq -r --arg k "$2" '.[$k] // "MISSING"' "$GS_PIPE/goal-$1.json" 2>/dev/null || echo "NOJSON"; }
 gs_goal_file_count() { ls "$GS_PIPE"/goal-"$1".* 2>/dev/null | wc -l | tr -d ' '; }
+
+# ---------------------------------------------------------------- classification drivers ---------------------
+
+# gs_classify <issue state> <labels-csv> <comment body…> — one single-ticket goal (t-7) in a launch-eligible shape;
+# prints delivered | waiting_jp | active | none. Outcome read from the registry store / launch, never from call shapes.
+gs_classify() {
+  local st=$1 lb=$2 b out=none
+  shift 2
+  gs_env
+  gs_issue 7 "$st" "" "" "$lb"
+  rm -f "$GS_ST/comments/$GS_A-7.json"
+  for b in "$@"; do gs_comment 7 "$b"; done
+  gs_own "$GS_ID_T7" 50 "$GS_SPEC_T7" 3600 ""
+  gs_tick
+  if [ "$(gs_reg_state 50)" = closed ] && ! gs_has_label 50 goal-stopped; then out=delivered
+  elif gs_has_label 50 goal-waiting-jp; then out=waiting_jp
+  elif gs_wait_claude 1; then out=active
+  fi
+  gs_cleanup
+  printf '%s' "$out"
+}
+
+gs_check_class() {  # <expected> <label> <state> <labels> <comments…>
+  local want=$1 label=$2 got
+  shift 2
+  got=$(gs_classify "$@")
+  assert_eq "$got" "$want" "classification: $label" || return 1
+}
+
+# gs_classify_sr <issue state> <state_reason> — same as gs_classify, but sets the ticket's state_reason (#557)
+gs_classify_sr() {
+  local st=$1 sr=$2 out=none
+  gs_env
+  gs_issue 7 "$st" "" "" "" open m "$sr"
+  rm -f "$GS_ST/comments/$GS_A-7.json"
+  gs_own "$GS_ID_T7" 50 "$GS_SPEC_T7" 3600 ""
+  gs_tick
+  if [ "$(gs_reg_state 50)" = closed ] && ! gs_has_label 50 goal-stopped; then out=delivered
+  elif gs_has_label 50 goal-waiting-jp; then out=waiting_jp
+  elif gs_wait_claude 1; then out=active
+  fi
+  gs_cleanup
+  printf '%s' "$out"
+}
+
+# gs_classify_ms <issue state> <milestone state> <milestone title> <comment body…> — gs_classify with a milestone on t-7
+gs_classify_ms() {
+  local st=$1 mss=$2 mst=$3 b out=none
+  shift 3
+  gs_env
+  gs_issue 7 "$st" 99 "" "" "$mss" "$mst"
+  rm -f "$GS_ST/comments/$GS_A-7.json"
+  for b in "$@"; do gs_comment 7 "$b"; done
+  gs_own "$GS_ID_T7" 50 "$GS_SPEC_T7" 3600 ""
+  gs_tick
+  if [ "$(gs_reg_state 50)" = closed ] && ! gs_has_label 50 goal-stopped; then out=delivered
+  elif gs_has_label 50 goal-waiting-jp; then out=waiting_jp
+  elif gs_wait_claude 1; then out=active
+  fi
+  gs_cleanup
+  printf '%s' "$out"
+}
+
+# the deployer's plain DEPLOYED bodies (staging merge is not delivery; see test-goal-supervisor.sh for the source examples)
+GS_DEP_STAGING=$'**[deployer] DEPLOYED**\n- PR #1973 merged to staging\n- Migrations: none\nProduction deploy pending JP\'s review on staging.'
+GS_DEP_DIRECT=$'**[deployer] DEPLOYED**\n- PR #12 merged to staging (abc1234)\n- Migrations: none\n- Route: direct — the auto-release workflow promotes it when enabled; otherwise production deploy pending JP\'s review.'
+GS_DEP_MAIN=$'**[deployer] DEPLOYED**\n- PR #9 merged to main\n- Migrations: none (n/a)'
+
+# gs_gate_class <gate issue state|missing> <ticket comments…> — t-7 whose body names "Depends on #42 for starting work" (#428).
+gs_gate_class() {
+  local gst=$1 b out=none
+  shift
+  gs_env
+  gs_issue 7 open
+  gs_body 7 $'Do the thing.\n\nDepends on #42 for starting work'
+  rm -f "$GS_ST/comments/$GS_A-7.json"
+  for b in "$@"; do gs_comment 7 "$b"; done
+  if [ "$gst" = missing ]; then rm -f "$GS_ST/issues/$GS_A/42.json"; else gs_issue 42 "$gst"; fi
+  gs_own "$GS_ID_T7" 50 "$GS_SPEC_T7" 3600 ""
+  gs_tick
+  if [ "$(gs_reg_state 50)" = closed ] && ! gs_has_label 50 goal-stopped; then out=delivered
+  elif gs_has_label 50 goal-waiting-jp; then out=waiting_jp
+  elif gs_wait_claude 1; then out=active
+  fi
+  gs_cleanup
+  printf '%s' "$out"
+}
+
+# gs_held_seed <snap|"-"> — ms-12 parked: .held + goal-held label + np=3; "-" leaves the .snap a normal launch tick wrote (#427).
+gs_held_seed() {
+  gs_env
+  gs_own "$GS_ID_MS12" 50 "$GS_SPEC_MS12" 3600 ""
+  if [ "$1" = "-" ]; then
+    gs_tick; gs_wait_claude 1; gs_settle   # a normal tick stores the real snapshot of the current scope
+    gs_launch_state "$GS_ID_MS12" 3600 0 60
+  else
+    echo "$1" > "$GS_PIPE/goal-$GS_ID_MS12.snap"
+  fi
+  touch "$GS_PIPE/goal-$GS_ID_MS12.held"; echo 3 > "$GS_PIPE/goal-$GS_ID_MS12.np"
+  gs_reg 50 "$GS_SPEC_MS12" "$GS_ID_MS12" host-a held
+}

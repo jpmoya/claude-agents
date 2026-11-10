@@ -174,48 +174,7 @@ test_gs_ac4_all_delivered_closes_registry_with_card_and_removes_cache() {
 }
 
 # ---------------------------------------------------------------- classification table -----------------------
-
-# gs_classify <issue state> <labels-csv> <comment body…> — one single-ticket goal (t-7) in a launch-eligible shape;
-# prints delivered | waiting_jp | active | none. Outcome read from the registry store / launch, never from call shapes.
-gs_classify() {
-  local st=$1 lb=$2 b out=none
-  shift 2
-  gs_env
-  gs_issue 7 "$st" "" "" "$lb"
-  rm -f "$GS_ST/comments/$GS_A-7.json"
-  for b in "$@"; do gs_comment 7 "$b"; done
-  gs_own "$GS_ID_T7" 50 "$GS_SPEC_T7" 3600 ""
-  gs_tick
-  if [ "$(gs_reg_state 50)" = closed ] && ! gs_has_label 50 goal-stopped; then out=delivered
-  elif gs_has_label 50 goal-waiting-jp; then out=waiting_jp
-  elif gs_wait_claude 1; then out=active
-  fi
-  gs_cleanup
-  printf '%s' "$out"
-}
-
-gs_check_class() {  # <expected> <label> <state> <labels> <comments…>
-  local want=$1 label=$2 got
-  shift 2
-  got=$(gs_classify "$@")
-  assert_eq "$got" "$want" "classification: $label" || return 1
-}
-
-# gs_classify_sr <issue state> <state_reason> — same as gs_classify, but sets the ticket's state_reason (#557)
-gs_classify_sr() {
-  local st=$1 sr=$2 out=none
-  gs_env
-  gs_issue 7 "$st" "" "" "" open m "$sr"
-  rm -f "$GS_ST/comments/$GS_A-7.json"
-  gs_own "$GS_ID_T7" 50 "$GS_SPEC_T7" 3600 ""
-  gs_tick
-  if [ "$(gs_reg_state 50)" = closed ] && ! gs_has_label 50 goal-stopped; then out=delivered
-  elif gs_has_label 50 goal-waiting-jp; then out=waiting_jp
-  elif gs_wait_claude 1; then out=active
-  fi
-  gs_cleanup
-  printf '%s' "$out"
-}
+# gs_classify / gs_check_class / gs_classify_sr (the drivers) live in lib/goal-sandbox.sh.
 
 test_gs_classify_delivered() {
   gs_check_class delivered "issue CLOSED, no marker" closed "" || return 1
@@ -264,28 +223,7 @@ test_gs_classify_active() {
 # `DEPLOYED TO STAGING` only in post-merge mode. Real example: Benjis-Plants/benjis-ops-tool#1970 (2026-10-28), open, plain
 # DEPLOYED, "- PR #1973 merged to staging". Production ships later; release automation closes the vX.Y.Z milestone at ship
 # (benjis-ops-tool#926: still open, milestone v1.5.0 closed = shipped).
-
-# gs_classify_ms <issue state> <milestone state> <milestone title> <comment body…> — gs_classify with a milestone on t-7
-gs_classify_ms() {
-  local st=$1 mss=$2 mst=$3 b out=none
-  shift 3
-  gs_env
-  gs_issue 7 "$st" 99 "" "" "$mss" "$mst"
-  rm -f "$GS_ST/comments/$GS_A-7.json"
-  for b in "$@"; do gs_comment 7 "$b"; done
-  gs_own "$GS_ID_T7" 50 "$GS_SPEC_T7" 3600 ""
-  gs_tick
-  if [ "$(gs_reg_state 50)" = closed ] && ! gs_has_label 50 goal-stopped; then out=delivered
-  elif gs_has_label 50 goal-waiting-jp; then out=waiting_jp
-  elif gs_wait_claude 1; then out=active
-  fi
-  gs_cleanup
-  printf '%s' "$out"
-}
-
-GS_DEP_STAGING=$'**[deployer] DEPLOYED**\n- PR #1973 merged to staging\n- Migrations: none\nProduction deploy pending JP\'s review on staging.'
-GS_DEP_DIRECT=$'**[deployer] DEPLOYED**\n- PR #12 merged to staging (abc1234)\n- Migrations: none\n- Route: direct — the auto-release workflow promotes it when enabled; otherwise production deploy pending JP\'s review.'
-GS_DEP_MAIN=$'**[deployer] DEPLOYED**\n- PR #9 merged to main\n- Migrations: none (n/a)'
+# gs_classify_ms and the GS_DEP_STAGING / GS_DEP_DIRECT / GS_DEP_MAIN bodies live in lib/goal-sandbox.sh.
 
 test_gs_classify_staging_merge() {
   gs_check_class waiting_jp "plain DEPLOYED, merged to staging, still open" open "" "$GS_DEP_STAGING" || return 1
@@ -351,26 +289,7 @@ test_gs_sync_refreshes_the_cached_priority_from_the_registry() {
 }
 
 # ---------------------------------------------------------------- #428: start-gated, never-started ticket -------
-
-# gs_gate_class <gate issue state|missing> <ticket comments…> — t-7 whose body names "Depends on #42 for starting work".
-gs_gate_class() {
-  local gst=$1 b out=none
-  shift
-  gs_env
-  gs_issue 7 open
-  gs_body 7 $'Do the thing.\n\nDepends on #42 for starting work'
-  rm -f "$GS_ST/comments/$GS_A-7.json"
-  for b in "$@"; do gs_comment 7 "$b"; done
-  if [ "$gst" = missing ]; then rm -f "$GS_ST/issues/$GS_A/42.json"; else gs_issue 42 "$gst"; fi
-  gs_own "$GS_ID_T7" 50 "$GS_SPEC_T7" 3600 ""
-  gs_tick
-  if [ "$(gs_reg_state 50)" = closed ] && ! gs_has_label 50 goal-stopped; then out=delivered
-  elif gs_has_label 50 goal-waiting-jp; then out=waiting_jp
-  elif gs_wait_claude 1; then out=active
-  fi
-  gs_cleanup
-  printf '%s' "$out"
-}
+# gs_gate_class (t-7 whose body names "Depends on #42 for starting work") lives in lib/goal-sandbox.sh.
 
 test_gs_428_open_start_gate_without_marker_is_waiting() {   # AC1
   assert_eq "$(gs_gate_class open)" "waiting_jp" "428 AC1: open gate, no marker" || return 1
@@ -404,20 +323,7 @@ test_gs_428_goal_with_start_gated_ticket_reaches_waiting_branch() {   # AC6 (han
 }
 
 # ---------------------------------------------------------------- #427: a held goal is looked at again -----------
-
-# gs_held_seed <snap|"-"> — ms-12 parked: .held + goal-held label + np=3; "-" leaves the .snap a normal launch tick wrote.
-gs_held_seed() {
-  gs_env
-  gs_own "$GS_ID_MS12" 50 "$GS_SPEC_MS12" 3600 ""
-  if [ "$1" = "-" ]; then
-    gs_tick; gs_wait_claude 1; gs_settle   # a normal tick stores the real snapshot of the current scope
-    gs_launch_state "$GS_ID_MS12" 3600 0 60
-  else
-    echo "$1" > "$GS_PIPE/goal-$GS_ID_MS12.snap"
-  fi
-  touch "$GS_PIPE/goal-$GS_ID_MS12.held"; echo 3 > "$GS_PIPE/goal-$GS_ID_MS12.np"
-  gs_reg 50 "$GS_SPEC_MS12" "$GS_ID_MS12" host-a held
-}
+# gs_held_seed (ms-12 parked: .held + goal-held label + np=3) lives in lib/goal-sandbox.sh.
 
 test_gs_427_held_goal_with_all_tickets_closed_is_delivered() {   # AC2 (hand: 101 and 102 closed -> 2 of 2)
   gs_held_seed stale
@@ -852,10 +758,14 @@ test_gs_sync_is_throttled_to_once_per_goal_sync_secs() {
   GS_SYNC=default gs_env
   gs_own "$GS_ID_MS12" 50 "$GS_SPEC_MS12" 3600 ""
   gs_live "$GS_ID_MS12"
-  gs_tick
+  # The blocker-adoption step (#566, supervisor 3d-2) also reads the registry, every GOAL_ADOPT_SECS (300) on a gh_tick_due
+  # stamp — and gh_tick_due is always due with the budget guard off (the suite default), which made the second tick read
+  # the registry once more regardless of the sync throttle. These two ticks run with the guard on (the shipped configuration,
+  # so every registry reader is throttled) and the read cache off (every read reaches the fake gh and is counted).
   local r1 r2
+  GH_BUDGET_ENABLED=1 GH_CACHE_TTL_SECS=0 gs_tick
   r1=$(grep -c 'labels=delivery-goal' "$GS_BIN/gh-calls.log")
-  gs_tick
+  GH_BUDGET_ENABLED=1 GH_CACHE_TTL_SECS=0 gs_tick
   r2=$(grep -c 'labels=delivery-goal' "$GS_BIN/gh-calls.log")
   gs_cleanup
   [ "$r1" -ge 1 ] || { fail "sync: the first tick never read the registry"; return 1; }

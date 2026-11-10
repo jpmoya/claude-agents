@@ -1,6 +1,8 @@
 # #621 — goal classifier reads "Blocked on: needs_jp" with the same prefix rule as supervisor.sh blocked_class_of
 # (^Blocked on: needs_jp( |$)): the documented "Blocked on: needs_jp — <reason>" form is waiting_jp, not active work.
-# Reuses gs_check_class from test-goal-supervisor.sh; this file name sorts after it (all test files share one shell).
+# Reuses gs_check_class from lib/goal-sandbox.sh (sourced here, so the file also runs standalone — #628).
+
+. "$(dirname "${BASH_SOURCE[0]}")/lib/goal-sandbox.sh"
 
 test_gs_621_needs_jp_forms_are_waiting_jp() {
   gs_check_class waiting_jp "bare needs_jp" open "" $'**[product-manager] BLOCKED**\nBlocked on: needs_jp\nonly JP can decide' || return 1
