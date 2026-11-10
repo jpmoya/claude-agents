@@ -31,6 +31,8 @@ goal_label_name() {
 
 _goal_uri() { jq -rn --arg s "$1" '$s | @uri'; }
 _goal_is_bi() { case "$1" in */Business-Intelligence) return 0 ;; esac; return 1; }
+# direct_route_repo (#632) comes from config.sh, which every entry point sources first; a harness that sources this file alone gets the empty rule
+type direct_route_repo >/dev/null 2>&1 || direct_route_repo() { return 1; }
 
 # goal_parse <spec> -> "repo<TAB>kind<TAB>ref" (kind: ms | msall | t | fb | label); exit 1 when malformed.
 # owner/repo:feedback (kind fb) is the standing staff-feedback goal (#472): scope = the repo's user-feedback tickets that are
@@ -413,19 +415,26 @@ _goal_checkout() {
 
 _goal_have_marker_re() { type marker_re >/dev/null 2>&1 || . "$_GOAL_LIB_DIR/../../hooks/pipeline-markers.sh" 2>/dev/null || . "$HOME/.claude/hooks/pipeline-markers.sh"; }
 
-# _goal_primary_repo <goal json> -> the repo whose checkout hosts the lead (a label goal: the first of its repos)
+# _goal_primary_repo <goal json> -> the repo whose checkout hosts the lead (a label goal: the first of its repos that is not
+# direct-route (#632) — a goal spanning jpmoya/claude-agents and app repos runs from an app repo; else its first repo)
 _goal_primary_repo() {
-  local spec line
+  local spec line r first=""
   spec=$(printf '%s' "$1" | jq -r .spec)
   line=$(goal_parse "$spec") || return 1
-  if [ "$(printf '%s' "$line" | cut -f2)" = label ]; then printf '%s' "$1" | jq -r '(.block.repos // [])[0] // empty'
+  if [ "$(printf '%s' "$line" | cut -f2)" = label ]; then
+    while IFS= read -r r; do
+      [ -n "$r" ] || continue
+      [ -n "$first" ] || first=$r
+      direct_route_repo "$r" || { printf '%s\n' "$r"; return 0; }
+    done <<< "$(printf '%s' "$1" | jq -r '(.block.repos // [])[]')"
+    printf '%s\n' "$first"
   else printf '%s' "$line" | cut -f1; fi
 }
 
 # goal_brief <id> [goal-json] [scope file] -> the delivery-lead launch prompt, generated from live registry + ticket state
 # (never the cache). With a scope file, the open refs the brief hands the lead are written there, one per line (#527).
 goal_brief() {
-  local id="$1" g spec instr repo checkout rows row ref st n owner_repo cm last proj ia
+  local id="$1" g spec instr repo checkout rows row ref st n owner_repo cm last proj ia direct
   if [ $# -ge 2 ] && [ -n "$2" ]; then g=$2; else g=$(_goal_find "$id") || { echo "goal $id not found in the registry" >&2; return 1; }; fi
   spec=$(printf '%s' "$g" | jq -r .spec); instr=$(printf '%s' "$g" | jq -r .instructions)
   repo=$(_goal_primary_repo "$g")
@@ -454,8 +463,11 @@ goal_brief() {
   printf 'Instructions: %s\n' "${instr:-(none)}"
   printf 'Your memory (read first, append to it): %s/goals/%s.md\n' "$LOGDIR" "$id"
   printf '\nScope (live from GitHub):\n'
+  direct=""
   while IFS=$'\t' read -r ref st; do
     [ -n "$ref" ] || continue
+    # #632: a direct-route ticket is listed apart, never as work for the lead (no marker read either)
+    if direct_route_repo "${ref%%#*}"; then direct="$direct$ref  $st"$'\n'; continue; fi
     last="-"
     if [ "$st" = open ]; then
       owner_repo="${ref%%#*}"; n="${ref##*#}"
@@ -465,6 +477,9 @@ goal_brief() {
     fi
     printf '%s  %s  latest marker: %s\n' "$ref" "$st" "$last"
   done <<< "$rows"
+  if [ -n "$direct" ]; then
+    printf '\nDirect route — needs the interactive session (not your work: never dispatch, label or relaunch these; list them under this heading in your report, ticket number + 3-5 word description each):\n%s' "$direct"
+  fi
   cat <<RULES
 
 Rules:
@@ -472,6 +487,7 @@ Rules:
 - Completion is decided by the supervisor from GitHub state, never by you. Never unload, create or edit launchd/cron/loop schedulers.
 - JP-only items (a prod go, spending money, external communications, private-artefact access) park the ticket and are reported, never decided.
 - Goals only run on repos listed in DISPATCH_REPOS; never act outside the scope above.
+- A ticket in a direct-route repo (DIRECT_ROUTE_REPOS in config.sh, today jpmoya/claude-agents) is never dispatched, labelled or relaunched by you: the interactive session implements it with subagents, and orchestrate.sh refuses it. Report it under "Direct route — needs the interactive session".
 RULES
 }
 
@@ -492,6 +508,10 @@ goal_launch() {
   local id="$1" g="${2:-}" repo checkout brief
   [ -n "$g" ] || g=$(_goal_find "$id") || { echo "goal $id not found in the registry" >&2; return 1; }
   repo=$(_goal_primary_repo "$g")
+  if direct_route_repo "$repo"; then   # #632: nothing of the pipeline runs a direct-route repo, a lead included
+    slog "[goal] $id: $repo is a direct-route repo — launch skipped (its changes are made by the interactive session, see CLAUDE.md)"
+    return 1
+  fi
   checkout=$(_goal_checkout "$repo") || { echo "$repo is not in DISPATCH_REPOS" >&2; return 1; }
   mkdir -p "$PIPE" "$LOGDIR/goals"
   rm -f "$PIPE/goal-$id.launch-scope" "$PIPE/goal-$id.yielded"
@@ -847,6 +867,7 @@ _goal_grant_rows() {
     ref="$r#$n"
     if printf '%s' "$granted" | jq -e --arg x "$ref" 'index($x) != null' >/dev/null; then continue; fi
     if _goal_is_bi "$r"; then slog "repo=$r issue=$n reason=Business-Intelligence is never part of a goal, no agent-go"; continue; fi
+    if direct_route_repo "$r"; then slog "repo=$r issue=$n reason=direct-route repo, never agent-go (#632)"; continue; fi
     case ",$labels," in *",source:sentry,"*) [ "$sentry" = 1 ] || { slog "repo=$r issue=$n reason=source:sentry ticket skipped (goal has no --include-sentry)"; continue; } ;; esac
     case ",$labels," in
       *",agent-go,"*) ;;
@@ -867,6 +888,7 @@ _goal_grant_go() {
   shift 3
   for r in "$@"; do
     _goal_is_bi "$r" && continue
+    if direct_route_repo "$r"; then slog "repo=$r reason=direct-route repo, its labelled tickets are never granted agent-go (#632)"; continue; fi
     js=$(_goal_label_issues "$r" "$label" open) || return 1
     rows+=$(printf '%s' "$js" | jq -r --arg r "$r" '.[] | "\($r)\t\(.number)\topen\t\([.labels[].name] | join(","))"')$'\n'
   done
@@ -1094,7 +1116,7 @@ _goal_granted_rows() {
 # goal_eval <id> <spec> — live scope + ticket classes into GE_* (current shell); exit 1 on any failed read
 goal_eval() {
   local rows ref st repo n r cls istate marker why lbl au gates sr ms
-  GE_TOTAL=0; GE_DELIVERED=0; GE_ACTIVE=0; GE_WAITING=0; GE_SNAP=""; GE_REFS=""
+  GE_TOTAL=0; GE_DELIVERED=0; GE_ACTIVE=0; GE_WAITING=0; GE_SNAP=""; GE_REFS=""; GE_DIRECT=""
   # $3: explicit "ref<TAB>state" rows. Live rows carry labels, author, start-gate refs and state_reason too (#548/#557: no
   # per-ticket issue read).
   if [ -n "${3:-}" ]; then rows=$3; else
@@ -1106,6 +1128,9 @@ goal_eval() {
   fi
   while IFS=$'\t' read -r ref st lbl au gates sr ms; do
     [ -n "$ref" ] || continue
+    # #632: a direct-route ticket is the interactive session's, not the goal's: no total, no class, no read; GE_DIRECT names
+    # it (ref per line) so the lead's brief and report can list it. It can never keep a goal active or block its delivery.
+    if direct_route_repo "${ref%%#*}"; then GE_DIRECT="$GE_DIRECT$ref"$'\n'; continue; fi
     if [ "$st" = closed ]; then
       # #557: a closed issue only counts as delivered when GitHub says it was actually completed. "not_planned" (closed
       # as a duplicate, wontfix, or by mistake while still in the goal's scope) never shipped anything, so it must not

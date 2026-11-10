@@ -155,8 +155,9 @@ test_fu_ac6_no_new_hook_daemon_timer_or_state_file_and_single_config_key() {
   # the one allowed config key exists and defaults to today's behaviour (empty)
   assert_eq "$(grep -c '^SCAN_ONLY_REPOS=()' "$ROOT_FU/skills/orchestrate/config.sh")" "1" "AC6: config.sh carries the single new key, defaulting to empty" || return 1
   # ...and it is the only new key: no other *_REPOS / SCAN_* assignment beyond the baseline
+  # (re-pinned for #632: DIRECT_ROUTE_REPOS, the tracked direct-route list, joins the baseline)
   keys=$(grep -oE '^[A-Z_]*(REPOS|SCAN)[A-Z_]*=' "$ROOT_FU/skills/orchestrate/config.sh" | sort | tr '\n' ' ')
-  assert_eq "$keys" "DISPATCH_REPOS= SCAN_ONLY_REPOS= " "AC6: exactly one new config key" || return 1
+  assert_eq "$keys" "DIRECT_ROUTE_REPOS= DISPATCH_REPOS= SCAN_ONLY_REPOS= " "AC6: exactly one new config key" || return 1
 }
 
 run_test test_fu_ac1_claude_md_forbids_general_purpose_ticket_writing

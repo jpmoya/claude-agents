@@ -246,6 +246,8 @@ cmd_register() {
   local line repo id checkout rows block body resp n host="" kind go=false granted='[]' granted_at=""
   line=$(goal_parse "$spec") || exit 1
   repo=$(printf '%s' "$line" | cut -f1); kind=$(printf '%s' "$line" | cut -f2)
+  # #632: before the DISPATCH_REPOS check, so the message is this one even on a host whose config still lists the repo
+  if direct_route_repo "$repo"; then die "$repo is a direct-route repo: its changes are made by the interactive session with subagents, never by a goal (see CLAUDE.md)"; fi
   checkout=$(_goal_checkout "$repo") || die "$repo is not in DISPATCH_REPOS; goals only run on dispatched repos"
   [ -e "$checkout/.git" ] || die "checkout $checkout for $repo is not a git checkout"
   id=$(goal_id "$spec") || exit 1
@@ -336,7 +338,7 @@ register_rollback() {
 cmd_register_label() {
   local spec=$1 repos_in=$2 title=$3 req=$4 sentry=$5 mockups=$6 instr=$7 now=${8:-0} pin=${9:-} hosts=${10:-both} host=""
   local label id r kept="" checkout seed_ok=0 req_ok=0 seed_repo="" seed_n="" rows block body resp n url room desc
-  local granted='[]' granted_at="" go=false repos_json out
+  local granted='[]' granted_at="" go=false repos_json out dropped_direct=""
   [ -n "$repos_in" ] || die "a label goal needs --repos owner/repo,owner/repo"
   if [ -z "$spec" ]; then
     [ -n "$title" ] || die "--title is required when no label: spec is given"
@@ -347,13 +349,19 @@ cmd_register_label() {
   fi
   [ "${#label}" -le 43 ] || die "label '$label' is longer than 43 chars; \"$label (done)\" would not fit GitHub's 50-char limit"
   spec="label:$label"
+  id=$(goal_id "$spec") || exit 1
   for r in $(printf '%s' "$repos_in" | tr ',' ' '); do
     [[ "$r" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || die "malformed repo '$r' in --repos (want owner/repo)"
     if _goal_is_bi "$r"; then echo "skipping $r: Business-Intelligence is never part of a goal" >&2; continue; fi
+    # #632: a cross-repo goal may name a direct-route repo (goals do span it); the repo is dropped, the goal goes on without it
+    if direct_route_repo "$r"; then echo "direct-route repo $r ignored for goal $id" >&2; dropped_direct="${dropped_direct:-$r}"; continue; fi
     checkout=$(_goal_checkout "$r") || die "$r is not in DISPATCH_REPOS; goals only run on dispatched repos"
     [ -e "$checkout/.git" ] || die "checkout $checkout for $r is not a git checkout"
     case ",$kept," in *",$r,"*) ;; *) kept="${kept:+$kept,}$r" ;; esac
   done
+  if [ -z "$kept" ] && [ -n "$dropped_direct" ]; then
+    die "$dropped_direct is a direct-route repo: its changes are made by the interactive session with subagents, never by a goal (see CLAUDE.md)"
+  fi
   [ -n "$kept" ] || die "no repo left in --repos"
   repos_json=$(printf '%s' "$kept" | jq -Rc 'split(",")')
   if [ -n "$req" ]; then
@@ -365,7 +373,6 @@ cmd_register_label() {
   else
     echo "no go granted: no --requirements ticket given (go needs a non-empty requirements ticket)" >&2
   fi
-  id=$(goal_id "$spec") || exit 1
   check_overlap "$spec" "$id" "" "$kept" "$([ "$seed_ok" = 1 ] && printf '%s' "$req")"
   rows=$(_goal_scope_rows "$spec" "$id" "$kept") || die "cannot read the scope of $spec"
   { [ -n "$rows" ] || [ "$seed_ok" = 1 ]; } || die "empty scope: no ticket carries '$label' and there is no requirements ticket to label; a goal must start with at least one"

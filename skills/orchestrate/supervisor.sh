@@ -45,6 +45,9 @@ PY
 slog() { printf '[%s] %s\n' "$(date -u +%FT%TZ)" "$*" >> "$SLOG"; }
 # #341: every .held creation logs its path and caller (log line only, no behaviour change)
 touch_held() { touch "$1"; slog "[held-touch] path=$1 caller=${FUNCNAME[1]:-main}:${BASH_LINENO[0]}"; }
+# #632: config.sh dropped these direct-route repos from both repo lists at load (a host config that still names one is
+# harmless; every step below iterates the filtered arrays). One line per drop so the stale entry gets cleaned up.
+while read -r dr_list dr_repo; do [ -n "$dr_repo" ] && slog "[config] dropped direct-route repo $dr_repo from $dr_list"; done <<< "${DIRECT_ROUTE_DROPPED:-}"
 # A GitHub rename must never silently blind the scan: resolve canonical names, WARN loudly on rename/unresolvable.
 canonicalize_repo_lists
 
