@@ -8,6 +8,7 @@
 import { isIssueUrl } from "./validate.js";
 import { groupTickets, buildBacklog } from "./group.js";
 import { PIPELINES } from "./pipelines.js";
+import { CI_QUEUE_CATEGORY_VOCAB } from "./vocab.js";
 
 // Auto-refresh interval in seconds. Must stay <= 30 (AC15). Grepped directly by tests.
 export const PAGE_REFRESH_SECS = 20;
@@ -556,6 +557,128 @@ function renderHostSection(key, host, thresholds, nowEpochSecs) {
   </section>`;
 }
 
+// issue #644: human labels for #643's closed `ci_queue.categories[].key` / `.oldest.key`
+// vocabulary. Anything not in the map (shouldn't happen — validate.js already rejects any key
+// outside CI_QUEUE_CATEGORY_VOCAB) falls back to the "other" copy.
+const CI_QUEUE_LABELS = {
+  dependabot: "Dependabot PRs",
+  deploy_release: "Release/deploy jobs",
+  pr: "Other feature PRs",
+  other: "Other",
+};
+
+const CI_BAR_HEIGHT = 18;
+const CI_BAR_GAP = 10;
+const CI_LABEL_WIDTH = 140;
+const CI_BAR_MAX_WIDTH = 160;
+const CI_CHART_WIDTH = CI_LABEL_WIDTH + CI_BAR_MAX_WIDTH + 40;
+
+/**
+ * One bar per non-zero category (AC4), in the fixed CI_QUEUE_CATEGORY_VOCAB order rather than
+ * sorted by count — the page already reloads every PAGE_REFRESH_SECS, and sorting by count would
+ * make the bars reshuffle on every reload. Width is proportional to the largest non-zero count
+ * (AC2); '' (no chart at all) when every category is zero (AC4/AC5-adjacent: empty categories[]).
+ */
+function renderCiQueueChart(categories) {
+  const byKey = new Map(
+    (Array.isArray(categories) ? categories : []).map((c) => [c.key, c.count]),
+  );
+  const bars = CI_QUEUE_CATEGORY_VOCAB.map((key) => ({
+    key,
+    count: byKey.get(key) || 0,
+  })).filter((c) => c.count > 0);
+  if (bars.length === 0) return "";
+
+  const maxCount = Math.max(...bars.map((b) => b.count));
+  const height = bars.length * (CI_BAR_HEIGHT + CI_BAR_GAP);
+  const summary = bars
+    .map((b) => `${CI_QUEUE_LABELS[b.key] || CI_QUEUE_LABELS.other}: ${b.count}`)
+    .join(", ");
+  const rows = bars
+    .map((b, i) => {
+      const y = i * (CI_BAR_HEIGHT + CI_BAR_GAP);
+      const width = Math.max(
+        2,
+        Math.round((b.count / maxCount) * CI_BAR_MAX_WIDTH),
+      );
+      const label = CI_QUEUE_LABELS[b.key] || CI_QUEUE_LABELS.other;
+      return (
+        `<g transform="translate(0, ${esc(y)})">` +
+        `<text x="0" y="${esc(CI_BAR_HEIGHT - 5)}" class="ci-bar-label">${esc(label)}</text>` +
+        `<rect x="${esc(CI_LABEL_WIDTH)}" y="0" width="${esc(width)}" height="${esc(CI_BAR_HEIGHT)}" class="ci-bar" data-key="${esc(b.key)}"></rect>` +
+        `<text x="${esc(CI_LABEL_WIDTH + width + 6)}" y="${esc(CI_BAR_HEIGHT - 5)}" class="ci-bar-count">${esc(b.count)}</text>` +
+        `</g>`
+      );
+    })
+    .join("");
+  return `<svg class="ci-chart" viewBox="0 0 ${esc(CI_CHART_WIDTH)} ${esc(height)}" width="${esc(CI_CHART_WIDTH)}" height="${esc(height)}" role="img" aria-label="${esc(`CI queue by category: ${summary}`)}" xmlns="http://www.w3.org/2000/svg">${rows}</svg>`;
+}
+
+/**
+ * The "waiting" tile (AC5): a neutral "no jobs waiting" state when `oldest` is null, otherwise
+ * the age computed at render time from `oldest.queued_at` vs `nowEpochSecs` — never stored
+ * pre-formatted (#643) — clamped to >= 0 so host clock-skew (`queued_at` after `now`) never
+ * renders a negative wait.
+ */
+function renderCiQueueWaitingTile(oldest, nowEpochSecs) {
+  if (!oldest) {
+    return `<div class="ci-tile"><div class="ci-tile-value">&mdash;</div><div class="ci-tile-label">No jobs waiting</div></div>`;
+  }
+  const queuedMs = Date.parse(oldest.queued_at);
+  const waitSecs = Number.isNaN(queuedMs)
+    ? 0
+    : Math.max(0, nowEpochSecs - Math.floor(queuedMs / 1000));
+  const mins = Math.round(waitSecs / 60);
+  const label = CI_QUEUE_LABELS[oldest.key] || CI_QUEUE_LABELS.other;
+  return `<div class="ci-tile"><div class="ci-tile-value">${esc(mins)} min</div><div class="ci-tile-label">${esc(label)} waiting longest</div></div>`;
+}
+
+function renderCiQueueTiles(ciQueue, nowEpochSecs) {
+  return `<div class="ci-tiles">
+    <div class="ci-tile"><div class="ci-tile-value">${esc(ciQueue.queued_total)}</div><div class="ci-tile-label">Jobs queued now</div></div>
+    <div class="ci-tile"><div class="ci-tile-value">${esc(ciQueue.runners_busy)}/${esc(ciQueue.runners_total)}</div><div class="ci-tile-label">Runner slots busy</div></div>
+    ${renderCiQueueWaitingTile(ciQueue.oldest, nowEpochSecs)}
+  </div>`;
+}
+
+/** Whichever host's `ci_queue` has the freshest `as_of` (AC3); null if neither host has one. */
+function pickFreshestCiQueue(hosts) {
+  let best = null;
+  let bestMs = -Infinity;
+  for (const key of ["mac", "vm"]) {
+    const rec = hosts[key];
+    const ciQueue = rec && rec.ci_queue;
+    if (!ciQueue || typeof ciQueue !== "object") continue;
+    const ms = Date.parse(ciQueue.as_of);
+    if (Number.isNaN(ms)) continue;
+    if (ms > bestMs) {
+      bestMs = ms;
+      best = ciQueue;
+    }
+  }
+  return best ? { ciQueue: best, asOfMs: bestMs } : null;
+}
+
+/**
+ * CI queue panel (issue #644): stat tiles + bar chart over #643's `ci_queue` beat field. Omitted
+ * entirely when no host has ever sent `ci_queue` (AC1) — never a render error. Stale-marked
+ * (AC6) using the same `thresholds.staleSecs` the host live/stale/offline badges already use
+ * (reused rather than a new constant, per the ticket).
+ */
+export function renderCiQueuePanel(hosts, thresholds, nowEpochSecs) {
+  const picked = pickFreshestCiQueue(hosts);
+  if (!picked) return "";
+  const { ciQueue, asOfMs } = picked;
+  const ageSecs = nowEpochSecs - Math.floor(asOfMs / 1000);
+  const stale = ageSecs >= thresholds.staleSecs;
+  const chart = renderCiQueueChart(ciQueue.categories);
+  return `<section class="group ci-queue">
+    <h2>CI queue${stale ? ` <span class="badge stale">stale</span>` : ""}</h2>
+    ${renderCiQueueTiles(ciQueue, nowEpochSecs)}
+    ${chart}
+  </section>`;
+}
+
 /** Two-link nav ("Status" | "Pipelines"); the current page gets aria-current. */
 function renderNav(current) {
   const link = (href, label, key) =>
@@ -589,6 +712,16 @@ const NAV_CSS = `  nav { margin-bottom: 1.5rem; display: flex; gap: 1.25rem; bor
   nav a:hover { color: var(--text); }
   nav a[aria-current="page"] { color: var(--text); font-weight: 600; border-bottom-color: var(--accent); }`;
 
+const CI_QUEUE_CSS = `  section.ci-queue h2 { display: flex; align-items: center; gap: 0.5rem; }
+  .ci-tiles { display: flex; flex-wrap: wrap; gap: 0.75rem; margin: 0 0 1rem; }
+  .ci-tile { flex: 1 1 8rem; min-width: 8rem; padding: 0.6rem 0.8rem; border-radius: 0.5rem; background: var(--bg); border: 1px solid var(--border); }
+  .ci-tile-value { font-size: 1.3rem; font-weight: 700; }
+  .ci-tile-label { font-size: 0.75rem; color: var(--muted); margin-top: 0.15rem; }
+  .ci-chart { display: block; max-width: 100%; height: auto; }
+  .ci-bar { fill: var(--accent); }
+  .ci-bar-label { font-size: 11px; fill: var(--text); }
+  .ci-bar-count { font-size: 11px; fill: var(--muted); }`;
+
 /**
  * @param {{ mac: object|null, vm: object|null }} hosts
  * @param {{ staleSecs: number, offlineSecs: number }} thresholds
@@ -597,10 +730,13 @@ const NAV_CSS = `  nav { margin-bottom: 1.5rem; display: flex; gap: 1.25rem; bor
  */
 export function renderPage(hosts, thresholds, nowEpochSecs) {
   const bothEmpty = !hosts.mac && !hosts.vm;
+  const ciQueuePanel = bothEmpty
+    ? ""
+    : renderCiQueuePanel(hosts, thresholds, nowEpochSecs);
 
   const body = bothEmpty
     ? '<p class="empty">no data from either host yet</p>'
-    : `${renderHostSection("mac", hosts.mac, thresholds, nowEpochSecs)}${renderHostSection("vm", hosts.vm, thresholds, nowEpochSecs)}${renderGoalsSection(hosts)}${renderBacklogSection(hosts)}${groupTickets(hosts, nowEpochSecs).map(renderGroupSection).join("")}`;
+    : `${renderHostSection("mac", hosts.mac, thresholds, nowEpochSecs)}${renderHostSection("vm", hosts.vm, thresholds, nowEpochSecs)}${ciQueuePanel}${renderGoalsSection(hosts)}${renderBacklogSection(hosts)}${groupTickets(hosts, nowEpochSecs).map(renderGroupSection).join("")}`;
 
   return `<!doctype html>
 <html lang="en">
@@ -646,7 +782,7 @@ ${ROOT_VARS_CSS}
   tbody tr:last-child td { border-bottom: none; }
   section.host, section.group { margin-bottom: 1.25rem; padding: 1.1rem 1.25rem; border-radius: 0.75rem;
     background: var(--surface); border: 1px solid var(--border); }
-${NAV_CSS}
+${NAV_CSS}${ciQueuePanel ? `\n${CI_QUEUE_CSS}` : ""}
   @media (max-width: 640px) {
     body { padding: 1rem; }
     section.host, section.group { padding: 0.9rem; }
