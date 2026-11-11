@@ -54,6 +54,19 @@
 # BEFORE the MAX_SAMPLE_RUNNERS cap is applied — never sorted by id/age, which would evict the
 # currently-live slots in favor of whichever happened to have a lower id.
 #
+# #655: two more per-slot fields. `history_secs` (AC A) = now - the oldest retained sample's `ts`
+# for that slot (0 for a slot with no prior samples), so render.js can flag a util_24h_pct/
+# util_72h_pct that's still "building" instead of looking like a confident full-window average.
+# `current_job` (AC B) = {repo, run_id, pr_url?}, attached only to a slot that's busy THIS cycle,
+# matched from an in_progress job's `runner_name` (reduced to a slot the same way a registration
+# is). This adds ZERO new `gh api` calls: `_ciq_collect_repo` already fetches each run's job list
+# for the existing queued-jobs/categories[] extraction; this only reads one more field
+# (`runner_name`) off jobs already in hand, plus the run's own `pull_requests[]` (already present
+# on every run object the queued/in_progress run-list calls return — no per-job extra call).
+# `pr_url` prefers `pull_requests[0].html_url` but GitHub's real shape for that field has no
+# `html_url` (verified live against org repos before implementing) — only `number` — so it's built
+# as `https://github.com/<repo>/pull/<number>` from the validated `repo` + that `number` instead.
+#
 # Env (production): CI_QUEUE_COLLECT_ENABLED (gate, read by report-status.sh, not this script),
 #   PIPE, GH_TOKEN (optional — the host's own `gh` auth is used), SLACK_WEBHOOK_URL, SENTRY_DSN,
 #   CI_QUEUE_REPOS_FILE (default: scripts/ci-metrics.repos), CI_QUEUE_ORG (default: Benjis-Plants),
@@ -190,6 +203,32 @@ _ciq_collect_repo() {
       .jobs[]? | select(.status=="queued")
       | {cat: $cat, queued_at: (.created_at | sub("\\.[0-9]+Z$"; "Z"))}
     ' >> "$WORK/queued-jobs.jsonl" 2>/dev/null
+
+    # #655 AC B: zero new API calls — $jobsjson is the SAME per-run job listing already fetched
+    # above for the queued-jobs/categories[] extraction; this only pulls an extra field
+    # (`runner_name`) out of jobs already in hand. `pr_url` is built from the run's own
+    # `pull_requests[0]`, preferring `html_url` if GitHub ever returns one, else constructing
+    # `https://github.com/<repo>/pull/<number>` from the validated `repo` + `number` — GitHub's
+    # real `pull_requests[]` shape (verified live, see the PR description) carries `number`, not
+    # `html_url`. Only an in_progress job (one actually assigned a runner) is ever a candidate;
+    # the slot-level busy/race gating happens later in _ciq_runner_history, where the current
+    # cycle's busy slots are known.
+    printf '%s' "$run" | jq -c --arg repo "$repo" --argjson run_id "$id" '
+      (.pull_requests[0]) as $pr
+      | {
+          repo: $repo,
+          run_id: $run_id,
+          pr_url: (if $pr == null then null
+                   elif ($pr.html_url // null) != null then $pr.html_url
+                   elif ($pr.number // null) != null then ("https://github.com/" + $repo + "/pull/" + ($pr.number | tostring))
+                   else null end)
+        }
+    ' > "$WORK/run-${safe}-${id}.prctx.json" 2>/dev/null
+    printf '%s' "$jobsjson" | jq -c --slurpfile ctx "$WORK/run-${safe}-${id}.prctx.json" '
+      ($ctx[0]) as $ctx
+      | .jobs[]? | select(.status=="in_progress" and ((.runner_name // "") != ""))
+      | {runner_name: .runner_name, repo: $ctx.repo, run_id: $ctx.run_id, pr_url: $ctx.pr_url}
+    ' >> "$WORK/running-jobs.jsonl" 2>/dev/null
   done < "$WORK/$safe.runs.jsonl"
   return 0
 }
@@ -221,11 +260,15 @@ _ciq_merge_runners() {
   ' > "$WORK/runners-merged.json" 2>/dev/null
 }
 
-# _ciq_runner_history <merged-registrations-file> — the #648 per-SLOT sample/prune/rollup step.
+# _ciq_runner_history <merged-registrations-file> <running-jobs-file> — the #648 per-SLOT
+# sample/prune/rollup step (#655 additionally: history_secs + current_job).
 # <merged-registrations-file> is $WORK/runners-merged.json, one entry PER REGISTRATION (as written
 # by _ciq_merge_runners) — this function's first job is collapsing that down to one entry per
 # SLOT before anything is sampled, so a dead duplicate registration sharing a slot with a live one
 # never gets its own sample line (which would dilute that slot's utilization, see corrected AC3).
+# <running-jobs-file> is $WORK/running-jobs.jsonl, one line per in_progress job with an assigned
+# runner (written by _ciq_collect_repo, zero new API calls — see that function's comment):
+# {runner_name, repo, run_id, pr_url|null}.
 #
 # Writes $WORK/runners-out.json (the final `ci_queue.runners[]` array: identity from the CURRENT
 # cycle for every currently-known slot, plus any slot that's dropped out of the API response
@@ -233,11 +276,25 @@ _ciq_merge_runners() {
 # doesn't vanish the instant it's deregistered; it ages out only once that 72h window empties,
 # AC6). Live slots sort before lingering ones (then by slot name) BEFORE the cap is applied — never
 # sorted by id/age, which would evict the currently-live slots instead of the dead ones.
+#
+# #655 AC A: each slot's `history_secs` is `now - (oldest retained sample's ts)`, computed from
+# $old (samples taken BEFORE this cycle's own append — same basis as the util_*_pct rollup below,
+# so the span and the percentage it's vouching for are always measuring the same window) — 0 for a
+# slot with zero prior samples (first-ever cycle), never null (a real, meaningful value — "just
+# started" IS the honest answer render.js's "building" badge wants).
+#
+# #655 AC B: `current_job` is attached only to a slot whose CURRENT cycle registration is busy
+# ($c.busy == true, the same $c this function already derives online/busy from — a slot that
+# merely has a stale/race in_progress job referencing its name, but isn't itself busy this cycle,
+# must never get a link, same as render.js's own busy-only gate). Matched by slot-prefix keying —
+# a running job's `runner_name` is reduced to a slot with the exact same stripping regex
+# _ciq_merge_runners uses — first match wins (job order mirrors $running_jobs' own append order:
+# repo order, then run order, then job order). Omitted entirely (never `null`) when unmatched.
 # Returns 1 on any failure (propagates as a normal collect_once failure: $OUT is left untouched,
 # the existing 3-failures-before-Slack/Sentry path in main() fires exactly as it does for an API
 # failure — same seam, no new alert path, per the Observability section).
 _ciq_runner_history() {
-  local merged=$1 now keep old_pruned by_slot new_lines combined
+  local merged=$1 running_jobs=$2 now keep old_pruned by_slot new_lines combined
   now=${CI_QUEUE_NOW:-$(date +%s)}
   keep=$(( WINDOW_72H_SECS + INTERVAL ))
 
@@ -274,11 +331,30 @@ _ciq_runner_history() {
     .[] | {ts: $now, slot, id, name, online, busy, role}
   ' "$by_slot" > "$new_lines" 2>/dev/null || return 1
 
+  # #655: slot-ify each running job's runner_name with the exact same stripping regex
+  # _ciq_merge_runners uses, so the join below keys on the identical notion of "slot".
+  local jobs_by_slot="$WORK/running-jobs-by-slot.json"
+  if [ -e "$running_jobs" ]; then
+    jq -s -c '
+      map(
+        (.runner_name // "") as $n
+        | . + { slot: (if $n == "" then "" elif ($n | test("-[0-9]+$")) then ($n | sub("-[0-9]+$"; "")) else $n end) }
+      )
+      | map(select(.slot != ""))
+    ' "$running_jobs" > "$jobs_by_slot" 2>/dev/null || return 1
+  else
+    printf '[]' > "$jobs_by_slot"
+  fi
+
   # Rollup is computed from $old (samples taken BEFORE this cycle's own append) — a slot seen
   # for the very first time this cycle has zero prior samples and reports null, not 0/100 (AC7).
+  # history_secs (AC A) is derived from the same $old/$samples basis, so it never disagrees with
+  # the percentage it's vouching for. current_job (AC B) is matched from $jobs, gated on $c.busy.
   jq -n --argjson now "$now" --argjson w24 "$WINDOW_24H_SECS" --argjson w72 "$WINDOW_72H_SECS" \
-    --argjson max "$MAX_SAMPLE_RUNNERS" --slurpfile old "$old_pruned" --slurpfile cur "$by_slot" '
+    --argjson max "$MAX_SAMPLE_RUNNERS" --slurpfile old "$old_pruned" --slurpfile cur "$by_slot" \
+    --slurpfile jobsfile "$jobs_by_slot" '
     ($cur[0] // []) as $cur
+    | ($jobsfile[0] // []) as $jobs
     | ($cur | map(.slot)) as $cur_slots
     | ($old | map(select(.ts >= ($now - $w72)) | .slot)) as $recent72_slots
     | ($cur_slots + $recent72_slots | unique) as $slots
@@ -288,6 +364,7 @@ _ciq_runner_history() {
         | ($samples | map(select(.ts >= ($now - $w72)))) as $s72
         | ($cur | map(select(.slot == $slot)) | .[0]) as $c
         | (if $c != null then null else ($samples | sort_by(.ts) | if length > 0 then .[-1] else null end) end) as $last
+        | (if $c != null and $c.busy then ($jobs | map(select(.slot == $slot)) | .[0]) else null end) as $job
         | {
             _live: ($c != null),
             _slot: $slot,
@@ -299,11 +376,17 @@ _ciq_runner_history() {
             util_24h_pct: (if ($s24 | length) == 0 then null
               else ((100 * ([$s24[] | select(.busy == true)] | length) / ($s24 | length)) | round) end),
             util_72h_pct: (if ($s72 | length) == 0 then null
-              else ((100 * ([$s72[] | select(.busy == true)] | length) / ($s72 | length)) | round) end)
+              else ((100 * ([$s72[] | select(.busy == true)] | length) / ($s72 | length)) | round) end),
+            history_secs: (if ($samples | length) == 0 then 0 else ($now - ($samples | map(.ts) | min)) end),
+            current_job: (if $job == null then null
+              else { repo: $job.repo, run_id: $job.run_id }
+                   + (if ($job.pr_url // null) != null then { pr_url: $job.pr_url } else {} end)
+              end)
           }
       ]
     | sort_by([(if ._live then 0 else 1 end), ._slot])
     | map(del(._live, ._slot))
+    | map(if .current_job == null then del(.current_job) else . end)
     | .[0:$max]
   ' > "$WORK/runners-out.json" 2>/dev/null || return 1
 
@@ -329,7 +412,7 @@ collect_once() {
     _ciq_collect_repo "$repo" || return 1
   done < <(repos)
 
-  _ciq_runner_history "$WORK/runners-merged.json" || return 1
+  _ciq_runner_history "$WORK/runners-merged.json" "$WORK/running-jobs.jsonl" || return 1
 
   as_of=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   final=$(jq -n \
@@ -468,6 +551,7 @@ main() {
   WORK=$(mktemp -d) || { rmdir "$LOCKDIR" 2>/dev/null; exit 0; }
   trap 'rm -rf "$WORK"; rmdir "$LOCKDIR" 2>/dev/null' EXIT
   : > "$WORK/queued-jobs.jsonl"
+  : > "$WORK/running-jobs.jsonl"
   : > "$WORK/calls.count"
 
   if collect_once; then

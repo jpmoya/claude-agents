@@ -24,6 +24,7 @@ import {
   validCiQueue,
   validCiQueueRunner,
   validCiQueueWithRunners,
+  validCiQueueCurrentJob,
 } from "./fixtures.js";
 
 beforeEach(() => {
@@ -139,6 +140,149 @@ describe("AC8 — per-runner table: three states, null utilization renders —",
     const { html } = await getCi(env);
     expect(html).toMatch(/dropped-runner[\s\S]{0,200}badge offline[\s\S]{0,40}offline/);
     expect(html).not.toMatch(/dropped-runner[\s\S]{0,200}badge live/);
+  });
+});
+
+// Issue #655 AC A — history-depth honesty: the 24h util badge flags "building" below a 12h
+// sample span, the 72h badge below a 24h span, each independently of the other.
+describe("AC A (#655) — history-depth 'building' badge", () => {
+  it("history_secs below the 12h floor shows a building note next to 24h util, and below the 24h floor next to 72h util", async () => {
+    const mac = hostRecord({
+      received_at: "2026-09-21T11:59:00Z",
+      ci_queue: validCiQueueWithRunners({
+        runners: [
+          validCiQueueRunner({ name: "thin-history", util_24h_pct: 50, util_72h_pct: 50, history_secs: 3600 }),
+        ],
+      }),
+    });
+    const env = makeEnv({ STATUS: createMockKV({ "host:mac": JSON.stringify(mac) }) });
+    const { html } = await getCi(env);
+    const row = /<tr[^>]*>[\s\S]*?thin-history[\s\S]*?<\/tr>/.exec(html)[0];
+    expect(row).toMatch(/50%[\s\S]{0,60}<span class="ci-util-building">\(building[\s\S]{0,20}1h collected/);
+    // both the 24h and 72h columns get the caveat, since 1h is under both floors
+    expect(row.match(/<span class="ci-util-building">/g)).toHaveLength(2);
+  });
+
+  it("history_secs at/above the 12h floor hides the 24h building note, but still shows it on 72h (below the 24h floor)", async () => {
+    const mac = hostRecord({
+      received_at: "2026-09-21T11:59:00Z",
+      ci_queue: validCiQueueWithRunners({
+        runners: [
+          validCiQueueRunner({ name: "mid-history", util_24h_pct: 50, util_72h_pct: 50, history_secs: 13 * 3600 }),
+        ],
+      }),
+    });
+    const env = makeEnv({ STATUS: createMockKV({ "host:mac": JSON.stringify(mac) }) });
+    const { html } = await getCi(env);
+    const row = /<tr[^>]*>[\s\S]*?mid-history[\s\S]*?<\/tr>/.exec(html)[0];
+    // exactly one "building" note span in the row (72h's), not two (24h's floor is cleared) —
+    // matches the rendered <span>, not the class name itself, which also contains "building"
+    expect(row.match(/<span class="ci-util-building">/g)).toHaveLength(1);
+    expect(row).toContain("13h collected");
+  });
+
+  it("history_secs at/above the 24h floor hides both building notes entirely", async () => {
+    const mac = hostRecord({
+      received_at: "2026-09-21T11:59:00Z",
+      ci_queue: validCiQueueWithRunners({
+        runners: [
+          validCiQueueRunner({ name: "long-history", util_24h_pct: 50, util_72h_pct: 50, history_secs: 25 * 3600 }),
+        ],
+      }),
+    });
+    const env = makeEnv({ STATUS: createMockKV({ "host:mac": JSON.stringify(mac) }) });
+    const { html } = await getCi(env);
+    const row = /<tr[^>]*>[\s\S]*?long-history[\s\S]*?<\/tr>/.exec(html)[0];
+    expect(row).not.toContain("building");
+  });
+
+  it("a null util_pct never shows the building note (the — fallback already says 'no data')", async () => {
+    const mac = hostRecord({
+      received_at: "2026-09-21T11:59:00Z",
+      ci_queue: validCiQueueWithRunners({
+        runners: [
+          validCiQueueRunner({ name: "null-util", util_24h_pct: null, util_72h_pct: null, history_secs: 1800 }),
+        ],
+      }),
+    });
+    const env = makeEnv({ STATUS: createMockKV({ "host:mac": JSON.stringify(mac) }) });
+    const { html } = await getCi(env);
+    const row = /<tr[^>]*>[\s\S]*?null-util[\s\S]*?<\/tr>/.exec(html)[0];
+    expect(row).not.toContain("building");
+  });
+
+  it("no history_secs at all (pre-#655 collector) never shows the building note", async () => {
+    const mac = hostRecord({
+      received_at: "2026-09-21T11:59:00Z",
+      ci_queue: validCiQueueWithRunners({
+        runners: [validCiQueueRunner({ name: "no-history-field", util_24h_pct: 50, util_72h_pct: 50 })],
+      }),
+    });
+    const env = makeEnv({ STATUS: createMockKV({ "host:mac": JSON.stringify(mac) }) });
+    const { html } = await getCi(env);
+    const row = /<tr[^>]*>[\s\S]*?no-history-field[\s\S]*?<\/tr>/.exec(html)[0];
+    expect(row).not.toContain("building");
+  });
+});
+
+// Issue #655 AC B — a busy runner links to the PR (preferred) or the Actions run it's executing;
+// no link when there's no matched job, and never a fabricated/unsanitised href.
+describe("AC B (#655) — busy-runner link to its PR/run", () => {
+  it("a busy runner with a valid pr_url links straight to the PR", async () => {
+    const job = validCiQueueCurrentJob();
+    const mac = hostRecord({
+      received_at: "2026-09-21T11:59:00Z",
+      ci_queue: validCiQueueWithRunners({
+        runners: [validCiQueueRunner({ name: "busy-with-pr", busy: true, current_job: job })],
+      }),
+    });
+    const env = makeEnv({ STATUS: createMockKV({ "host:mac": JSON.stringify(mac) }) });
+    const { html } = await getCi(env);
+    expect(html).toMatch(
+      new RegExp(`busy-with-pr[\\s\\S]{0,200}<a href="${job.pr_url.replace(/\//g, "\\/")}"`),
+    );
+  });
+
+  it("a busy runner with current_job but no pr_url falls back to the Actions run URL", async () => {
+    const job = { repo: "jpmoya/claude-agents", run_id: 43050239599 };
+    const mac = hostRecord({
+      received_at: "2026-09-21T11:59:00Z",
+      ci_queue: validCiQueueWithRunners({
+        runners: [validCiQueueRunner({ name: "busy-run-only", busy: true, current_job: job })],
+      }),
+    });
+    const env = makeEnv({ STATUS: createMockKV({ "host:mac": JSON.stringify(mac) }) });
+    const { html } = await getCi(env);
+    expect(html).toContain(
+      `<a href="https://github.com/jpmoya/claude-agents/actions/runs/43050239599"`,
+    );
+  });
+
+  it("a busy runner with no current_job renders no link at all", async () => {
+    const mac = hostRecord({
+      received_at: "2026-09-21T11:59:00Z",
+      ci_queue: validCiQueueWithRunners({
+        runners: [validCiQueueRunner({ name: "busy-no-job", busy: true })],
+      }),
+    });
+    const env = makeEnv({ STATUS: createMockKV({ "host:mac": JSON.stringify(mac) }) });
+    const { html } = await getCi(env);
+    const row = /<tr[^>]*>[\s\S]*?busy-no-job[\s\S]*?<\/tr>/.exec(html)[0];
+    expect(row).not.toContain("<a href");
+  });
+
+  it("an idle runner that somehow carries a current_job never renders a link (link gated on busy)", async () => {
+    const job = validCiQueueCurrentJob();
+    const mac = hostRecord({
+      received_at: "2026-09-21T11:59:00Z",
+      ci_queue: validCiQueueWithRunners({
+        runners: [validCiQueueRunner({ name: "idle-stale-job", busy: false, current_job: job })],
+      }),
+    });
+    const env = makeEnv({ STATUS: createMockKV({ "host:mac": JSON.stringify(mac) }) });
+    const { html } = await getCi(env);
+    const row = /<tr[^>]*>[\s\S]*?idle-stale-job[\s\S]*?<\/tr>/.exec(html)[0];
+    expect(row).not.toContain("<a href");
   });
 });
 

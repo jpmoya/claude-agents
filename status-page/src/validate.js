@@ -25,6 +25,11 @@ const REPO_ALIAS = /^[a-z0-9][a-z0-9-]{0,23}$/;
 // where a goal name leads: a GitHub issue, a milestone page, or a cross-repo issue search
 const GOAL_URL = /^https:\/\/github\.com\/(?:[\w.-]+\/[\w.-]+\/(?:issues\/\d+|milestone\/\d+(?:\?closed=1)?|issues\?q=[\w%.~-]+)|issues\?q=[\w%.~-]+|(?:users|orgs)\/[\w.-]+\/projects\/\d+)$/;
 const ISSUE_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/\d+$/;
+// `ci_queue.runners[].current_job` (issue #655): a github.com PR URL, and the "owner/repo" shape
+// that URL also gets interpolated into. Separate consts (not ISSUE_URL) since a PR and an issue
+// live under different path segments.
+const PR_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/;
+const REPO_FULL = /^[\w.-]+\/[\w.-]+$/;
 const TITLE_WHITESPACE_OR_CONTROL = /[\u0000-\u001f\u007f\s]+/g;
 const MAX_TITLE_CODE_POINTS = 140;
 const MAX_RUNS = 20;
@@ -42,6 +47,12 @@ const GOAL_UNSAFE = /[<>&"`]/;
 /** True iff `value` is a string that is exactly a GitHub issue URL. render.js re-checks with it. */
 export function isIssueUrl(value) {
   return typeof value === 'string' && ISSUE_URL.test(value);
+}
+
+/** True iff `value` is a string that is exactly a GitHub PR URL. render.js re-checks with it
+ * before ever emitting an `href` for a busy runner's `current_job.pr_url` (issue #655). */
+export function isPrUrl(value) {
+  return typeof value === 'string' && PR_URL.test(value);
 }
 
 function isPlainObject(value) {
@@ -286,6 +297,47 @@ function sanitiseUtilPct(value) {
   return undefined;
 }
 
+// `ci_queue.runners[].history_secs` (issue #655, AC A): how far back this slot's retained sample
+// history actually reaches — the render side's "building" badge is driven off this, never off a
+// hand-waved default. Bounded to a bit over the collector's own retention window (72h + one
+// cycle's buffer, see ci-queue-collect.sh's `keep`) so a garbled value can never inflate the badge
+// math; a sane cap, not a tight one, since this is a duration not a count.
+const MAX_HISTORY_SECS = 604800; // 7 days
+
+/**
+ * Sanitises `ci_queue.runners[].history_secs`. `undefined` signals "omit the key" — unlike
+ * `util_*_pct`, a malformed/absent value never drops the whole runner entry: this is a brand-new
+ * additive field (a pre-#655 collector never sends it at all), same reasoning as
+ * `runners_offline`/`runners[]` themselves in sanitiseCiQueue below. `0` (a slot just seen for the
+ * first time) is a real, meaningful value, so this checks range membership, not truthiness.
+ */
+function sanitiseHistorySecs(value) {
+  if (isIntInRange(value, 0, MAX_HISTORY_SECS)) return value;
+  return undefined;
+}
+
+// `ci_queue.runners[].current_job` (issue #655, AC B): `run_id` is GitHub's own numeric Actions
+// run id — real ids are 11 digits, so this is bounded only by JS's safe-integer range, never by
+// the much tighter `id` cap above (that one bounds a self-hosted runner's small registration id,
+// a different number entirely).
+const MAX_RUN_ID = Number.MAX_SAFE_INTEGER;
+
+/**
+ * Sanitises one `ci_queue.runners[].current_job`. Returns undefined to omit the whole key —
+ * never fabricates a link from a partial/malformed shape (AC B's "never a broken or fabricated
+ * href"). `repo`/`run_id` are required (the run-URL fallback needs both); `pr_url` is the only
+ * optional sub-field — present-and-invalid drops just `pr_url`, keeping the run-URL fallback
+ * available, rather than dropping the whole object over one bad sub-field.
+ */
+function sanitiseCurrentJob(raw) {
+  if (!isPlainObject(raw)) return undefined;
+  if (!(typeof raw.repo === 'string' && REPO_FULL.test(raw.repo))) return undefined;
+  if (!isIntInRange(raw.run_id, 1, MAX_RUN_ID)) return undefined;
+  const result = { repo: raw.repo, run_id: raw.run_id };
+  if (typeof raw.pr_url === 'string' && PR_URL.test(raw.pr_url)) result.pr_url = raw.pr_url;
+  return result;
+}
+
 /**
  * Sanitises one `ci_queue.runners[]` entry. Returns null to DROP just this one entry — unlike
  * `categories[]`, a single bad runner entry never takes down the whole `ci_queue` object (issue
@@ -302,7 +354,7 @@ function sanitiseCiQueueRunner(raw) {
   if (util24 === undefined) return null;
   const util72 = sanitiseUtilPct(raw.util_72h_pct);
   if (util72 === undefined) return null;
-  return {
+  const result = {
     id: raw.id,
     name: raw.name,
     online: raw.online,
@@ -311,6 +363,14 @@ function sanitiseCiQueueRunner(raw) {
     util_24h_pct: util24,
     util_72h_pct: util72,
   };
+
+  const historySecs = sanitiseHistorySecs(raw.history_secs);
+  if (historySecs !== undefined) result.history_secs = historySecs;
+
+  const currentJob = sanitiseCurrentJob(raw.current_job);
+  if (currentJob !== undefined) result.current_job = currentJob;
+
+  return result;
 }
 
 /**

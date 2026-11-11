@@ -6,7 +6,17 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import worker, { __resetRateLimiter } from '../src/index.js';
 import { renderPage, renderCiPage, renderCiQueuePanel } from '../src/render.js';
-import { makeEnv, getRequest, validPayload, beatRequest, TOKEN_MAC, hostRecord, validCiQueue } from './fixtures.js';
+import {
+  makeEnv,
+  getRequest,
+  validPayload,
+  beatRequest,
+  TOKEN_MAC,
+  hostRecord,
+  validCiQueue,
+  validCiQueueRunner,
+  validCiQueueWithRunners,
+} from './fixtures.js';
 
 beforeEach(() => {
   __resetRateLimiter();
@@ -311,5 +321,58 @@ describe('GET /status.json passes ci_queue through on the host record (no new co
     const res = await worker.fetch(getRequest('/status.json'), env, {});
     const json = await res.json();
     expect(json.hosts.mac).not.toHaveProperty('ci_queue');
+  });
+});
+
+// Issue #655 — render's OWN re-check of current_job, exercised by calling renderCiPage directly
+// with an unsanitised ci_queue (bypassing validateBeatPayload on purpose, same pattern
+// grouped-render.test.js uses for isIssueUrl): a stored value that validate.js would have
+// rejected must still never produce a broken/fabricated/unsanitised href if it somehow reaches
+// render (defence in depth — "never trust that the stored value was validated").
+describe('#655 AC B — render re-checks current_job itself, never trusts storage', () => {
+  const thresholds = { staleSecs: 1500, offlineSecs: 4500 };
+  const NOW = Date.parse('2026-09-21T12:00:00Z') / 1000;
+
+  function ciPageWithRunner(runnerOverrides) {
+    const mac = hostRecord({
+      received_at: '2026-09-21T11:59:00Z',
+      ci_queue: validCiQueueWithRunners({
+        runners: [validCiQueueRunner({ name: 'r-unsanitised', busy: true, ...runnerOverrides })],
+      }),
+    });
+    return renderCiPage({ mac, vm: hostRecord() }, thresholds, NOW);
+  }
+
+  it('an unsanitised current_job (bad repo, negative run_id, javascript: pr_url) renders no link and no javascript: anywhere', () => {
+    const html = ciPageWithRunner({
+      current_job: { repo: 'bad repo', run_id: -1, pr_url: 'javascript:alert(1)' },
+    });
+    expect(html).not.toContain('javascript:');
+    const row = /<tr[^>]*>[\s\S]*?r-unsanitised[\s\S]*?<\/tr>/.exec(html)[0];
+    expect(row).not.toContain('<a href');
+  });
+
+  it('a pr_url pointing off github.com falls back to the run URL; the foreign host never appears', () => {
+    const html = ciPageWithRunner({
+      current_job: { repo: 'jpmoya/claude-agents', run_id: 1, pr_url: 'https://evil.example/pull/1' },
+    });
+    expect(html).not.toContain('evil.example');
+    expect(html).toContain('<a href="https://github.com/jpmoya/claude-agents/actions/runs/1"');
+  });
+
+  it('online: false wins over busy: true (runnerStatus gate) — no link even with an otherwise-valid current_job', () => {
+    const html = ciPageWithRunner({
+      online: false,
+      current_job: { repo: 'jpmoya/claude-agents', run_id: 1, pr_url: 'https://github.com/jpmoya/claude-agents/pull/1' },
+    });
+    const row = /<tr[^>]*>[\s\S]*?r-unsanitised[\s\S]*?<\/tr>/.exec(html)[0];
+    expect(row).not.toContain('<a href');
+  });
+
+  it("JP's live case — busy, util 0/0, 1800s (0h) of history: both badges read \"(building — 0h collected)\", never a bare confident 0%", () => {
+    const html = ciPageWithRunner({ util_24h_pct: 0, util_72h_pct: 0, history_secs: 1800 });
+    const row = /<tr[^>]*>[\s\S]*?r-unsanitised[\s\S]*?<\/tr>/.exec(html)[0];
+    expect(row.match(/<span class="ci-util-building">\(building &mdash; 0h collected\)<\/span>/g)).toHaveLength(2);
+    expect(row).toContain('0%');
   });
 });
