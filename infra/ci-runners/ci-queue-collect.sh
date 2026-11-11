@@ -19,8 +19,10 @@
 #
 # API calls per cycle (bounded, #637): 2 runner-list calls (org + jpmoya/claude-agents repo-level)
 # + 2 run-list calls per repo (status=queued, status=in_progress) + up to
-# MAX_RUN_LOOKUPS_PER_REPO job-lookup calls per repo. No --paginate anywhere (one HTTP call per
-# `gh api` invocation) — each call also uses a fixed per_page instead of walking pages.
+# MAX_RUN_LOOKUPS_PER_REPO job-lookup calls per repo, + 1 extra run-list call per repo ONLY when
+# that repo's queued backlog spans more than one page (#645 review finding 1 — see
+# _ciq_collect_repo's "last page" fetch below). No --paginate anywhere (one HTTP call per `gh api`
+# invocation) — each call also uses a fixed per_page instead of walking pages.
 #
 # Env (production): CI_QUEUE_COLLECT_ENABLED (gate, read by report-status.sh, not this script),
 #   PIPE, GH_TOKEN (optional — the host's own `gh` auth is used), SLACK_WEBHOOK_URL, SENTRY_DSN,
@@ -43,8 +45,9 @@ REPOS_FILE=${CI_QUEUE_REPOS_FILE:-$HERE/../../scripts/ci-metrics.repos}
 ORG=${CI_QUEUE_ORG:-Benjis-Plants}
 SELF_REPO=${CI_QUEUE_SELF_REPO:-jpmoya/claude-agents}
 INTERVAL=${CI_QUEUE_INTERVAL_SECS:-240}
-PER_PAGE=${CI_QUEUE_PER_PAGE:-30}
-# Bounds total API calls per cycle (#637): 2 (runners) + 2*repos (run lists) + repos*MAX_RUN_LOOKUPS_PER_REPO (job lookups).
+PER_PAGE=${CI_QUEUE_PER_PAGE:-100}   # GitHub's max; free (same single call), shrinks how often a repo needs the extra last-page fetch below
+# Bounds total API calls per cycle (#637): 2 (runners) + 2*repos (run lists) + repos*MAX_RUN_LOOKUPS_PER_REPO (job lookups)
+# + up to 1*repos extra (#645 — only repos whose queued backlog exceeds one page get the last-page fetch).
 MAX_RUN_LOOKUPS_PER_REPO=5
 RELEASE=${CI_QUEUE_RELEASE:-$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo unknown)}
 ENVIRONMENT=${CI_QUEUE_ENVIRONMENT:-$(hostname -s 2>/dev/null || echo unknown)}
@@ -95,14 +98,46 @@ _ciq_categorize() {
 
 # _ciq_collect_repo <repo> — appends one {cat, queued_at} line per queued job to
 # $WORK/queued-jobs.jsonl. Returns 1 (aborting the whole cycle) on any API failure.
+#
+# #645 review finding 1 (backlog undercount): two independent bias sources, both fixed here:
+#   (a) GitHub's run-list endpoint always returns newest-first with no ascending-sort query param
+#       (confirmed against the REST docs — no sort/direction param on "List workflow runs for a
+#       repository"). If a repo's queued backlog exceeds one page, the genuinely oldest queued
+#       run sits on the LAST page, never this one. Below, when the queued call's `total_count`
+#       says there's a page beyond what we fetched, one bounded extra call fetches exactly that
+#       last page — the oldest queued run is then always among what we hold, regardless of how
+#       deep the backlog is (2 calls total, not proportional to backlog size).
+#   (b) Merging queued + in_progress runs and walking them oldest-id-first (as this used to do via
+#       `unique_by`) is NOT safe on its own: in_progress runs generally have lower ids (they
+#       started running earlier) than queued ones, so a repo with >= MAX_RUN_LOOKUPS_PER_REPO
+#       in_progress runs could spend the whole job-lookup budget on runs that typically have zero
+#       queued jobs, starving every actually-queued run of a lookup. Runs are now tagged by source
+#       list and queued-source runs are always walked (oldest-id-first) before any in_progress-
+#       source run, so the cap is spent on the runs likeliest to answer "oldest queued" first.
+# Residual risk (documented, not fixed): a queued job inside an old in_progress run that isn't
+# reached before the cap runs out can still be missed — unchanged from before, and orthogonal to
+# (a)/(b) above.
 _ciq_collect_repo() {
-  local repo=$1 safe qjson pjson n=0 run id cat jobsjson
+  local repo=$1 safe qjson pjson n=0 run id cat jobsjson qtotal page qlast=""
   safe=${repo//\//__}
   qjson=$(_ciq_call_shaped "repos/$repo/actions/runs?status=queued&per_page=$PER_PAGE" "runs-${safe}-queued.json" workflow_runs) || return 1
   pjson=$(_ciq_call_shaped "repos/$repo/actions/runs?status=in_progress&per_page=$PER_PAGE" "runs-${safe}-in_progress.json" workflow_runs) || return 1
-  { printf '%s' "$qjson" | jq -c '.workflow_runs[]?' 2>/dev/null
-    printf '%s' "$pjson" | jq -c '.workflow_runs[]?' 2>/dev/null
-  } | jq -s -c 'unique_by(.id) | .[]' > "$WORK/$safe.runs.jsonl" 2>/dev/null
+
+  qtotal=$(printf '%s' "$qjson" | jq '(.total_count // (.workflow_runs | length))' 2>/dev/null)
+  if [ -n "$qtotal" ] && [ "$qtotal" -gt "$PER_PAGE" ] 2>/dev/null; then
+    page=$(( (qtotal + PER_PAGE - 1) / PER_PAGE ))
+    qlast=$(_ciq_call_shaped "repos/$repo/actions/runs?status=queued&per_page=$PER_PAGE&page=$page" "runs-${safe}-queued-lastpage.json" workflow_runs) || return 1
+  fi
+
+  { printf '%s' "$qjson" | jq -c '.workflow_runs[]? | . + {source:"queued"}' 2>/dev/null
+    [ -z "$qlast" ] || printf '%s' "$qlast" | jq -c '.workflow_runs[]? | . + {source:"queued"}' 2>/dev/null
+    printf '%s' "$pjson" | jq -c '.workflow_runs[]? | . + {source:"in_progress"}' 2>/dev/null
+  } | jq -s -c '
+      group_by(.id)
+      | map(if any(.[]; .source == "queued") then (map(select(.source == "queued")) | .[0]) else .[0] end)
+      | sort_by([(if .source == "queued" then 0 else 1 end), .id])
+      | .[]
+    ' > "$WORK/$safe.runs.jsonl" 2>/dev/null
   [ -s "$WORK/$safe.runs.jsonl" ] || return 0   # nothing queued/in-progress for this repo: not a failure
 
   while IFS= read -r run; do

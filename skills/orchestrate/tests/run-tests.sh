@@ -33,7 +33,12 @@ export GH_BUDGET_ENABLED=0   # gh-budget.sh (call log, quota guard, read cache) 
 # #643: report-status.sh's opt-in background call to the host-side CI queue collector (real gh/GitHub
 # Actions API calls) must never fire just because the suite ran report-status.sh — explicit, not just
 # relying on the script's own default-off, in case a real ~/.claude/pipeline/config.local.sh enabled it.
+# #645: CI_QUEUE_COLLECT_TEST_DISABLE is the structural guarantee — config.sh forces
+# CI_QUEUE_COLLECT_ENABLED back to 0 AFTER sourcing config.local.sh whenever this is set, so a host
+# config.local.sh that turns the collector on for real (its one intended purpose) can't win a race
+# against this plain export.
 export CI_QUEUE_COLLECT_ENABLED=0
+export CI_QUEUE_COLLECT_TEST_DISABLE=1
 
 . "$HERE/lib/assert.sh"
 . "$HERE/lib/fixture.sh"
