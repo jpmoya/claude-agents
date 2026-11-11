@@ -235,6 +235,7 @@ export function hostRecord({
   staging,
   approved,
   backlog,
+  ci_queue,
   received_at = "2026-09-21T12:00:00Z",
 } = {}) {
   const rec = {
@@ -249,5 +250,6 @@ export function hostRecord({
   if (staging !== undefined) rec.staging = staging;
   if (approved !== undefined) rec.approved = approved;
   if (backlog !== undefined) rec.backlog = backlog;
+  if (ci_queue !== undefined) rec.ci_queue = ci_queue;
   return rec;
 }
