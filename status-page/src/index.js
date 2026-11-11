@@ -1,6 +1,6 @@
 // src/index.js — router, bearer auth, Google sign-in, rate limiting, response headers.
 //
-// Routes: POST /beat, GET /status.json, GET /, GET /pipelines, POST /backlog-priority,
+// Routes: POST /beat, GET /status.json, GET /, GET /pipelines, GET /ci, POST /backlog-priority,
 // POST /learnings/push, GET /learnings, POST /learnings/edit, POST /learnings/delete,
 // GET /robots.txt, GET /login, GET /auth/callback, else 404. X-Robots-Tag: noindex is applied in
 // one place to every response.
@@ -24,7 +24,12 @@
 // cross-site POST from carrying the cookie, same as every other human-facing write here).
 
 import { validateBeatPayload } from "./validate.js";
-import { renderPage, renderPipelines, renderLearnings } from "./render.js";
+import {
+  renderPage,
+  renderPipelines,
+  renderCiPage,
+  renderLearnings,
+} from "./render.js";
 import { captureError } from "./capture.js";
 import { KEEPALIVE_SECS, computeThresholds } from "./vocab.js";
 import { setBacklogPriority, isValidKeyList } from "./backlog-priority.js";
@@ -229,6 +234,34 @@ async function handlePipelines(env) {
       release: env.RELEASE,
       environment: env.ENVIRONMENT,
       route: "/pipelines",
+    };
+    await captureError(err, tags, env);
+    return noindexResponse("Internal error", {
+      status: 500,
+      headers: { "Content-Type": "text/plain" },
+    });
+  }
+}
+
+/** GET /ci — issue #649: the CI-queue panel + per-runner table, moved off `/` onto its own tab. */
+async function handleCi(env) {
+  try {
+    const hosts = await readHostRecords(env);
+    const thresholds = computeThresholds(KEEPALIVE_SECS);
+    const nowEpochSecs = Math.floor(Date.now() / 1000);
+    const html = renderCiPage(hosts, thresholds, nowEpochSecs);
+    return noindexResponse(html, {
+      status: 200,
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "max-age=15",
+      },
+    });
+  } catch (err) {
+    const tags = {
+      release: env.RELEASE,
+      environment: env.ENVIRONMENT,
+      route: "/ci",
     };
     await captureError(err, tags, env);
     return noindexResponse("Internal error", {
@@ -579,6 +612,13 @@ export default {
         return noindexResponse(null, { status: 405 });
       if (!(await requireSession(request, env))) return redirectTo("/login");
       return handlePipelines(env);
+    }
+
+    if (url.pathname === "/ci") {
+      if (request.method !== "GET")
+        return noindexResponse(null, { status: 405 });
+      if (!(await requireSession(request, env))) return redirectTo("/login");
+      return handleCi(env);
     }
 
     if (url.pathname === "/backlog-priority") {
