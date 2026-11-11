@@ -32,6 +32,8 @@ DISPATCH_REPOS=(
 # companion infra issue once the status-page Worker + KV are deployed.
 # STATUS_PUSH_URL="https://<worker>.<account>.workers.dev/beat"   # the deployed Worker's /beat endpoint
 # STATUS_PUSH_TOKEN="..."                                         # secret — this file only, never the repo
+# Also reused, unchanged, by skills/orchestrate/push-learnings.sh (message-triage's Learnings tab
+# push) — it derives the /learnings/push URL from STATUS_PUSH_URL itself, nothing more to set.
 
 # Repo alias map for the status board (issue #10): "owner/repo:published-alias" — a repo absent
 # from this list publishes as "other". Placeholder entries only; this repo is public.

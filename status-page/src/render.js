@@ -249,7 +249,8 @@ export const GOAL_LEGEND = [
 // Pulls "owner/repo#issue" out of a backlog row's `url` (already validated as a GitHub issue URL
 // by validate.js's ISSUE_URL check) — the key backlog-priority.sh's `set` wants. `repo` on the row
 // is only the published alias (never the real owner/repo), so the key must come from the URL.
-const OWNER_REPO_ISSUE_RE = /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/issues\/(\d+)$/;
+const OWNER_REPO_ISSUE_RE =
+  /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/issues\/(\d+)$/;
 function backlogKeyOf(row) {
   const m = isIssueUrl(row.url) ? OWNER_REPO_ISSUE_RE.exec(row.url) : null;
   return m ? `${m[1]}#${m[2]}` : null;
@@ -592,7 +593,9 @@ function renderCiQueueChart(categories) {
   const maxCount = Math.max(...bars.map((b) => b.count));
   const height = bars.length * (CI_BAR_HEIGHT + CI_BAR_GAP);
   const summary = bars
-    .map((b) => `${CI_QUEUE_LABELS[b.key] || CI_QUEUE_LABELS.other}: ${b.count}`)
+    .map(
+      (b) => `${CI_QUEUE_LABELS[b.key] || CI_QUEUE_LABELS.other}: ${b.count}`,
+    )
     .join(", ");
   const rows = bars
     .map((b, i) => {
@@ -679,11 +682,11 @@ export function renderCiQueuePanel(hosts, thresholds, nowEpochSecs) {
   </section>`;
 }
 
-/** Two-link nav ("Status" | "Pipelines"); the current page gets aria-current. */
+/** Three-link nav ("Status" | "Pipelines" | "Learnings"); the current page gets aria-current. */
 function renderNav(current) {
   const link = (href, label, key) =>
     `<a href="${href}"${current === key ? ' aria-current="page"' : ""}>${label}</a>`;
-  return `<nav>${link("/", "Status", "status")} ${link("/pipelines", "Pipelines", "pipelines")}</nav>`;
+  return `<nav>${link("/", "Status", "status")} ${link("/pipelines", "Pipelines", "pipelines")} ${link("/learnings", "Learnings", "learnings")}</nav>`;
 }
 
 const ROOT_VARS_CSS = `  :root {
@@ -976,6 +979,78 @@ ${renderStory()}
 ${renderIntakeDocs()}
 ${renderGroupedTracks(data)}
 ${renderLegend()}
+</body>
+</html>`;
+}
+
+const LEARNINGS_CSS = `${ROOT_VARS_CSS}
+  body { font-family: -apple-system, "Inter", "Segoe UI", system-ui, sans-serif; margin: 0; padding: 1.5rem; max-width: 72rem;
+    background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; }
+  h1 { font-size: 1.3rem; font-weight: 700; margin: 0 0 1.25rem; letter-spacing: -0.01em; }
+  a { color: var(--accent); }
+${NAV_CSS}
+  .learnings-help { font-size: 0.85rem; color: var(--muted); margin: 0 0 1.25rem; line-height: 1.5; max-width: 48rem; }
+  .learnings-list { list-style: none; margin: 0; padding: 0; }
+  .learning-row { display: flex; gap: 0.75rem; align-items: flex-start; padding: 0.85rem 0;
+    border-bottom: 1px solid var(--border); }
+  .learning-row:last-child { border-bottom: none; }
+  .learning-edit { flex: 1; display: flex; flex-direction: column; gap: 0.35rem; }
+  .learning-edit textarea { width: 100%; min-height: 3.2rem; font-family: inherit; font-size: 0.85rem;
+    padding: 0.5rem 0.6rem; border-radius: 0.4rem; border: 1px solid var(--border); background: var(--bg);
+    color: var(--text); resize: vertical; box-sizing: border-box; }
+  .learning-meta { font-size: 0.72rem; color: var(--muted); }
+  .learning-actions { display: flex; flex-direction: column; gap: 0.4rem; flex: 0 0 auto; }
+  .learning-row button { font-size: 0.78rem; padding: 0.4rem 0.7rem; border-radius: 0.4rem;
+    border: 1px solid var(--border); background: var(--surface); color: var(--text); cursor: pointer; }
+  .learning-row button:hover { background: var(--accent-soft); }
+  .empty { color: var(--muted); font-size: 0.9rem; }`;
+
+/** One entry: an edit form (textarea + Save) and a separate delete form (Delete) — two plain
+ * HTML forms, no JS, each posting straight to /learnings/edit or /learnings/delete. */
+function renderLearningRow(entry) {
+  return `<li class="learning-row">
+    <form method="POST" action="/learnings/edit" class="learning-edit">
+      <input type="hidden" name="id" value="${esc(entry.id)}">
+      <textarea name="text" rows="2">${esc(entry.text)}</textarea>
+      <div class="learning-meta">added ${esc(entry.added_at)}</div>
+      <button type="submit">Save</button>
+    </form>
+    <form method="POST" action="/learnings/delete" class="learning-actions">
+      <input type="hidden" name="id" value="${esc(entry.id)}">
+      <button type="submit">Delete</button>
+    </form>
+  </li>`;
+}
+
+/**
+ * Learnings tab: the message-triage agent's running "learnings" log, pushed one-way from JP's
+ * Mac (POST /learnings/push). Editing or deleting a row only changes what this page shows —
+ * the Worker can't reach JP's Mac to update the real file, so the agent still reads its own copy
+ * until that's fixed there too.
+ * @param {Array<{id: string, text: string, added_at: string}>} entries
+ * @returns {string} full HTML document
+ */
+export function renderLearnings(entries) {
+  const list = entries.length
+    ? `<ul class="learnings-list">${entries.map(renderLearningRow).join("")}</ul>`
+    : '<p class="empty">no learnings pushed yet</p>';
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Learnings</title>
+<style>
+${LEARNINGS_CSS}
+</style>
+</head>
+<body>
+${renderNav("learnings")}
+<h1>Message-triage learnings</h1>
+<p class="learnings-help">Pushed one-way from message-triage's running learnings log on JP's Mac. Editing or
+  deleting a row here only changes what this page shows — the agent still reads its own file, so a lesson
+  removed here should also be removed there once it's actually been acted on.</p>
+${list}
 </body>
 </html>`;
 }

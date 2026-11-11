@@ -250,6 +250,37 @@ Without this secret, the drag/keyboard reorder controls still render but a save 
 (JP falls back to the terminal `backlog-priority.sh set` command); nothing else on the page is
 affected.
 
+## Learnings tab
+
+JP's personal `message-triage` agent (`~/.claude/agents/message-triage.md`, outside this repo)
+keeps an append-only, plain-markdown bullet log of lessons learned from his edits
+(`~/.claude/agents/message-triage-learnings.md`). This tab shows that log and lets JP edit or
+delete entries from the browser — the status page's first non-pipeline data source.
+
+The Worker can't reach JP's Mac filesystem, so this is a one-way sync, same shape as the
+`POST /beat` heartbeat: `skills/orchestrate/push-learnings.sh` (called by `message-triage.md`
+after it appends a new learning) POSTs the file's raw content to `POST /learnings/push`, bearer-
+auth'd with the same `TOKEN_MAC`/`TOKEN_VM` secrets and rate limiter as `/beat` — a separate
+secret would buy no real isolation (same Mac, same user, same readable config) and would mean one
+more `wrangler secret put` to forget before this works. The Worker parses bullet lines
+(`src/learnings.js`'s `parseLearningsMarkdown`) and merges them into KV key `learnings:entries`:
+`{ entries: [{id, text, added_at}], seen: string[] }`. A line's exact text is added at most once
+(tracked in `seen`, kept forever, even past an edit or delete) — that's what makes re-running the
+push against the same, ever-growing append-only file safe: it can never re-add, or resurrect, a
+line already seen.
+
+`GET /learnings` (same Google-session-cookie gate as `/`, `/pipelines`) renders the `entries` list
+with a "Learnings" nav link alongside "Status" | "Pipelines"; each row is two plain HTML forms, no
+JS — a textarea + Save posting to `POST /learnings/edit`, and a Delete button posting to
+`POST /learnings/delete` (same session gate, 303 back to `/learnings`, 404 for an unknown id).
+Both are display-only: they change what KV (and so the page) shows, never the Mac file, and never
+touch `seen`, so the next push can't undo a delete or duplicate an edit. **This means deleting a
+lesson here does not stop `message-triage` from applying it** — the agent still reads its own
+file. Treat the page as a view/cleanup layer on top of the real log, not a way to retract a
+lesson; edit the Mac file by hand (or change the agent's own editing habits) for that.
+No new Worker secret or KV namespace: `/learnings/push` reuses `TOKEN_MAC`/`TOKEN_VM`, and
+`learnings:entries` lives in the existing `STATUS` namespace.
+
 ## Pipelines tab (issue #273)
 
 `GET /pipelines` is a static, server-rendered routing diagram (no JS, no KV access) with a

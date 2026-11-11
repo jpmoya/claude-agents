@@ -1,6 +1,7 @@
 // src/index.js — router, bearer auth, Google sign-in, rate limiting, response headers.
 //
 // Routes: POST /beat, GET /status.json, GET /, GET /pipelines, POST /backlog-priority,
+// POST /learnings/push, GET /learnings, POST /learnings/edit, POST /learnings/delete,
 // GET /robots.txt, GET /login, GET /auth/callback, else 404. X-Robots-Tag: noindex is applied in
 // one place to every response.
 //
@@ -9,19 +10,32 @@
 // TOKEN_MAC and TOKEN_VM, with no early exit; the host label is whichever secret matched, never
 // read from the body. Rate limiting is a module-scope Map keyed by CF-Connecting-IP, fixed 60s
 // window, bounded eviction, reset via __resetRateLimiter for vitest. Neither /beat's auth nor
-// its rate limiter apply to the human-facing routes below.
+// its rate limiter apply to the human-facing routes below. POST /learnings/push reuses this same
+// TOKEN_MAC/TOKEN_VM check and rate limiter — it's pushed from the same Mac, by a script that
+// reads the same host config as the pipeline reporter (skills/orchestrate/push-learnings.sh), so
+// a separate secret would buy no real isolation, just another `wrangler secret put` to forget.
 //
-// The human-facing routes (GET /, /status.json, /pipelines) require a signed session cookie
-// (Google OAuth 2.0 Authorization Code flow, see src/auth.js): unauthenticated -> 302 to /login
-// -> 302 to Google -> /auth/callback exchanges the code, checks the ALLOWED_EMAILS allowlist,
-// and issues the session cookie. See issue #11 / #4 §5 for the pre-existing routes/validation
-// tables.
+// The human-facing routes (GET /, /status.json, /pipelines, /learnings) require a signed session
+// cookie (Google OAuth 2.0 Authorization Code flow, see src/auth.js): unauthenticated -> 302 to
+// /login -> 302 to Google -> /auth/callback exchanges the code, checks the ALLOWED_EMAILS
+// allowlist, and issues the session cookie. See issue #11 / #4 §5 for the pre-existing
+// routes/validation tables. POST /learnings/edit and /learnings/delete are behind the same
+// session cookie (plain HTML forms, no JS, no new CSRF mechanism — SameSite=Lax already blocks a
+// cross-site POST from carrying the cookie, same as every other human-facing write here).
 
 import { validateBeatPayload } from "./validate.js";
-import { renderPage, renderPipelines } from "./render.js";
+import { renderPage, renderPipelines, renderLearnings } from "./render.js";
 import { captureError } from "./capture.js";
 import { KEEPALIVE_SECS, computeThresholds } from "./vocab.js";
 import { setBacklogPriority, isValidKeyList } from "./backlog-priority.js";
+import {
+  parseLearningsMarkdown,
+  loadLearningsRecord,
+  mergePushedLines,
+  editLearningEntry,
+  deleteLearningEntry,
+  MAX_LEARNINGS_PUSH_BYTES,
+} from "./learnings.js";
 import {
   requireSession,
   isConfiguredSecret as isConfiguredAuthSecret,
@@ -268,6 +282,106 @@ async function handleBacklogPriority(request, env) {
   }
 }
 
+const LEARNINGS_KV_KEY = "learnings:entries";
+
+async function readLearningsRecord(env) {
+  return loadLearningsRecord(await env.STATUS.get(LEARNINGS_KV_KEY));
+}
+
+/**
+ * POST /learnings/push — the Mac's one-way sync of message-triage-learnings.md into KV
+ * (skills/orchestrate/push-learnings.sh). Same bearer auth and rate limiter as /beat; the raw
+ * markdown body (capped at 64 KB) is parsed into bullet lines and merged (src/learnings.js) so a
+ * line already pushed before is never re-added, even if it was since edited or deleted on the
+ * page. KV is only written when the merge actually added a line — a re-push of unchanged content
+ * (or a push scheduled more often than the file actually grows) costs nothing against the shared
+ * KV write budget report-status.sh's AC12 comment documents, and never risks clobbering a browser
+ * delete/edit that landed in KV after this handler's own read.
+ */
+async function handleLearningsPush(request, env) {
+  const ip = request.headers.get("CF-Connecting-IP") || "unknown";
+  if (isRateLimited(ip)) return noindexResponse(null, { status: 429 });
+
+  const token = extractBearerToken(request);
+  const okMac =
+    isConfiguredSecret(env.TOKEN_MAC) &&
+    constantTimeEqual(token ?? "", env.TOKEN_MAC);
+  const okVm =
+    isConfiguredSecret(env.TOKEN_VM) &&
+    constantTimeEqual(token ?? "", env.TOKEN_VM);
+  if (!okMac && !okVm) return noindexResponse(null, { status: 401 });
+
+  const rawBody = await request.text();
+  const byteLength = new TextEncoder().encode(rawBody).length;
+  if (byteLength > MAX_LEARNINGS_PUSH_BYTES)
+    return noindexResponse(null, { status: 413 });
+
+  const lines = parseLearningsMarkdown(rawBody);
+  const record = await readLearningsRecord(env);
+  const merged = mergePushedLines(record, lines);
+  if (merged.seen.length > record.seen.length) {
+    await env.STATUS.put(LEARNINGS_KV_KEY, JSON.stringify(merged));
+  }
+  return noindexResponse(null, { status: 204 });
+}
+
+/** GET /learnings — renders the current KV-stored list. `no-store`: a delete/edit redirects back
+ * here and must never show a stale cached copy. */
+async function handleLearningsPage(env) {
+  const record = await readLearningsRecord(env);
+  const html = renderLearnings(record.entries);
+  return noindexResponse(html, {
+    status: 200,
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+    },
+  });
+}
+
+/** POST /learnings/edit — plain HTML form (id, text). 400 for a missing id or blank text
+ * (malformed request); 404 if `id` is well-formed but no longer exists. */
+async function handleLearningsEdit(request, env) {
+  let form;
+  try {
+    form = await request.formData();
+  } catch {
+    return noindexResponse(null, { status: 400 });
+  }
+  const id = form.get("id");
+  const text = form.get("text");
+  if (typeof id !== "string" || id === "")
+    return noindexResponse(null, { status: 400 });
+  if (typeof text !== "string" || text.trim() === "")
+    return noindexResponse(null, { status: 400 });
+
+  const record = await readLearningsRecord(env);
+  const updated = editLearningEntry(record, id, text);
+  if (!updated) return noindexResponse(null, { status: 404 });
+  await env.STATUS.put(LEARNINGS_KV_KEY, JSON.stringify(updated));
+  return redirectTo("/learnings", 303);
+}
+
+/** POST /learnings/delete — plain HTML form (id). Display-only: never touches the Mac file, and
+ * never clears `seen`, so the next push can't bring the entry back. 404 if `id` no longer exists. */
+async function handleLearningsDelete(request, env) {
+  let form;
+  try {
+    form = await request.formData();
+  } catch {
+    return noindexResponse(null, { status: 400 });
+  }
+  const id = form.get("id");
+  if (typeof id !== "string" || id === "")
+    return noindexResponse(null, { status: 400 });
+
+  const record = await readLearningsRecord(env);
+  const updated = deleteLearningEntry(record, id);
+  if (!updated) return noindexResponse(null, { status: 404 });
+  await env.STATUS.put(LEARNINGS_KV_KEY, JSON.stringify(updated));
+  return redirectTo("/learnings", 303);
+}
+
 function handleRobots() {
   return noindexResponse("User-agent: *\nDisallow: /\n", {
     status: 200,
@@ -275,10 +389,12 @@ function handleRobots() {
   });
 }
 
-/** 302 redirect carrying X-Robots-Tag like every other response (never Response.redirect — its headers are immutable). */
-function redirectTo(location) {
+/** Redirect (302 by default) carrying X-Robots-Tag like every other response (never
+ * Response.redirect — its headers are immutable). /learnings/edit and /learnings/delete pass 303
+ * (POST -> GET) so a page reload never resubmits the form. */
+function redirectTo(location, status = 302) {
   const headers = new Headers({ Location: location });
-  return noindexResponse(null, { status: 302, headers });
+  return noindexResponse(null, { status, headers });
 }
 
 /**
@@ -367,7 +483,11 @@ async function handleAuthCallback(request, env) {
         : "state-invalid"; // neither the cookie nor the signed state verified
     await captureError(
       { name: `auth-callback-rejected:${reason}` },
-      { release: env.RELEASE, environment: env.ENVIRONMENT, route: "/auth/callback" },
+      {
+        release: env.RELEASE,
+        environment: env.ENVIRONMENT,
+        route: "/auth/callback",
+      },
       env,
     );
     return noindexResponse("Sign-in failed", {
@@ -466,6 +586,33 @@ export default {
         return noindexResponse(null, { status: 405 });
       if (!(await requireSession(request, env))) return redirectTo("/login");
       return handleBacklogPriority(request, env);
+    }
+
+    if (url.pathname === "/learnings/push") {
+      if (request.method !== "POST")
+        return noindexResponse(null, { status: 405 });
+      return handleLearningsPush(request, env);
+    }
+
+    if (url.pathname === "/learnings") {
+      if (request.method !== "GET")
+        return noindexResponse(null, { status: 405 });
+      if (!(await requireSession(request, env))) return redirectTo("/login");
+      return handleLearningsPage(env);
+    }
+
+    if (url.pathname === "/learnings/edit") {
+      if (request.method !== "POST")
+        return noindexResponse(null, { status: 405 });
+      if (!(await requireSession(request, env))) return redirectTo("/login");
+      return handleLearningsEdit(request, env);
+    }
+
+    if (url.pathname === "/learnings/delete") {
+      if (request.method !== "POST")
+        return noindexResponse(null, { status: 405 });
+      if (!(await requireSession(request, env))) return redirectTo("/login");
+      return handleLearningsDelete(request, env);
     }
 
     if (url.pathname === "/login") {
