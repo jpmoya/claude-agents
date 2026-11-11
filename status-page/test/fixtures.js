@@ -231,6 +231,16 @@ export function validCiQueueRunner(overrides = {}) {
   };
 }
 
+/** One valid `ci_queue.runners[].current_job` (issue #655), per the Expected Behavior payload shape. */
+export function validCiQueueCurrentJob(overrides = {}) {
+  return {
+    repo: 'jpmoya/claude-agents',
+    run_id: 43050239599,
+    pr_url: 'https://github.com/jpmoya/claude-agents/pull/42',
+    ...overrides,
+  };
+}
+
 /** A valid `ci_queue` object that also carries #648's `runners[]`/`runners_offline` fields. */
 export function validCiQueueWithRunners(overrides = {}) {
   return validCiQueue({

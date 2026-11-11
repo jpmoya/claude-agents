@@ -97,6 +97,134 @@ afterAll(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
+// Issue #655 — history_secs + current_job, exercised against the real collector (own temp
+// root/fixtures, separate from the #648 setup above so that one's zero-repo isolation is
+// untouched). Proves: (a) history_secs is derived from pre-seeded sample history, (b) a busy
+// slot's current_job is matched from a job already fetched for categories[] (zero new calls:
+// asserted via the same CI_QUEUE_CALL_LOG seam #637's AC6 test uses), preferring a PR link built
+// from the run's pull_requests[0].number (GitHub's real `pull_requests[]` shape has no `html_url`
+// — verified live against benjis-ops-tool/scheduler before writing this), and (c) an idle slot
+// with a same-named in_progress job (race/stale-assignment edge case) never gets a current_job —
+// matching is gated on the slot being busy, not merely present.
+describe('#655 — history_secs + current_job against the real collector', () => {
+  let root2, fixdir2, pipe2, reposFile2, raw2;
+
+  beforeAll(() => {
+    root2 = mkdtempSync(join(tmpdir(), 'ciq-collector-655-'));
+    fixdir2 = join(root2, 'fixtures');
+    pipe2 = join(root2, 'pipe');
+    mkdirSync(fixdir2, { recursive: true });
+    mkdirSync(pipe2, { recursive: true });
+
+    reposFile2 = join(root2, 'repos.txt');
+    writeFileSync(reposFile2, 'owner1/repo1\n');
+
+    // Two slots: gha-pool-1 (busy, has a matching in_progress job) and gha-pool-2 (idle, has a
+    // same-named in_progress job that must NOT attach — the negative case).
+    writeFileSync(
+      join(fixdir2, 'runners-org.json'),
+      JSON.stringify({
+        total_count: 2,
+        runners: [
+          { id: 50, name: 'gha-pool-1-50', status: 'online', busy: true, labels: [{ name: 'benjis-ci' }] },
+          { id: 60, name: 'gha-pool-2-60', status: 'online', busy: false, labels: [{ name: 'benjis-ci' }] },
+        ],
+      }),
+    );
+    writeFileSync(join(fixdir2, 'runners-repo.json'), JSON.stringify({ total_count: 0, runners: [] }));
+
+    writeFileSync(join(fixdir2, 'runs-owner1__repo1-queued.json'), JSON.stringify({ total_count: 0, workflow_runs: [] }));
+    writeFileSync(
+      join(fixdir2, 'runs-owner1__repo1-in_progress.json'),
+      JSON.stringify({
+        total_count: 2,
+        workflow_runs: [
+          { id: 999001, event: 'pull_request', name: 'CI', actor: { login: 'jp' }, pull_requests: [{ number: 7 }] },
+          { id: 999002, event: 'workflow_dispatch', name: 'CI', actor: { login: 'jp' }, pull_requests: [] },
+        ],
+      }),
+    );
+    writeFileSync(
+      join(fixdir2, 'jobs-999001.json'),
+      JSON.stringify({ total_count: 1, jobs: [{ status: 'in_progress', runner_name: 'gha-pool-1-50' }] }),
+    );
+    writeFileSync(
+      join(fixdir2, 'jobs-999002.json'),
+      JSON.stringify({ total_count: 1, jobs: [{ status: 'in_progress', runner_name: 'gha-pool-2-60' }] }),
+    );
+
+    // Pre-seed history for gha-pool-1 only: oldest retained sample 5400s (1.5h) before "now" ->
+    // history_secs must equal exactly that span. gha-pool-2 has no prior samples -> history_secs 0.
+    const now2 = 1700000000;
+    writeFileSync(
+      join(pipe2, 'ci-runner-samples.jsonl'),
+      [{ ts: now2 - 5400, slot: 'gha-pool-1', id: 50, name: 'gha-pool-1-50', online: true, busy: true, role: 'general' }]
+        .map((l) => JSON.stringify(l))
+        .join('\n') + '\n',
+    );
+
+    const env2 = {
+      PATH: process.env.PATH,
+      HOME: process.env.HOME,
+      PIPE: pipe2,
+      CI_QUEUE_FORCE: '1',
+      CI_QUEUE_NOW: String(now2),
+      CI_QUEUE_OUT: join(pipe2, 'status-ci.json'),
+      CI_QUEUE_ATTEMPT_FILE: join(pipe2, 'attempt'),
+      CI_QUEUE_STATE_FILE: join(pipe2, 'state.json'),
+      CI_QUEUE_LOCKDIR: join(pipe2, 'lockdir'),
+      CI_QUEUE_SAMPLES_FILE: join(pipe2, 'ci-runner-samples.jsonl'),
+      CI_QUEUE_CALL_LOG: join(pipe2, 'calls.log'),
+      CI_QUEUE_REPOS_FILE: reposFile2,
+      CI_QUEUE_FIXTURE_DIR: fixdir2,
+    };
+
+    const result2 = spawnSync('bash', [COLLECTOR], { env: env2, encoding: 'utf8' });
+    if (result2.status !== 0) {
+      throw new Error(`collector exited ${result2.status}: stdout=${result2.stdout} stderr=${result2.stderr}`);
+    }
+    raw2 = JSON.parse(readFileSync(join(pipe2, 'status-ci.json'), 'utf8'));
+  });
+
+  afterAll(() => {
+    rmSync(root2, { recursive: true, force: true });
+  });
+
+  it('history_secs reflects the pre-seeded sample span per slot', () => {
+    const pool1 = raw2.runners.find((r) => r.name === 'gha-pool-1-50');
+    const pool2 = raw2.runners.find((r) => r.name === 'gha-pool-2-60');
+    expect(pool1.history_secs).toBe(5400);
+    expect(pool2.history_secs).toBe(0);
+  });
+
+  it('the busy slot gets current_job, built as a PR link from pull_requests[0].number (no html_url in the real shape)', () => {
+    const pool1 = raw2.runners.find((r) => r.name === 'gha-pool-1-50');
+    expect(pool1.current_job).toEqual({
+      repo: 'owner1/repo1',
+      run_id: 999001,
+      pr_url: 'https://github.com/owner1/repo1/pull/7',
+    });
+  });
+
+  it('the idle slot never gets current_job, even though a same-named in_progress job exists (gated on busy, not presence)', () => {
+    const pool2 = raw2.runners.find((r) => r.name === 'gha-pool-2-60');
+    expect(pool2).not.toHaveProperty('current_job');
+  });
+
+  it('adds zero new API calls beyond the existing per-cycle budget (2 + 2*repos + job-lookups already made for categories[])', () => {
+    const calls = Number(readFileSync(join(pipe2, 'calls.log'), 'utf8').trim());
+    // 2 (org+repo runner lists) + 2 (queued+in_progress run lists for the one repo) + 2 (one job
+    // lookup per in_progress run, already made for categories[] before this ticket) = 6.
+    expect(calls).toBe(6);
+  });
+
+  it('validateBeatPayload passes the real ci_queue object (history_secs + current_job included) through unchanged', () => {
+    const result = validateBeatPayload(validPayload({ ci_queue: raw2 }));
+    expect(result.ok).toBe(true);
+    expect(result.value.ci_queue).toEqual(raw2);
+  });
+});
+
 describe('validate.js against the real collector output (issue #648)', () => {
   it('the collector produced a ci_queue with the expected runner shapes (sanity before comparing)', () => {
     const raw = JSON.parse(readFileSync(join(pipe, 'status-ci.json'), 'utf8'));

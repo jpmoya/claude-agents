@@ -5,7 +5,7 @@
 // passes through esc() even though the payload is already enum-validated (defence in depth,
 // tested directly per skills/quality-gate/SKILL.md).
 
-import { isIssueUrl } from "./validate.js";
+import { isIssueUrl, isPrUrl } from "./validate.js";
 import { groupTickets, buildBacklog } from "./group.js";
 import { PIPELINES } from "./pipelines.js";
 import { CI_QUEUE_CATEGORY_VOCAB } from "./vocab.js";
@@ -722,6 +722,54 @@ function renderUtilPct(pct) {
   return pct === null || pct === undefined ? "&mdash;" : `${esc(pct)}%`;
 }
 
+// Issue #655 AC A — "trustworthy" floors for the 24h/72h utilization claims: below these, a
+// slot's sample history is too thin for the percentage to mean what it looks like it means.
+const HISTORY_FLOOR_24H_SECS = 12 * 3600;
+const HISTORY_FLOOR_72H_SECS = 24 * 3600;
+
+/**
+ * "" (no caveat) when `historySecs` is missing (pre-#655 payload), the util value itself is
+ * null/undefined (the "&mdash;" fallback already says "no data" — AC A never piles a second
+ * caveat on top of that), or the span has already cleared `floorSecs`. Otherwise a small
+ * "(building — Nh collected)" note — hours floored, never rounded up, so it never overclaims.
+ */
+function renderHistoryBuildingNote(historySecs, pct, floorSecs) {
+  if (typeof historySecs !== "number") return "";
+  if (pct === null || pct === undefined) return "";
+  if (historySecs >= floorSecs) return "";
+  const hours = Math.floor(historySecs / 3600);
+  return ` <span class="ci-util-building">(building &mdash; ${esc(hours)}h collected)</span>`;
+}
+
+const OWNER_REPO_RUN_RE = /^[\w.-]+\/[\w.-]+$/;
+
+/**
+ * Href for a busy runner's current job (issue #655 AC B): the PR link when `current_job.pr_url`
+ * passes `isPrUrl` (re-checked here — never trust that the stored value was validated, same
+ * defence-in-depth pattern as `renderTicketCell`'s `isIssueUrl` re-check above), else the Actions
+ * run URL built from a re-validated `repo`/`run_id`, else `null` — never a fabricated/partial
+ * href (AC B: "a busy runner with no matched job ... renders no link").
+ */
+function currentJobHref(currentJob) {
+  if (!currentJob || typeof currentJob !== "object") return null;
+  if (isPrUrl(currentJob.pr_url)) return currentJob.pr_url;
+  const repo = currentJob.repo;
+  const runId = currentJob.run_id;
+  if (typeof repo !== "string" || !OWNER_REPO_RUN_RE.test(repo)) return null;
+  if (typeof runId !== "number" || !Number.isInteger(runId) || runId <= 0) return null;
+  return `https://github.com/${repo}/actions/runs/${runId}`;
+}
+
+/** "" (no link), or a same-tab-safe link to what a busy runner is currently executing. Gated on
+ * `runnerStatus(r) === "busy"` (not raw `r.busy`) so an offline-but-busy row (online: false wins,
+ * per `runnerStatus` above) never shows a link to a job that's no longer actually running. */
+function renderCurrentJobLink(r) {
+  if (runnerStatus(r) !== "busy") return "";
+  const href = currentJobHref(r.current_job);
+  if (href === null) return "";
+  return ` <a href="${esc(href)}" target="_blank" rel="noopener noreferrer">running</a>`;
+}
+
 /**
  * Per-runner table (issue #649, the render consumer of #648's `ci_queue.runners[]`): name,
  * three-state status badge, 24h/72h utilization. The `prod_deploy`-role runner (the
@@ -731,6 +779,10 @@ function renderUtilPct(pct) {
  * available from this payload (`categories[]` keys on workflow name, not target runner label) —
  * see the PR description's noted follow-up limitation. "" (no section at all) when `runners` is
  * absent or empty (AC9) — never broken/empty table markup.
+ *
+ * Issue #655 adds two more things to each row: a "(building — Nh collected)" caveat next to a
+ * util percentage still below its trustworthy sample-history floor (AC A), and a link next to a
+ * busy runner's status to the PR/run it's currently executing (AC B).
  */
 function renderCiRunnersSection(runners) {
   if (!Array.isArray(runners) || runners.length === 0) return "";
@@ -741,7 +793,10 @@ function renderCiRunnersSection(runners) {
       const prodBadge = isProd
         ? ` <span class="badge ci-role-prod">Prod deploy</span>`
         : "";
-      return `<tr${isProd ? ' class="ci-runner-prod"' : ""}><td data-label="Runner">${esc(r.name)}${prodBadge}</td><td data-label="Status"><span class="badge ${esc(RUNNER_STATUS_BADGE_CLASS[status])}">${esc(status)}</span></td><td data-label="24h util">${renderUtilPct(r.util_24h_pct)}</td><td data-label="72h util">${renderUtilPct(r.util_72h_pct)}</td></tr>`;
+      const util24Note = renderHistoryBuildingNote(r.history_secs, r.util_24h_pct, HISTORY_FLOOR_24H_SECS);
+      const util72Note = renderHistoryBuildingNote(r.history_secs, r.util_72h_pct, HISTORY_FLOOR_72H_SECS);
+      const jobLink = renderCurrentJobLink(r);
+      return `<tr${isProd ? ' class="ci-runner-prod"' : ""}><td data-label="Runner">${esc(r.name)}${prodBadge}</td><td data-label="Status"><span class="badge ${esc(RUNNER_STATUS_BADGE_CLASS[status])}">${esc(status)}</span>${jobLink}</td><td data-label="24h util">${renderUtilPct(r.util_24h_pct)}${util24Note}</td><td data-label="72h util">${renderUtilPct(r.util_72h_pct)}${util72Note}</td></tr>`;
     })
     .join("");
   const prod = runners.filter((r) => r.role === "prod_deploy");
@@ -808,9 +863,12 @@ const CI_QUEUE_CSS = `  section.ci-queue h2 { display: flex; align-items: center
 
 // Issue #649: the prod-deploy runner row/badge stand out from the general pool at a glance, and
 // the pool-split summary line under the table.
+// Issue #655: the "building" sample-history caveat and the busy-runner job link read as
+// secondary/muted text, never competing visually with the percentage or status badge itself.
 const CI_RUNNERS_CSS = `  .badge.ci-role-prod { background: var(--accent-soft); color: var(--accent); }
   tr.ci-runner-prod { background: var(--accent-soft); }
-  .ci-pool-summary { font-size: 0.8rem; color: var(--muted); margin: 0.75rem 0 0; }`;
+  .ci-pool-summary { font-size: 0.8rem; color: var(--muted); margin: 0.75rem 0 0; }
+  .ci-util-building { font-size: 0.72rem; color: var(--muted); font-weight: 500; }`;
 
 /**
  * @param {{ mac: object|null, vm: object|null }} hosts
