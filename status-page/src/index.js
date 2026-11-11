@@ -30,6 +30,8 @@ import {
   fetchGoogleUserinfo,
   isEmailAllowed,
   signSession,
+  signState,
+  verifyState,
   buildCookie,
   clearCookie,
   parseCookies,
@@ -295,7 +297,7 @@ function callbackRedirectUri(url, env) {
 }
 
 /** GET /login — starts the Google OAuth flow for the human-facing routes. */
-function handleLogin(request, env) {
+async function handleLogin(request, env) {
   if (
     !isConfiguredAuthSecret(env.GOOGLE_CLIENT_ID) ||
     !isConfiguredAuthSecret(env.SESSION_SECRET)
@@ -306,7 +308,7 @@ function handleLogin(request, env) {
     });
   }
   const url = new URL(request.url);
-  const state = crypto.randomUUID();
+  const state = await signState(crypto.randomUUID(), env.SESSION_SECRET);
   const headers = new Headers();
   headers.append(
     "Set-Cookie",
@@ -350,9 +352,24 @@ async function handleAuthCallback(request, env) {
   if (
     !code ||
     !returnedState ||
-    !expectedState ||
-    !constantTimeEqual(returnedState, expectedState)
+    !(
+      (expectedState && constantTimeEqual(returnedState, expectedState)) ||
+      (await verifyState(returnedState, env.SESSION_SECRET))
+    )
   ) {
+    // Diagnostic only (#647): the exact reason never reaches the response body or an
+    // attacker — just a Slack alert naming which check failed, so the next occurrence is
+    // visible without a live wrangler tail.
+    const reason = !code
+      ? "missing-code"
+      : !returnedState
+        ? "missing-returned-state"
+        : "state-invalid"; // neither the cookie nor the signed state verified
+    await captureError(
+      { name: `auth-callback-rejected:${reason}` },
+      { release: env.RELEASE, environment: env.ENVIRONMENT, route: "/auth/callback" },
+      env,
+    );
     return noindexResponse("Sign-in failed", {
       status: 400,
       headers: failureHeaders(),
