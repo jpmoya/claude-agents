@@ -217,6 +217,29 @@ export function validCiQueue(overrides = {}) {
   };
 }
 
+/** One valid `ci_queue.runners[]` entry (issue #648), per the Expected Behavior payload shape. */
+export function validCiQueueRunner(overrides = {}) {
+  return {
+    id: 15686,
+    name: 'gha-CI-ubuntu-8gb-ash-2-1-3218',
+    online: true,
+    busy: false,
+    role: 'general',
+    util_24h_pct: 60,
+    util_72h_pct: 45,
+    ...overrides,
+  };
+}
+
+/** A valid `ci_queue` object that also carries #648's `runners[]`/`runners_offline` fields. */
+export function validCiQueueWithRunners(overrides = {}) {
+  return validCiQueue({
+    runners_offline: 1,
+    runners: [validCiQueueRunner()],
+    ...overrides,
+  });
+}
+
 /** One valid backlog[] item (backlog reorder view): {repo, issue, title?, url?, rank?}. */
 export function validBacklogItem(overrides = {}) {
   return {

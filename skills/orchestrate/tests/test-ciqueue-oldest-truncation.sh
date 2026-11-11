@@ -37,7 +37,7 @@ _ciqt_run() {  # _ciqt_run <pipe> <fixturedir> <reposfile> -> sets CIQT_OUT / CI
     CI_QUEUE_OUT="$pipe/status-ci.json" \
     CI_QUEUE_ATTEMPT_FILE="$pipe/attempt" \
     CI_QUEUE_STATE_FILE="$pipe/state.json" \
-    CI_QUEUE_LOCKDIR="$pipe/lockdir" \
+    CI_QUEUE_LOCKDIR="$pipe/lockdir" CI_QUEUE_SAMPLES_FILE="$pipe/ci-runner-samples.jsonl" \
     CI_QUEUE_CALL_LOG="$pipe/calls.log" \
     CI_QUEUE_REPOS_FILE="$reposfile" \
     CI_QUEUE_FIXTURE_DIR="$fixdir" \

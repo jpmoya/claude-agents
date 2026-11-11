@@ -25,11 +25,13 @@ REPOS_FILE_CIQC="$REPO_ROOT_CIQC/scripts/ci-metrics.repos"
 #     Combined busy=3, total=5 — deliberately NOT equal to ci-metrics.repos' SLOTS=4 (AC4).
 _ciqc_build_fixtures() {
   local d=$1
+  # #648: status:"online" added to every runner below so the online-only counting change doesn't
+  # alter this suite's pre-existing busy=3/total=5 expectations (AC4) — all 5 are online here.
   cat > "$d/runners-org.json" <<'EOF'
-{"total_count":3,"runners":[{"id":1,"busy":true},{"id":2,"busy":true},{"id":3,"busy":false}]}
+{"total_count":3,"runners":[{"id":1,"name":"r1","status":"online","busy":true},{"id":2,"name":"r2","status":"online","busy":true},{"id":3,"name":"r3","status":"online","busy":false}]}
 EOF
   cat > "$d/runners-repo.json" <<'EOF'
-{"total_count":2,"runners":[{"id":10,"busy":true},{"id":11,"busy":false}]}
+{"total_count":2,"runners":[{"id":10,"name":"r10","status":"online","busy":true},{"id":11,"name":"r11","status":"online","busy":false}]}
 EOF
   cat > "$d/runs-Benjis-Plants__scheduler-queued.json" <<'EOF'
 {"workflow_runs":[{"id":101,"name":"CI","event":"pull_request","actor":{"login":"dependabot[bot]"}}]}
@@ -75,7 +77,7 @@ _ciqc_run() {
     CI_QUEUE_OUT="$pipe/status-ci.json" \
     CI_QUEUE_ATTEMPT_FILE="$pipe/attempt" \
     CI_QUEUE_STATE_FILE="$pipe/state.json" \
-    CI_QUEUE_LOCKDIR="$pipe/lockdir" \
+    CI_QUEUE_LOCKDIR="$pipe/lockdir" CI_QUEUE_SAMPLES_FILE="$pipe/ci-runner-samples.jsonl" \
     CI_QUEUE_CALL_LOG="$pipe/calls.log" \
     CI_QUEUE_REPOS_FILE="$REPOS_FILE_CIQC" \
     CI_QUEUE_FIXTURE_DIR="$fixdir" \
@@ -107,7 +109,7 @@ test_ciqc_ac2_fresh_snapshot_is_throttled_no_calls_no_change() {
   echo '{"as_of":"2020-01-01T00:00:00Z","runners_busy":0,"runners_total":0,"queued_total":0,"categories":[],"oldest":null}' > "$pipe/status-ci.json"
   before=$(cat "$pipe/status-ci.json")
   ( CI_QUEUE_OUT="$pipe/status-ci.json" CI_QUEUE_ATTEMPT_FILE="$pipe/attempt" CI_QUEUE_STATE_FILE="$pipe/state.json" \
-    CI_QUEUE_LOCKDIR="$pipe/lockdir" CI_QUEUE_CALL_LOG="$pipe/calls.log" CI_QUEUE_REPOS_FILE="$REPOS_FILE_CIQC" \
+    CI_QUEUE_LOCKDIR="$pipe/lockdir" CI_QUEUE_SAMPLES_FILE="$pipe/ci-runner-samples.jsonl" CI_QUEUE_CALL_LOG="$pipe/calls.log" CI_QUEUE_REPOS_FILE="$REPOS_FILE_CIQC" \
     bash "$COLLECTOR_CIQC" )
   rc=$?
   after=$(cat "$pipe/status-ci.json")
@@ -126,7 +128,7 @@ test_ciqc_ac2_backdated_snapshot_runs() {
   python3 -c "import os,sys,time; t=time.time()-1000; os.utime(sys.argv[1], (t, t))" "$pipe/status-ci.json"
   local fixdir; fixdir=$(mktemp -d); _ciqc_build_fixtures "$fixdir"
   ( CI_QUEUE_OUT="$pipe/status-ci.json" CI_QUEUE_ATTEMPT_FILE="$pipe/attempt" CI_QUEUE_STATE_FILE="$pipe/state.json" \
-    CI_QUEUE_LOCKDIR="$pipe/lockdir" CI_QUEUE_CALL_LOG="$pipe/calls.log" CI_QUEUE_REPOS_FILE="$REPOS_FILE_CIQC" \
+    CI_QUEUE_LOCKDIR="$pipe/lockdir" CI_QUEUE_SAMPLES_FILE="$pipe/ci-runner-samples.jsonl" CI_QUEUE_CALL_LOG="$pipe/calls.log" CI_QUEUE_REPOS_FILE="$REPOS_FILE_CIQC" \
     CI_QUEUE_FIXTURE_DIR="$fixdir" bash "$COLLECTOR_CIQC" )
   rc=$?
   calls=$(_ciqc_calls "$pipe")
@@ -236,7 +238,7 @@ test_ciqc_obs_sentry_event_has_route_release_environment_no_token_leak() {
   _ciqc_write_recording_curl "$bindir"
   token="ghp_fakeTestTokenNotReal0000"
   ( CI_QUEUE_FORCE=1 CI_QUEUE_OUT="$pipe/status-ci.json" CI_QUEUE_ATTEMPT_FILE="$pipe/attempt" \
-    CI_QUEUE_STATE_FILE="$pipe/state.json" CI_QUEUE_LOCKDIR="$pipe/lockdir" CI_QUEUE_CALL_LOG="$pipe/calls.log" \
+    CI_QUEUE_STATE_FILE="$pipe/state.json" CI_QUEUE_LOCKDIR="$pipe/lockdir" CI_QUEUE_SAMPLES_FILE="$pipe/ci-runner-samples.jsonl" CI_QUEUE_CALL_LOG="$pipe/calls.log" \
     CI_QUEUE_REPOS_FILE="$REPOS_FILE_CIQC" CI_QUEUE_FIXTURE_DIR="$fixdir" CI_QUEUE_FIXTURE_FAIL=1 \
     SENTRY_DSN="https://testkey@sentry.test/42" GH_TOKEN="$token" \
     PATH="$bindir:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" \
@@ -259,7 +261,7 @@ test_ciqc_obs_slack_only_on_third_consecutive_failure() {
 
   _ciqc_fail_run() {  # one forced-failure cycle
     ( CI_QUEUE_FORCE=1 CI_QUEUE_OUT="$pipe/status-ci.json" CI_QUEUE_ATTEMPT_FILE="$pipe/attempt" \
-      CI_QUEUE_STATE_FILE="$pipe/state.json" CI_QUEUE_LOCKDIR="$pipe/lockdir" CI_QUEUE_CALL_LOG="$pipe/calls.log" \
+      CI_QUEUE_STATE_FILE="$pipe/state.json" CI_QUEUE_LOCKDIR="$pipe/lockdir" CI_QUEUE_SAMPLES_FILE="$pipe/ci-runner-samples.jsonl" CI_QUEUE_CALL_LOG="$pipe/calls.log" \
       CI_QUEUE_REPOS_FILE="$REPOS_FILE_CIQC" CI_QUEUE_FIXTURE_DIR="$fixdir" CI_QUEUE_FIXTURE_FAIL=1 \
       SLACK_WEBHOOK_URL="https://hooks.slack.test/T/B/X" \
       PATH="$bindir:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" \
@@ -268,7 +270,7 @@ test_ciqc_obs_slack_only_on_third_consecutive_failure() {
   _ciqc_ok_run() {  # one successful cycle (resets the failure streak)
     _ciqc_build_fixtures "$fixdir"
     ( CI_QUEUE_FORCE=1 CI_QUEUE_OUT="$pipe/status-ci.json" CI_QUEUE_ATTEMPT_FILE="$pipe/attempt" \
-      CI_QUEUE_STATE_FILE="$pipe/state.json" CI_QUEUE_LOCKDIR="$pipe/lockdir" CI_QUEUE_CALL_LOG="$pipe/calls.log" \
+      CI_QUEUE_STATE_FILE="$pipe/state.json" CI_QUEUE_LOCKDIR="$pipe/lockdir" CI_QUEUE_SAMPLES_FILE="$pipe/ci-runner-samples.jsonl" CI_QUEUE_CALL_LOG="$pipe/calls.log" \
       CI_QUEUE_REPOS_FILE="$REPOS_FILE_CIQC" CI_QUEUE_FIXTURE_DIR="$fixdir" \
       SLACK_WEBHOOK_URL="https://hooks.slack.test/T/B/X" \
       PATH="$bindir:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" \
