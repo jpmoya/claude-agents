@@ -30,6 +30,8 @@ import {
   parseCookies,
   buildCookie,
   buildGoogleAuthUrl,
+  signState,
+  verifyState,
 } from "../src/auth.js";
 
 beforeEach(() => {
@@ -425,7 +427,7 @@ describe("GET /auth/callback", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("a missing state cookie (expired/never set) is rejected with 400", async () => {
+  it("a missing state cookie (expired/never set) is rejected with 400 when the state isn't a valid signed state either", async () => {
     mockGoogle();
     const env = makeEnv();
     const res = await worker.fetch(
@@ -434,6 +436,69 @@ describe("GET /auth/callback", () => {
       {},
     );
     expect(res.status).toBe(400);
+  });
+
+  it("a dropped oauth_state cookie still succeeds when the state param is a valid signed state (#641)", async () => {
+    mockGoogle({ email: ALLOWED_EMAIL });
+    const env = makeEnv();
+    const signed = await signState("nonce-xyz", env.SESSION_SECRET);
+    const res = await worker.fetch(
+      callbackRequest({ state: signed, stateCookie: null }),
+      env,
+      {},
+    );
+    expect(res.status).toBe(302);
+    expect(res.headers.get("Location")).toBe("/");
+  });
+
+  it("an expired signed state (no cookie) is rejected with 400, not accepted", async () => {
+    mockGoogle();
+    const env = makeEnv();
+    const realNow = Date.now;
+    Date.now = () => realNow() - 11 * 60 * 1000; // sign as if 11 minutes ago (> 10 min window)
+    const signed = await signState("nonce-old", env.SESSION_SECRET);
+    Date.now = realNow;
+    const res = await worker.fetch(
+      callbackRequest({ state: signed, stateCookie: null }),
+      env,
+      {},
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("a signed state verifies only under the SESSION_SECRET it was signed with", async () => {
+    const good = await signState("n", "secret-a");
+    expect(await verifyState(good, "secret-a")).toBe(true);
+    expect(await verifyState(good, "secret-b")).toBe(false);
+    expect(await verifyState("garbage", "secret-a")).toBe(false);
+    expect(await verifyState(null, "secret-a")).toBe(false);
+  });
+
+  it("a rejected 400 posts a diagnostic naming the reason to Slack when SLACK_WEBHOOK_URL is set (#647)", async () => {
+    mockGoogle();
+    const slackSpy = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    const realFetch = globalThis.fetch;
+    fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const href = typeof url === "string" ? url : url.url;
+      if (href === "https://hooks.slack.test/webhook") return slackSpy(url, init);
+      return realFetch(url, init);
+    });
+    const env = makeEnv({ SLACK_WEBHOOK_URL: "https://hooks.slack.test/webhook" });
+
+    await worker.fetch(callbackRequest({ stateCookie: null }), env, {});
+    expect(slackSpy).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(slackSpy.mock.calls[0][1].body);
+    expect(body.text).toContain("auth-callback-rejected:state-invalid");
+
+    slackSpy.mockClear();
+    await worker.fetch(
+      callbackRequest({ code: null }),
+      env,
+      {},
+    );
+    expect(slackSpy).toHaveBeenCalledTimes(1);
+    const missingCodeBody = JSON.parse(slackSpy.mock.calls[0][1].body);
+    expect(missingCodeBody.text).toContain("auth-callback-rejected:missing-code");
   });
 
   it("an email not on the allowlist is rejected with 403 and no session cookie is set", async () => {

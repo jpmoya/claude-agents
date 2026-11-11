@@ -357,6 +357,19 @@ async function handleAuthCallback(request, env) {
       (await verifyState(returnedState, env.SESSION_SECRET))
     )
   ) {
+    // Diagnostic only (#647): the exact reason never reaches the response body or an
+    // attacker — just a Slack alert naming which check failed, so the next occurrence is
+    // visible without a live wrangler tail.
+    const reason = !code
+      ? "missing-code"
+      : !returnedState
+        ? "missing-returned-state"
+        : "state-invalid"; // neither the cookie nor the signed state verified
+    await captureError(
+      { name: `auth-callback-rejected:${reason}` },
+      { release: env.RELEASE, environment: env.ENVIRONMENT, route: "/auth/callback" },
+      env,
+    );
     return noindexResponse("Sign-in failed", {
       status: 400,
       headers: failureHeaders(),
