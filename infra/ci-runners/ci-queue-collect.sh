@@ -25,18 +25,34 @@
 # invocation) — each call also uses a fixed per_page instead of walking pages.
 #
 # #648: runners_busy/runners_total now count ONLINE runners only (status=="online"), with a new
-# runners_offline count and a per-runner runners[] array (identity + 24h/72h utilization rollup,
-# keyed by GitHub's own stable numeric runner `id` — names change on re-registration, ids don't).
+# runners_offline count and a per-runner runners[] array (identity + 24h/72h utilization rollup).
+#
+# CORRECTED (post-BLOCKED ruling, see the issue's corrected AC3/AC6 text): GitHub's numeric runner
+# `id` is NOT stable across a slot's re-registration — live evidence showed every ephemeral job
+# mints a brand-new id AND a new name suffix together for the same physical slot; only a dead/
+# offline registration ever keeps an old id. History is therefore keyed by SLOT: a runner's `name`
+# with its trailing `-[0-9]+` numeric suffix stripped (e.g. `gha-CI-ubuntu-8gb-ash-2-1-29555` ->
+# slot `gha-CI-ubuntu-8gb-ash-2-1`), computed once per registration in _ciq_merge_runners. A slot
+# is online if any of its CURRENT cycle's registrations is online; busy if any online registration
+# is busy. `runners[].id`/`.name`/`.role` come from the slot's current (most recent == highest-id)
+# registration. runners_busy/runners_total/runners_offline stay counted PER REGISTRATION (AC1 is
+# unaffected by this — that counting never depended on the keying scheme).
+#
 # This adds ZERO new `gh api` calls: the runner list was already fetched above for the busy/total
 # count; only how it's processed/stored changes (AC9). History is a new append-only sample file,
-# $PIPE/ci-runner-samples.jsonl by default (one line per currently-known runner per cycle:
-# {ts, id, name, online, busy, role} — `name`/`role` ride along so a runner that stops being
-# returned by the API (deregistered) can still be shown, using its last-known identity, until its
-# samples age out past the 72h window; `ts` is a unix epoch, not ISO, since this is a local sample
-# stream, not part of the beat payload itself), pruned to 72h + one cycle's buffer every cycle.
+# $PIPE/ci-runner-samples.jsonl by default (ONE line per currently-known SLOT per cycle, not per
+# registration — a dead duplicate sharing a slot with a live one must never dilute that slot's
+# utilization): {ts, slot, id, name, online, busy, role} — `id`/`name`/`role` ride along (the slot's
+# current representative) so a slot that stops being returned by the API (deregistered) can still
+# be shown, using its last-known identity, until its samples age out past the 72h window; `ts` is a
+# unix epoch, not ISO, since this is a local sample stream, not part of the beat payload itself),
+# pruned to 72h + one cycle's buffer every cycle.
 # util_24h_pct/util_72h_pct for a given cycle are computed from samples taken BEFORE that cycle's
-# own append (so a runner's very first-ever cycle reports null, not 0/100 from its own single
+# own append (so a slot's very first-ever cycle reports null, not 0/100 from its own single
 # fresh sample — AC7); the fresh sample is appended after the rollup, feeding the NEXT cycle.
+# `runners[]` is ordered live-slots-first (then lingering slots), each group sorted by slot name,
+# BEFORE the MAX_SAMPLE_RUNNERS cap is applied — never sorted by id/age, which would evict the
+# currently-live slots in favor of whichever happened to have a lower id.
 #
 # Env (production): CI_QUEUE_COLLECT_ENABLED (gate, read by report-status.sh, not this script),
 #   PIPE, GH_TOKEN (optional — the host's own `gh` auth is used), SLACK_WEBHOOK_URL, SENTRY_DSN,
@@ -179,33 +195,49 @@ _ciq_collect_repo() {
 }
 
 # _ciq_merge_runners <org-json> <repo-json> -> writes $WORK/runners-merged.json: one object per
-# currently-known runner, {id, name, status, busy, role}, defensively defaulted (#648 AC2
-# negative case: a runner object missing `status`/`busy` in the API response is treated as
-# offline/not-busy, never crashes the cycle) and `role` derived from the GitHub labels GitHub
-# itself returns (prod_deploy iff $PROD_DEPLOY_LABEL is among them, else general).
+# currently-known REGISTRATION (not yet deduped by slot — that's _ciq_runner_history's job),
+# {id, name, status, busy, role, slot}, defensively defaulted (#648 AC2 negative case: a runner
+# object missing `status`/`busy` in the API response is treated as offline/not-busy, never
+# crashes the cycle), `role` derived from the GitHub labels GitHub itself returns (prod_deploy iff
+# $PROD_DEPLOY_LABEL is among them, else general), and `slot` = `name` with its trailing
+# `-[0-9]+` numeric suffix stripped (an empty/missing name falls back to `id-<id>` so two
+# differently-nameless registrations never collide into the same slot).
 _ciq_merge_runners() {
   printf '%s\n%s\n' "$1" "$2" | jq -s --arg label "$PROD_DEPLOY_LABEL" -c '
     [.[].runners[]?]
-    | map({
-        id: (.id // -1),
-        name: (.name // ""),
-        status: (.status // "offline"),
-        busy: (.busy == true),
-        role: (if ([.labels[]?.name] | index($label)) then "prod_deploy" else "general" end)
-      })
+    | map(
+        (.name // "") as $n
+        | {
+            id: (.id // -1),
+            name: $n,
+            status: (.status // "offline"),
+            busy: (.busy == true),
+            role: (if ([.labels[]?.name] | index($label)) then "prod_deploy" else "general" end),
+            slot: (if $n == "" then ("id-" + ((.id // -1) | tostring))
+                   elif ($n | test("-[0-9]+$")) then ($n | sub("-[0-9]+$"; ""))
+                   else $n end)
+          }
+      )
   ' > "$WORK/runners-merged.json" 2>/dev/null
 }
 
-# _ciq_runner_history <merged-runners-file> — the #648 per-runner sample/prune/rollup step.
+# _ciq_runner_history <merged-registrations-file> — the #648 per-SLOT sample/prune/rollup step.
+# <merged-registrations-file> is $WORK/runners-merged.json, one entry PER REGISTRATION (as written
+# by _ciq_merge_runners) — this function's first job is collapsing that down to one entry per
+# SLOT before anything is sampled, so a dead duplicate registration sharing a slot with a live one
+# never gets its own sample line (which would dilute that slot's utilization, see corrected AC3).
+#
 # Writes $WORK/runners-out.json (the final `ci_queue.runners[]` array: identity from the CURRENT
-# cycle for every currently-known runner, plus any runner that's dropped out of the API response
-# but still has a sample inside the trailing 72h — using its last-known identity — so it doesn't
-# vanish the instant it's deregistered; it ages out only once that 72h window empties, AC6).
+# cycle for every currently-known slot, plus any slot that's dropped out of the API response
+# entirely but still has a sample inside the trailing 72h — using its last-known identity — so it
+# doesn't vanish the instant it's deregistered; it ages out only once that 72h window empties,
+# AC6). Live slots sort before lingering ones (then by slot name) BEFORE the cap is applied — never
+# sorted by id/age, which would evict the currently-live slots instead of the dead ones.
 # Returns 1 on any failure (propagates as a normal collect_once failure: $OUT is left untouched,
 # the existing 3-failures-before-Slack/Sentry path in main() fires exactly as it does for an API
 # failure — same seam, no new alert path, per the Observability section).
 _ciq_runner_history() {
-  local merged=$1 now keep old_pruned new_lines combined
+  local merged=$1 now keep old_pruned by_slot new_lines combined
   now=${CI_QUEUE_NOW:-$(date +%s)}
   keep=$(( WINDOW_72H_SECS + INTERVAL ))
 
@@ -218,30 +250,51 @@ _ciq_runner_history() {
     : > "$old_pruned"
   fi
 
+  # Collapse registrations to one entry per slot: online if ANY of this cycle's registrations in
+  # the slot is online, busy if ANY ONLINE one is busy; id/name/role come from the slot's current
+  # (highest-id == most recently (re-)registered) registration.
+  by_slot="$WORK/runners-by-slot.json"
+  jq -c '
+    group_by(.slot)
+    | map(
+        (max_by(.id)) as $rep
+        | {
+            slot: .[0].slot,
+            id: $rep.id,
+            name: $rep.name,
+            role: $rep.role,
+            online: (any(.[]; .status == "online")),
+            busy: (any(.[]; .status == "online" and .busy == true))
+          }
+      )
+  ' "$merged" > "$by_slot" 2>/dev/null || return 1
+
   new_lines="$WORK/samples-new.jsonl"
   jq -c --argjson now "$now" '
-    .[] | {ts: $now, id, name, online: (.status == "online"), busy: ((.status == "online") and (.busy == true)), role}
-  ' "$merged" > "$new_lines" 2>/dev/null || return 1
+    .[] | {ts: $now, slot, id, name, online, busy, role}
+  ' "$by_slot" > "$new_lines" 2>/dev/null || return 1
 
-  # Rollup is computed from $old (samples taken BEFORE this cycle's own append) — a runner seen
+  # Rollup is computed from $old (samples taken BEFORE this cycle's own append) — a slot seen
   # for the very first time this cycle has zero prior samples and reports null, not 0/100 (AC7).
   jq -n --argjson now "$now" --argjson w24 "$WINDOW_24H_SECS" --argjson w72 "$WINDOW_72H_SECS" \
-    --argjson max "$MAX_SAMPLE_RUNNERS" --slurpfile old "$old_pruned" --slurpfile cur "$merged" '
+    --argjson max "$MAX_SAMPLE_RUNNERS" --slurpfile old "$old_pruned" --slurpfile cur "$by_slot" '
     ($cur[0] // []) as $cur
-    | ($cur | map(.id)) as $cur_ids
-    | ($old | map(select(.ts >= ($now - $w72)) | .id)) as $recent72_ids
-    | ($cur_ids + $recent72_ids | unique) as $ids
-    | [ $ids[] as $id
-        | ($old | map(select(.id == $id))) as $samples
+    | ($cur | map(.slot)) as $cur_slots
+    | ($old | map(select(.ts >= ($now - $w72)) | .slot)) as $recent72_slots
+    | ($cur_slots + $recent72_slots | unique) as $slots
+    | [ $slots[] as $slot
+        | ($old | map(select(.slot == $slot))) as $samples
         | ($samples | map(select(.ts >= ($now - $w24)))) as $s24
         | ($samples | map(select(.ts >= ($now - $w72)))) as $s72
-        | ($cur | map(select(.id == $id)) | .[0]) as $c
+        | ($cur | map(select(.slot == $slot)) | .[0]) as $c
         | (if $c != null then null else ($samples | sort_by(.ts) | if length > 0 then .[-1] else null end) end) as $last
         | {
-            id: $id,
+            _live: ($c != null),
+            _slot: $slot,
+            id: (if $c != null then $c.id else ($last.id // -1) end),
             name: (if $c != null then $c.name else ($last.name // "") end),
-            online: (if $c != null then ($c.status == "online") else false end),
-            busy: (if $c != null then (($c.status == "online") and ($c.busy == true)) else false end),
+            online: (if $c != null then $c.online else false end),
+            busy: (if $c != null then $c.busy else false end),
             role: (if $c != null then $c.role else ($last.role // "general") end),
             util_24h_pct: (if ($s24 | length) == 0 then null
               else ((100 * ([$s24[] | select(.busy == true)] | length) / ($s24 | length)) | round) end),
@@ -249,7 +302,8 @@ _ciq_runner_history() {
               else ((100 * ([$s72[] | select(.busy == true)] | length) / ($s72 | length)) | round) end)
           }
       ]
-    | sort_by(.id)
+    | sort_by([(if ._live then 0 else 1 end), ._slot])
+    | map(del(._live, ._slot))
     | .[0:$max]
   ' > "$WORK/runners-out.json" 2>/dev/null || return 1
 
