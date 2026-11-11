@@ -618,28 +618,54 @@ function renderCiQueueChart(categories) {
 }
 
 /**
- * The "waiting" tile (AC5): a neutral "no jobs waiting" state when `oldest` is null, otherwise
- * the age computed at render time from `oldest.queued_at` vs `nowEpochSecs` — never stored
+ * Pure duration formatter (issue #649 AC1) for the "waiting longest" tile: minutes -> one
+ * compact token, never a bare "min" word. Three boundaries: under 60 min -> "<N>m"; under 24h
+ * -> "<H>h <M>m"; 24h or more -> "<D>d <H>h". Input is coerced/clamped to a non-negative integer
+ * first, so NaN/negative input (clock skew, bad data) can never render "-1m" or "NaNm".
+ */
+export function formatCiWaitDuration(mins) {
+  const total = Math.max(0, Math.round(Number(mins) || 0));
+  if (total < 60) return `${total}m`;
+  const hours = Math.floor(total / 60);
+  if (hours < 24) return `${hours}h ${total % 60}m`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ${hours % 24}h`;
+}
+
+/**
+ * The "waiting" tile (AC5, reworded per #649 AC2): a neutral "no jobs waiting" state when
+ * `oldest` is null, otherwise a single sentence naming the category then the formatted duration
+ * ("Longest wait: <label> — <duration>") — one `<div>`, not two disconnected stacked lines. Age
+ * is computed at render time from `oldest.queued_at` vs `nowEpochSecs` — never stored
  * pre-formatted (#643) — clamped to >= 0 so host clock-skew (`queued_at` after `now`) never
  * renders a negative wait.
  */
 function renderCiQueueWaitingTile(oldest, nowEpochSecs) {
   if (!oldest) {
-    return `<div class="ci-tile"><div class="ci-tile-value">&mdash;</div><div class="ci-tile-label">No jobs waiting</div></div>`;
+    return `<div class="ci-tile"><div class="ci-tile-value ci-tile-sentence">No jobs waiting</div></div>`;
   }
   const queuedMs = Date.parse(oldest.queued_at);
   const waitSecs = Number.isNaN(queuedMs)
     ? 0
     : Math.max(0, nowEpochSecs - Math.floor(queuedMs / 1000));
-  const mins = Math.round(waitSecs / 60);
+  const duration = formatCiWaitDuration(waitSecs / 60);
   const label = CI_QUEUE_LABELS[oldest.key] || CI_QUEUE_LABELS.other;
-  return `<div class="ci-tile"><div class="ci-tile-value">${esc(mins)} min</div><div class="ci-tile-label">${esc(label)} waiting longest</div></div>`;
+  return `<div class="ci-tile"><div class="ci-tile-value ci-tile-sentence">Longest wait: ${esc(label)} &mdash; ${esc(duration)}</div></div>`;
+}
+
+/** Visible-but-never-silent offline note for the busy tile (AC3): "" when `runners_offline` is
+ * absent/zero (old collector, or nothing offline), else " (<N> offline)" — never folded into the
+ * busy/total ratio, which stays online-only capacity (#648). */
+function renderCiOfflineNote(ciQueue) {
+  const offline = ciQueue.runners_offline;
+  if (typeof offline !== "number" || offline <= 0) return "";
+  return ` <span class="ci-tile-note">(${esc(offline)} offline)</span>`;
 }
 
 function renderCiQueueTiles(ciQueue, nowEpochSecs) {
   return `<div class="ci-tiles">
     <div class="ci-tile"><div class="ci-tile-value">${esc(ciQueue.queued_total)}</div><div class="ci-tile-label">Jobs queued now</div></div>
-    <div class="ci-tile"><div class="ci-tile-value">${esc(ciQueue.runners_busy)}/${esc(ciQueue.runners_total)}</div><div class="ci-tile-label">Runner slots busy</div></div>
+    <div class="ci-tile"><div class="ci-tile-value">${esc(ciQueue.runners_busy)}/${esc(ciQueue.runners_total)}${renderCiOfflineNote(ciQueue)}</div><div class="ci-tile-label">Runner slots busy</div></div>
     ${renderCiQueueWaitingTile(ciQueue.oldest, nowEpochSecs)}
   </div>`;
 }
@@ -682,11 +708,64 @@ export function renderCiQueuePanel(hosts, thresholds, nowEpochSecs) {
   </section>`;
 }
 
-/** Three-link nav ("Status" | "Pipelines" | "Learnings"); the current page gets aria-current. */
+/** Runner status badge class/text (issue #649): three states, reusing the existing
+ * `.badge` live/nodata/offline CSS rather than inventing new colors — `online: false` always
+ * wins over `busy` (a dead/dropped runner is never shown as "busy"). */
+const RUNNER_STATUS_BADGE_CLASS = { busy: "live", idle: "nodata", offline: "offline" };
+function runnerStatus(runner) {
+  if (!runner.online) return "offline";
+  return runner.busy ? "busy" : "idle";
+}
+
+/** "<N>%" or "&mdash;" (not-yet-sampled runner, #648 AC7) — `=== null` check so `0` renders "0%", not the fallback. */
+function renderUtilPct(pct) {
+  return pct === null || pct === undefined ? "&mdash;" : `${esc(pct)}%`;
+}
+
+/**
+ * Per-runner table (issue #649, the render consumer of #648's `ci_queue.runners[]`): name,
+ * three-state status badge, 24h/72h utilization. The `prod_deploy`-role runner (the
+ * `benjis-ci-prod-deploy`-labeled one) gets a distinct row class + badge so it reads as
+ * unmistakable at a glance, per JP's request. A one-line general/prod-deploy capacity split is
+ * shown below the table from `runners[]` itself (real data); a *queued-job* split by role isn't
+ * available from this payload (`categories[]` keys on workflow name, not target runner label) —
+ * see the PR description's noted follow-up limitation. "" (no section at all) when `runners` is
+ * absent or empty (AC9) — never broken/empty table markup.
+ */
+function renderCiRunnersSection(runners) {
+  if (!Array.isArray(runners) || runners.length === 0) return "";
+  const rows = runners
+    .map((r) => {
+      const status = runnerStatus(r);
+      const isProd = r.role === "prod_deploy";
+      const prodBadge = isProd
+        ? ` <span class="badge ci-role-prod">Prod deploy</span>`
+        : "";
+      return `<tr${isProd ? ' class="ci-runner-prod"' : ""}><td data-label="Runner">${esc(r.name)}${prodBadge}</td><td data-label="Status"><span class="badge ${esc(RUNNER_STATUS_BADGE_CLASS[status])}">${esc(status)}</span></td><td data-label="24h util">${renderUtilPct(r.util_24h_pct)}</td><td data-label="72h util">${renderUtilPct(r.util_72h_pct)}</td></tr>`;
+    })
+    .join("");
+  const prod = runners.filter((r) => r.role === "prod_deploy");
+  const general = runners.filter((r) => r.role !== "prod_deploy");
+  const poolLine = (label, list) =>
+    `${esc(label)}: ${esc(list.filter((r) => r.busy).length)}/${esc(list.length)} busy`;
+  const summary = prod.length
+    ? `<p class="ci-pool-summary">${poolLine("General pool", general)} &middot; ${poolLine("Prod deploy", prod)}</p>`
+    : "";
+  return `<section class="group ci-runners">
+    <h2>Runners</h2>
+    <div class="table-scroll"><table>
+      <tr class="cols"><th>Runner</th><th>Status</th><th>24h util</th><th>72h util</th></tr>
+      <tbody>${rows}</tbody>
+    </table></div>
+    ${summary}
+  </section>`;
+}
+
+/** Four-link nav ("Status" | "Pipelines" | "CI" | "Learnings"); the current page gets aria-current. */
 function renderNav(current) {
   const link = (href, label, key) =>
     `<a href="${href}"${current === key ? ' aria-current="page"' : ""}>${label}</a>`;
-  return `<nav>${link("/", "Status", "status")} ${link("/pipelines", "Pipelines", "pipelines")} ${link("/learnings", "Learnings", "learnings")}</nav>`;
+  return `<nav>${link("/", "Status", "status")} ${link("/pipelines", "Pipelines", "pipelines")} ${link("/ci", "CI", "ci")} ${link("/learnings", "Learnings", "learnings")}</nav>`;
 }
 
 const ROOT_VARS_CSS = `  :root {
@@ -719,11 +798,19 @@ const CI_QUEUE_CSS = `  section.ci-queue h2 { display: flex; align-items: center
   .ci-tiles { display: flex; flex-wrap: wrap; gap: 0.75rem; margin: 0 0 1rem; }
   .ci-tile { flex: 1 1 8rem; min-width: 8rem; padding: 0.6rem 0.8rem; border-radius: 0.5rem; background: var(--bg); border: 1px solid var(--border); }
   .ci-tile-value { font-size: 1.3rem; font-weight: 700; }
+  .ci-tile-value.ci-tile-sentence { font-size: 0.95rem; font-weight: 600; }
   .ci-tile-label { font-size: 0.75rem; color: var(--muted); margin-top: 0.15rem; }
+  .ci-tile-note { font-size: 0.72rem; color: var(--muted); font-weight: 500; }
   .ci-chart { display: block; max-width: 100%; height: auto; }
   .ci-bar { fill: var(--accent); }
   .ci-bar-label { font-size: 11px; fill: var(--text); }
   .ci-bar-count { font-size: 11px; fill: var(--muted); }`;
+
+// Issue #649: the prod-deploy runner row/badge stand out from the general pool at a glance, and
+// the pool-split summary line under the table.
+const CI_RUNNERS_CSS = `  .badge.ci-role-prod { background: var(--accent-soft); color: var(--accent); }
+  tr.ci-runner-prod { background: var(--accent-soft); }
+  .ci-pool-summary { font-size: 0.8rem; color: var(--muted); margin: 0.75rem 0 0; }`;
 
 /**
  * @param {{ mac: object|null, vm: object|null }} hosts
@@ -733,13 +820,10 @@ const CI_QUEUE_CSS = `  section.ci-queue h2 { display: flex; align-items: center
  */
 export function renderPage(hosts, thresholds, nowEpochSecs) {
   const bothEmpty = !hosts.mac && !hosts.vm;
-  const ciQueuePanel = bothEmpty
-    ? ""
-    : renderCiQueuePanel(hosts, thresholds, nowEpochSecs);
 
   const body = bothEmpty
     ? '<p class="empty">no data from either host yet</p>'
-    : `${renderHostSection("mac", hosts.mac, thresholds, nowEpochSecs)}${renderHostSection("vm", hosts.vm, thresholds, nowEpochSecs)}${ciQueuePanel}${renderGoalsSection(hosts)}${renderBacklogSection(hosts)}${groupTickets(hosts, nowEpochSecs).map(renderGroupSection).join("")}`;
+    : `${renderHostSection("mac", hosts.mac, thresholds, nowEpochSecs)}${renderHostSection("vm", hosts.vm, thresholds, nowEpochSecs)}${renderGoalsSection(hosts)}${renderBacklogSection(hosts)}${groupTickets(hosts, nowEpochSecs).map(renderGroupSection).join("")}`;
 
   return `<!doctype html>
 <html lang="en">
@@ -785,7 +869,7 @@ ${ROOT_VARS_CSS}
   tbody tr:last-child td { border-bottom: none; }
   section.host, section.group { margin-bottom: 1.25rem; padding: 1.1rem 1.25rem; border-radius: 0.75rem;
     background: var(--surface); border: 1px solid var(--border); }
-${NAV_CSS}${ciQueuePanel ? `\n${CI_QUEUE_CSS}` : ""}
+${NAV_CSS}
   @media (max-width: 640px) {
     body { padding: 1rem; }
     section.host, section.group { padding: 0.9rem; }
@@ -806,6 +890,82 @@ ${NAV_CSS}${ciQueuePanel ? `\n${CI_QUEUE_CSS}` : ""}
 <body>
 ${renderNav("status")}
 <h1>Pipeline status</h1>
+${body}
+</body>
+</html>`;
+}
+
+// Issue #649: /ci tab's own self-contained style block, same pattern as PIPELINES_CSS/LEARNINGS_CSS
+// below (each tab carries its own <style>, sharing only ROOT_VARS_CSS/NAV_CSS) — duplicates the
+// badge/table rules `/`'s inline style also carries rather than touching that pinned block.
+const CI_PAGE_CSS = `${ROOT_VARS_CSS}
+  body { font-family: -apple-system, "Inter", "Segoe UI", system-ui, sans-serif; margin: 0; padding: 1.5rem;
+    max-width: 72rem; background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; }
+  h1 { font-size: 1.3rem; font-weight: 700; margin: 0 0 1.25rem; letter-spacing: -0.01em; }
+  h2 { font-size: 0.95rem; font-weight: 600; margin: 0 0 0.75rem; }
+  a { color: var(--accent); }
+  .empty { color: var(--muted); font-size: 0.9rem; }
+  .badge { display: inline-flex; align-items: center; gap: 0.3em; padding: 0.15rem 0.6rem; border-radius: 0.375rem;
+    font-weight: 600; font-size: 0.75rem; line-height: 1.4; }
+  .badge.live { background: var(--green-soft); color: var(--green); }
+  .badge.stale { background: var(--amber-soft); color: var(--amber); }
+  .badge.offline { background: var(--red-soft); color: var(--red); }
+  .badge.nodata { background: var(--gray-soft); color: var(--gray); }
+  .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  th { text-align: left; padding: 0.5rem 0.6rem; font-weight: 600; font-size: 0.75rem; text-transform: uppercase;
+    letter-spacing: 0.03em; color: var(--muted); border-bottom: 1px solid var(--border); }
+  td { text-align: left; padding: 0.55rem 0.6rem; border-bottom: 1px solid var(--border); }
+  tbody tr:hover { background: var(--accent-soft); }
+  tbody tr:last-child td { border-bottom: none; }
+  section.group { margin-bottom: 1.25rem; padding: 1.1rem 1.25rem; border-radius: 0.75rem;
+    background: var(--surface); border: 1px solid var(--border); }
+${NAV_CSS}
+${CI_QUEUE_CSS}
+${CI_RUNNERS_CSS}
+  @media (max-width: 640px) {
+    body { padding: 1rem; }
+    section.group { padding: 0.9rem; }
+    .table-scroll { overflow-x: visible; }
+    table, tbody { display: block; width: 100%; }
+    tr.cols { display: none; }
+    tbody tr { display: block; border: 1px solid var(--border); border-radius: 0.5rem; margin-bottom: 0.6rem; overflow: hidden; }
+    tbody tr:last-child { margin-bottom: 0; }
+    td { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; text-align: right; border-bottom: 1px solid var(--border); }
+    tbody tr td:last-child { border-bottom: none; }
+    td[data-label]::before { content: attr(data-label); font-weight: 600; font-size: 0.7rem; text-transform: uppercase;
+      letter-spacing: 0.03em; color: var(--muted); text-align: left; flex-shrink: 0; }
+  }`;
+
+/**
+ * CI tab (issue #649): the CI-queue panel (#644, moved off `/` — see renderPage above) plus the
+ * per-runner table (#648's render consumer). Degrades gracefully: a neutral "no CI queue data
+ * yet" line (nav still renders) when no host has ever sent `ci_queue` — never a render error.
+ * @param {{ mac: object|null, vm: object|null }} hosts
+ * @param {{ staleSecs: number, offlineSecs: number }} thresholds
+ * @param {number} nowEpochSecs
+ * @returns {string} full HTML document
+ */
+export function renderCiPage(hosts, thresholds, nowEpochSecs) {
+  const picked = pickFreshestCiQueue(hosts);
+  const body = !picked
+    ? '<p class="empty">no CI queue data yet</p>'
+    : `${renderCiQueuePanel(hosts, thresholds, nowEpochSecs)}${renderCiRunnersSection(picked.ciQueue.runners)}`;
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="${PAGE_REFRESH_SECS}">
+<title>CI queue</title>
+<style>
+${CI_PAGE_CSS}
+</style>
+</head>
+<body>
+${renderNav("ci")}
+<h1>CI queue</h1>
 ${body}
 </body>
 </html>`;
