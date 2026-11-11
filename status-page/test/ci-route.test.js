@@ -71,12 +71,15 @@ describe("nav (AC5) — CI link appears everywhere, marks itself current only on
     ["/pipelines", "Pipelines"],
     ["/ci", "CI"],
     ["/learnings", "Learnings"],
+    ["/sales-agents", "Sales Agents"],
   ])("%s shows the CI link, and marks only %s as current", async (path, current) => {
     const res = await worker.fetch(getRequest(path), makeEnv(), {});
     const html = await res.text();
     expect(html).toMatch(/<a[^>]*href="\/ci"[^>]*>\s*CI\s*<\/a>/);
+    // Widened from `[A-Za-z]+` (#sales-agents): a two-word link label ("Sales Agents") would
+    // otherwise be truncated at the first space.
     const marked = [
-      ...html.matchAll(/<a[^>]*aria-current="page"[^>]*>\s*([A-Za-z]+)/g),
+      ...html.matchAll(/<a[^>]*aria-current="page"[^>]*>\s*([^<]+?)\s*<\/a>/g),
     ].map((m) => m[1]);
     expect(marked).toEqual([current]);
   });

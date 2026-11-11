@@ -8,6 +8,11 @@
 import { isIssueUrl, isPrUrl } from "./validate.js";
 import { groupTickets, buildBacklog } from "./group.js";
 import { PIPELINES } from "./pipelines.js";
+import {
+  SALES_AGENTS,
+  DAILY_CAP_PER_PROSPECT,
+  SCALE_NOTE,
+} from "./sales-agents.js";
 import { CI_QUEUE_CATEGORY_VOCAB } from "./vocab.js";
 
 // Auto-refresh interval in seconds. Must stay <= 30 (AC15). Grepped directly by tests.
@@ -816,11 +821,11 @@ function renderCiRunnersSection(runners) {
   </section>`;
 }
 
-/** Four-link nav ("Status" | "Pipelines" | "CI" | "Learnings"); the current page gets aria-current. */
+/** Five-link nav ("Status" | "Pipelines" | "CI" | "Learnings" | "Sales Agents"); the current page gets aria-current. */
 function renderNav(current) {
   const link = (href, label, key) =>
     `<a href="${href}"${current === key ? ' aria-current="page"' : ""}>${label}</a>`;
-  return `<nav>${link("/", "Status", "status")} ${link("/pipelines", "Pipelines", "pipelines")} ${link("/ci", "CI", "ci")} ${link("/learnings", "Learnings", "learnings")}</nav>`;
+  return `<nav>${link("/", "Status", "status")} ${link("/pipelines", "Pipelines", "pipelines")} ${link("/ci", "CI", "ci")} ${link("/learnings", "Learnings", "learnings")} ${link("/sales-agents", "Sales Agents", "sales-agents")}</nav>`;
 }
 
 const ROOT_VARS_CSS = `  :root {
@@ -1269,6 +1274,119 @@ ${renderNav("learnings")}
   deleting a row here only changes what this page shows — the agent still reads its own file, so a lesson
   removed here should also be removed there once it's actually been acted on.</p>
 ${list}
+</body>
+</html>`;
+}
+
+// Sales Agents tab's own self-contained style block, same pattern as PIPELINES_CSS/CI_PAGE_CSS/
+// LEARNINGS_CSS above (each tab carries its own <style>, sharing only ROOT_VARS_CSS/NAV_CSS) —
+// duplicates the .uml/.node/.chip/.track-summary rules PIPELINES_CSS also carries, so this page's
+// diagrams reuse that same visual language without importing PIPELINES_CSS itself.
+const SALES_AGENTS_CSS = `${ROOT_VARS_CSS}
+  body { font-family: -apple-system, "Inter", "Segoe UI", system-ui, sans-serif; margin: 0; padding: 1.5rem; max-width: 72rem; overflow-wrap: anywhere;
+    background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; }
+  h1 { font-size: 1.3rem; font-weight: 700; margin: 0 0 1.25rem; letter-spacing: -0.01em; }
+  h2 { font-size: 0.95rem; font-weight: 600; margin: 0 0 0.75rem; }
+  a { color: var(--accent); }
+${NAV_CSS}
+  .sa-intro { font-size: 0.88rem; color: var(--text); line-height: 1.55; max-width: 48rem; margin: 0 0 1.25rem; }
+  .sa-scale-note { font-size: 0.82rem; color: var(--muted); line-height: 1.5; margin: 0 0 1.25rem; }
+  .sa-tiles { display: flex; flex-wrap: wrap; gap: 0.75rem; margin: 0 0 1.25rem; }
+  .sa-tile { flex: 1 1 11rem; min-width: 11rem; padding: 0.6rem 0.8rem; border-radius: 0.5rem; background: var(--surface); border: 1px solid var(--border); }
+  .sa-tile-value { font-size: 1.3rem; font-weight: 700; }
+  .sa-tile-label { font-size: 0.75rem; color: var(--muted); margin-top: 0.15rem; }
+  section.group { margin-bottom: 1.25rem; padding: 1.1rem 1.25rem; border-radius: 0.75rem;
+    background: var(--surface); border: 1px solid var(--border); }
+  .track-summary { font-size: 0.82rem; color: var(--muted); margin: -0.35rem 0 0.75rem; line-height: 1.45; }
+  .uml-scroll { overflow-x: auto; max-width: 100%; padding-bottom: 0.3rem; }
+  .uml-scroll + .uml-scroll { margin-top: 0.75rem; }
+  .uml { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: row; align-items: stretch; gap: 0; width: max-content; }
+  .uml li { max-width: 18rem; display: flex; align-items: center; }
+  .uml .link { display: flex; align-items: center; justify-content: center; width: 1.8rem; flex: 0 0 auto;
+    color: var(--muted); font-size: 1.1rem; align-self: center; }
+  .uml .node { border: 1px solid var(--border); border-radius: 0.5rem; max-width: 18rem; box-sizing: border-box; overflow: hidden; }
+  .uml .node b { display: block; padding: 0.4rem 0.7rem; font-size: 0.85rem; font-weight: 600;
+    background: var(--bg); border-bottom: 1px solid var(--border); }
+  .uml .node .chip { display: inline-block; margin: 0.45rem 0.7rem 0; padding: 0.15rem 0.5rem; border-radius: 0.375rem;
+    font-size: 0.72rem; font-weight: 600; background: var(--accent-soft); color: var(--accent); }
+  .uml .node .chip[data-soon] { background: var(--amber-soft); color: var(--amber); }
+  .uml .node ul { margin: 0; padding: 0.4rem 0.7rem 0.4rem 1.7rem; font-size: 0.8rem; color: var(--muted); }
+  @media (max-width: 640px) {
+    .uml { flex-direction: column; width: 100%; }
+    .uml li { max-width: 100%; }
+    .uml .node { max-width: 100%; }
+    .uml .link { width: auto; height: 1.4rem; transform: rotate(90deg); }
+  }`;
+
+/** One stat tile: a value and the label under it (same `.sa-tile` pattern as /ci's `.ci-tile`). */
+function renderSalesAgentsTile(value, label) {
+  return `<div class="sa-tile"><div class="sa-tile-value">${esc(value)}</div><div class="sa-tile-label">${esc(label)}</div></div>`;
+}
+
+/** Daily-volume stat tiles (one per track) plus a distinctly labelled per-prospect-cap tile — kept
+ * visually and textually separate from the daily targets since the two numbers are easy to mix up. */
+function renderSalesAgentsTiles(data) {
+  const trackTiles = data.tracks
+    .map((t) =>
+      renderSalesAgentsTile(t.dailyTarget, `${t.title} — daily volume target`),
+    )
+    .join("");
+  const capTile = renderSalesAgentsTile(
+    `${DAILY_CAP_PER_PROSPECT} emails`,
+    "Per-prospect cap, ever — not a daily number",
+  );
+  return `<div class="sa-tiles">${trackTiles}${capTile}</div>`;
+}
+
+/** The sequencer -> researcher arrowed pair, plus reply-watch as its own standalone box (it runs
+ * independently, not triggered by the sequencer, so it isn't chained into that arrow). */
+function renderSalesAgentsShared(data) {
+  const pair = data.sharedAgents
+    .map((stage, i) => {
+      const link =
+        i > 0 ? '<span class="link" aria-hidden="true">&rarr;</span>' : "";
+      return `<li>${link}${renderNode(stage)}</li>`;
+    })
+    .join("");
+  const standalone = `<li>${renderNode(data.replyWatch)}</li>`;
+  return `<section class="group" id="track-shared-agents">
+    <h2>Shared agents (run daily, across both pipelines)</h2>
+    <p class="track-summary">Both tracks below are fed by the same sequencer and researcher, and watched by the same reply-watch task.</p>
+    <div class="uml-scroll"><ol class="uml">${pair}</ol></div>
+    <div class="uml-scroll"><ol class="uml">${standalone}</ol></div>
+  </section>`;
+}
+
+/**
+ * Sales Agents tab: documentation-only view of Benji's outbound-sales agent pipeline (a
+ * completely different system, in a different repo, from the engineering ticket pipeline the
+ * Pipelines tab renders). Same server-rendered, no-JS UML-style box-and-arrow diagrams.
+ * @param {object} [data]
+ * @returns {string} full HTML document
+ */
+export function renderSalesAgents(data = SALES_AGENTS) {
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sales Agents</title>
+<style>
+${SALES_AGENTS_CSS}
+</style>
+</head>
+<body>
+${renderNav("sales-agents")}
+<h1>Benji's outbound-sales agents</h1>
+<p class="sa-intro">This is Benji's outbound-sales agent pipeline — lead-sourcing-researcher,
+  outbound-sales-writer, partnership-outbound-writer, outbound-sequencer, and a reply-watch
+  scheduled task. It lives in a separate repo (Benjis-Plants/sales-agents) and is a completely
+  different system from the engineering ticket pipeline on the Pipelines tab: documentation
+  only, nothing here is wired to that pipeline or its agents.</p>
+${renderSalesAgentsTiles(data)}
+<p class="sa-scale-note">${esc(SCALE_NOTE)}</p>
+${renderSalesAgentsShared(data)}
+${data.tracks.map(renderTrack).join("")}
 </body>
 </html>`;
 }
