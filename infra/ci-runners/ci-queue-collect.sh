@@ -24,16 +24,33 @@
 # _ciq_collect_repo's "last page" fetch below). No --paginate anywhere (one HTTP call per `gh api`
 # invocation) — each call also uses a fixed per_page instead of walking pages.
 #
+# #648: runners_busy/runners_total now count ONLINE runners only (status=="online"), with a new
+# runners_offline count and a per-runner runners[] array (identity + 24h/72h utilization rollup,
+# keyed by GitHub's own stable numeric runner `id` — names change on re-registration, ids don't).
+# This adds ZERO new `gh api` calls: the runner list was already fetched above for the busy/total
+# count; only how it's processed/stored changes (AC9). History is a new append-only sample file,
+# $PIPE/ci-runner-samples.jsonl by default (one line per currently-known runner per cycle:
+# {ts, id, name, online, busy, role} — `name`/`role` ride along so a runner that stops being
+# returned by the API (deregistered) can still be shown, using its last-known identity, until its
+# samples age out past the 72h window; `ts` is a unix epoch, not ISO, since this is a local sample
+# stream, not part of the beat payload itself), pruned to 72h + one cycle's buffer every cycle.
+# util_24h_pct/util_72h_pct for a given cycle are computed from samples taken BEFORE that cycle's
+# own append (so a runner's very first-ever cycle reports null, not 0/100 from its own single
+# fresh sample — AC7); the fresh sample is appended after the rollup, feeding the NEXT cycle.
+#
 # Env (production): CI_QUEUE_COLLECT_ENABLED (gate, read by report-status.sh, not this script),
 #   PIPE, GH_TOKEN (optional — the host's own `gh` auth is used), SLACK_WEBHOOK_URL, SENTRY_DSN,
 #   CI_QUEUE_REPOS_FILE (default: scripts/ci-metrics.repos), CI_QUEUE_ORG (default: Benjis-Plants),
 #   CI_QUEUE_SELF_REPO (default: jpmoya/claude-agents — its runners are repo-level, not org-level),
-#   CI_QUEUE_INTERVAL_SECS (default 240 — "every ~3-5 min").
+#   CI_QUEUE_INTERVAL_SECS (default 240 — "every ~3-5 min"), CI_QUEUE_PROD_DEPLOY_LABEL (default
+#   benjis-ci-prod-deploy — the GitHub runner label that sets `runners[].role` to "prod_deploy").
 # Env (tests): CI_QUEUE_FIXTURE_DIR (canned `gh api` JSON responses instead of a live call — see
 #   _ciq_call below; mirrors ci-report.sh's CI_REPORT_JOBS_FILE seam), CI_QUEUE_FIXTURE_FAIL=1
 #   (simulate every API call failing), CI_QUEUE_FORCE=1 (skip the throttle), CI_QUEUE_OUT /
 #   CI_QUEUE_ATTEMPT_FILE / CI_QUEUE_STATE_FILE / CI_QUEUE_LOCKDIR (relocate the written files),
-#   CI_QUEUE_CALL_LOG (dump the total API call count to this path, for the AC6 bound test).
+#   CI_QUEUE_CALL_LOG (dump the total API call count to this path, for the AC6 bound test),
+#   CI_QUEUE_SAMPLES_FILE (relocate the per-runner sample stream), CI_QUEUE_NOW (epoch seconds —
+#   freezes "now" for the sample/prune/rollup window math so tests are deterministic).
 set -uo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -51,6 +68,13 @@ PER_PAGE=${CI_QUEUE_PER_PAGE:-100}   # GitHub's max; free (same single call), sh
 MAX_RUN_LOOKUPS_PER_REPO=5
 RELEASE=${CI_QUEUE_RELEASE:-$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo unknown)}
 ENVIRONMENT=${CI_QUEUE_ENVIRONMENT:-$(hostname -s 2>/dev/null || echo unknown)}
+
+# #648: per-runner utilization history.
+SAMPLES_FILE=${CI_QUEUE_SAMPLES_FILE:-$PIPE/ci-runner-samples.jsonl}
+PROD_DEPLOY_LABEL=${CI_QUEUE_PROD_DEPLOY_LABEL:-benjis-ci-prod-deploy}
+WINDOW_24H_SECS=86400
+WINDOW_72H_SECS=259200
+MAX_SAMPLE_RUNNERS=30   # mirrors status-page/src/validate.js's MAX_CI_QUEUE_RUNNERS cap
 
 repos() { grep -E '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+[[:space:]]*$' "$REPOS_FILE"; }
 
@@ -154,25 +178,112 @@ _ciq_collect_repo() {
   return 0
 }
 
-# collect_once — one full collection pass: runner counts + every repo's queued jobs, then the
-# final ci_queue JSON written atomically to $OUT. Returns 1 (no write) on any API failure.
+# _ciq_merge_runners <org-json> <repo-json> -> writes $WORK/runners-merged.json: one object per
+# currently-known runner, {id, name, status, busy, role}, defensively defaulted (#648 AC2
+# negative case: a runner object missing `status`/`busy` in the API response is treated as
+# offline/not-busy, never crashes the cycle) and `role` derived from the GitHub labels GitHub
+# itself returns (prod_deploy iff $PROD_DEPLOY_LABEL is among them, else general).
+_ciq_merge_runners() {
+  printf '%s\n%s\n' "$1" "$2" | jq -s --arg label "$PROD_DEPLOY_LABEL" -c '
+    [.[].runners[]?]
+    | map({
+        id: (.id // -1),
+        name: (.name // ""),
+        status: (.status // "offline"),
+        busy: (.busy == true),
+        role: (if ([.labels[]?.name] | index($label)) then "prod_deploy" else "general" end)
+      })
+  ' > "$WORK/runners-merged.json" 2>/dev/null
+}
+
+# _ciq_runner_history <merged-runners-file> — the #648 per-runner sample/prune/rollup step.
+# Writes $WORK/runners-out.json (the final `ci_queue.runners[]` array: identity from the CURRENT
+# cycle for every currently-known runner, plus any runner that's dropped out of the API response
+# but still has a sample inside the trailing 72h — using its last-known identity — so it doesn't
+# vanish the instant it's deregistered; it ages out only once that 72h window empties, AC6).
+# Returns 1 on any failure (propagates as a normal collect_once failure: $OUT is left untouched,
+# the existing 3-failures-before-Slack/Sentry path in main() fires exactly as it does for an API
+# failure — same seam, no new alert path, per the Observability section).
+_ciq_runner_history() {
+  local merged=$1 now keep old_pruned new_lines combined
+  now=${CI_QUEUE_NOW:-$(date +%s)}
+  keep=$(( WINDOW_72H_SECS + INTERVAL ))
+
+  old_pruned="$WORK/samples-old-pruned.jsonl"
+  if [ -e "$SAMPLES_FILE" ]; then
+    jq -c --argjson now "$now" --argjson keep "$keep" \
+      'select((.ts | type) == "number" and (($now - .ts) <= $keep))' \
+      "$SAMPLES_FILE" > "$old_pruned" 2>/dev/null || return 1
+  else
+    : > "$old_pruned"
+  fi
+
+  new_lines="$WORK/samples-new.jsonl"
+  jq -c --argjson now "$now" '
+    .[] | {ts: $now, id, name, online: (.status == "online"), busy: ((.status == "online") and (.busy == true)), role}
+  ' "$merged" > "$new_lines" 2>/dev/null || return 1
+
+  # Rollup is computed from $old (samples taken BEFORE this cycle's own append) — a runner seen
+  # for the very first time this cycle has zero prior samples and reports null, not 0/100 (AC7).
+  jq -n --argjson now "$now" --argjson w24 "$WINDOW_24H_SECS" --argjson w72 "$WINDOW_72H_SECS" \
+    --argjson max "$MAX_SAMPLE_RUNNERS" --slurpfile old "$old_pruned" --slurpfile cur "$merged" '
+    ($cur[0] // []) as $cur
+    | ($cur | map(.id)) as $cur_ids
+    | ($old | map(select(.ts >= ($now - $w72)) | .id)) as $recent72_ids
+    | ($cur_ids + $recent72_ids | unique) as $ids
+    | [ $ids[] as $id
+        | ($old | map(select(.id == $id))) as $samples
+        | ($samples | map(select(.ts >= ($now - $w24)))) as $s24
+        | ($samples | map(select(.ts >= ($now - $w72)))) as $s72
+        | ($cur | map(select(.id == $id)) | .[0]) as $c
+        | (if $c != null then null else ($samples | sort_by(.ts) | if length > 0 then .[-1] else null end) end) as $last
+        | {
+            id: $id,
+            name: (if $c != null then $c.name else ($last.name // "") end),
+            online: (if $c != null then ($c.status == "online") else false end),
+            busy: (if $c != null then (($c.status == "online") and ($c.busy == true)) else false end),
+            role: (if $c != null then $c.role else ($last.role // "general") end),
+            util_24h_pct: (if ($s24 | length) == 0 then null
+              else ((100 * ([$s24[] | select(.busy == true)] | length) / ($s24 | length)) | round) end),
+            util_72h_pct: (if ($s72 | length) == 0 then null
+              else ((100 * ([$s72[] | select(.busy == true)] | length) / ($s72 | length)) | round) end)
+          }
+      ]
+    | sort_by(.id)
+    | .[0:$max]
+  ' > "$WORK/runners-out.json" 2>/dev/null || return 1
+
+  combined="$WORK/samples-combined.jsonl"
+  cat "$old_pruned" "$new_lines" > "$combined" 2>/dev/null || return 1
+  _ciq_write_samples_atomic "$(cat "$combined" 2>/dev/null)"
+}
+
+# collect_once — one full collection pass: runner counts/history + every repo's queued jobs, then
+# the final ci_queue JSON written atomically to $OUT. Returns 1 (no write) on any failure.
 collect_once() {
-  local org_json repo_json busy total as_of final repo
+  local org_json repo_json busy total offline as_of final repo
   org_json=$(_ciq_call_shaped "orgs/$ORG/actions/runners?per_page=100" "runners-org.json" runners) || return 1
   repo_json=$(_ciq_call_shaped "repos/$SELF_REPO/actions/runners?per_page=100" "runners-repo.json" runners) || return 1
-  busy=$(printf '%s\n%s\n' "$org_json" "$repo_json" | jq -s '[.[].runners[]?] | map(select(.busy==true)) | length') || return 1
-  total=$(printf '%s\n%s\n' "$org_json" "$repo_json" | jq -s '[.[].runners[]?] | length') || return 1
+  _ciq_merge_runners "$org_json" "$repo_json" || return 1
+  # #648: runners_busy/runners_total now count ONLINE runners only; runners_offline is new.
+  busy=$(jq '[.[] | select(.status=="online" and .busy==true)] | length' "$WORK/runners-merged.json") || return 1
+  total=$(jq '[.[] | select(.status=="online")] | length' "$WORK/runners-merged.json") || return 1
+  offline=$(jq '[.[] | select(.status!="online")] | length' "$WORK/runners-merged.json") || return 1
 
   [ -r "$REPOS_FILE" ] || return 1
   while read -r repo; do
     _ciq_collect_repo "$repo" || return 1
   done < <(repos)
 
+  _ciq_runner_history "$WORK/runners-merged.json" || return 1
+
   as_of=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   final=$(jq -n \
     --slurpfile jobs "$WORK/queued-jobs.jsonl" \
+    --slurpfile runners "$WORK/runners-out.json" \
     --argjson busy "$busy" \
     --argjson total "$total" \
+    --argjson offline "$offline" \
     --arg as_of "$as_of" \
     '
     ($jobs) as $j
@@ -183,9 +294,11 @@ collect_once() {
     | {as_of: $as_of,
        runners_busy: ([$busy, 999] | min),
        runners_total: ([$total, 999] | min),
+       runners_offline: ([$offline, 999] | min),
        queued_total: ([($j | length), 999] | min),
        categories: $cats,
-       oldest: (if $o == null then null else {key: $o.cat, queued_at: $o.queued_at} end)}
+       oldest: (if $o == null then null else {key: $o.cat, queued_at: $o.queued_at} end),
+       runners: ($runners[0] // [])}
     ') || return 1
 
   _ciq_write_atomic "$final"
@@ -198,6 +311,17 @@ _ciq_write_atomic() {
   tmp=$(mktemp "$OUT.XXXXXX" 2>/dev/null) || return 1
   printf '%s' "$1" > "$tmp" || { rm -f "$tmp"; return 1; }
   mv -f "$tmp" "$OUT" || { rm -f "$tmp"; return 1; }
+}
+
+# _ciq_write_samples_atomic <content> — same atomic temp-file-then-mv pattern as _ciq_write_atomic,
+# targeting $SAMPLES_FILE instead of $OUT (kept as a separate function, not a shared helper, so
+# the AC2 test's literal `mv -f "$tmp" "$OUT"` grep stays meaningful for $OUT specifically).
+_ciq_write_samples_atomic() {
+  local tmp
+  mkdir -p "$(dirname "$SAMPLES_FILE")" 2>/dev/null
+  tmp=$(mktemp "$SAMPLES_FILE.XXXXXX" 2>/dev/null) || return 1
+  printf '%s' "$1" > "$tmp" || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$SAMPLES_FILE" || { rm -f "$tmp"; return 1; }
 }
 
 _ciq_age() {  # <file> -> age in seconds, or empty if the file doesn't exist
@@ -298,7 +422,7 @@ main() {
     local fails
     fails=$(( $(_ciq_read_fails) + 1 ))
     _ciq_write_fails "$fails"
-    sentry_report "ci-queue-collect: API call failed (fails=$fails)"
+    sentry_report "ci-queue-collect: collection cycle failed (fails=$fails)"
     # Only on a failure STREAK reaching 3 (not every failed tick, which would spam the channel
     # every ~3-5 min): fire exactly once, on the transition into the streak.
     [ "$fails" -eq 3 ] && slack_post "CI queue collector: $fails consecutive failures [env=$ENVIRONMENT release=$RELEASE]"

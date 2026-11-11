@@ -69,6 +69,12 @@ export const BLOCK_CLASS_VOCAB = ['ci_pending', 'ci_red', 'merge_conflict', 'dep
 // text later (ticket #644).
 export const CI_QUEUE_CATEGORY_VOCAB = ['dependabot', 'deploy_release', 'pr', 'other'];
 
+// `ci_queue.runners[].role` (issue #648): distinguishes the production-deploy-labeled runner
+// (GitHub label `benjis-ci-prod-deploy`, #2440 in benjis-ops-tool) from the general `benjis-ci`
+// pool — #649 (render, dependent on this ticket) styles/groups them separately. A closed
+// vocabulary, same reasoning as CI_QUEUE_CATEGORY_VOCAB: no free-text label ever reaches storage.
+export const CI_RUNNER_ROLE_VOCAB = ['general', 'prod_deploy'];
+
 // The `runs[].state` enum (validate.js table) — fixed by the frozen v1 payload contract,
 // not derived from a repo scan the way STAGE_VOCAB/MARKER_VOCAB are.
 export const STATE_VOCAB = ['running', 'restarting', 'queued', 'held'];

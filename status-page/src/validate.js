@@ -17,6 +17,7 @@ import {
   PARKED_REASON_VOCAB,
   BLOCK_CLASS_VOCAB,
   CI_QUEUE_CATEGORY_VOCAB,
+  CI_RUNNER_ROLE_VOCAB,
 } from './vocab.js';
 
 const ISO_8601_Z = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
@@ -273,6 +274,45 @@ function sanitiseCiQueueOldest(raw) {
   return { ok: true, value: { key: raw.key, queued_at: raw.queued_at } };
 }
 
+// `ci_queue.runners[]` (issue #648): bounded array of per-runner identity + utilization-history
+// rollup. `name` follows GitHub's own self-hosted runner naming charset.
+const MAX_CI_QUEUE_RUNNERS = 30;
+const RUNNER_NAME = /^[A-Za-z0-9._-]{1,100}$/;
+
+/** Sanitises one `ci_queue.runners[].util_*_pct` value: null, or an int 0-100. `undefined` signals "invalid, drop the entry". */
+function sanitiseUtilPct(value) {
+  if (value === null) return null;
+  if (isIntInRange(value, 0, 100)) return value;
+  return undefined;
+}
+
+/**
+ * Sanitises one `ci_queue.runners[]` entry. Returns null to DROP just this one entry — unlike
+ * `categories[]`, a single bad runner entry never takes down the whole `ci_queue` object (issue
+ * #648 AC8(b)): a collector hiccup on one runner must not blank the whole panel.
+ */
+function sanitiseCiQueueRunner(raw) {
+  if (!isPlainObject(raw)) return null;
+  if (!isIntInRange(raw.id, 0, 999999999)) return null;
+  if (!(typeof raw.name === 'string' && RUNNER_NAME.test(raw.name))) return null;
+  if (typeof raw.online !== 'boolean') return null;
+  if (typeof raw.busy !== 'boolean') return null;
+  if (!(typeof raw.role === 'string' && CI_RUNNER_ROLE_VOCAB.includes(raw.role))) return null;
+  const util24 = sanitiseUtilPct(raw.util_24h_pct);
+  if (util24 === undefined) return null;
+  const util72 = sanitiseUtilPct(raw.util_72h_pct);
+  if (util72 === undefined) return null;
+  return {
+    id: raw.id,
+    name: raw.name,
+    online: raw.online,
+    busy: raw.busy,
+    role: raw.role,
+    util_24h_pct: util24,
+    util_72h_pct: util72,
+  };
+}
+
 /**
  * Sanitises the optional top-level `ci_queue` (issue #643): every field is an enum, a bounded
  * int (0-999), or an ISO-8601Z timestamp — no free text. Unlike every other optional field in
@@ -280,6 +320,12 @@ function sanitiseCiQueueOldest(raw) {
  * a stale/garbled collector snapshot must disappear entirely, not corrupt one field while
  * keeping stale siblings. Returns null (key omitted) on any violation, including when `raw` is
  * absent/non-object.
+ *
+ * `runners[]` / `runners_offline` (issue #648) are the one exception to "drop the whole object":
+ * they are newer, additive fields — a collector that predates #648 never sends them, and that
+ * must keep showing the rest of the (still fully #643-shaped) panel, not disappear. So each is
+ * independently optional: present-and-malformed (wrong type) just omits that one key, and a bad
+ * `runners[]` entry (AC8(b)) drops only that entry, never the whole `ci_queue`.
  */
 function sanitiseCiQueue(raw) {
   if (!isPlainObject(raw)) return null;
@@ -294,7 +340,8 @@ function sanitiseCiQueue(raw) {
   if (new Set(keys).size !== keys.length) return null; // no duplicate category keys
   const oldest = sanitiseCiQueueOldest(raw.oldest);
   if (!oldest.ok) return null;
-  return {
+
+  const result = {
     as_of: raw.as_of,
     runners_busy: raw.runners_busy,
     runners_total: raw.runners_total,
@@ -302,6 +349,19 @@ function sanitiseCiQueue(raw) {
     categories,
     oldest: oldest.value,
   };
+
+  if (isIntInRange(raw.runners_offline, 0, 999)) {
+    result.runners_offline = raw.runners_offline;
+  }
+
+  if (Array.isArray(raw.runners)) {
+    result.runners = raw.runners
+      .map(sanitiseCiQueueRunner)
+      .filter((runner) => runner !== null)
+      .slice(0, MAX_CI_QUEUE_RUNNERS);
+  }
+
+  return result;
 }
 
 /**
