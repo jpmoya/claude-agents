@@ -199,6 +199,24 @@ export function validApprovedItem(overrides = {}) {
   };
 }
 
+/** A valid `ci_queue` object (issue #643), per the Expected Behavior payload shape. */
+export function validCiQueue(overrides = {}) {
+  return {
+    as_of: '2026-09-21T12:00:00Z',
+    runners_busy: 2,
+    runners_total: 4,
+    queued_total: 5,
+    categories: [
+      { key: 'dependabot', count: 1 },
+      { key: 'deploy_release', count: 1 },
+      { key: 'pr', count: 2 },
+      { key: 'other', count: 1 },
+    ],
+    oldest: { key: 'deploy_release', queued_at: '2026-09-21T11:45:00Z' },
+    ...overrides,
+  };
+}
+
 /** One valid backlog[] item (backlog reorder view): {repo, issue, title?, url?, rank?}. */
 export function validBacklogItem(overrides = {}) {
   return {
@@ -217,6 +235,7 @@ export function hostRecord({
   staging,
   approved,
   backlog,
+  ci_queue,
   received_at = "2026-09-21T12:00:00Z",
 } = {}) {
   const rec = {
@@ -231,5 +250,6 @@ export function hostRecord({
   if (staging !== undefined) rec.staging = staging;
   if (approved !== undefined) rec.approved = approved;
   if (backlog !== undefined) rec.backlog = backlog;
+  if (ci_queue !== undefined) rec.ci_queue = ci_queue;
   return rec;
 }
