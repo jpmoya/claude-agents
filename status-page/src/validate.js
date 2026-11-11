@@ -9,7 +9,15 @@
 // (140 code points), has control characters and whitespace runs collapsed to one space, and is
 // HTML-escaped at render. `runs[].url` is not an exception — it must match ISSUE_URL below.
 
-import { STAGE_VOCAB, MARKER_VOCAB, STATE_VOCAB, NEEDS_VOCAB, PARKED_REASON_VOCAB, BLOCK_CLASS_VOCAB } from './vocab.js';
+import {
+  STAGE_VOCAB,
+  MARKER_VOCAB,
+  STATE_VOCAB,
+  NEEDS_VOCAB,
+  PARKED_REASON_VOCAB,
+  BLOCK_CLASS_VOCAB,
+  CI_QUEUE_CATEGORY_VOCAB,
+} from './vocab.js';
 
 const ISO_8601_Z = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 const REPO_ALIAS = /^[a-z0-9][a-z0-9-]{0,23}$/;
@@ -246,6 +254,56 @@ function sanitiseBacklog(raw) {
   return Array.isArray(raw) ? raw.map(sanitiseBacklogItem).filter((item) => item !== null).slice(0, MAX_BACKLOG) : [];
 }
 
+const MAX_CI_QUEUE_CATEGORIES = 4;
+
+/** Sanitises one `ci_queue.categories[]` entry. Returns null on any violation. */
+function sanitiseCiQueueCategory(raw) {
+  if (!isPlainObject(raw)) return null;
+  if (!(typeof raw.key === 'string' && CI_QUEUE_CATEGORY_VOCAB.includes(raw.key))) return null;
+  if (!isIntInRange(raw.count, 0, 999)) return null;
+  return { key: raw.key, count: raw.count };
+}
+
+/** Sanitises `ci_queue.oldest` (an object or exactly `null`). Returns {ok:false} on any violation. */
+function sanitiseCiQueueOldest(raw) {
+  if (raw === null) return { ok: true, value: null };
+  if (!isPlainObject(raw)) return { ok: false };
+  if (!(typeof raw.key === 'string' && CI_QUEUE_CATEGORY_VOCAB.includes(raw.key))) return { ok: false };
+  if (!isIsoTimestamp(raw.queued_at)) return { ok: false };
+  return { ok: true, value: { key: raw.key, queued_at: raw.queued_at } };
+}
+
+/**
+ * Sanitises the optional top-level `ci_queue` (issue #643): every field is an enum, a bounded
+ * int (0-999), or an ISO-8601Z timestamp — no free text. Unlike every other optional field in
+ * this file, a single malformed sub-field drops the WHOLE object (never partially rebuilt) —
+ * a stale/garbled collector snapshot must disappear entirely, not corrupt one field while
+ * keeping stale siblings. Returns null (key omitted) on any violation, including when `raw` is
+ * absent/non-object.
+ */
+function sanitiseCiQueue(raw) {
+  if (!isPlainObject(raw)) return null;
+  if (!isIsoTimestamp(raw.as_of)) return null;
+  if (!isIntInRange(raw.runners_busy, 0, 999)) return null;
+  if (!isIntInRange(raw.runners_total, 0, 999)) return null;
+  if (!isIntInRange(raw.queued_total, 0, 999)) return null;
+  if (!Array.isArray(raw.categories) || raw.categories.length > MAX_CI_QUEUE_CATEGORIES) return null;
+  const categories = raw.categories.map(sanitiseCiQueueCategory);
+  if (categories.some((c) => c === null)) return null;
+  const keys = categories.map((c) => c.key);
+  if (new Set(keys).size !== keys.length) return null; // no duplicate category keys
+  const oldest = sanitiseCiQueueOldest(raw.oldest);
+  if (!oldest.ok) return null;
+  return {
+    as_of: raw.as_of,
+    runners_busy: raw.runners_busy,
+    runners_total: raw.runners_total,
+    queued_total: raw.queued_total,
+    categories,
+    oldest: oldest.value,
+  };
+}
+
 /**
  * @param {unknown} parsedBody - already-JSON-parsed request body
  * @returns {{ ok: true, value: object } | { ok: false, reason: 'bad-json'|'bad-version'|'too-many-runs' }}
@@ -300,6 +358,11 @@ export function validateBeatPayload(parsedBody) {
     const goals = parsedBody.goals.slice(0, MAX_GOALS).map(sanitiseGoal).filter((g) => g !== null);
     if (goals.length > 0) value.goals = goals;
   }
+
+  // Optional (issue #643): absent, non-object, or any single malformed sub-field -> no key
+  // (never a rejection, never a partial rebuild — see sanitiseCiQueue).
+  const ciQueue = sanitiseCiQueue(parsedBody.ci_queue);
+  if (ciQueue !== null) value.ci_queue = ciQueue;
 
   return { ok: true, value };
 }

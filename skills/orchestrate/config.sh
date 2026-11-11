@@ -74,6 +74,13 @@ STALE_WORK_HOURS=4
 
 [ -f "$HOME/.claude/pipeline/config.local.sh" ] && source "$HOME/.claude/pipeline/config.local.sh"
 
+# #645: the test harness's hard-disable of #643's CI queue collector must survive a real host
+# config.local.sh (sourced just above) turning it back on — run-tests.sh exports
+# CI_QUEUE_COLLECT_TEST_DISABLE=1 (a marker config.local.sh has no reason to ever set) and nothing
+# sourced after this line can re-enable report-status.sh's gh/GitHub API calls. Set AFTER the host
+# override, same pattern as DIRECT_ROUTE_REPOS below.
+[ "${CI_QUEUE_COLLECT_TEST_DISABLE:-0}" != "1" ] || CI_QUEUE_COLLECT_ENABLED=0
+
 # Direct-route repos (#632): the pipeline never runs them — orchestrate.sh refuses the launch (exit 2, no --force), the
 # supervisor and the goal machinery ignore their tickets. Set AFTER the host override so no config.local.sh can clear it.
 # Changed only by an interactive session with subagents — never orchestrate.sh, agent-go, a goal or the supervisor (#632).
