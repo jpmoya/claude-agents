@@ -179,7 +179,148 @@ test_ciqbl_deep_queue_nobody_busy_unaffected() {
   assert_eq "$calls" "9" "contrast: deep queue alone (no in_progress contention) still costs 2+2+5=9, same as before the fix" || return 1
 }
 
+# ---- Issue #658 round 2 (PR #664 review finding): sticky-then-rotation, multi-cycle ------------
+# The round-1 fix above (reservation) is proven single-cycle by the four tests above. These prove
+# the round-2 fix: picking the OLDEST `r` in_progress runs every cycle starves a NEWER one that
+# holds the busy runner's job 100% of the time whenever in_progress runs outnumber `r`. Prefix
+# _ciqbl2_ to keep these distinct from the round-1 helpers above (same file, same conventions).
+
+# _ciqbl2_inprogress_run_idle_fixture <dir> <run-id> <runner-name> — like
+# _ciqbl_inprogress_run_fixture but the job's runner is IDLE (no pull_requests), used to prove a
+# run whose job sits on an idle runner must never go sticky/starve the rotation budget.
+_ciqbl2_inprogress_run_idle_fixture() {
+  local dir=$1 id=$2 runner=$3
+  echo "{\"jobs\":[{\"id\":$((id + 90000)),\"status\":\"in_progress\",\"created_at\":\"2026-01-01T00:00:00Z\",\"runner_name\":\"$runner\"}]}" > "$dir/jobs-$id.json"
+  printf '{"id":%d,"name":"CI","event":"push","actor":{"login":"someone"},"pull_requests":[]}' "$id"
+}
+
+test_ciqbl2_sticky_resolves_by_cycle2_and_stays_resolved_cycle3() {
+  local pipe fixdir reposfile rc run601 runs cj calls
+  pipe=$(mktemp -d); fixdir=$(mktemp -d); reposfile=$(_ciqbl_repos_file "$fixdir")
+  _ciqbl_runners_fixtures "$fixdir" "gha-zz-1-101" ""
+  # Exact reviewer repro: run 601 (no assigned runner) + run 602 (holds the one busy runner),
+  # 7 queued runs -> cap=5, r=1, so only ONE of {601,602} gets looked up per cycle.
+  run601=$(_ciqbl2_inprogress_run_idle_fixture "$fixdir" 601 "")
+  local run602; run602=$(_ciqbl_inprogress_run_fixture "$fixdir" 602 42 "gha-zz-1-101")
+  _ciqbl_queued_runs "$fixdir" 501 502 503 504 505 506 507
+  echo "{\"workflow_runs\":[$run601,$run602]}" > "$fixdir/runs-${CIQBL_SAFE}-in_progress.json"
+  # run601's job carries no runner_name (jq .runner_name // "" == "" never enters running-jobs.jsonl).
+  echo '{"jobs":[{"id":690601,"status":"in_progress","created_at":"2026-01-01T00:00:00Z"}]}' > "$fixdir/jobs-601.json"
+
+  _ciqbl_run "$pipe" "$fixdir" "$reposfile"; rc=$?
+  assert_exit0 "$rc" "cycle1 still exits 0" || { rm -rf "$pipe" "$fixdir"; return 1; }
+  assert_eq "$CIQBL_CALLS" "9" "cycle1: calls stay at 2+2+5=9" || { rm -rf "$pipe" "$fixdir"; return 1; }
+
+  _ciqbl_run "$pipe" "$fixdir" "$reposfile"; rc=$?
+  cj=$(printf '%s' "$CIQBL_OUT" | jq -c '.runners[] | select(.name=="gha-zz-1-101") | .current_job')
+  calls=$CIQBL_CALLS
+  assert_exit0 "$rc" "cycle2 still exits 0" || { rm -rf "$pipe" "$fixdir"; return 1; }
+  assert_eq "$cj" '{"repo":"example-owner/busy-link-backlog","run_id":602,"pr_url":"https://github.com/example-owner/busy-link-backlog/pull/42"}' \
+    "AC: resolved by cycle 2 at the latest (rotation reached run 602)" || { rm -rf "$pipe" "$fixdir"; return 1; }
+  assert_eq "$calls" "9" "cycle2: calls stay at 2+2+5=9" || { rm -rf "$pipe" "$fixdir"; return 1; }
+
+  _ciqbl_run "$pipe" "$fixdir" "$reposfile"; rc=$?
+  cj=$(printf '%s' "$CIQBL_OUT" | jq -c '.runners[] | select(.name=="gha-zz-1-101") | .current_job')
+  calls=$CIQBL_CALLS
+  rm -rf "$pipe" "$fixdir"
+  assert_exit0 "$rc" "cycle3 still exits 0" || return 1
+  assert_eq "$cj" '{"repo":"example-owner/busy-link-backlog","run_id":602,"pr_url":"https://github.com/example-owner/busy-link-backlog/pull/42"}' \
+    "AC (anti-flicker): still resolved on cycle 3 (sticky held, didn't rotate away)" || return 1
+  assert_eq "$calls" "9" "cycle3: calls stay at 2+2+5=9" || return 1
+}
+
+test_ciqbl2_rotation_bounds_resolution_more_inprogress_than_reservation() {
+  local pipe fixdir reposfile rc i runs cj calls
+  pipe=$(mktemp -d); fixdir=$(mktemp -d); reposfile=$(_ciqbl_repos_file "$fixdir")
+  # 1 busy runner, 1 idle runner. 6 in_progress runs: 601-605 sit on the IDLE runner (must never
+  # go sticky/starve rotation — the round-1-only bug this guards against), 606 (highest id) holds
+  # the busy runner's job. 7 queued -> cap=5, busy=1, r=1: exactly one of the 6 gets looked up
+  # per cycle, so resolution is bounded to ceil(6/1)=6 cycles, worst case (ascending rotation from
+  # cursor 0 reaches the highest id last).
+  _ciqbl_runners_fixtures "$fixdir" "gha-busy-1-900" "gha-idle-1-800"
+  runs='['
+  for i in 601 602 603 604 605; do
+    _ciqbl2_inprogress_run_idle_fixture "$fixdir" "$i" "gha-idle-1-800" > /dev/null
+    runs="$runs{\"id\":$i,\"name\":\"CI\",\"event\":\"push\",\"actor\":{\"login\":\"someone\"},\"pull_requests\":[]},"
+  done
+  local run606; run606=$(_ciqbl_inprogress_run_fixture "$fixdir" 606 99 "gha-busy-1-900")
+  runs="$runs$run606]"
+  echo "{\"workflow_runs\":$runs}" > "$fixdir/runs-${CIQBL_SAFE}-in_progress.json"
+  _ciqbl_queued_runs "$fixdir" 501 502 503 504 505 506 507
+
+  local resolved_at=0
+  for i in 1 2 3 4 5 6; do
+    _ciqbl_run "$pipe" "$fixdir" "$reposfile"; rc=$?
+    assert_exit0 "$rc" "cycle $i still exits 0" || { rm -rf "$pipe" "$fixdir"; return 1; }
+    assert_eq "$CIQBL_CALLS" "9" "cycle $i: calls stay at 2+2+5=9" || { rm -rf "$pipe" "$fixdir"; return 1; }
+    cj=$(printf '%s' "$CIQBL_OUT" | jq -c '.runners[] | select(.name=="gha-busy-1-900") | .current_job')
+    if [ "$resolved_at" -eq 0 ] && [ "$cj" != "null" ] && [ -n "$cj" ]; then resolved_at=$i; fi
+  done
+  assert_le "$resolved_at" "6" "AC: resolves within ceil(6/1)=6 cycles" || { rm -rf "$pipe" "$fixdir"; return 1; }
+  assert_ne "$resolved_at" "0" "AC: did resolve at all within 6 cycles" || { rm -rf "$pipe" "$fixdir"; return 1; }
+
+  # One further cycle: still resolved (sticky, no flicker).
+  _ciqbl_run "$pipe" "$fixdir" "$reposfile"; rc=$?
+  cj=$(printf '%s' "$CIQBL_OUT" | jq -c '.runners[] | select(.name=="gha-busy-1-900") | .current_job')
+  calls=$CIQBL_CALLS
+  rm -rf "$pipe" "$fixdir"
+  assert_exit0 "$rc" "cycle 7 still exits 0" || return 1
+  assert_eq "$cj" '{"repo":"example-owner/busy-link-backlog","run_id":606,"pr_url":"https://github.com/example-owner/busy-link-backlog/pull/99"}' \
+    "AC (anti-flicker): still resolved one further cycle after first resolution" || return 1
+  assert_eq "$calls" "9" "cycle7: calls stay at 2+2+5=9" || return 1
+}
+
+test_ciqbl2_fixture_fail_leaves_ip_state_file_untouched() {
+  local pipe fixdir reposfile rc ipstate before after
+  pipe=$(mktemp -d); fixdir=$(mktemp -d); reposfile=$(_ciqbl_repos_file "$fixdir")
+  _ciqbl_runners_fixtures "$fixdir" "gha-zz-1-101" ""
+  _ciqbl_inprogress_run_fixture "$fixdir" 601 42 "gha-zz-1-101" > /dev/null
+  echo '{"workflow_runs":[{"id":601,"name":"CI","event":"push","actor":{"login":"someone"},"pull_requests":[{"number":42}]}]}' > "$fixdir/runs-${CIQBL_SAFE}-in_progress.json"
+  _ciqbl_queued_runs "$fixdir" 501 502 503
+
+  # Cycle 1 (success) seeds a real ip-state file.
+  _ciqbl_run "$pipe" "$fixdir" "$reposfile" > /dev/null
+  ipstate="$pipe/ci-queue-collect.ip-state.json"
+  assert_file_exists "$ipstate" "a successful cycle writes the ip-state file" || { rm -rf "$pipe" "$fixdir"; return 1; }
+  before=$(cat "$ipstate")
+
+  rc=$(
+    CI_QUEUE_FORCE=1 CI_QUEUE_OUT="$pipe/status-ci.json" CI_QUEUE_ATTEMPT_FILE="$pipe/attempt" \
+    CI_QUEUE_STATE_FILE="$pipe/state.json" CI_QUEUE_LOCKDIR="$pipe/lockdir" CI_QUEUE_SAMPLES_FILE="$pipe/ci-runner-samples.jsonl" \
+    CI_QUEUE_CALL_LOG="$pipe/calls.log" CI_QUEUE_REPOS_FILE="$reposfile" CI_QUEUE_FIXTURE_DIR="$fixdir" CI_QUEUE_FIXTURE_FAIL=1 \
+    bash "$COLLECTOR_CIQBL" > /dev/null 2>&1; echo $?
+  )
+  after=$(cat "$ipstate")
+  rm -rf "$pipe" "$fixdir"
+
+  assert_exit0 "$rc" "a forced-failure cycle still exits 0" || return 1
+  assert_eq "$before" "$after" "AC: ip-state file is byte-for-byte unchanged after a forced-failure cycle" || return 1
+}
+
+test_ciqbl2_corrupt_ip_state_file_does_not_abort_cycle() {
+  local pipe fixdir reposfile rc
+  pipe=$(mktemp -d); fixdir=$(mktemp -d); reposfile=$(_ciqbl_repos_file "$fixdir")
+  mkdir -p "$pipe"
+  echo 'not valid json {{{' > "$pipe/ci-queue-collect.ip-state.json"
+  _ciqbl_runners_fixtures "$fixdir" "gha-zz-1-101" ""
+  _ciqbl_inprogress_run_fixture "$fixdir" 601 42 "gha-zz-1-101" > /dev/null
+  echo '{"workflow_runs":[{"id":601,"name":"CI","event":"push","actor":{"login":"someone"},"pull_requests":[{"number":42}]}]}' > "$fixdir/runs-${CIQBL_SAFE}-in_progress.json"
+  _ciqbl_queued_runs "$fixdir" 501 502 503
+
+  _ciqbl_run "$pipe" "$fixdir" "$reposfile"; rc=$?
+  local cj; cj=$(printf '%s' "$CIQBL_OUT" | jq -c '.runners[] | select(.name=="gha-zz-1-101") | .current_job')
+  rm -rf "$pipe" "$fixdir"
+
+  assert_exit0 "$rc" "a corrupt ip-state file still exits 0" || return 1
+  assert_eq "$cj" '{"repo":"example-owner/busy-link-backlog","run_id":601,"pr_url":"https://github.com/example-owner/busy-link-backlog/pull/42"}' \
+    "AC: a corrupt ip-state file degrades to no-sticky/cursor-0, never aborts the cycle" || return 1
+}
+
 run_test test_ciqbl_at_cap_queued_plus_one_busy_inprogress_run_resolves_link
 run_test test_ciqbl_above_cap_queued_plus_one_busy_inprogress_run_resolves_link
 run_test test_ciqbl_two_busy_runners_plus_deep_queue_both_resolve
 run_test test_ciqbl_deep_queue_nobody_busy_unaffected
+run_test test_ciqbl2_sticky_resolves_by_cycle2_and_stays_resolved_cycle3
+run_test test_ciqbl2_rotation_bounds_resolution_more_inprogress_than_reservation
+run_test test_ciqbl2_fixture_fail_leaves_ip_state_file_untouched
+run_test test_ciqbl2_corrupt_ip_state_file_does_not_abort_cycle
