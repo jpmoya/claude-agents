@@ -250,6 +250,18 @@ export function validCiQueueWithRunners(overrides = {}) {
   });
 }
 
+/** One valid `ci_queue.queued_items[]` entry (issue #657), per the Expected Behavior payload shape. */
+export function validCiQueueQueuedItem(overrides = {}) {
+  return {
+    key: 'deploy_release',
+    repo: 'jpmoya/claude-agents',
+    run_id: 43050239599,
+    pr_url: 'https://github.com/jpmoya/claude-agents/pull/42',
+    queued_at: '2026-09-21T11:45:00Z',
+    ...overrides,
+  };
+}
+
 /** One valid backlog[] item (backlog reorder view): {repo, issue, title?, url?, rank?}. */
 export function validBacklogItem(overrides = {}) {
   return {

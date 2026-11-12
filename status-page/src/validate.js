@@ -5,9 +5,10 @@
 // free-text string reaches storage — every string field is an enum or a strict pattern. See
 // issue #11 / #4 §5 for the full field table.
 //
-// Exactly one documented exception (issue #29): `runs[].title` is free text. It is length-capped
-// (140 code points), has control characters and whitespace runs collapsed to one space, and is
-// HTML-escaped at render. `runs[].url` is not an exception — it must match ISSUE_URL below.
+// Two documented free-text exceptions: `runs[].title` (issue #29) and `ci_queue.queued_items[].title`
+// (issue #657, the queued run's/PR's title). Both are length-capped (140 code points), have
+// control characters and whitespace runs collapsed to one space, and are HTML-escaped at render.
+// `runs[].url` is not an exception — it must match ISSUE_URL below.
 
 import {
   STAGE_VOCAB,
@@ -266,7 +267,9 @@ function sanitiseBacklog(raw) {
   return Array.isArray(raw) ? raw.map(sanitiseBacklogItem).filter((item) => item !== null).slice(0, MAX_BACKLOG) : [];
 }
 
-const MAX_CI_QUEUE_CATEGORIES = 4;
+// #657: tracks CI_QUEUE_CATEGORY_VOCAB's length (not hand-picked) so adding/removing a vocab key
+// never silently desyncs this cap.
+const MAX_CI_QUEUE_CATEGORIES = CI_QUEUE_CATEGORY_VOCAB.length;
 
 /** Sanitises one `ci_queue.categories[]` entry. Returns null on any violation. */
 function sanitiseCiQueueCategory(raw) {
@@ -373,6 +376,56 @@ function sanitiseCiQueueRunner(raw) {
   return result;
 }
 
+// `ci_queue.queued_items[]` (issue #657): a capped per-category list of the ACTUAL queued runs
+// (not just the categories[] count) — repo, run_id, pr_url (always present, nullable — unlike
+// current_job, which omits the whole key), title (optional free text, same exception as
+// runs[].title), queued_at. `MAX_CI_QUEUE_QUEUED_ITEMS` mirrors `MAX_CI_QUEUE_RUNNERS`'s pattern,
+// but applied PER category key (one noisy category must never crowd out another's items).
+const MAX_CI_QUEUE_QUEUED_ITEMS = 10;
+
+/**
+ * Sanitises one `ci_queue.queued_items[]` entry. Returns null to DROP just this one entry (same
+ * per-entry-drop reasoning as sanitiseCiQueueRunner — a single malformed queued item must never
+ * blank the whole panel).
+ */
+function sanitiseCiQueueQueuedItem(raw) {
+  if (!isPlainObject(raw)) return null;
+  if (!(typeof raw.key === 'string' && CI_QUEUE_CATEGORY_VOCAB.includes(raw.key))) return null;
+  if (!(typeof raw.repo === 'string' && REPO_FULL.test(raw.repo))) return null;
+  if (!isIntInRange(raw.run_id, 1, MAX_RUN_ID)) return null;
+  if (!isIsoTimestamp(raw.queued_at)) return null;
+
+  const item = { key: raw.key, repo: raw.repo, run_id: raw.run_id, queued_at: raw.queued_at };
+  // pr_url is always a present key (null when there's no attached PR) — the one deliberate
+  // difference from current_job's "omit the whole key" convention (AC: "no attached PR -> list
+  // item has pr_url: null, still included, not dropped").
+  item.pr_url = typeof raw.pr_url === 'string' && PR_URL.test(raw.pr_url) ? raw.pr_url : null;
+  const title = sanitiseTitle(raw.title);
+  if (title !== null) item.title = title;
+  return item;
+}
+
+/**
+ * Sanitises `ci_queue.queued_items[]`: absent/non-array -> []; each malformed entry is dropped
+ * individually (never fails the whole list); each category `key` is capped independently at
+ * MAX_CI_QUEUE_QUEUED_ITEMS, preserving the collector's own order (already oldest-queued_at-first
+ * per key) rather than re-sorting here.
+ */
+function sanitiseCiQueueQueuedItems(raw) {
+  if (!Array.isArray(raw)) return [];
+  const perKeyCount = {};
+  const result = [];
+  for (const rawItem of raw) {
+    const item = sanitiseCiQueueQueuedItem(rawItem);
+    if (item === null) continue;
+    const n = (perKeyCount[item.key] || 0) + 1;
+    perKeyCount[item.key] = n;
+    if (n > MAX_CI_QUEUE_QUEUED_ITEMS) continue;
+    result.push(item);
+  }
+  return result;
+}
+
 /**
  * Sanitises the optional top-level `ci_queue` (issue #643): every field is an enum, a bounded
  * int (0-999), or an ISO-8601Z timestamp — no free text. Unlike every other optional field in
@@ -419,6 +472,12 @@ function sanitiseCiQueue(raw) {
       .map(sanitiseCiQueueRunner)
       .filter((runner) => runner !== null)
       .slice(0, MAX_CI_QUEUE_RUNNERS);
+  }
+
+  // #657: additive, same reasoning as runners[]/runners_offline above — a collector that predates
+  // #657 never sends this, and that must keep showing the rest of the panel, not disappear.
+  if (Array.isArray(raw.queued_items)) {
+    result.queued_items = sanitiseCiQueueQueuedItems(raw.queued_items);
   }
 
   return result;

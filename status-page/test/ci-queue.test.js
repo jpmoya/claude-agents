@@ -6,11 +6,11 @@
 import { describe, it, expect } from 'vitest';
 import { validateBeatPayload } from '../src/validate.js';
 import { CI_QUEUE_CATEGORY_VOCAB } from '../src/vocab.js';
-import { validPayload, validCiQueue } from './fixtures.js';
+import { validPayload, validCiQueue, validCiQueueQueuedItem } from './fixtures.js';
 
 describe('AC10 — CI_QUEUE_CATEGORY_VOCAB', () => {
-  it('is exactly [dependabot, deploy_release, pr, other]', () => {
-    expect(CI_QUEUE_CATEGORY_VOCAB).toEqual(['dependabot', 'deploy_release', 'pr', 'other']);
+  it('is exactly [dependabot, prod_deploy, staging_deploy, deploy_release, pr, other] (issue #657 split)', () => {
+    expect(CI_QUEUE_CATEGORY_VOCAB).toEqual(['dependabot', 'prod_deploy', 'staging_deploy', 'deploy_release', 'pr', 'other']);
   });
 });
 
@@ -33,6 +33,15 @@ describe('AC8(a) — a valid ci_queue passes through unchanged', () => {
     const r = validateBeatPayload(validPayload({ ci_queue: ciQueue }));
     expect(r.ok).toBe(true);
     expect(r.value.ci_queue.categories).toHaveLength(4);
+  });
+
+  it('accepts all 6 vocab keys at once (issue #657: MAX_CI_QUEUE_CATEGORIES tracks the vocab length)', () => {
+    const ciQueue = validCiQueue({
+      categories: CI_QUEUE_CATEGORY_VOCAB.map((key) => ({ key, count: 1 })),
+    });
+    const r = validateBeatPayload(validPayload({ ci_queue: ciQueue }));
+    expect(r.ok).toBe(true);
+    expect(r.value.ci_queue.categories).toHaveLength(6);
   });
 });
 
@@ -111,9 +120,11 @@ describe('AC8(c) — one malformed ci_queue sub-field drops the whole object, si
     siblingsSurvive(validateBeatPayload(payload));
   });
 
-  it('more than 4 category entries drops ci_queue', () => {
-    const payload = basePayload();
-    payload.ci_queue.categories.push({ key: 'other', count: 1 });
+  it('more than MAX_CI_QUEUE_CATEGORIES (6) category entries drops ci_queue', () => {
+    const payload = validPayload({
+      ci_queue: validCiQueue({ categories: CI_QUEUE_CATEGORY_VOCAB.map((key) => ({ key, count: 1 })) }),
+    });
+    payload.ci_queue.categories.push({ key: 'other', count: 1 }); // 7th entry (a duplicate key, same as the pre-#657 version of this test)
     siblingsSurvive(validateBeatPayload(payload));
   });
 
@@ -145,5 +156,109 @@ describe('AC8(c) — one malformed ci_queue sub-field drops the whole object, si
     payload.ci_queue.as_of = 'yesterday';
     const r = validateBeatPayload(payload);
     expect(JSON.stringify(r.value)).not.toContain('runners_busy');
+  });
+});
+
+// Issue #657 — `ci_queue.queued_items[]`: an additive field, same reasoning as `runners[]`/
+// `runners_offline` above (AC8(c)'s comment) — present-and-malformed never drops the whole
+// `ci_queue`, and a single bad entry drops only that entry.
+describe('issue #657 — ci_queue.queued_items[]', () => {
+  it('absent queued_items: no key, rest of ci_queue still passes through', () => {
+    const r = validateBeatPayload(validPayload({ ci_queue: validCiQueue() }));
+    expect(r.ok).toBe(true);
+    expect(r.value.ci_queue).not.toHaveProperty('queued_items');
+  });
+
+  it('a well-formed queued_items[] passes through unchanged, including pr_url: null', () => {
+    const items = [
+      validCiQueueQueuedItem(),
+      validCiQueueQueuedItem({ key: 'pr', run_id: 2, pr_url: null, title: 'Fix the thing' }),
+    ];
+    const ciQueue = validCiQueue({ queued_items: items });
+    const r = validateBeatPayload(validPayload({ ci_queue: ciQueue }));
+    expect(r.ok).toBe(true);
+    expect(r.value.ci_queue.queued_items).toEqual(items);
+  });
+
+  it('a malformed entry (bad category key) is dropped individually — ci_queue itself survives', () => {
+    const good = validCiQueueQueuedItem({ run_id: 1 });
+    const bad = validCiQueueQueuedItem({ run_id: 2, key: 'spam' });
+    const ciQueue = validCiQueue({ queued_items: [good, bad] });
+    const r = validateBeatPayload(validPayload({ ci_queue: ciQueue }));
+    expect(r.ok).toBe(true);
+    expect(r.value.ci_queue.queued_items).toEqual([good]);
+  });
+
+  it('a malformed entry (missing run_id) is dropped individually, never crashes', () => {
+    const good = validCiQueueQueuedItem({ run_id: 1 });
+    const bad = { ...validCiQueueQueuedItem({ run_id: 2 }), run_id: 'not-a-number' };
+    const ciQueue = validCiQueue({ queued_items: [good, bad] });
+    const r = validateBeatPayload(validPayload({ ci_queue: ciQueue }));
+    expect(r.ok).toBe(true);
+    expect(r.value.ci_queue.queued_items).toEqual([good]);
+  });
+
+  it('a malformed entry (bad repo shape) is dropped individually', () => {
+    const good = validCiQueueQueuedItem({ run_id: 1 });
+    const bad = validCiQueueQueuedItem({ run_id: 2, repo: 'not-a-repo' });
+    const ciQueue = validCiQueue({ queued_items: [good, bad] });
+    const r = validateBeatPayload(validPayload({ ci_queue: ciQueue }));
+    expect(r.ok).toBe(true);
+    expect(r.value.ci_queue.queued_items).toEqual([good]);
+  });
+
+  it('a malformed entry (non-ISO queued_at) is dropped individually', () => {
+    const good = validCiQueueQueuedItem({ run_id: 1 });
+    const bad = validCiQueueQueuedItem({ run_id: 2, queued_at: 'not-a-date' });
+    const ciQueue = validCiQueue({ queued_items: [good, bad] });
+    const r = validateBeatPayload(validPayload({ ci_queue: ciQueue }));
+    expect(r.ok).toBe(true);
+    expect(r.value.ci_queue.queued_items).toEqual([good]);
+  });
+
+  it('a malformed entry (invalid pr_url) drops pr_url to null, not the whole entry', () => {
+    const item = validCiQueueQueuedItem({ run_id: 1, pr_url: 'javascript:alert(1)' });
+    const ciQueue = validCiQueue({ queued_items: [item] });
+    const r = validateBeatPayload(validPayload({ ci_queue: ciQueue }));
+    expect(r.ok).toBe(true);
+    expect(r.value.ci_queue.queued_items).toEqual([{ ...item, pr_url: null }]);
+  });
+
+  it('a non-array queued_items (wrong type) omits the key, rest of ci_queue survives', () => {
+    const ciQueue = validCiQueue({ queued_items: 'nope' });
+    const r = validateBeatPayload(validPayload({ ci_queue: ciQueue }));
+    expect(r.ok).toBe(true);
+    expect(r.value.ci_queue).not.toHaveProperty('queued_items');
+    expect(r.value.ci_queue.categories).toEqual(validCiQueue().categories);
+  });
+
+  it('a long/control-character title is capped and cleaned, same exception as runs[].title', () => {
+    const longTitle = 'x'.repeat(500) + '\u0007\n\n  spaced  out';
+    const item = validCiQueueQueuedItem({ run_id: 1, title: longTitle });
+    const ciQueue = validCiQueue({ queued_items: [item] });
+    const r = validateBeatPayload(validPayload({ ci_queue: ciQueue }));
+    expect(r.ok).toBe(true);
+    const outTitle = r.value.ci_queue.queued_items[0].title;
+    expect(outTitle.length).toBeLessThanOrEqual(140);
+    expect(outTitle).not.toMatch(/\s{2,}/);
+  });
+
+  it('more than MAX_CI_QUEUE_QUEUED_ITEMS entries for one category key are truncated, not rejected', () => {
+    const items = Array.from({ length: 15 }, (_, i) => validCiQueueQueuedItem({ run_id: i + 1 }));
+    const ciQueue = validCiQueue({ queued_items: items });
+    const r = validateBeatPayload(validPayload({ ci_queue: ciQueue }));
+    expect(r.ok).toBe(true);
+    expect(r.value.ci_queue.queued_items.length).toBeLessThan(15);
+    expect(r.value.ci_queue.queued_items.length).toBeGreaterThan(0);
+  });
+
+  it('the cap is applied independently per category key', () => {
+    const deployItems = Array.from({ length: 15 }, (_, i) => validCiQueueQueuedItem({ run_id: i + 1, key: 'deploy_release' }));
+    const prItems = Array.from({ length: 3 }, (_, i) => validCiQueueQueuedItem({ run_id: 1000 + i, key: 'pr' }));
+    const ciQueue = validCiQueue({ queued_items: [...deployItems, ...prItems] });
+    const r = validateBeatPayload(validPayload({ ci_queue: ciQueue }));
+    expect(r.ok).toBe(true);
+    const prOut = r.value.ci_queue.queued_items.filter((i) => i.key === 'pr');
+    expect(prOut).toHaveLength(3);
   });
 });

@@ -64,10 +64,14 @@ export const NEEDS_VOCAB = ['Approve mockups', 'Say go', 'Approve effort', 'Miss
 export const PARKED_REASON_VOCAB = ['answered', 'out_of_scope', 'auto_retry'];
 export const BLOCK_CLASS_VOCAB = ['ci_pending', 'ci_red', 'merge_conflict', 'dependency', 'unsupported_project', 'other'];
 
-// `ci_queue.categories[].key` / `ci_queue.oldest.key` (issue #643): a closed vocabulary — no
-// free-text category labels ever reach storage. The Worker/render side maps each key to display
-// text later (ticket #644).
-export const CI_QUEUE_CATEGORY_VOCAB = ['dependabot', 'deploy_release', 'pr', 'other'];
+// `ci_queue.categories[].key` / `ci_queue.oldest.key` / `ci_queue.queued_items[].key` (issue
+// #643, split by #657): a closed vocabulary — no free-text category labels ever reach storage.
+// The Worker/render side maps each key to display text later (ticket #644). #657 splits the old
+// single `deploy_release` bucket: `prod_deploy` (name matches deploy|release AND head_branch ==
+// "main"), `staging_deploy` (same name match, head_branch == "staging"), `deploy_release` now
+// means "name matches deploy|release but neither branch" (e.g. release housekeeping workflows) —
+// see ci-queue-collect.sh's _ciq_categorize for the exact precedence.
+export const CI_QUEUE_CATEGORY_VOCAB = ['dependabot', 'prod_deploy', 'staging_deploy', 'deploy_release', 'pr', 'other'];
 
 // `ci_queue.runners[].role` (issue #648): distinguishes the production-deploy-labeled runner
 // (GitHub label `benjis-ci-prod-deploy`, #2440 in benjis-ops-tool) from the general `benjis-ci`

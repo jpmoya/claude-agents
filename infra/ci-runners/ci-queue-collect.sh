@@ -93,6 +93,22 @@
 # for every repo — it never aborts the cycle. Still zero new `gh api` calls: this only changes
 # which in_progress run IDs fill the existing r/qsel/pextra slots.
 #
+# #657: the old single `deploy_release` category bucket conflated a prod merge/deploy with a
+# staging deploy with release housekeeping. `_ciq_categorize` now also reads `head_branch`
+# (already present on every run object the existing queued/in_progress run-list calls return — no
+# new `gh api` call) to split a deploy|release-named workflow into `prod_deploy` (head_branch ==
+# "main"), `staging_deploy` (head_branch == "staging"), or `deploy_release` (name matches but
+# neither branch — e.g. release housekeeping). `ci_queue.queued_items[]` is new: a capped
+# (MAX_CI_QUEUE_QUEUED_ITEMS per category) list of the ACTUAL queued runs behind each category's
+# count — repo, run_id, pr_url (always present, nullable), title (optional), queued_at — built
+# from the SAME run/job data already fetched per run for categories[]/current_job (zero new `gh
+# api` calls), deduped GLOBALLY by run id in collect_once (the scheduler/benjis-ops-tool repo
+# alias in scripts/ci-metrics.repos means the same physical run can otherwise appear via two
+# entries). Documented limitation: categories[] stays per-JOB and is not deduped across that
+# alias (unchanged, out of scope) — queued_items is per-RUN and IS deduped, so a category's count
+# and the length of its queued_items can legitimately disagree under the alias; this is by
+# design, not a bug.
+#
 # Env (production): CI_QUEUE_COLLECT_ENABLED (gate, read by report-status.sh, not this script),
 #   PIPE, GH_TOKEN (optional — the host's own `gh` auth is used), SLACK_WEBHOOK_URL, SENTRY_DSN,
 #   CI_QUEUE_REPOS_FILE (default: scripts/ci-metrics.repos), CI_QUEUE_ORG (default: Benjis-Plants),
@@ -138,6 +154,7 @@ PROD_DEPLOY_LABEL=${CI_QUEUE_PROD_DEPLOY_LABEL:-benjis-ci-prod-deploy}
 WINDOW_24H_SECS=86400
 WINDOW_72H_SECS=259200
 MAX_SAMPLE_RUNNERS=30   # mirrors status-page/src/validate.js's MAX_CI_QUEUE_RUNNERS cap
+MAX_CI_QUEUE_QUEUED_ITEMS=10   # mirrors status-page/src/validate.js's MAX_CI_QUEUE_QUEUED_ITEMS cap, per category key (#657)
 
 repos() { grep -E '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+[[:space:]]*$' "$REPOS_FILE"; }
 
@@ -174,11 +191,40 @@ _ciq_call_shaped() {
 
 # _ciq_categorize — reads one workflow_run JSON object on stdin, prints exactly one
 # CI_QUEUE_CATEGORY_VOCAB key. Precedence: dependabot actor, then a deploy/release workflow name,
-# then a pull_request(_target)-triggered run, else "other" (never silently dropped).
+# then a pull_request(_target)-triggered run, else "other" (never silently dropped) — UNCHANGED
+# from before #657; the split below is a sub-decision made ONLY once a run has already matched
+# the deploy/release name test, so it can never steal a run away from the `pr`/`other` buckets
+# (e.g. a PR-triggered run literally named "Staging E2E" still categorizes as `pr`, not
+# `staging_deploy` — JP's ruling on the issue was about splitting the deploy_release bucket, not
+# reordering this outer precedence).
+#
+# #657 (JP-ruled 5-rule cascade, issue #657 delivery-lead JP CONFIRMED comment — supersedes the
+# ticket's own simpler "head_branch == main/staging" rule, which live data showed misclassifies a
+# schedule-triggered "Deploy Staging Preview" run (head_branch main, but a staging deploy by name
+# and by what it does) and every workflow_run-triggered "Post-release cleanup"/"Announce release"
+# run (head_branch main, inherited from the deploy it's chained off, not itself a prod-merge
+# event) — checked in this order, once a run's name has already matched deploy|release:
+#   1. name contains "staging" (case-insensitive) -> staging_deploy, regardless of branch/event.
+#   2. else name contains "cleanup" or "announce" (case-insensitive) -> deploy_release (release
+#      housekeeping; a denylist, so a future housekeeping workflow named e.g. "*release*" that
+#      isn't caught by either word falls through to rule 3/4 below instead — accepted tradeoff,
+#      JP confirmed, no ticket needed for it).
+#   3. else name matches deploy|release AND head_branch == "main" -> prod_deploy.
+#   4. else name matches deploy|release AND head_branch == "staging" -> staging_deploy.
+#   5. else (matches deploy|release, neither branch) -> deploy_release (unchanged fallback bucket).
+# `head_branch` is already present on every run object the existing queued/in_progress run-list
+# calls return (verified against the REST docs and live data before implementing) — zero new
+# `gh api` calls.
 _ciq_categorize() {
   jq -r '
     if ((.actor.login // "") | ascii_downcase | contains("dependabot")) then "dependabot"
-    elif ((.name // "") | ascii_downcase | (contains("deploy") or contains("release"))) then "deploy_release"
+    elif ((.name // "") | ascii_downcase | (contains("deploy") or contains("release"))) then
+      ((.name // "") | ascii_downcase) as $name
+      | if ($name | contains("staging")) then "staging_deploy"
+        elif ($name | (contains("cleanup") or contains("announce"))) then "deploy_release"
+        elif (.head_branch // "") == "main" then "prod_deploy"
+        elif (.head_branch // "") == "staging" then "staging_deploy"
+        else "deploy_release" end
     elif (.event == "pull_request" or .event == "pull_request_target") then "pr"
     else "other" end'
 }
@@ -321,9 +367,7 @@ _ciq_collect_repo() {
     # `pull_requests[0]`, preferring `html_url` if GitHub ever returns one, else constructing
     # `https://github.com/<repo>/pull/<number>` from the validated `repo` + `number` — GitHub's
     # real `pull_requests[]` shape (verified live, see the PR description) carries `number`, not
-    # `html_url`. Only an in_progress job (one actually assigned a runner) is ever a candidate;
-    # the slot-level busy/race gating happens later in _ciq_runner_history, where the current
-    # cycle's busy slots are known.
+    # `html_url`.
     printf '%s' "$run" | jq -c --arg repo "$repo" --argjson run_id "$id" '
       (.pull_requests[0]) as $pr
       | {
@@ -335,11 +379,34 @@ _ciq_collect_repo() {
                    else null end)
         }
     ' > "$WORK/run-${safe}-${id}.prctx.json" 2>/dev/null
+
+    # Only an in_progress job (one actually assigned a runner) is ever a current_job candidate;
+    # the slot-level busy/race gating happens later in _ciq_runner_history, where the current
+    # cycle's busy slots are known.
     printf '%s' "$jobsjson" | jq -c --slurpfile ctx "$WORK/run-${safe}-${id}.prctx.json" '
       ($ctx[0]) as $ctx
       | .jobs[]? | select(.status=="in_progress" and ((.runner_name // "") != ""))
       | {runner_name: .runner_name, repo: $ctx.repo, run_id: $ctx.run_id, pr_url: $ctx.pr_url}
     ' >> "$WORK/running-jobs.jsonl" 2>/dev/null
+
+    # #657: one queued-ITEM line per RUN that has >= 1 queued job (not per job, unlike
+    # queued-jobs.jsonl above — categories[] counts stay per-job; queued_items is per-run,
+    # deduped globally by run id in collect_once; see that function's comment for why these two
+    # populations are deliberately not the same shape). Zero new `gh api` calls: built entirely
+    # from $run (already in hand) + $jobsjson/$ctx (already fetched above for queued-jobs.jsonl/
+    # running-jobs.jsonl). `title` prefers the run's own `display_title` (GitHub's rendered
+    # title for the run, already present on every run object — no new call); `pr_url` reuses the
+    # same prctx this run already built. `queued_at` is the EARLIEST queued job's created_at
+    # (fractional seconds stripped, same as queued-jobs.jsonl).
+    printf '%s' "$run" | jq -c --arg cat "$cat" --argjson jj "$jobsjson" \
+        --slurpfile ctx "$WORK/run-${safe}-${id}.prctx.json" '
+      ($ctx[0]) as $ctx
+      | ([$jj.jobs[]? | select(.status=="queued") | (.created_at | sub("\\.[0-9]+Z$"; "Z"))] | sort) as $qats
+      | if ($qats | length) == 0 then empty else
+          { key: $cat, repo: $ctx.repo, run_id: $ctx.run_id, pr_url: $ctx.pr_url, queued_at: $qats[0] }
+          + (if (.display_title // null) != null then {title: .display_title} else {} end)
+        end
+    ' >> "$WORK/queued-items.jsonl" 2>/dev/null
   done < "$WORK/$safe.runs.jsonl"
   return 0
 }
@@ -568,17 +635,34 @@ collect_once() {
   as_of=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   final=$(jq -n \
     --slurpfile jobs "$WORK/queued-jobs.jsonl" \
+    --slurpfile items "$WORK/queued-items.jsonl" \
     --slurpfile runners "$WORK/runners-out.json" \
     --argjson busy "$busy" \
     --argjson total "$total" \
     --argjson offline "$offline" \
+    --argjson max_items "$MAX_CI_QUEUE_QUEUED_ITEMS" \
     --arg as_of "$as_of" \
     '
     ($jobs) as $j
-    | (["dependabot","deploy_release","pr","other"]
+    # #657: prod_deploy/staging_deploy split out of the old single deploy_release bucket — this
+    # vocab order must match status-page/src/vocab.js CI_QUEUE_CATEGORY_VOCAB exactly.
+    | ["dependabot","prod_deploy","staging_deploy","deploy_release","pr","other"] as $vocab
+    | ($vocab
         | map(. as $k | {key: $k, count: ([$j[] | select(.cat == $k)] | length)})
         | map(select(.count > 0))) as $cats
     | ($j | sort_by(.queued_at) | .[0]) as $o
+    # #657: queued_items is a SEPARATE population from categories[]/oldest above — per-RUN (not
+    # per-job) and deduped GLOBALLY by run id (first occurrence wins; the scheduler/benjis-ops-tool
+    # repo alias means the same physical run can otherwise appear twice). Documented limitation:
+    # categories[]/queued_total stay per-job and are not deduped across repo aliases — unchanged,
+    # out of scope (see the issue) — so a given categorys queued_items list and its own
+    # categories[].count can disagree under that alias, by design, not a bug.
+    | ($items | group_by(.run_id) | map(.[0])) as $items_dedup
+    | ($vocab
+        | map(. as $k
+              | ($items_dedup | map(select(.key == $k)) | sort_by(.queued_at) | .[0:$max_items])
+          )
+        | add // []) as $queued_items
     | {as_of: $as_of,
        runners_busy: ([$busy, 999] | min),
        runners_total: ([$total, 999] | min),
@@ -586,6 +670,7 @@ collect_once() {
        queued_total: ([($j | length), 999] | min),
        categories: $cats,
        oldest: (if $o == null then null else {key: $o.cat, queued_at: $o.queued_at} end),
+       queued_items: $queued_items,
        runners: ($runners[0] // [])}
     ') || return 1
 
@@ -703,6 +788,7 @@ main() {
   trap 'rm -rf "$WORK"; rmdir "$LOCKDIR" 2>/dev/null' EXIT
   : > "$WORK/queued-jobs.jsonl"
   : > "$WORK/running-jobs.jsonl"
+  : > "$WORK/queued-items.jsonl"
   : > "$WORK/calls.count"
 
   # #658 round 2: read once per cycle, defensively — a missing/corrupt/non-object file degrades to
