@@ -67,6 +67,15 @@
 # `html_url` (verified live against org repos before implementing) — only `number` — so it's built
 # as `https://github.com/<repo>/pull/<number>` from the validated `repo` + that `number` instead.
 #
+# #658: `current_job` could still go missing for a genuinely busy runner (100% of the time, not
+# intermittently) whenever a repo's queued backlog alone reached MAX_RUN_LOOKUPS_PER_REPO — the
+# job-lookup cap was exhausted on queued runs before the in_progress run holding the busy runner's
+# job was ever looked up. `_ciq_collect_repo` now reserves part of that SAME bounded cap for
+# in_progress-source runs (capped by the current online+busy runner count), rather than letting
+# queued runs always win it all — see that function's comment for the exact split. Still zero new
+# `gh api` calls: the total number of job lookups per repo stays min(run count, cap), only which
+# runs get them changes.
+#
 # Env (production): CI_QUEUE_COLLECT_ENABLED (gate, read by report-status.sh, not this script),
 #   PIPE, GH_TOKEN (optional — the host's own `gh` auth is used), SLACK_WEBHOOK_URL, SENTRY_DSN,
 #   CI_QUEUE_REPOS_FILE (default: scripts/ci-metrics.repos), CI_QUEUE_ORG (default: Benjis-Plants),
@@ -149,8 +158,8 @@ _ciq_categorize() {
     else "other" end'
 }
 
-# _ciq_collect_repo <repo> — appends one {cat, queued_at} line per queued job to
-# $WORK/queued-jobs.jsonl. Returns 1 (aborting the whole cycle) on any API failure.
+# _ciq_collect_repo <repo> <online-busy-runner-count> — appends one {cat, queued_at} line per
+# queued job to $WORK/queued-jobs.jsonl. Returns 1 (aborting the whole cycle) on any API failure.
 #
 # #645 review finding 1 (backlog undercount): two independent bias sources, both fixed here:
 #   (a) GitHub's run-list endpoint always returns newest-first with no ascending-sort query param
@@ -160,18 +169,26 @@ _ciq_categorize() {
 #       says there's a page beyond what we fetched, one bounded extra call fetches exactly that
 #       last page — the oldest queued run is then always among what we hold, regardless of how
 #       deep the backlog is (2 calls total, not proportional to backlog size).
-#   (b) Merging queued + in_progress runs and walking them oldest-id-first (as this used to do via
-#       `unique_by`) is NOT safe on its own: in_progress runs generally have lower ids (they
-#       started running earlier) than queued ones, so a repo with >= MAX_RUN_LOOKUPS_PER_REPO
-#       in_progress runs could spend the whole job-lookup budget on runs that typically have zero
-#       queued jobs, starving every actually-queued run of a lookup. Runs are now tagged by source
-#       list and queued-source runs are always walked (oldest-id-first) before any in_progress-
-#       source run, so the cap is spent on the runs likeliest to answer "oldest queued" first.
+#   (b) Merging queued + in_progress runs and picking which ones get a job lookup needs to protect
+#       TWO different consumers of the SAME bounded budget (MAX_RUN_LOOKUPS_PER_REPO), not one:
+#       `oldest` (queued-stats, #645) and `current_job` (busy-runner linking, #655/#658). A plain
+#       "queued always wins" order (the original #645 fix) starves `current_job` instead: once a
+#       repo's queued backlog alone reaches the cap, every in_progress run — including the one
+#       holding a genuinely busy runner's job — is pushed out, 100% of the time, not intermittently
+#       (#658's root cause). The selection below reserves `r = min(in_progress-run count, the
+#       online+busy runner count passed in, cap - (1 if any queued run exists else 0))` of the cap
+#       for the OLDEST `r` in_progress-source runs, guarantees at least 1 slot for queued whenever
+#       any queued run exists (so `oldest` can never be starved to zero, preserving #645(b)), and
+#       gives any unused budget on either side back to the other (oldest-id-first on both sides) —
+#       so the TOTAL number of job lookups per repo is always exactly min(run count, cap), unchanged
+#       from before (#658 AC2: no new `gh api` calls — this reallocates lookups, it never adds any).
+#       `r` is capped by the actual busy-runner count (not just "is there an in_progress run") so a
+#       repo with many in_progress runs but nobody currently busy doesn't needlessly starve `oldest`.
 # Residual risk (documented, not fixed): a queued job inside an old in_progress run that isn't
 # reached before the cap runs out can still be missed — unchanged from before, and orthogonal to
 # (a)/(b) above.
 _ciq_collect_repo() {
-  local repo=$1 safe qjson pjson n=0 run id cat jobsjson qtotal page qlast=""
+  local repo=$1 busy=${2:-0} safe qjson pjson n=0 run id cat jobsjson qtotal page qlast=""
   safe=${repo//\//__}
   qjson=$(_ciq_call_shaped "repos/$repo/actions/runs?status=queued&per_page=$PER_PAGE" "runs-${safe}-queued.json" workflow_runs) || return 1
   pjson=$(_ciq_call_shaped "repos/$repo/actions/runs?status=in_progress&per_page=$PER_PAGE" "runs-${safe}-in_progress.json" workflow_runs) || return 1
@@ -185,9 +202,19 @@ _ciq_collect_repo() {
   { printf '%s' "$qjson" | jq -c '.workflow_runs[]? | . + {source:"queued"}' 2>/dev/null
     [ -z "$qlast" ] || printf '%s' "$qlast" | jq -c '.workflow_runs[]? | . + {source:"queued"}' 2>/dev/null
     printf '%s' "$pjson" | jq -c '.workflow_runs[]? | . + {source:"in_progress"}' 2>/dev/null
-  } | jq -s -c '
+  } | jq -s -c --argjson cap "$MAX_RUN_LOOKUPS_PER_REPO" --argjson busy "$busy" '
       group_by(.id)
       | map(if any(.[]; .source == "queued") then (map(select(.source == "queued")) | .[0]) else .[0] end)
+      | (map(select(.source == "queued")) | sort_by(.id)) as $q
+      | (map(select(.source == "in_progress")) | sort_by(.id)) as $p
+      | ($q | length) as $qcount
+      | ($p | length) as $pcount
+      | (if $qcount > 0 then 1 else 0 end) as $qreserve
+      | ([$pcount, $busy, (($cap - $qreserve) as $x | if $x < 0 then 0 else $x end)] | min) as $r
+      | ([$qcount, ($cap - $r)] | min) as $qsel
+      | ([($pcount - $r), ($cap - $r - $qsel)] | min) as $pextra
+      | ($r + (if $pextra < 0 then 0 else $pextra end)) as $psel
+      | ($q[0:$qsel] + $p[0:$psel])
       | sort_by([(if .source == "queued" then 0 else 1 end), .id])
       | .[]
     ' > "$WORK/$safe.runs.jsonl" 2>/dev/null
@@ -409,7 +436,7 @@ collect_once() {
 
   [ -r "$REPOS_FILE" ] || return 1
   while read -r repo; do
-    _ciq_collect_repo "$repo" || return 1
+    _ciq_collect_repo "$repo" "$busy" || return 1
   done < <(repos)
 
   _ciq_runner_history "$WORK/runners-merged.json" "$WORK/running-jobs.jsonl" || return 1
