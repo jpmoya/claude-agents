@@ -88,15 +88,15 @@ gha_report() { # route message -> one Sentry event (skipped silently without a D
     --data "{\"message\":\"$m\",\"level\":\"error\",\"release\":\"$GHA_RELEASE\",\"environment\":\"ci-runner\",\"tags\":{\"route\":\"$1\"}}" \
     >/dev/null 2>&1 || true
 }
-gha_alert() { # text -> Slack via the existing webhook in alert.env (silent if absent)
+gha_alert() { # text -> Slack via the existing webhook in alert.env (silent/0 if absent; curl's exit status otherwise)
   local url; url=$(gha_envval "$GHA_ROOT/etc/gha/alert.env" SLACK_WEBHOOK_URL)
   [ -n "$url" ] || return 0
-  curl -sS --max-time 10 -X POST -H 'Content-type: application/json' --data "{\"text\":\"$1\"}" "$url" >/dev/null 2>&1 || true
+  curl -sS --max-time 10 -X POST -H 'Content-type: application/json' --data "{\"text\":\"$1\"}" "$url" >/dev/null 2>&1
 }
 gha_fail() { # route message
   echo "ERROR: $1: $2" >&2
   gha_report "$1" "$2"
-  gha_alert "CI runner failure ($1): $2 [${HOSTNAME:-host} $GHA_RELEASE]"
+  gha_alert "CI runner failure ($1): $2 [${HOSTNAME:-host} $GHA_RELEASE]" || true
   exit 1
 }
 EOF
@@ -156,8 +156,9 @@ if [ -n "$pct" ] && [ "$pct" -ge 80 ]; then
   # hourly runs: alert once per UTC day, not every hour while the disk stays high
   stamp="$mlog/disk-alert.day" today=$(date -u +%F)
   if [ "$(cat "$stamp" 2>/dev/null || true)" != "$today" ]; then
-    gha_alert "CI runner disk at ${pct}% on ${HOSTNAME:-host}"
-    mkdir -p "$mlog" && echo "$today" > "$stamp" || true
+    if gha_alert "CI runner disk at ${pct}% on ${HOSTNAME:-host}"; then
+      mkdir -p "$mlog" && echo "$today" > "$stamp" || true
+    fi
   fi
 fi
 # cap the metrics logs (14 days of per-minute samples; last 5000 runner lives)
