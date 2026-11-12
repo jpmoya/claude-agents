@@ -1,0 +1,18 @@
+diff --git a/src/lib/visits/assign.ts b/src/lib/visits/assign.ts
+--- a/src/lib/visits/assign.ts
++++ b/src/lib/visits/assign.ts
+@@ -22,10 +22,14 @@ export async function assignTechnician(visitId: string, techId: string) {
+   const visit = await loadVisit(visitId)
+   const tech = await loadTechnician(techId)
+ 
++  if (!tech) {
++    return { visitId, techId, assigned: false, reason: 'technician_not_found' }
++  }
++
+   try {
+     await notifyTechnician(tech.id, visit)
+   } catch (err) {
+     Sentry.captureException(err, { tags: { flow: 'assign-technician' } })
+     throw err
+   }
+ 

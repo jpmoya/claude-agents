@@ -32,6 +32,16 @@ Check every item. Any CRITICAL stops the PR.
 
 **HIGH — evidence match:** when the ticket cites an error-tracking event (Sentry, Crashlytics, etc.), does the fix address the exact evidence — the specific user/role, condition, or error string cited — not an adjacent plausible cause? A fix that would leave the originally cited event still failing is a FAIL regardless of how clean the diff is. (#1903: three cycles were spent on a theory that never matched the cited Sentry user's role.)
 
+**HIGH — silenced error reporting (Sentry-sourced tickets):** applies when the linked issue has the label `source:sentry` or its body has a line starting `Sentry-Issue:` (`gh issue view <N> --json labels,body`), on both lanes (full and fast). For such a ticket the cheapest "fix" is to silence the error, which closes the ticket while the bug stays. FAIL the PR (finding at HIGH, verdict FAIL) if the diff, in non-test code (rule 5 is the one rule about test files):
+
+1. removes a capture call (`Sentry.captureException`, `Sentry.captureMessage`, `captureRejectedTechSave`, or the repo's shared error-capture helper) without replacing it with an equivalent capture on the same failure path;
+2. downgrades a level (`error` or `fatal` to `warning` or `info`), or lowers `sampleRate`;
+3. wraps the failing call in a catch that neither rethrows nor captures;
+4. adds the error to `ignoreErrors`, `denyUrls`, a `beforeSend` that returns `null`, or to the poller's exclusion list (`scripts/sentry-intake.config.ts`);
+5. deletes or weakens a Sentry guard test.
+
+Making the failing condition not occur (the actual fix) is not a finding. Each finding cites the `file:line` of the removed or changed line, as for every other finding.
+
 **HIGH — migrations:** WHERE-less UPDATE/DELETE, irreversible destructive migration, missing indexes on new FK/JOIN columns, N+1 queries, schema/code deploy incompatibility.
 
 **MEDIUM — performance:** unbounded collection loads, bundle-size regressions, cache changes without invalidation story.

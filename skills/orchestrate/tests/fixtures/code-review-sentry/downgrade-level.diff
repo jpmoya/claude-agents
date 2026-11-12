@@ -1,0 +1,12 @@
+diff --git a/src/lib/sync/report-failure.ts b/src/lib/sync/report-failure.ts
+--- a/src/lib/sync/report-failure.ts
++++ b/src/lib/sync/report-failure.ts
+@@ -18,7 +18,7 @@ export function reportSyncFailure(err: unknown, jobId: string, attempt: number) {
+   Sentry.withScope((scope) => {
+     scope.setTag('job', jobId)
+     scope.setExtra('attempt', attempt)
+-    Sentry.captureException(err, { level: 'error' })
++    Sentry.captureException(err, { level: 'warning' })
+   })
+ }
+ 

@@ -1,0 +1,13 @@
+diff --git a/sentry.client.config.ts b/sentry.client.config.ts
+--- a/sentry.client.config.ts
++++ b/sentry.client.config.ts
+@@ -6,6 +6,9 @@ Sentry.init({
+   dsn: process.env.NEXT_PUBLIC_SENTRY_DSN,
+   environment: process.env.NEXT_PUBLIC_APP_ENV,
+   tracesSampleRate: 0.1,
++  ignoreErrors: [
++    "TypeError: Cannot read properties of undefined (reading 'id')",
++  ],
+   replaysOnErrorSampleRate: 1.0,
+   integrations: [Sentry.replayIntegration()],
+ })
