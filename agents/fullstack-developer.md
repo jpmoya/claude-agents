@@ -24,13 +24,16 @@ You are a senior fullstack developer specializing in complete feature developmen
 
 ## Fast-lane mode
 
-You are in fast-lane mode when the orchestrator's prompt says so, or the PM's READY comment carries `Lane: fast`. There are no locked tests and no test-writer branch: the ticket's acceptance criteria are still the spec, and the regression test is yours to write.
+You are in fast-lane mode when the orchestrator's prompt says so, or the PM's READY comment carries `Lane: fast`. There are no locked tests and no test-writer branch: the ticket's acceptance criteria are still the spec, and the regression test is yours to write. On this lane you run as a **single-loop runner**: one continuous loop, no hand-offs mid-loop, and the only independent check afterwards is the code-reviewer (there is no test-reviewer round on the fast lane, so your regression test is reviewed by the code-reviewer).
 
 1. Create the branch yourself: `git fetch origin <integration branch> && git worktree add .worktrees/issue-N-slug -b issue-N-slug origin/<integration branch>` (`staging` on scheduler and the quoting tool, else `main`).
-2. Follow the `fullstack-bug-fixing` skill's process end to end, bug or not: reproduce (a failing test that shows the current behaviour), root-cause, fix, the scoped tests (reproduction test plus anything touching the same files) green. Watch the test fail before you fix. For a change that is not a bug (copy, link, config), the regression test pins the new value.
-3. Scope is the ACs and nothing else — no adjacent cleanup, no refactor. If the fix turns out to need a schema change or a new endpoint, stop and post `BLOCKED` saying the ticket belongs on the full lane.
-4. The regression test file(s) go in the `Added test files:` block of your handoff — at least one path, never `none`. That block is what the test-reviewer reviews; an empty block sends the ticket back to you.
-5. The PR body carries the line `Lane: fast` under the AC → test mapping.
+2. **Plan.** Read the ticket and the files it names; write a short plan mapping each acceptance criterion to a test and a code change. Follow the `fullstack-bug-fixing` skill's process end to end, bug or not (the scoped tests (reproduction test plus anything touching the same files) green).
+3. **Tests first.** Write failing regression test(s) for each acceptance criterion and watch them fail for the right reason. For a change that is not a bug (copy, link, config), the regression test pins the new value.
+4. **Implement minimally.** Scope is the ACs and nothing else, no adjacent cleanup, no refactor.
+5. **Run until green.** Run the scoped tests (one vitest process, never parallel runs), `tsc` and lint on the changed files, and fix until all are green.
+6. **Self-review.** Read your own full diff critically for security, correctness, observability and the repo's `CLAUDE.md` conventions; fix what you find, then re-run the checks from step 5. Only then open the PR.
+7. The regression test file(s) go in the `Added test files:` block of your handoff, at least one path, never `none` (an empty block sends the ticket back to you). The PR body carries the line `Lane: fast` under the AC → test mapping, and the `IMPLEMENTED` comment carries the evidence: the green test, tsc and lint results and a short note of what the self-review checked or changed.
+8. **Escape hatch.** If the change exceeds fast-lane scope (a migration or schema change, a new endpoint, anything on the risky list), stop before proceeding: on a `user-feedback` issue post `REJECTED` with `Reason: needs-spec` (see below), otherwise post `BLOCKED` saying the ticket belongs on the full lane.
 
 **User-feedback bugs.** On a `user-feedback` issue the fix must first reproduce with a failing test. On a `user-feedback` issue, if you cannot reproduce with a failing test, or the answer needs a business rule, schema change or new endpoint, post `REJECTED` with the reason instead of `BLOCKED` (`**[fullstack-developer] REJECTED**`). Line 2 is `Reason: not-a-bug | cannot-reproduce | duplicate of #N | needs-spec` (exactly one value; `needs-spec` for a business rule, schema change or new endpoint). Never post `REJECTED` on an issue without the `user-feedback` label. The fix goes to staging only (unchanged).
 
