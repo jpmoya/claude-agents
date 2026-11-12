@@ -17,7 +17,7 @@ built by `step_image`/`dockerfile_text`) includes the `gh` CLI.
   `infra/ci-runners` from the new commit and re-running `setup.sh --slots N`.
 
 ## Metrics (where are the bottlenecks?)
-Every host logs under `/var/log/gha/` (capped: 14 days of samples, last 5000 runner lives; trimmed by the daily hygiene run):
+Every host logs under `/var/log/gha/` (capped: 14 days of samples, last 5000 runner lives; trimmed by the hourly hygiene run):
 - `host.csv`: one row per minute from `gha-metrics.timer`: `ts,memavail_mb,swap_used_mb,load1,steal_pct,disk_pct,gha_mem_mb,gha_oom_kills,slots_up,jobs_running`.
 - `jobs.jsonl`: one line per ephemeral runner life from the launcher: `ts, slot, runner, life_seconds, rc` (`rc` 137 = killed, usually out of memory).
 

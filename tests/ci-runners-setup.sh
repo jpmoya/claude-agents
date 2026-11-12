@@ -177,7 +177,7 @@ test_rendered() {
   newenv; bash "$SETUP" --slots 2 >/dev/null 2>&1; local all; all=$(alltext); local s rc=0
   for s in 'OOMScoreAdjust=500' 'MemorySwapMax=0' 'CPUWeight=50' 'IOWeight=50' 'TasksMax=4096' '--rm' \
            'Restart=always' 'benjis-ci' '2.338.0' 'generate-jitconfig' \
-           'Delegate=' 'data-root' '/srv/gha/docker' 'until=24h' '08:30'; do
+           'Delegate=' 'data-root' '/srv/gha/docker' 'until=24h' 'OnCalendar=*-*-* *:30:00 UTC'; do
     grep -qF -- "$s" <<<"$all" || { echo "missing: $s"; rc=1; }
   done
   grep -Eq 'MemoryMax=(8G|8192M|8589934592)$' <<<"$all" || { echo "MemoryMax != 4G x 2"; rc=1; }
@@ -351,14 +351,24 @@ t "hygiene: 85% disk -> Slack alert" test_hy_alert 85
 t "hygiene: exactly 80% -> Slack alert (boundary)" test_hy_alert 80
 t "hygiene: 79% -> no alert (boundary)" test_hy_quiet 79
 t "hygiene: no alert.env -> silent, exit 0" test_hy_noenv
+test_hy_alert_once_a_day() {
+  newenv; setup_alert; bash "$SETUP" >/dev/null 2>&1; : > "$ST/curl.log"
+  export STUB_DF_PCT=90; hygiene_run || return 1; hygiene_run || return 1
+  [ "$(hook_posts)" -eq 1 ] || { echo "want 1 alert for 2 runs on one day, got $(hook_posts)"; return 1; }
+  echo 2000-01-01 > "$R/var/log/gha/disk-alert.day"; hygiene_run || return 1
+  [ "$(hook_posts)" -eq 2 ] || { echo "no alert on a new day"; return 1; }
+}
+t "hygiene: hourly runs alert at most once per day" test_hy_alert_once_a_day
 test_hy_prunes() {
   newenv; bash "$SETUP" >/dev/null 2>&1; : > "$ST/docker.log"; hygiene_run || return 1
   # Per code-review of #291: -a would delete the idle gha-runner image, so only these three are allowed.
   grep -Eq 'container prune -f --filter until=24h' "$ST/docker.log" || { echo "no container prune"; return 1; }
   grep -Eq 'builder prune -af --filter until=24h' "$ST/docker.log" || { echo "no builder prune"; return 1; }
   grep -Eq 'image prune -f( |$)' "$ST/docker.log" || { echo "no dangling image prune"; return 1; }
+  grep -Eq 'volume prune -f$' "$ST/docker.log" || { echo "no anonymous volume prune"; return 1; }
+  ! grep -Eq 'volume prune .*(-a|--all)' "$ST/docker.log" || { echo "volume prune -a would delete named volumes"; return 1; }
 }
-t "hygiene prunes containers/build cache >24h and dangling images" test_hy_prunes
+t "hygiene prunes containers/build cache >24h, dangling images and anonymous volumes" test_hy_prunes
 test_hy_keeps_image() {
   newenv; bash "$SETUP" >/dev/null 2>&1; : > "$ST/docker.log"; hygiene_run || return 1
   [ -s "$ST/docker.log" ] || { echo "hygiene ran no docker command"; return 1; }

@@ -88,15 +88,15 @@ gha_report() { # route message -> one Sentry event (skipped silently without a D
     --data "{\"message\":\"$m\",\"level\":\"error\",\"release\":\"$GHA_RELEASE\",\"environment\":\"ci-runner\",\"tags\":{\"route\":\"$1\"}}" \
     >/dev/null 2>&1 || true
 }
-gha_alert() { # text -> Slack via the existing webhook in alert.env (silent if absent)
+gha_alert() { # text -> Slack via the existing webhook in alert.env (silent/0 if absent; curl's exit status otherwise)
   local url; url=$(gha_envval "$GHA_ROOT/etc/gha/alert.env" SLACK_WEBHOOK_URL)
   [ -n "$url" ] || return 0
-  curl -sS --max-time 10 -X POST -H 'Content-type: application/json' --data "{\"text\":\"$1\"}" "$url" >/dev/null 2>&1 || true
+  curl -sS --max-time 10 -X POST -H 'Content-type: application/json' --data "{\"text\":\"$1\"}" "$url" >/dev/null 2>&1
 }
 gha_fail() { # route message
   echo "ERROR: $1: $2" >&2
   gha_report "$1" "$2"
-  gha_alert "CI runner failure ($1): $2 [${HOSTNAME:-host} $GHA_RELEASE]"
+  gha_alert "CI runner failure ($1): $2 [${HOSTNAME:-host} $GHA_RELEASE]" || true
   exit 1
 }
 EOF
@@ -145,15 +145,23 @@ EOF
 }
 hygiene_text() { render <<'EOF'
 #!/usr/bin/env bash
-# gha-hygiene.sh: daily docker prune and disk alert (>=80% root usage).
+# gha-hygiene.sh: hourly docker prune and disk alert (>=80% root usage, at most one alert per UTC day).
 set -euo pipefail
 # shellcheck disable=SC1091
 . "${GHA_ROOT:-}/usr/local/lib/gha/common.sh"
 gha_docker_env
-pct=$(df --output=pcent "$GHA_ROOT/" 2>/dev/null | tail -n 1 | tr -dc '0-9' || true)
-if [ -n "$pct" ] && [ "$pct" -ge 80 ]; then gha_alert "CI runner disk at ${pct}% on ${HOSTNAME:-host}"; fi
-# cap the metrics logs (14 days of per-minute samples; last 5000 runner lives)
 mlog="$GHA_ROOT/var/log/gha"
+pct=$(df --output=pcent "$GHA_ROOT/" 2>/dev/null | tail -n 1 | tr -dc '0-9' || true)
+if [ -n "$pct" ] && [ "$pct" -ge 80 ]; then
+  # hourly runs: alert once per UTC day, not every hour while the disk stays high
+  stamp="$mlog/disk-alert.day" today=$(date -u +%F)
+  if [ "$(cat "$stamp" 2>/dev/null || true)" != "$today" ]; then
+    if gha_alert "CI runner disk at ${pct}% on ${HOSTNAME:-host}"; then
+      mkdir -p "$mlog" && echo "$today" > "$stamp" || true
+    fi
+  fi
+fi
+# cap the metrics logs (14 days of per-minute samples; last 5000 runner lives)
 if [ -s "$mlog/host.csv" ]; then
   awk -v n=20160 'NR==FNR{c=NR;next} FNR==1||FNR>c-n' "$mlog/host.csv" "$mlog/host.csv" > "$mlog/host.csv.tmp" \
     && mv -f "$mlog/host.csv.tmp" "$mlog/host.csv" || true
@@ -162,7 +170,10 @@ if [ -s "$mlog/jobs.jsonl" ]; then
   tail -n 5000 "$mlog/jobs.jsonl" > "$mlog/jobs.jsonl.tmp" && mv -f "$mlog/jobs.jsonl.tmp" "$mlog/jobs.jsonl" || true
 fi
 # Never `-a` on images: it would delete the idle gha-runner image and break every slot.
-{ docker container prune -f --filter until=24h && docker builder prune -af --filter until=24h && docker image prune -f; } >/dev/null 2>&1 || gha_fail hygiene/prune "docker prune failed"
+# `volume prune -f` (no -a) removes only unused anonymous volumes (Docker >= 23), e.g. the data dir a removed
+# service container (postgres:15 declares VOLUME) leaves behind; named volumes of a live stack are kept.
+{ docker container prune -f --filter until=24h && docker builder prune -af --filter until=24h && docker image prune -f \
+  && docker volume prune -f; } >/dev/null 2>&1 || gha_fail hygiene/prune "docker prune failed"
 EOF
 }
 metrics_text() { render <<'EOF'
@@ -244,10 +255,10 @@ EOF
 }
 timer_text() { render <<'EOF'
 [Unit]
-Description=Daily GHA runner hygiene
+Description=Hourly GHA runner hygiene
 
 [Timer]
-OnCalendar=*-*-* 08:30:00 UTC
+OnCalendar=*-*-* *:30:00 UTC
 Persistent=true
 
 [Install]
