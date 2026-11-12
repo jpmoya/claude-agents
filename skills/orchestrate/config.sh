@@ -27,6 +27,14 @@ GRACE_PERIOD_SECS=1200                      # BLOCKED younger than this may be a
 
 # Intake agent (#114): 1 = a triaged bug gets agent-go directly (default since #115); 0 = bug gets agent-proposed instead
 INTAKE_AUTO_GO=1
+# Intake / spec retry (#676): a run that exits with no handoff marker is classified. A usage-limit exit never counts and never
+# gives up (nothing is launched by steps 3b/3c until the stamp passes: this long for a monthly spend limit, RATE_LIMIT_BACKOFF_SECS
+# otherwise); a transient exit (non-zero or no exit code) is released without counting, up to INTAKE_MAX_TRANSIENT per cycle,
+# after the next TRANSIENT_BACKOFF wait; a give-up expires after INTAKE_GAVEUP_RETRY_SECS, INTAKE_MAX_GIVEUPS cycles in total.
+INTAKE_LIMIT_BACKOFF_SPEND_SECS=21600
+INTAKE_MAX_TRANSIENT=3
+INTAKE_GAVEUP_RETRY_SECS=21600
+INTAKE_MAX_GIVEUPS=4
 # Sentry-sourced bugs (#176): never follow INTAKE_AUTO_GO. 0 = agent-proposed (JP's digest); 1 = agent-go directly.
 SENTRY_AUTO_GO=0
 

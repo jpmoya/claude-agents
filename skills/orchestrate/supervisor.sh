@@ -12,7 +12,7 @@
 #   7. status reconcile: refresh listed tickets from GitHub (backgrounded, throttled to once per 600 s; issue #51)
 #   8. PM Slack DM poll: record JP's replies to delivery-lead asks (backgrounded, no-op without PM_SLACK_BOT_TOKEN; issue #117)
 #   9. stale-work digest: log (never act on) stale agent-go, stuck ci_red/ci_pending/merge_conflict holds, disk
-#      pressure >= 85% (throttled to once per 600 s; issue #491)
+#      pressure >= 85%, feedback tickets with no owner (#676) (throttled to once per 600 s; issue #491)
 # One launch per tick max. All state is local (~/.claude/pipeline/state); the only shared state is the issue's markers and labels.
 set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -424,6 +424,134 @@ sw_disk_pressure() {
   esac
 }
 
+# --- Unowned staff feedback (#676) ---------------------------------------------------------------
+# A feedback ticket nobody is working on used to sit unseen for days. Reported here, never acted on (no GitHub write);
+# the only local write is the per-repo Slack stamp below.
+SW_FEEDBACK_NOTIFY_SECS=86400   # one #engineering message per repo per day, or sooner when the set of tickets changes
+
+# sw_tags — release (commit SHA) / environment (host) / route tags of a digest failure line
+sw_tags() {
+  printf 'release=%s environment=%s route=supervisor-tick' "$(git -C "$HERE" rev-parse HEAD 2>/dev/null || echo unknown)" "$(hostname -s 2>/dev/null || echo unknown)"
+}
+
+# sw_repo_dir <owner/repo> → this host's checkout of it (DISPATCH_REPOS), else the name itself (a path that does not exist)
+sw_repo_dir() {
+  local e
+  for e in ${DISPATCH_REPOS[@]+"${DISPATCH_REPOS[@]}"}; do
+    [ "${e%%:*}" = "$1" ] || continue
+    e="${e#*:}"; printf '%s' "${e/#\~/$HOME}"; return 0
+  done
+  printf '%s' "$1"
+}
+
+# sw_has_local_run <owner/repo> <issue> → 0 when this host has a live or pending run of the ticket: an intake or spec run,
+# a live orchestrator, a queued launch or a hold.
+sw_has_local_run() {
+  local o=${1//\//_} rk
+  rk=$(run_key "$1" "$2")
+  [ -e "$PIPE/intake-$o-$2.id" ] || [ -e "$PIPE/spec-$o-$2.id" ] && return 0
+  [ -f "$PIPE/orch-$rk.pid" ] && kill -0 "$(cat "$PIPE/orch-$rk.pid" 2>/dev/null)" 2>/dev/null && return 0
+  [ -e "$QUEUE/orch-$rk.json" ] || [ -e "$PIPE/orch-$rk.held" ] && return 0
+  return 1
+}
+
+# sw_feedback_gate <owner/repo> <issue> → latest_marker's output for the ticket (the gate marker's first line, "none" when
+# there is no routing marker; a later delivery-lead decision on a 2nd line) from ONE comments read. The issue author is read
+# only when a [jp] marker is in the thread (latest_marker's own rule). Returns 1 when the read failed.
+sw_feedback_gate() {
+  local raw author="" out
+  raw=$(gh api "repos/$1/issues/$2/comments?per_page=100" --paginate 2>/dev/null </dev/null) || return 1
+  [ -n "$raw" ] || return 1
+  if grep -qE 'SKIP MOCKUPS|\[jp\] (MOCKUPS APPROVED|GO)' <<< "$raw"; then
+    author=$(gh api "repos/$1/issues/$2" 2>/dev/null </dev/null | jq -r '.user.login // empty' 2>/dev/null) || author=""
+  fi
+  out=$(latest_marker "$1" "$2" "$raw" "$author") || return 1
+  case "$out" in ''|'?'*) return 1 ;; esac
+  printf '%s\n' "$out"
+}
+
+# sw_unowned_feedback <threshold_secs> — one line per open feedback ticket that is idle past the threshold and has no owner:
+#   user-feedback-intake  no agent-in-progress label                                    → "intake not picked up"
+#   user-feedback         none of agent-go / agent-in-progress / agent-proposed / user-feedback-needs-spec, and its gate marker
+#                         is absent ("never started …") or is neither a gate nor done ("stopped mid-pipeline after <marker>")
+# and no live or pending run on this host (sw_has_local_run). Two list reads per repo; the comments read happens only after
+# the cheaper checks passed. One #engineering message per repo, at most once per SW_FEEDBACK_NOTIFY_SECS or when the set of
+# unowned tickets changes ($PIPE/stale-feedback-<owner_repo>.notified holds the sorted refs).
+sw_unowned_feedback() {
+  local threshold=$1 hours repo rows rc now kind num upd labels upd_ep age_s reason m gate decision rk tk
+  local refs incomplete stamp set_now prev last n shown
+  hours=$((threshold / 3600))
+  while IFS= read -r repo; do
+    [ -n "$repo" ] || continue
+    rows=$(
+      set -o pipefail
+      for kind in intake feedback; do
+        if [ "$kind" = intake ]; then labels=user-feedback-intake; else labels=$LABEL_FEEDBACK; fi
+        gh issue list --repo "$repo" --state open --label "$labels" --limit 300 --json number,updatedAt,labels 2>/dev/null </dev/null \
+          | jq -r --arg k "$kind" '.[] | [$k, .number, (.updatedAt // "-"), ([.labels[]?.name] | join(",") | if . == "" then "-" else . end)] | @tsv' 2>/dev/null \
+          || exit 1
+      done
+    ); rc=$?
+    if [ "$rc" -ne 0 ]; then
+      slog "[stale-digest] $repo — feedback list read failed; $(sw_tags)"
+      sw_alert "feedback list ($repo)"
+      continue
+    fi
+    refs=""; incomplete=0; now=$(date +%s)
+    while IFS=$'\t' read -r kind num upd labels; do
+      case "$num" in ''|*[!0-9]*) continue ;; esac
+      [ "$upd" != "-" ] || continue
+      upd_ep=$(to_epoch "$upd"); [ "$upd_ep" -gt 0 ] || continue
+      age_s=$(( now - upd_ep ))
+      [ "$age_s" -ge "$threshold" ] || continue
+      sw_has_local_run "$repo" "$num" && continue
+      if [ "$kind" = intake ]; then
+        case ",$labels," in *",$LABEL_IN_PROGRESS,"*) continue ;; esac
+        reason="intake not picked up"
+      else
+        case ",$labels," in
+          *",user-feedback-intake,"*) continue ;;   # the intake list above already judged it
+          *",$LABEL_GO,"*|*",$LABEL_IN_PROGRESS,"*|*",$LABEL_PROPOSED,"*|*",user-feedback-needs-spec,"*) continue ;;
+        esac
+        if ! m=$(sw_feedback_gate "$repo" "$num"); then
+          incomplete=1
+          slog "[stale-digest] $repo#$num — feedback marker read failed; $(sw_tags)"
+          sw_alert "feedback marker ($repo#$num)"
+          continue
+        fi
+        gate=$(sed -n 1p <<< "$m"); decision=$(sed -n 2p <<< "$m")
+        if [ "$gate" = none ]; then
+          reason="never started (no approval label, no marker)"
+        else
+          rk=$(run_key "$repo" "$num")   # terminal_kind reads $rk (the run's .start, for the BLOCKED grace window)
+          tk=$(terminal_kind "$gate" "$num" "$decision" "$(sw_repo_dir "$repo")" </dev/null)
+          [ -z "$tk" ] || continue       # a gate (waiting on JP), done or inside the grace window: it has an owner
+          reason="stopped mid-pipeline after $(printf '%s' "$gate" | cut -c1-160)"
+        fi
+      fi
+      slog "[stale-digest] $repo#$num — feedback unowned $((age_s / 3600))h: $reason"
+      refs="$refs$num"$'\n'
+    done <<SWFB
+$rows
+SWFB
+    [ "$incomplete" -eq 0 ] || continue   # a ticket could not be judged: leave the Slack stamp alone this run
+    stamp="$PIPE/stale-feedback-${repo//\//_}.notified"
+    if [ -z "$refs" ]; then rm -f "$stamp"; continue; fi
+    set_now=$(printf '%s' "$refs" | sort -n | sed 's/^/#/' | tr '\n' ' '); set_now=${set_now% }
+    prev=$(cat "$stamp" 2>/dev/null) || prev=""
+    last=$(_rs_mtime "$stamp")
+    if [ "$set_now" != "$prev" ] || [ -z "$last" ] || [ $(( now - last )) -ge "$SW_FEEDBACK_NOTIFY_SECS" ]; then
+      n=$(printf '%s' "$refs" | grep -c .)
+      shown=$(printf '%s' "$refs" | sort -n | head -30 | sed 's/^/#/' | tr '\n' ',' | sed -e 's/,$//' -e 's/,/, /g')
+      [ "$n" -le 30 ] || shown="$shown, +$((n - 30)) more"
+      notify_engineering 0 ":mag:" "$n feedback tickets with no owner for more than ${hours}h: $shown" "$repo" </dev/null
+      printf '%s\n' "$set_now" > "$stamp"
+    fi
+  done <<SWREPOS
+$(sw_repo_list)
+SWREPOS
+}
+
 # stale_work_digest — the whole step (AC1/AC2): throttled to once per STALE_DIGEST_INTERVAL_SECS, read-only,
 # never blocks or delays the dispatch steps that already ran earlier in this tick (AC8). Never fails the tick.
 stale_work_digest() {
@@ -440,6 +568,7 @@ stale_work_digest() {
   sw_stale_agent_go "$threshold"
   sw_stuck_holds "$threshold"
   sw_disk_pressure
+  sw_unowned_feedback "$threshold"
   return 0
 }
 
@@ -1460,10 +1589,108 @@ for f in "$PIPE"/orch-*.pid; do
   fi
 done
 
+# #676 — shared by 3b (intake-* state) and 3c (spec-* state): a run that exited with no handoff marker is classified, and a
+# give-up is no longer permanent. <k> is the run's state stem (intake_key / spec_key); <kind> is the word `intake` or `spec`.
+#   limit      the run's log says "hit your … limit" (limit_kind_of): never counted, never gives up. The issue is released and
+#              nothing is launched by 3b/3c on this host until $PIPE/intake-limit-until (an epoch) has passed.
+#   transient  not a limit, and the exit code is non-zero or was never written: released without counting, claimable again
+#              after $PIPE/<k>.retry-after; at most INTAKE_MAX_TRANSIENT per give-up cycle ($PIPE/<k>.transients).
+#   failed     exit 0 and no marker (or the transient allowance is spent): the existing flow, one more run then give up.
+# MIN_RUN_SECS is deliberately not used: a healthy intake run takes about 40 s, so it would class every failure as transient.
+# .attempts is incremented at launch, so a released run's increment is taken back: a limit or transient exit never counts.
+# .launched-at (launch epoch) outlives a released run and is cleared at done / give-up, so its presence at claim time means
+# "same cycle": the claim then keeps .attempts and the launch-time .sentry record instead of starting from zero.
+fb_exit_class() {  # <k> → "limit:<monthly_spend|weekly|other>" | "transient" | "failed"
+  local k=$1 lk code n
+  lk=$(limit_kind_of "$PIPE/$k.log")
+  if [ -n "$lk" ]; then echo "limit:$lk"; return 0; fi
+  code=$(cat "$PIPE/$k.exit" 2>/dev/null) || code=""
+  if [ "$code" = 0 ]; then echo failed; return 0; fi
+  n=$(cat "$PIPE/$k.transients" 2>/dev/null) || n=0; case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  if [ "$n" -ge "${INTAKE_MAX_TRANSIENT:-3}" ]; then echo failed; else echo transient; fi
+}
+fb_iso() {  # <epoch> → UTC, to the minute (the give-up NOTE and the log)
+  python3 -c "import sys,datetime; print(datetime.datetime.fromtimestamp(int(sys.argv[1]), datetime.timezone.utc).strftime('%Y-%m-%dT%H:%MZ'))" "$1" 2>/dev/null || echo "?"
+}
+fb_limit_active() {  # 0 while the host-wide limit stamp is in the future: 3b and 3c launch nothing, post no claim
+  local u; u=$(cat "$PIPE/intake-limit-until" 2>/dev/null) || return 1
+  case "$u" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$(date +%s)" -lt "$u" ]
+}
+# fb_release <kind> <k> <owner/repo> <issue> <class> — a limit or transient exit: put the issue back in its queue (3b re-adds
+# user-feedback-intake; 3c never re-adds a label it did not remove), take the run's attempt back, set the wait, clear the run's
+# state (.sentry, .transients and .launched-at are kept). Returns 1, with nothing changed, when the label write failed (the next
+# tick classifies the same exit again). One log line, no issue comment.
+fb_release() {
+  local kind=$1 k=$2 repo=$3 num=$4 cls=$5 now a n back till cur
+  if [ "$kind" = intake ]; then
+    gh issue edit "$num" --repo "$repo" --remove-label "$LABEL_IN_PROGRESS" --add-label user-feedback-intake >/dev/null 2>&1
+  else
+    gh issue edit "$num" --repo "$repo" --remove-label "$LABEL_IN_PROGRESS" >/dev/null 2>&1
+  fi || { slog "[$kind] $repo#$num exit class=${cls%%:*} — label write failed, release retried next tick"; return 1; }
+  now=$(date +%s)
+  a=$(cat "$PIPE/$k.attempts" 2>/dev/null) || a=0; case "$a" in ''|*[!0-9]*) a=0 ;; esac
+  [ "$a" -gt 0 ] && echo $((a - 1)) > "$PIPE/$k.attempts"
+  case "$cls" in
+    limit:*)
+      if [ "${cls#limit:}" = monthly_spend ]; then back=${INTAKE_LIMIT_BACKOFF_SPEND_SECS:-21600}; else back=${RATE_LIMIT_BACKOFF_SECS:-3600}; fi
+      till=$((now + back))
+      cur=$(cat "$PIPE/intake-limit-until" 2>/dev/null) || cur=0; case "$cur" in ''|*[!0-9]*) cur=0 ;; esac
+      [ "$cur" -gt "$till" ] && till=$cur   # a longer wait already set by another run stands
+      echo "$till" > "$PIPE/intake-limit-until"
+      mv -f "$PIPE/$k.log" "$PIPE/$k.log.prev" 2>/dev/null   # the next run's exit must not be classified on this run's limit line
+      slog "[$kind] $repo#$num exit class=limit kind=${cls#limit:} — released, not counted; no intake/spec launch on this host until $(fb_iso "$till")" ;;
+    *)
+      n=$(cat "$PIPE/$k.transients" 2>/dev/null) || n=0; case "$n" in ''|*[!0-9]*) n=0 ;; esac
+      n=$((n + 1)); echo "$n" > "$PIPE/$k.transients"
+      back=${TRANSIENT_BACKOFF[$((n - 1))]:-${TRANSIENT_BACKOFF[$(( ${#TRANSIENT_BACKOFF[@]} - 1 ))]}}
+      echo $((now + back)) > "$PIPE/$k.retry-after"
+      slog "[$kind] $repo#$num exit class=transient ($n/${INTAKE_MAX_TRANSIENT:-3} this cycle, exit $(cat "$PIPE/$k.exit" 2>/dev/null || echo none)) — released, not counted; retry after ${back}s" ;;
+  esac
+  rm -f "$PIPE/$k".{id,pid,path,exit,exit-seen}
+}
+# fb_giveup <kind> <k> <owner/repo> <issue> — the cycle is over: count it in .giveups and park the issue (.gaveup). Not final
+# (fewer than INTAKE_MAX_GIVEUPS cycles): a NOTE with the retry time; fb_claimable lets it through again once .gaveup is
+# INTAKE_GAVEUP_RETRY_SECS old. Final: a NOTE, one #engineering message and a tagged failure line; .gaveup stays for good.
+fb_giveup() {
+  local kind=$1 k=$2 repo=$3 num=$4 n max=${INTAKE_MAX_GIVEUPS:-4} when
+  n=$(cat "$PIPE/$k.giveups" 2>/dev/null) || n=0; case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  n=$((n + 1))
+  if [ "$n" -lt "$max" ]; then
+    when=$(fb_iso $(( $(date +%s) + ${INTAKE_GAVEUP_RETRY_SECS:-21600} )))
+    gh issue comment "$num" --repo "$repo" --body "**[supervisor] NOTE** $kind failed (cycle $n/$max); automatic retry after $when." >/dev/null 2>&1
+    slog "[$kind] $repo#$num gave up (cycle $n/$max): no handoff marker; automatic retry after $when"
+  else
+    gh issue comment "$num" --repo "$repo" --body "**[supervisor] NOTE** $kind failed $max cycles; needs manual triage." >/dev/null 2>&1
+    notify_engineering "$num" ":warning:" "$kind gave up after $max cycles — needs manual triage" "$repo"
+    slog "[$kind] $repo#$num gave up for good after $max cycles: needs manual triage; release=$(git -C "$HERE" rev-parse HEAD 2>/dev/null || echo unknown) environment=$(hostname -s 2>/dev/null || echo unknown) route=intake-giveup"
+  fi
+  echo "$n" > "$PIPE/$k.giveups"; touch "$PIPE/$k.gaveup"
+  rm -f "$PIPE/$k".{id,pid,path,exit,exit-seen,sentry,launched-at,retry-after}
+}
+# fb_claimable <k> — may the claim loop take this issue now? No while a give-up is younger than INTAKE_GAVEUP_RETRY_SECS, after
+# the final one (.giveups >= INTAKE_MAX_GIVEUPS; an unreadable count reads as final), or before .retry-after. An expired give-up
+# is cleared here (.gaveup, .attempts, .transients): the next cycle starts from zero, .giveups keeps the count.
+fb_claimable() {
+  local k=$1 g at ra now; now=$(date +%s)
+  if [ -e "$PIPE/$k.gaveup" ]; then
+    g=0; if [ -e "$PIPE/$k.giveups" ]; then g=$(cat "$PIPE/$k.giveups" 2>/dev/null) || g=""; fi
+    case "$g" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$g" -lt "${INTAKE_MAX_GIVEUPS:-4}" ] || return 1
+    at=$(_rs_mtime "$PIPE/$k.gaveup"); case "$at" in ''|*[!0-9]*) return 1 ;; esac
+    [ $(( now - at )) -ge "${INTAKE_GAVEUP_RETRY_SECS:-21600}" ] || return 1
+    rm -f "$PIPE/$k".{gaveup,attempts,transients}
+    slog "[${k%%-*}] ${k#*-} — give-up expired after cycle $g, claimable again"
+  fi
+  ra=$(cat "$PIPE/$k.retry-after" 2>/dev/null) || ra=0; case "$ra" in ''|*[!0-9]*) ra=0 ;; esac
+  [ "$now" -ge "$ra" ]
+}
+
 # 3b. Intake — triage raw staff feedback (#114): one `user-feedback-intake` issue per tick from DISPATCH_REPOS, claimed like
 #     step 5, label swapped to agent-in-progress, `claude --agent intake -p` launched detached. State is separate from the
 #     orchestrator's (PIPE/intake-<owner_repo>-<n>.*) but counts against MAX_CONCURRENT. A run that exits with no [intake]
-#     marker gets one recovery launch; a second failure posts a NOTE, re-adds the label once and parks it locally (.gaveup).
+#     marker is classified (#676, fb_* above): a limit or transient exit is released without counting; a failed one gets one
+#     recovery launch, then a NOTE, the label back and a give-up (.gaveup) that expires after 6h, 4 cycles at most.
 intake_key() { printf 'intake-%s-%s' "${1//\//_}" "$2"; }
 intake_launch() {  # <owner/repo> <local path> <issue> <prompt>
   local k; k=$(intake_key "$1" "$3")
@@ -1476,6 +1703,7 @@ intake_launch() {  # <owner/repo> <local path> <issue> <prompt>
     >> "$PIPE/$k.log" 2>&1 9>&- & echo $! > "$PIPE/$k.pid" )
   echo "$2" > "$PIPE/$k.path"; echo "$1 $3" > "$PIPE/$k.id"
   echo $(( $(cat "$PIPE/$k.attempts" 2>/dev/null || echo 0) + 1 )) > "$PIPE/$k.attempts"
+  date +%s > "$PIPE/$k.launched-at"   # #676: launch epoch; kept across a released (limit/transient) run, cleared at done / give-up
   slog "[intake] $1#$3 launched (attempt $(cat "$PIPE/$k.attempts"))"
 }
 # code-enforced gate (#176): the intake agent reads attacker-influenced text, so a source:sentry issue never keeps agent-go
@@ -1512,21 +1740,29 @@ for idf in "$PIPE"/intake-*.id; do   # runs that have exited: healthy -> clear s
   if [ "${have:-0}" -gt 0 ]; then
     sentry_strip_go "$i_repo" "$i_num" || { launched=1; continue; }   # keep state so the next tick retries the strip; hold dispatch this tick
     gh issue edit "$i_num" --repo "$i_repo" --remove-label "$LABEL_IN_PROGRESS" >/dev/null 2>&1
-    rm -f "$PIPE/$k".{id,pid,path,exit,exit-seen,attempts,sentry}; slog "[intake] $i_repo#$i_num done"
+    rm -f "$PIPE/$k".{id,pid,path,exit,exit-seen,attempts,sentry,launched-at,transients,retry-after}; slog "[intake] $i_repo#$i_num done"
   elif [ ! -e "$PIPE/$k.exit-seen" ]; then
     touch "$PIPE/$k.exit-seen"   # one grace tick: a slow marker or a lagging gh read must not trigger a recovery run
+  elif fb_cls=$(fb_exit_class "$k"); [ "$fb_cls" != failed ]; then
+    # #676: a limit or transient exit goes back to the intake queue and is never counted. A source:sentry issue is stripped of
+    # an injected agent-go first, exactly as in the give-up branch below (the released issue no longer carries agent-in-progress).
+    sentry_strip_go "$i_repo" "$i_num" || { launched=1; continue; }
+    fb_release intake "$k" "$i_repo" "$i_num" "$fb_cls" || continue
   elif [ "$(cat "$PIPE/$k.attempts" 2>/dev/null || echo 1)" -lt 2 ]; then
+    fb_limit_active && continue   # #676: nothing is launched while the usage-limit stamp is in the future
     [ "$launched" -eq 0 ] && [ "$HAS_CAP" -eq 1 ] || continue
     intake_launch "$i_repo" "$i_path" "$i_num" "Triage $i_repo#$i_num as the intake agent. A previous run exited without posting an [intake] handoff marker: check the issue state with gh, finish the triage if it is incomplete, and post the handoff marker."
     launched=1
   else
     sentry_strip_go "$i_repo" "$i_num" || { launched=1; continue; }   # keep state (no .gaveup) so the next tick retries the strip; hold dispatch this tick
-    gh issue comment "$i_num" --repo "$i_repo" --body "**[supervisor] NOTE** intake ran twice without a handoff marker; the issue is back in the intake queue for manual attention." >/dev/null 2>&1
-    gh issue edit "$i_num" --repo "$i_repo" --remove-label "$LABEL_IN_PROGRESS" --add-label user-feedback-intake >/dev/null 2>&1
-    rm -f "$PIPE/$k".{id,pid,path,exit,exit-seen,sentry}; touch "$PIPE/$k.gaveup"; slog "[intake] $i_repo#$i_num gave up after 2 runs without a marker"
+    # #676: label first — a failed write keeps the state and is retried next tick, so the issue never ends up parked while it
+    # still carries agent-in-progress and no intake label. Then the NOTE, the cycle count and .gaveup (fb_giveup).
+    gh issue edit "$i_num" --repo "$i_repo" --remove-label "$LABEL_IN_PROGRESS" --add-label user-feedback-intake >/dev/null 2>&1 \
+      || { slog "[intake] $i_repo#$i_num give-up label write failed — retried next tick"; continue; }
+    fb_giveup intake "$k" "$i_repo" "$i_num"
   fi
 done
-if [ "$launched" -eq 0 ] && [ "$HAS_CAP" -eq 1 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ] && power_ok; then
+if [ "$launched" -eq 0 ] && [ "$HAS_CAP" -eq 1 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ] && power_ok && ! fb_limit_active; then
   cutoff=$(python3 -c "import datetime; print((datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(seconds=$CLAIM_WINDOW_SECS)).strftime('%Y-%m-%dT%H:%M:%SZ'))")
   for entry in "${DISPATCH_REPOS[@]}"; do
     [ "$launched" -ge 1 ] && break
@@ -1536,14 +1772,17 @@ if [ "$launched" -eq 0 ] && [ "$HAS_CAP" -eq 1 ] && [ "${#DISPATCH_REPOS[@]}" -g
     for num in $(gh issue list --repo "$owner_repo" --state open --label user-feedback-intake --limit 50 --json number,labels \
         --jq ".[] | select([.labels[].name] | index(\"$LABEL_IN_PROGRESS\") | not) | .number" 2>/dev/null); do
       case "$num" in ''|*[!0-9]*) continue ;; esac
-      k=$(intake_key "$owner_repo" "$num"); [ -e "$PIPE/$k.id" ] || [ -e "$PIPE/$k.gaveup" ] && continue
+      k=$(intake_key "$owner_repo" "$num"); [ -e "$PIPE/$k.id" ] && continue
+      fb_claimable "$k" || continue   # #676: a give-up younger than 6h (or the final one), or a transient wait not over yet
       ts=$(date -u +%FT%TZ)
       gh issue comment "$num" --repo "$owner_repo" --body "**[supervisor] NOTE** claim: $HOST $ts" >/dev/null 2>&1 || continue
       sleep "$CLAIM_SETTLE_SECS"
       winner=$(claim_winner "$local_path" "$num")
       [ "$winner" = "$HOST" ] || { slog "[intake] $owner_repo#$num — lost claim to ${winner:-?}"; continue; }
       gh issue edit "$num" --repo "$owner_repo" --add-label "$LABEL_IN_PROGRESS" --remove-label user-feedback-intake >/dev/null 2>&1
-      rm -f "$PIPE/$k.attempts" "$PIPE/$k.sentry"
+      # #676: a re-claim after a released (limit/transient) run is the same cycle: keep its count and its launch-time sentry record
+      [ -e "$PIPE/$k.launched-at" ] || rm -f "$PIPE/$k.attempts" "$PIPE/$k.sentry"
+      rm -f "$PIPE/$k.retry-after"
       intake_launch "$owner_repo" "$local_path" "$num" "Triage $owner_repo#$num as the intake agent."
       launched=1; break
     done
@@ -1553,6 +1792,7 @@ fi
 # 3c. Spec — PM-only run (#115) for one `user-feedback-needs-spec` idea: claim, swap in agent-in-progress, launch `claude --agent product-manager -p`.
 #     Never adds agent-go and never starts an orchestrator. When the PM exits, drop agent-in-progress + needs-spec and add agent-proposed (JP's digest).
 #     Any PM routing marker except REJECTED blocks a launch, as do two REJECTED needs-spec (a PM REJECTED needs-spec is how a fix reaches here). State: PIPE/spec-<owner_repo>-<n>.*
+#     A run that exits with no PM marker is classified like an intake run (#676, fb_* above): limit / transient exits are released without counting; two failed runs give up, with a NOTE, for 6h (4 cycles at most).
 spec_key() { printf 'spec-%s-%s' "${1//\//_}" "$2"; }
 spec_pm_markers() {  # <owner/repo> <issue> → PM routing markers other than REJECTED, +1 once two REJECTED needs-spec are on the issue (re-reject loop stop)
   gh issue view "$2" --repo "$1" --json comments 2>/dev/null | spec_pm_markers_json
@@ -1572,18 +1812,20 @@ for idf in "$PIPE"/spec-*.id; do   # exited PM runs: marker posted -> hand the s
   if [ -n "$s_rj" ]; then
     gh issue edit "$s_num" --repo "$s_repo" --remove-label "$LABEL_IN_PROGRESS" --remove-label user-feedback-needs-spec >/dev/null 2>&1
     gh issue close "$s_num" --repo "$s_repo" --reason "not planned" >/dev/null 2>&1
-    rm -f "$PIPE/$k".{id,pid,path,attempts}; slog "[spec] $s_repo#$s_num rejected by the PM ($s_rj), closed as not planned"; continue
+    rm -f "$PIPE/$k".{id,pid,path,attempts,exit,launched-at,transients,retry-after}; slog "[spec] $s_repo#$s_num rejected by the PM ($s_rj), closed as not planned"; continue
   fi
   m=$(printf '%s' "$s_c" | spec_pm_markers_json); case "$m" in ''|*[!0-9]*) continue ;; esac   # failed jq: act on nothing, retry next tick
   if [ "$m" != 0 ]; then
     gh issue edit "$s_num" --repo "$s_repo" --remove-label "$LABEL_IN_PROGRESS" --remove-label user-feedback-needs-spec --add-label "$LABEL_PROPOSED" >/dev/null 2>&1
-    rm -f "$PIPE/$k".{id,pid,path,attempts}; slog "[spec] $s_repo#$s_num spec written, moved to $LABEL_PROPOSED"
+    rm -f "$PIPE/$k".{id,pid,path,attempts,exit,launched-at,transients,retry-after}; slog "[spec] $s_repo#$s_num spec written, moved to $LABEL_PROPOSED"
+  elif fb_cls=$(fb_exit_class "$k"); [ "$fb_cls" != failed ]; then
+    fb_release spec "$k" "$s_repo" "$s_num" "$fb_cls" || continue   # #676: a limit or transient exit is released, never counted
   else
-    gh issue edit "$s_num" --repo "$s_repo" --remove-label "$LABEL_IN_PROGRESS" >/dev/null 2>&1; rm -f "$PIPE/$k".{id,pid,path}
-    [ "$(cat "$PIPE/$k.attempts" 2>/dev/null || echo 1)" -ge 2 ] && { touch "$PIPE/$k.gaveup"; slog "[spec] $s_repo#$s_num gave up: no PM marker after 2 runs"; }
+    gh issue edit "$s_num" --repo "$s_repo" --remove-label "$LABEL_IN_PROGRESS" >/dev/null 2>&1; rm -f "$PIPE/$k".{id,pid,path,exit}
+    [ "$(cat "$PIPE/$k.attempts" 2>/dev/null || echo 1)" -ge 2 ] && fb_giveup spec "$k" "$s_repo" "$s_num"   # #676: NOTE, cycle count, a give-up that expires
   fi
 done
-if [ "$launched" -eq 0 ] && [ "$HAS_CAP" -eq 1 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ] && power_ok; then
+if [ "$launched" -eq 0 ] && [ "$HAS_CAP" -eq 1 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ] && power_ok && ! fb_limit_active; then
   cutoff=$(python3 -c "import datetime; print((datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(seconds=$CLAIM_WINDOW_SECS)).strftime('%Y-%m-%dT%H:%M:%SZ'))")
   for entry in "${DISPATCH_REPOS[@]}"; do
     [ "$launched" -ge 1 ] && break
@@ -1593,13 +1835,15 @@ if [ "$launched" -eq 0 ] && [ "$HAS_CAP" -eq 1 ] && [ "${#DISPATCH_REPOS[@]}" -g
     for num in $(gh issue list --repo "$owner_repo" --state open --label user-feedback-needs-spec --limit 50 --json number,labels \
         --jq ".[] | select([.labels[].name] | (index(\"$LABEL_IN_PROGRESS\") or index(\"$LABEL_GO\") or index(\"source:sentry\")) | not) | .number" 2>/dev/null); do
       case "$num" in ''|*[!0-9]*) continue ;; esac
-      k=$(spec_key "$owner_repo" "$num"); [ -e "$PIPE/$k.id" ] || [ -e "$PIPE/$k.gaveup" ] && continue
+      k=$(spec_key "$owner_repo" "$num"); [ -e "$PIPE/$k.id" ] && continue
+      fb_claimable "$k" || continue   # #676: a give-up younger than 6h (or the final one), or a transient wait not over yet
       [ "$(spec_pm_markers "$owner_repo" "$num")" = 0 ] || continue
       gh issue comment "$num" --repo "$owner_repo" --body "**[supervisor] NOTE** claim: $HOST $(date -u +%FT%TZ)" >/dev/null 2>&1 || continue
       sleep "$CLAIM_SETTLE_SECS"
       winner=$(claim_winner "$local_path" "$num")
       [ "$winner" = "$HOST" ] || { slog "[spec] $owner_repo#$num — lost claim to ${winner:-?}"; continue; }
       gh issue edit "$num" --repo "$owner_repo" --add-label "$LABEL_IN_PROGRESS" >/dev/null 2>&1
+      rm -f "$PIPE/$k.exit" "$PIPE/$k.retry-after"; date +%s > "$PIPE/$k.launched-at"   # #676: this run's own exit code; launch epoch
       ( cd "$PIPE" && PIPELINE_ISSUE="$num" PIPELINE_AGENT=product-manager PIPELINE_REPO="$owner_repo" PIPE="$PIPE" CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 \
         nohup $SETSID bash -c 'claude --dangerously-skip-permissions --agent product-manager -p "$1"; echo $? > "$2"' _ \
         "Write the spec for $owner_repo#$num as the product-manager (spec-only run for a user-feedback idea): do not add agent-go; do not file dependency follow-ups on this issue; post your READY marker." "$PIPE/$k.exit" \
@@ -1829,7 +2073,8 @@ gh_class optional
 #    No-op unless PM_SLACK_BOT_TOKEN is set on this host; backgrounded with fd 9 closed so it never delays or fails the tick.
 ( "$HERE/pm-slack.sh" poll >/dev/null 2>&1 & ) 9>&- || true
 
-# 9. Stale-work digest (#491) — stale agent-go, stuck ci_red/ci_pending/merge_conflict holds, disk pressure.
+# 9. Stale-work digest (#491) — stale agent-go, stuck ci_red/ci_pending/merge_conflict holds, disk pressure,
+#    feedback tickets with no owner (#676, plus one #engineering message per repo per day).
 #    Read-only observability, logged (never acted on); throttled internally to once per 600 s. Runs last, after
 #    dispatch, so it never delays or blocks a launch decision made earlier in this tick.
 [ "$T_OPT" = 1 ] && { stale_work_digest || true; }
