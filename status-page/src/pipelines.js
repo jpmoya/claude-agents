@@ -119,20 +119,16 @@ export const PIPELINES = [
         name: "fullstack-developer",
         inputs: [
           "READY FOR ENGINEERING, Lane: fast",
-          "No lock file — writes its own regression test",
+          "No lock file — single loop: test first, run checks, self-review, then PR",
         ],
       },
       {
         name: "code-reviewer",
-        inputs: ["IMPLEMENTED: PR, Added test files (fast lane)"],
-      },
-      {
-        name: "test-reviewer",
-        inputs: ["Narrow review of the added regression test, every round"],
+        inputs: ["IMPLEMENTED: PR, Added test files, green-run evidence (fast lane)"],
       },
       {
         name: "deployer",
-        inputs: ["code-reviewer PASS", "test-reviewer narrow PASS"],
+        inputs: ["code-reviewer PASS"],
       },
     ],
   },
