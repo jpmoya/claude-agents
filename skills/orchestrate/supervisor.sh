@@ -1797,14 +1797,46 @@ fb_claimable() {
 #     marker is classified (#676, fb_* above): a limit or transient exit is released without counting; a failed one gets one
 #     recovery launch, then a NOTE, the label back and a give-up (.gaveup) that expires after 6h, 4 cycles at most.
 intake_key() { printf 'intake-%s-%s' "${1//\//_}" "$2"; }
+# #186: intake reads attacker-influenced text (staff feedback, Sentry events), so the CLI, not the prompt, bounds a run: no
+#   --dangerously-skip-permissions. In `-p` mode nobody answers a permission prompt, so whatever the allow-list does not cover is
+#   denied, compound and substituted commands included (each sub-command must match a rule).
+#   --setting-sources ""   no user/project/local settings: ~/.claude/settings.json allows bare Bash/Write/Edit and would widen the list.
+#                          It also stops ~/.claude/agents and the settings hooks loading, hence --agents and --settings below.
+#   --strict-mcp-config    no MCP servers (--tools only limits built-in tools).
+#   Edit(//<dir>/**)       the Write tool is checked against Edit rules (a Write(path) rule matches nothing); `//` = absolute path.
+INTAKE_TMP_ROOT="${INTAKE_TMP_ROOT:-$LOGDIR/intake-tmp}"   # not under $PIPE: the CLI refuses writes below any `.claude` dir whatever the allow rule
 intake_launch() {  # <owner/repo> <local path> <issue> <prompt>
-  local k; k=$(intake_key "$1" "$3")
+  local k lbls pinned=0 tmp ed cm cl helpers agent_md agents args; k=$(intake_key "$1" "$3")
   echo 0 > "$PIPE/$(run_key "$1" "$3")-intake-before.txt"; rm -f "$PIPE/$k.exit" "$PIPE/$k.exit-seen"
   # #176: remember a source:sentry issue at launch, so the agent removing the label cannot turn the agent-go strip into a no-op
-  case " $(gh issue view "$3" --repo "$1" --json labels --jq '[.labels[].name] | join(" ")' 2>/dev/null) " in
-    *" source:sentry "*) touch "$PIPE/$k.sentry" ;; esac
-  ( cd "$PIPE" && PIPELINE_ISSUE="$3" PIPELINE_AGENT=intake PIPELINE_REPO="$1" PIPE="$PIPE" CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 \
-    nohup $SETSID bash -c 'claude --dangerously-skip-permissions --agent intake -p "$1"; echo $? > "$2"' _ "$4" "$PIPE/$k.exit" \
+  lbls=$(gh issue view "$3" --repo "$1" --json labels --jq '[.labels[].name] | join(" ")' 2>/dev/null) || pinned=1   # unreadable: never the wider list
+  case " $lbls " in *" source:sentry "*) touch "$PIPE/$k.sentry" ;; esac
+  # #186: a Sentry run may edit, comment on and close only its own issue (injected text must not reach another issue's labels);
+  # staff-feedback runs keep the open patterns, duplicate handling edits the canonical issue
+  [ -e "$PIPE/$k.sentry" ] && pinned=1
+  ed="gh issue edit"; cm="gh issue comment"; cl="gh issue close"
+  if [ "$pinned" = 1 ]; then ed="$ed $3 --repo $1"; cm="$cm $3 --repo $1"; cl="$cl $3 --repo $1"; fi
+  tmp="$INTAKE_TMP_ROOT/${1//\//_}-$3"; rm -rf "${tmp:?}"   # per issue: <owner_repo>-<n>, fresh for every launch
+  mkdir -p "$tmp" && tmp=$(cd "$tmp" && pwd -P) || slog "[intake] $1#$3 could not create $tmp — the run cannot write its body file"
+  helpers=".claude/skills/orchestrate"   # the helpers by the path intake.md names (~/) and by the same path expanded
+  agent_md="$HOME/.claude/agents/intake.md"; [ -f "$agent_md" ] || agent_md="$HERE/../../agents/intake.md"
+  # the --agents value {"intake":{description,prompt,tools,model,effort}}: front matter + body of agents/intake.md
+  agents=$(awk 'NR==1&&/^---$/{fm=1;next} fm==1&&/^---$/{fm=2;next} fm==2{print}' "$agent_md" 2>/dev/null \
+    | jq -Rsc --arg fm "$(awk 'NR==1&&/^---$/{on=1;next} on&&/^---$/{exit} on{print}' "$agent_md" 2>/dev/null)" '
+    def fmv($k): [$fm | split("\n")[] | select(startswith($k + ":")) | .[($k | length) + 1:] | gsub("^\\s+|\\s+$"; "") | gsub("^\"|\"$"; "")] | first // "";
+    select(length > 0) | {intake: ({description: fmv("description"), prompt: ., tools: (fmv("tools") | split(",") | map(gsub("^\\s+|\\s+$"; "") | select(. != "")))}
+      + (fmv("model") | if . != "" then {model: .} else {} end) + (fmv("effort") | if . != "" then {effort: .} else {} end))}')
+  [ -n "$agents" ] || slog "[intake] $1#$3 agent definition unreadable ($agent_md) — the run will fail"
+  args=(--permission-mode default --tools "Bash,Read,Write" --allowedTools
+    "Bash(gh issue view:*)" "Bash(gh issue list:*)" "Bash($ed:*)" "Bash($cm:*)" "Bash($cl:*)"
+    "Bash(~/$helpers/intake-labels.sh:*)" "Bash(~/$helpers/find-duplicates.sh:*)"
+    "Bash($HOME/$helpers/intake-labels.sh:*)" "Bash($HOME/$helpers/find-duplicates.sh:*)"
+    "Read" "Edit(/$tmp/**)"
+    --setting-sources "" --strict-mcp-config
+    --settings '{"hooks":{"SessionStart":[{"matcher":"","hooks":[{"type":"command","command":"~/.claude/hooks/report-status-hook.sh"}]}],"Stop":[{"matcher":"","hooks":[{"type":"command","command":"~/.claude/hooks/require-handoff-marker.sh"},{"type":"command","command":"~/.claude/hooks/report-status-hook.sh"}]}]}}'
+    --agents "$agents" --agent intake)
+  ( cd "$PIPE" && PIPELINE_ISSUE="$3" PIPELINE_AGENT=intake PIPELINE_REPO="$1" PIPE="$PIPE" INTAKE_TMP="$tmp" CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 \
+    nohup $SETSID bash -c 'p=$1; x=$2; shift 2; claude "$@" -p "$p"; echo $? > "$x"' _ "$4 INTAKE_TMP=$tmp" "$PIPE/$k.exit" "${args[@]}" \
     >> "$PIPE/$k.log" 2>&1 9>&- & echo $! > "$PIPE/$k.pid" )
   echo "$2" > "$PIPE/$k.path"; echo "$1 $3" > "$PIPE/$k.id"
   echo $(( $(cat "$PIPE/$k.attempts" 2>/dev/null || echo 0) + 1 )) > "$PIPE/$k.attempts"
@@ -1845,6 +1877,12 @@ for idf in "$PIPE"/intake-*.id; do   # runs that have exited: healthy -> clear s
   if [ "${have:-0}" -gt 0 ]; then
     sentry_strip_go "$i_repo" "$i_num" || { launched=1; continue; }   # keep state so the next tick retries the strip; hold dispatch this tick
     gh issue edit "$i_num" --repo "$i_repo" --remove-label "$LABEL_IN_PROGRESS" >/dev/null 2>&1
+    # #186: the supervisor, not the agent, appends the intake.log line (the allow-list has no shell redirection). Same JSON shape as
+    # the agent wrote: outcome = the last terminal [intake] marker, lower-case and dashed; labels = the issue's labels now. Best
+    # effort: a failed read logs nothing and never holds this branch. The run's body-file directory goes with it.
+    rm -rf "$INTAKE_TMP_ROOT/${i_repo//\//_}-$i_num"
+    i_rec=$(gh issue view "$i_num" --repo "$i_repo" --json comments,labels --jq "{outcome: ([.comments[].body | split(\"\\n\")[0] | capture(\"^\\\\*\\\\*\\\\[intake\\\\] (?<m>TRIAGED BUG|TRIAGED IDEA|DUPLICATE|NOISE|BLOCKED)\")? | .m] | last // \"unknown\" | ascii_downcase | gsub(\" \"; \"-\")), labels: [(.labels // [])[].name | select(. != \"$LABEL_IN_PROGRESS\")]}" 2>/dev/null) \
+      && jq -cn --arg repo "$i_repo" --argjson issue "$i_num" --argjson j "$i_rec" '{repo: $repo, issue: $issue, outcome: $j.outcome, labels: $j.labels}' >> "$LOGDIR/intake.log" 2>/dev/null
     rm -f "$PIPE/$k".{id,pid,path,exit,exit-seen,attempts,sentry,launched-at,transients,retry-after}; slog "[intake] $i_repo#$i_num done"
   elif [ ! -e "$PIPE/$k.exit-seen" ]; then
     touch "$PIPE/$k.exit-seen"   # one grace tick: a slow marker or a lagging gh read must not trigger a recovery run
