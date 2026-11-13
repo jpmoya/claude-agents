@@ -53,6 +53,8 @@ JSON
 #!/bin/bash
 echo "$*" >> "$GH_LOG"
 if [ "$1" = "api" ]; then
+  # #676: the scan also reads each candidate's comments over `gh api` (fail closed); REG_MODE=fail is the unreadable REGISTRY only
+  case "$2" in repos/*/issues/[0-9]*/comments*) echo '[]'; exit 0 ;; esac
   [ "$REG_MODE" = fail ] && { echo "gh: HTTP 502" >&2; exit 1; }
   case "$*" in
     *"-X PATCH"*)   # the registry issue body is rewritten (the grant ledger): keep it for the next scan

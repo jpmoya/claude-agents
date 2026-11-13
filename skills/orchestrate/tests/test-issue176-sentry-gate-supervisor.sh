@@ -130,7 +130,7 @@ test_s176g_giveup_strip_failure_keeps_state_and_retries() {
   note=$(jq -r '.[].body' "$SI_D/comments.json")
   assert_eq "$kept" "1" "state kept while the give-up strip fails" || { si_cleanup; return 1; }
   assert_eq "$gave" "0" "not parked as gave-up while the strip fails" || { si_cleanup; return 1; }
-  assert_not_contains "$note" "ran twice" "no give-up NOTE before the strip succeeded" || { si_cleanup; return 1; }
+  assert_not_contains "$note" "intake failed" "no give-up NOTE before the strip succeeded" || { si_cleanup; return 1; }
   rm -f "$SI_D/strip-fail"; si_tick
   local labels; labels=$(si_labels 7); gave=0; ls "$SI_PIPE"/intake-*.gaveup >/dev/null 2>&1 && gave=1; si_cleanup
   assert_not_contains "$labels" "agent-go" "strip retried and applied" || return 1

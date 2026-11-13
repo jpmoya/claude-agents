@@ -54,6 +54,24 @@ goal_scan_record() {
     'if .label == $l then (.block = $b | .granted = $b.granted) else . end')
 }
 
+# #676: the claim search below is eventually consistent and capped at 1000 hits, so a search that succeeds with an incomplete
+# list used to relabel in-flight and shipped tickets (43 on 2026-11-06). Every candidate that passed the label filter gets one
+# comments read of its own: scan_inflight <owner/repo> <issue> → 0 when any comment's first line is a routing marker of any
+# agent (marker_re) or a `**[supervisor] NOTE** claim: ` line (never propose it), 1 when there is none, 2 when the read failed
+# or its output is not the expected JSON (fail closed: the caller skips the issue for this scan).
+source "$(cd "$(dirname "$0")" && pwd)/../../hooks/pipeline-markers.sh" 2>/dev/null || source "$HOME/.claude/hooks/pipeline-markers.sh"
+scan_inflight() {
+  local raw n
+  raw=$(GH_NOCACHE=1 gh api "repos/$1/issues/$2/comments?per_page=100" --paginate 2>/dev/null </dev/null) || return 2
+  n=$(printf '%s' "$raw" | jq -s --arg re "$(marker_re)" '
+    [.[] | if type == "array" then .[] else error("not a comment list") end
+     | if type == "object" then ((.body // "") | tostring | split("\n")[0] // "" | rtrimstr("\r")) else error("not a comment") end
+     | select(test($re) or startswith("**[supervisor] NOTE** claim: "))] | length' 2>/dev/null) || return 2
+  case "$n" in ''|*[!0-9]*) return 2 ;; 0) return 1 ;; esac
+  return 0
+}
+read_failed=()   # "<owner/repo>#<n>" of every candidate skipped on a failed comments read (one Slack alert per scan, below)
+
 canonicalize_repo_lists
 # ${arr[@]+...}: an empty or unset array is an unbound variable under `set -u` on bash 3.2 (macOS).
 for entry in ${DISPATCH_REPOS[@]+"${DISPATCH_REPOS[@]}"} ${SCAN_ONLY_REPOS[@]+"${SCAN_ONLY_REPOS[@]}"}; do
@@ -80,11 +98,21 @@ for entry in ${DISPATCH_REPOS[@]+"${DISPATCH_REPOS[@]}"} ${SCAN_ONLY_REPOS[@]+"$
       (contains(["'"$LABEL_IN_PROGRESS"'"]) | not) and
       (contains(["user-feedback-intake"]) | not) and
       (contains(["user-feedback-needs-spec"]) | not) and
+      (index("'"$LABEL_FEEDBACK"'") | not) and
       (contains(["release-watch"]) | not) and
       (contains(["backlog-priority-registry"]) | not)
     ) | "\(.number)\t\(.title)\t\([.labels[].name] | join(","))"' 2>/dev/null) || continue
   [ -n "$issues" ] || continue
   while IFS=$'\t' read -r num title lbls; do
+    # #676: never propose (agent-proposed or the goal go) a ticket the pipeline already touched; an unreadable ticket waits
+    scan_inflight "$repo" "$num"
+    case $? in
+      0) continue ;;
+      1) ;;
+      *) read_failed+=("$repo#$num")
+         echo "scan-backlog: comments read failed for $repo#$num — skipped this scan: release=$(git -C "$(dirname "$0")" rev-parse HEAD 2>/dev/null || echo unknown) environment=$(hostname -s 2>/dev/null || echo unknown) route=scan-backlog" >&2
+         continue ;;
+    esac
     new_issues+=("$repo#$num: $title")
     # an approved goal's ticket gets the go itself (never Business-Intelligence, never source:sentry; a ticket whose go was
     # already granted once and later removed is not given it again — the registry's `granted` list is the ledger)
@@ -95,6 +123,15 @@ for entry in ${DISPATCH_REPOS[@]+"${DISPATCH_REPOS[@]}"} ${SCAN_ONLY_REPOS[@]+"$
     fi
   done <<< "$issues"
 done
+
+# #676: one alert per scan for the candidates skipped on a failed comments read, however many there were (same webhook as the
+# claim-search alert above; repo and issue numbers only, never issue text)
+if [ ${#read_failed[@]} -gt 0 ] && [ -n "${SLACK_WEBHOOK_URL:-}" ]; then
+  rel=$(git -C "$(dirname "$0")" rev-parse HEAD 2>/dev/null || echo unknown)
+  shown="${read_failed[*]:0:30}"; [ ${#read_failed[@]} -le 30 ] || shown+=" +$(( ${#read_failed[@]} - 30 )) more"
+  curl -s -X POST -H 'Content-type: application/json' "$SLACK_WEBHOOK_URL" --data \
+    "$(jq -nc --arg t "scan-backlog: comments read failed for ${#read_failed[@]} issue(s), not proposed this scan ($shown): release=$rel environment=$(hostname -s 2>/dev/null || echo unknown) route=scan-backlog" '{text:$t}')" >/dev/null 2>&1 || true
+fi
 
 if [ ${#new_issues[@]} -eq 0 ]; then echo "No new issues to propose."; exit 0; fi
 
