@@ -36,4 +36,28 @@ t "not licensed: scripts/rehearse-migrations.sh" migration-rehearsal vitest.conf
 t "not licensed: supabase/config.toml" migration-rehearsal supabase/config.toml
 t "not licensed: benjis_payroll/sync/package.json" payroll-sync-tests vitest.config.ts benjis_payroll/sync/package.json
 t "not licensed: benjis_payroll/scrape/package.json" payroll-scrape-tests benjis_payroll/scrape/package.json
+# #684: .github/actions/sentry-intake/action.yml (payroll + rehearsal) licensed, exact path only; nothing wider
+a=.github/actions/sentry-intake/action.yml
+for j in payroll-sync-tests payroll-scrape-tests migration-rehearsal; do
+  # the file list of Benjis-Plants/benjis-ops-tool PR #2500
+  t licensed $j $a .github/workflows/sentry-intake.yml scripts/sentry-intake.action.test.ts \
+    scripts/sentry-intake.confirm.test.ts scripts/sentry-intake.guards.test.ts \
+    scripts/sentry-intake.not-planned.test.ts scripts/sentry-intake.ts scripts/sentry-intake.workflow.test.ts
+  t licensed $j $a
+  t "not licensed: .github/actions/other/action.yml" $j $a .github/actions/other/action.yml
+  t "not licensed: .github/actions/sentry-intake/run.sh" $j $a .github/actions/sentry-intake/run.sh
+  t "not licensed: .github/actions/sentry-intake/action.yml.bak" $j .github/actions/sentry-intake/action.yml.bak
+  t "not licensed: .github/actions/action.yml" $j .github/actions/action.yml
+  t "not licensed: .github/ci-image/Dockerfile" $j $a .github/ci-image/Dockerfile
+  t "not licensed: .github/workflows/ci.yml" $j $a .github/workflows/ci.yml
+  t "not licensed: .github/other.yml" $j $a .github/other.yml
+done
+t "not licensed: $a" destructive-migration-approval supabase/migrations/1.sql $a
+# both rationale bullets record the evidence for the entry
+for b in '**`payroll-sync-tests`, `payroll-scrape-tests`** run' '**`migration-rehearsal`** runs'; do
+  r="$(grep -F -- "$b" "$f")"
+  for s in "\`$a\`" '#684' 'uses: ./'; do
+    printf '%s' "$r" | grep -qF -- "$s" || { echo "MISSING in rationale ($b): $s"; fail=1; }
+  done
+done
 exit $fail
