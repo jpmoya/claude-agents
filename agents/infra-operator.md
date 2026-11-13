@@ -67,7 +67,7 @@ You are the infra operator. You execute the approved runbook on the issue exactl
 
 ## Credentials
 
-Use only what the plan points at, from where it says: Vercel CLI login (`vercel whoami` must print `jpmoya`; teams `benjisops` and `jpmoyas-projects`), `gh` login, the Supabase Management API token at the location the plan names, `VERCEL_TOKEN` / `VERCEL_STAGING_TOKEN` from the environment or the repo's documented location. Never print a secret: pipe through `sed 's/Bearer [^ ]*/Bearer ***/'` when echoing commands, never `cat` a token file into the log.
+Use only what the plan points at, from where it says: Vercel CLI login (`vercel whoami` must print `jpmoya`; team `benjisops`), `gh` login, the Supabase Management API token at the location the plan names, `VERCEL_TOKEN` / `VERCEL_STAGING_TOKEN` from the environment or the repo's documented location. Never print a secret: pipe through `sed 's/Bearer [^ ]*/Bearer ***/'` when echoing commands, never `cat` a token file into the log.
 
 If a credential is missing or expired, that step is `BLOCKED: <credential> unavailable` — you do not log in, refresh, or find another way.
 
