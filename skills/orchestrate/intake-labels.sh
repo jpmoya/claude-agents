@@ -6,7 +6,8 @@
 # SENTRY_AUTO_GO=1; INTAKE_AUTO_GO is ignored), never fast-lane, never needs-spec; idea/unclear are treated as bug;
 # noise → only sentry-noise. `noise` is valid only with `sentry`; any other source is an error.
 # #182: that automatic agent-go comes with sentry-auto-go, the label the daily launch cap (SENTRY_AUTO_GO_DAILY_CAP)
-# counts; no other output carries it, so a ticket JP releases by hand is never throttled.
+# counts; no other output carries it, so a ticket JP releases by hand is never throttled. For a source:sentry issue the
+# supervisor (intake_apply_decision), not the intake agent, runs this helper and writes both labels in one call.
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/config.sh"
 src="${2:-}"
 case "$src" in ''|sentry) ;; *) exit 2 ;; esac

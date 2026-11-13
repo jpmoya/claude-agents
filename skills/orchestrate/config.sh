@@ -43,8 +43,10 @@ SENTRY_AUTO_GO=0
 # LABEL_SENTRY_GO next to agent-go; at most this many tickets carrying it are launched per repo in any rolling 24 h
 # (orchestrate.sh refuses with exit 3, supervisor step 5 leaves the ticket queued). Worst-case spend = cap x
 # COST_CEILING_USD per app per day: 3 x $40 = $120. The count is this host's own $PIPE/sentry-launches.log (no GitHub
-# call), so two dispatching hosts each allow the cap. 0 = no automatic Sentry launch. A ticket JP releases by hand never
-# carries the label and is never throttled; SENTRY_CAP_BYPASS=1 in the environment lets one hand launch through.
+# call), so two dispatching hosts each allow the cap. 0 = no automatic Sentry launch. A ticket JP releases by hand (after
+# intake is done) never carries the label and is never throttled; SENTRY_CAP_BYPASS=1 in the environment lets one hand
+# launch through. The cap bounds new tickets: an automatic restart or queue drain of a ticket that already launched is not
+# counted again (COST_CEILING_USD bounds what one ticket can spend across its restarts).
 SENTRY_AUTO_GO_DAILY_CAP=3
 
 # Shared dispatch: "owner/repo:/local/checkout" entries. Empty = this machine never dispatches from labels.

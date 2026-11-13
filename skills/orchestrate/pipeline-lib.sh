@@ -619,20 +619,27 @@ pm_closing_reject() {
 }
 
 # --- Daily launch cap for automatically released Sentry tickets (#182) -------------------------------------------
-# $PIPE/sentry-launches.log is append-only, one line per launch of a `sentry-auto-go` ticket: "<epoch> <owner/repo> <issue>".
+# $PIPE/sentry-launches.log is append-only. A launch of a `sentry-auto-go` ticket is "<epoch> <owner/repo> <issue>"; a launch
+# counted when it was queued and then dropped before it started is cancelled by "<epoch> <owner/repo> <issue> released".
 # Local state only: the cap never costs a GitHub call. Used by orchestrate.sh (the refusal, the append) and by the
-# supervisor's step 5 (the pre-check that keeps a capped ticket from getting a claim comment).
+# supervisor's step 5 (the pre-check that keeps a capped ticket from getting a claim comment). Automatic restarts and
+# queue drains of a ticket that already launched go through the supervisor's do_launch and are not counted again.
 
-# sentry_launch_count <owner/repo> — prints how many launches of that repo lie inside the last 86400 s. A missing log is
-# 0. Returns 1, printing nothing, when the log exists but cannot be read (callers fail closed). Lines of any other shape
-# are not counted; repo names compare case-insensitively (GitHub's rule).
+# sentry_launch_count <owner/repo> — prints how many launches of that repo lie inside the last 86400 s, each `released`
+# line cancelling the latest launch line of its ticket. A missing log is 0. Returns 1, printing nothing, when the log
+# exists but cannot be read (callers fail closed). Lines of any other shape are not counted; repo names compare
+# case-insensitively (GitHub's rule).
 sentry_launch_count() {
   local r n
   [ -e "$PIPE/sentry-launches.log" ] || { echo 0; return 0; }
   [ -f "$PIPE/sentry-launches.log" ] && [ -r "$PIPE/sentry-launches.log" ] || return 1
   r=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
-  n=$(awk -v r="$r" -v min="$(( $(date +%s) - 86400 ))" \
-    'NF == 3 && $1 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ && ($1 + 0) > (min + 0) && tolower($2) == r {c++} END {print c + 0}' \
+  n=$(awk -v r="$r" -v min="$(( $(date +%s) - 86400 ))" '
+    (NF == 3 || NF == 4) && $1 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ && tolower($2) == r {
+      if (NF == 3) { n[$3]++; t[$3 "," n[$3]] = $1 }
+      else if ($4 == "released" && n[$3] > 0) n[$3]--
+    }
+    END { for (i in n) for (j = 1; j <= n[i]; j++) if ((t[i "," j] + 0) > (min + 0)) c++; print c + 0 }' \
     "$PIPE/sentry-launches.log" 2>/dev/null) || return 1
   case "$n" in ''|*[!0-9]*) return 1 ;; esac
   echo "$n"
@@ -641,6 +648,58 @@ sentry_launch_count() {
 # sentry_launch_record <owner/repo> <issue> — appends the launch line; returns 1 when the append failed.
 sentry_launch_record() {
   { printf '%s %s %s\n' "$(date +%s)" "$1" "$2" >> "$PIPE/sentry-launches.log"; } 2>/dev/null
+}
+
+# sentry_slot_release <queue entry json> — a launch that was counted when it was queued (orchestrate.sh found no free slot
+# and wrote the entry with a sentry_slot key) and is dropped before it ever started gives its place back: one `released`
+# line. No-op for any other entry. Call it before removing the entry. Never fails the caller.
+sentry_slot_release() {
+  local slot issue
+  [ -f "$1" ] || return 0
+  slot=$(jq -r '(.sentry_slot // "") | tostring' "$1" 2>/dev/null) || return 0
+  issue=$(jq -r '(.issue // "") | tostring' "$1" 2>/dev/null) || return 0
+  case "$slot" in */*) ;; *) return 0 ;; esac
+  case "$slot" in *[!A-Za-z0-9._/-]*) return 0 ;; esac
+  case "$issue" in ''|*[!0-9]*) return 0 ;; esac
+  { printf '%s %s %s released\n' "$(date +%s)" "$slot" "$issue" >> "$PIPE/sentry-launches.log"; } 2>/dev/null || return 0
+  if declare -F slog >/dev/null 2>&1; then slog "[sentry-cap] $slot#$issue — queued launch dropped before it started, its place in the daily window is released"; fi
+  return 0
+}
+
+# sentry_cap_lock <owner/repo> — serialises the gate-to-append section of a sentry-auto-go launch across processes on this
+# host: without it two launchers can both read "one place left" and both launch. mkdir is the lock (atomic, and present on
+# macOS, which has no file-lock binary) and "<pid> <epoch>" inside names the holder. A lock whose holder is gone, or older than
+# SENTRY_CAP_LOCK_STALE_SECS (default 600; a launch holds it through the claim settle wait, some 20 s), is taken over, the
+# same rule as the supervisor's own lock directory. Waits up to SENTRY_CAP_LOCK_WAIT_SECS (default 60), then returns 1
+# and the caller refuses the launch. Sets SENTRY_CAP_LOCK; sentry_cap_unlock removes only a lock this process holds.
+SENTRY_CAP_LOCK=""
+sentry_cap_lock() {
+  local d own pid ts now waited=0
+  d="$PIPE/sentry-cap-$(printf '%s' "$1" | tr '[:upper:]/' '[:lower:]_').lock"
+  while :; do
+    if mkdir "$d" 2>/dev/null; then
+      echo "$$ $(date +%s)" > "$d/owner" 2>/dev/null || true
+      SENTRY_CAP_LOCK=$d; return 0
+    fi
+    own=$(cat "$d/owner" 2>/dev/null) || own=""
+    pid=${own%% *}; ts=${own##* }; now=$(date +%s)
+    case "$pid" in ''|*[!0-9]*) pid="" ;; esac
+    case "$ts" in ''|*[!0-9]*) ts="" ;; esac
+    if { [ -n "$pid" ] && ! ps -p "$pid" >/dev/null 2>&1; } \
+       || { [ -n "$ts" ] && [ $(( now - ts )) -ge "${SENTRY_CAP_LOCK_STALE_SECS:-600}" ]; } \
+       || { [ -z "$pid" ] && [ -n "$(find "$d" -maxdepth 0 -mmin +10 2>/dev/null)" ]; }; then
+      rm -rf "$d" 2>/dev/null || return 1
+      continue
+    fi
+    [ "$waited" -lt "${SENTRY_CAP_LOCK_WAIT_SECS:-60}" ] || return 1
+    sleep 1; waited=$((waited + 1))
+  done
+}
+sentry_cap_unlock() {
+  [ -n "${SENTRY_CAP_LOCK:-}" ] || return 0
+  local own; own=$(cat "$SENTRY_CAP_LOCK/owner" 2>/dev/null) || own=""
+  if [ "${own%% *}" = "$$" ]; then rm -rf "$SENTRY_CAP_LOCK" 2>/dev/null || true; fi
+  SENTRY_CAP_LOCK=""; return 0
 }
 
 # sentry_cap_fail <owner/repo> <issue> <what happened> — a launch-log or label read (or the append) failed: one line

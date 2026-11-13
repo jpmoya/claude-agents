@@ -162,6 +162,7 @@ except Exception: print('?')
       echo "orchestrator for ${RUN_SLUG:+$RUN_SLUG}#$RUN_ISSUE not running"
     fi
     touch "$PIPE/orch-$RUN_KEY.stopped"
+    sentry_slot_release "$QUEUE/orch-$RUN_KEY.json"   # #182: a counted launch stopped while still queued gives its place back
     rm -f "$QUEUE/orch-$RUN_KEY.json"
     report_status_async "stop"   # event push: run stopped (design #10 §4.4)
     echo "wrote tombstone — supervisor will not auto-restart ${RUN_SLUG:+$RUN_SLUG}#$RUN_ISSUE"
@@ -216,6 +217,11 @@ except Exception: print('?')
         fi ;;
     esac
     if [ "$SENTRY_CAPPED" = 1 ] && [ "${SENTRY_CAP_BYPASS:-0}" != 1 ]; then
+      # From here to the launch-log append the launch holds the repo's cap lock, so two launchers (a hand launch, a lead,
+      # the supervisor) cannot both take the last place; every exit on the way releases it (EXIT trap).
+      trap 'sentry_cap_unlock' EXIT
+      sentry_cap_lock "$OWNER_REPO" || {
+        echo "#$ISSUE another sentry-auto-go launch of $OWNER_REPO holds the launch-cap lock — refusing, labels untouched; relaunch in a minute" >&2; exit 1; }
       SC_RC=0; sentry_cap_gate "$OWNER_REPO" "$ISSUE" || SC_RC=$?
       if [ "$SC_RC" = 3 ]; then
         echo "sentry launch cap reached for $OWNER_REPO ($SENTRY_CAP_N/$SENTRY_CAP_MAX in 24h)" >&2; exit 3
@@ -226,7 +232,7 @@ except Exception: print('?')
     # #451: reserve the pid file now so the claim-settle wait below is covered by the liveness check above; every exit
     # before the spawn puts the earlier content back.
     pid_reserve "$RK"
-    trap 'pid_reserve_restore "$RK"' EXIT
+    trap 'pid_reserve_restore "$RK"; sentry_cap_unlock' EXIT   # sentry_cap_unlock: no-op unless this launch holds the #182 cap lock
     pid_reserve_trap "$RK" 130   # EXIT traps do not run on an unhandled INT/TERM/HUP (Ctrl-C, `stop` during the wait)
     # Cross-machine guard: agent-in-progress on an issue this machine does not own (never launched here, or launched
     # here but already released via .label-cleared) means another machine is driving it.
@@ -250,6 +256,7 @@ except Exception: print('?')
     # Only after winning arbitration (a refused launch must leave labels alone, #217): launching consumes agent-go (the shared-dispatch pool) and claims the issue for this machine. Crash restarts are
     # the local supervisor's job, not the label's; the supervisor drops agent-in-progress when the run is done or parked.
     (cd "$REPO" && gh issue edit "$ISSUE" --add-label "$LABEL_IN_PROGRESS" --remove-label "$LABEL_GO" --remove-label "$LABEL_PROPOSED" 2>/dev/null) || true
+    sentry_slot_release "$QUEUE/orch-$RK.json"   # #182: a queued launch that was counted gives its place back; this launch counts itself
     rm -f "$QUEUE/orch-$RK.json"   # a manual launch supersedes a queued one; never both
     # Clear tombstones and restart state on manual launch
     rm -f "$PIPE/orch-$RK".{stopped,held,done,closed,release,marker,milestone,alert,label-cleared,start,exit,exit-logged,startgate,jp-reminded} "$PIPE/orch-$RK.restarts"
@@ -270,8 +277,17 @@ with open('$QUEUE/orch-$RK.json', 'w') as f:
       echo "check: ~/.claude/skills/orchestrate/orchestrate.sh queue"
       pid_reserve_done; rm -f "$PIPE/orch-$RK.pid"   # queued, not running: a stale dead pid makes the supervisor read this as a run that just ended (#22)
       # #182: accepted into the queue (claim won, agent-go consumed; the drain starts it with no second check), so the
-      # launch takes its place in the daily window now
-      [ "$SENTRY_CAPPED" != 1 ] || sentry_launch_record "$OWNER_REPO" "$ISSUE" || sentry_cap_fail "$OWNER_REPO" "$ISSUE" "launch log append failed, launch not counted"
+      # launch takes its place in the daily window now. The entry remembers it (sentry_slot), so a drop before it ever
+      # starts (stop, tombstone, lost claim) releases the place again.
+      if [ "$SENTRY_CAPPED" = 1 ]; then
+        if sentry_launch_record "$OWNER_REPO" "$ISSUE"; then
+          jq -c --arg s "$OWNER_REPO" '. + {sentry_slot: $s}' "$QUEUE/orch-$RK.json" > "$QUEUE/orch-$RK.json.tmp" 2>/dev/null \
+            && mv "$QUEUE/orch-$RK.json.tmp" "$QUEUE/orch-$RK.json" || rm -f "$QUEUE/orch-$RK.json.tmp"
+        else
+          sentry_cap_fail "$OWNER_REPO" "$ISSUE" "launch log append failed, launch not counted"
+        fi
+        sentry_cap_unlock
+      fi
       exit 0
     fi
     # The headless session IS the orchestrator (--agent), not a wrapper that calls Agent(orchestrator):
@@ -296,6 +312,7 @@ with open('$QUEUE/orch-$RK.json', 'w') as f:
     log_run_launch "$OWNER_REPO" "$ISSUE" "${LAUNCH_REASON:-manual}" 0 "" "$RK"
     # #182: the launch line is appended only here, after the claim was won and the run started
     [ "$SENTRY_CAPPED" != 1 ] || sentry_launch_record "$OWNER_REPO" "$ISSUE" || sentry_cap_fail "$OWNER_REPO" "$ISSUE" "launch log append failed, launch not counted"
+    sentry_cap_unlock
     report_status_async "launch"   # event push: run launched (design #10 §4.4)
     echo "launched orchestrator for $OWNER_REPO#$ISSUE  pid=$!  log=$PIPE/orch-$RK.log"
     echo "check: ~/.claude/skills/orchestrate/orchestrate.sh status $OWNER_REPO#$ISSUE"

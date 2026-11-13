@@ -1609,12 +1609,14 @@ if [ "$launched" -eq 0 ] && [ "$HAS_CAP" -eq 1 ]; then
     case "$q_rk" in *[!0-9]*) ;; *) q_rk=$(rk_of "$(python3 -c "import json; print(json.load(open('$qf'))['repo'])" 2>/dev/null)" "$q_issue") ;; esac   # legacy queue name: never write legacy names
     # Skip if tombstoned (stopped, held, or done)
     if [ -f "$PIPE/orch-$q_rk.stopped" ] || [ -f "$PIPE/orch-$q_rk.held" ] || [ -f "$PIPE/orch-$q_rk.done" ]; then
+      sentry_slot_release "$qf"   # #182: a launch counted at queue time that never started gives its place back
       rm -f "$qf"
       slog "[drain-skip] #$q_issue — tombstoned, purging queue entry"
       continue
     fi
     # Skip if already running
     if [ -f "$PIPE/orch-$q_rk.pid" ] && kill -0 "$(cat "$PIPE/orch-$q_rk.pid")" 2>/dev/null; then
+      sentry_slot_release "$qf"   # #182
       rm -f "$qf"
       slog "[drain-skip] #$q_issue — already running, purging queue entry"  # #551
       continue
@@ -1661,7 +1663,7 @@ except Exception:
     do_launch "$q_repo" "$best_issue" "$q_extra" "$restart_n" "$q_reason" "$q_wait" "$best_rk"
     case $? in
       0) rm -f "$best_qf"; launched=1 ;;
-      1) rm -f "$best_qf" ;;   # #438: the other host holds the claim; drop our queue entry
+      1) sentry_slot_release "$best_qf"; rm -f "$best_qf" ;;   # #438: the other host holds the claim; drop our queue entry (#182: and its counted place)
       *) : ;;                  # #438: claim unreadable; keep the entry for the next tick
     esac
   fi
@@ -1872,7 +1874,8 @@ intake_launch() {  # <owner/repo> <local path> <issue> <prompt>
 # SECRET / KEY / PASSWORD ... variables from the environment and config, and gh's own token). Values are compared in the shell
 # and never printed: the log line names the variable, not its value.
 # Labels come from intake-labels.sh for the verdict, kept only when on the fixed list below: the decision cannot name a label,
-# and agent-go appears only when SENTRY_AUTO_GO=1 makes the helper print it. Title and body are applied for `bug` only.
+# and agent-go appears only when SENTRY_AUTO_GO=1 makes the helper print it, in the same write as sentry-auto-go (#182: the
+# label the daily launch cap counts; this is its only writer). Title and body are applied for `bug` only.
 # The marker comment goes last and is the commit point: every earlier write is idempotent and is repeated on a retry.
 # Returns 0 applied; 1 nothing valid to apply (no marker follows, so the run is a failed attempt: the #676 path);
 # 2 a GitHub read or write failed (state kept, retried next tick).
@@ -1949,11 +1952,14 @@ intake_apply_decision() {  # <owner/repo> <issue>
       [ "$l" = add ] || continue
       case "$cur" in
         user-feedback|bug|"$LABEL_PROPOSED"|sentry-noise) adds="$adds${adds:+,}$cur" ;;
-        "$LABEL_GO") [ "${SENTRY_AUTO_GO:-0}" = 1 ] && adds="$adds${adds:+,}$cur" ;;
+        "$LABEL_GO"|"$LABEL_SENTRY_GO") [ "${SENTRY_AUTO_GO:-0}" = 1 ] && adds="$adds${adds:+,}$cur" ;;
       esac
     done <<< "$("$HERE/intake-labels.sh" "$v" sentry 2>/dev/null)"
     [ -n "$adds" ] || return 2
-    gh issue edit "$n" --repo "$repo" --add-label "$adds" >/dev/null 2>&1 || return 2 ;;
+    # #182: one write for the whole set, so agent-go never lands without sentry-auto-go (a label missing in the repo fails
+    # the write: nothing is added, the tick retries, and the line below says why)
+    gh issue edit "$n" --repo "$repo" --add-label "$adds" >/dev/null 2>&1 || {
+      slog "[intake] $repo#$n label write failed ($adds) — retried next tick; every label must exist in the repo"; return 2; } ;;
   esac
   case "$v" in noise|duplicate) gh issue close "$n" --repo "$repo" --reason "not planned" >/dev/null 2>&1 || return 2 ;; esac
   case "$v" in
@@ -1968,17 +1974,23 @@ intake_apply_decision() {  # <owner/repo> <issue>
 }
 # code-enforced gate (#176): the intake agent reads attacker-influenced text, so a source:sentry issue never keeps agent-go
 # unless SENTRY_AUTO_GO=1, whatever the agent did. Returns 1 when the label read fails (caller retries next tick), else 0.
+# #182: with SENTRY_AUTO_GO=1 the only agent-go that may stand while intake owns the issue is the one intake_apply_decision
+# wrote together with sentry-auto-go. A lone agent-go there would launch outside the daily cap, so it is stripped as well
+# (also a hand release made inside that window, as with SENTRY_AUTO_GO=0; after intake is done a hand release stands and
+# is never throttled). Only runs launched as source:sentry (.sentry) are read, so a staff-feedback run costs no extra call.
 sentry_strip_go() {  # <owner/repo> <issue>
-  [ "${SENTRY_AUTO_GO:-0}" = 1 ] && return 0
   local lbls k; k=$(intake_key "$1" "$2")
+  if [ "${SENTRY_AUTO_GO:-0}" = 1 ] && [ ! -e "$PIPE/$k.sentry" ]; then return 0; fi
   lbls=$(gh issue view "$2" --repo "$1" --json labels --jq '[.labels[].name] | join(" ")' 2>/dev/null) || {
     slog "[intake] $1#$2 label read failed — will retry the source:sentry $LABEL_GO strip next tick"; return 1; }
   # sentry = recorded at launch (survives the agent removing the label) OR labelled now
   if [ -e "$PIPE/$k.sentry" ]; then lbls="$lbls source:sentry"; fi
   case " $lbls " in *" source:sentry "*)
     case " $lbls " in *" $LABEL_GO "*)
+      if [ "${SENTRY_AUTO_GO:-0}" = 1 ]; then case " $lbls " in *" $LABEL_SENTRY_GO "*) return 0 ;; esac; fi
       if gh issue edit "$2" --repo "$1" --remove-label "$LABEL_GO" >/dev/null 2>&1; then
-        slog "[intake] $1#$2 source:sentry carried $LABEL_GO with SENTRY_AUTO_GO=0 — removed"
+        if [ "${SENTRY_AUTO_GO:-0}" = 1 ]; then slog "[intake] $1#$2 source:sentry carried $LABEL_GO without $LABEL_SENTRY_GO during intake — removed (it would launch outside the daily cap)"
+        else slog "[intake] $1#$2 source:sentry carried $LABEL_GO with SENTRY_AUTO_GO=0 — removed"; fi
       else
         slog "[intake] $1#$2 failed to remove $LABEL_GO from source:sentry issue — will retry next tick"; return 1
       fi ;;

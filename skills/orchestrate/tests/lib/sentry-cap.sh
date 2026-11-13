@@ -6,7 +6,9 @@
 # applies --label / --jq like the real CLI, honours `issue edit --add-label/--remove-label`, answers `repo view` from the
 # named repo or the checkout's origin, and logs every call to $SC_D/gh-calls.log. orchestrate.sh's label read
 # (`api repos/<owner/repo>/issues/<n> --jq ...`) is answered from issues.json; $SC_D/labels-fail makes it exit 1 (with a
-# token-shaped string on stderr that must never be logged). Every other `api` call exits 0 with no output.
+# token-shaped string on stderr that must never be logged). With $SC_D/rest-comments the supervisor's REST comment reads
+# (`api repos/<owner/repo>/issues/<n>/comments...`) are answered from comments.json (the queue drain arbitrates its claim
+# there). Every other `api` call exits 0 with no output.
 # Stub claude logs its argv to $SC_D/claude.log; with $SC_D/claude-hold it then stays alive (a running orchestrator).
 # Stub curl logs its argv to $SC_D/curl.log (the Slack webhook alert).
 
@@ -60,7 +62,15 @@ here_repo() { git config --get remote.origin.url 2>/dev/null | sed -E 's#.*githu
 num=$(printf '%s' "${3:-}" | grep -E '^[0-9]+$')
 case "${1:-} ${2:-}" in
   "api repos/"*"/issues/"[0-9]*)
-    case "$2" in */comments*) exit 0;; esac
+    case "$2" in */comments*)
+      # opt-in: the comment list in REST shape; a POST (-f body=...) is recorded like `issue comment`
+      [ -f "$D/rest-comments" ] || exit 0
+      case "$*" in *" -f body="*)
+        b=$(printf '%s' "$*" | sed 's/^.* -f body=//')
+        jq --arg b "$b" --arg t "$(date -u +%FT%TZ)" '. + [{body:$b,createdAt:$t}]' "$D/comments.json" > "$D/c.tmp" && mv "$D/c.tmp" "$D/comments.json"; exit 0;;
+      esac
+      jq -c 'map({body: .body, created_at: .createdAt})' "$D/comments.json"; exit 0;;
+    esac
     [ -n "$jqx" ] || exit 0   # only the launcher's label read carries --jq; the supervisor's own issue reads stay empty
     [ -f "$D/labels-fail" ] && { echo "HTTP 401: Bad credentials token=ghp_SECRETSECRETSECRET" >&2; exit 1; }
     out "$(jq -c --argjson n "${2##*/}" '{state:"open",title:"Customer Jane Doe cannot save",labels:[.[] | select(.number==$n) | .labels[]]}' "$D/issues.json")"; exit 0;;
@@ -101,21 +111,32 @@ sc_seed() {
 sc_log_lines() { if [ -f "$SC_LOG" ]; then wc -l < "$SC_LOG" | tr -d ' '; else echo 0; fi; }
 
 sc_path() { printf '%s' "$SC_D:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"; }
-# sc_tick — one supervisor tick
+# The stub orchestrator is started detached (nohup ... &), so its claude.log line can land after the launcher returned.
+# Nothing here sleeps a fixed time: every launch the launcher reported is waited for, bounded.
+# sc_wait_launches <n> — up to 5 s until claude.log holds at least <n> orchestrator launches
+sc_wait_launches() {
+  local i=0
+  while [ "$(sc_orch_launches)" -lt "$1" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+  return 0
+}
+# sc_tick — one supervisor tick; waits for every launch its log reports (step 5: "claimed by <host> ... orchestrate.sh status
+# <ticket>", the last line of a successful launch; queue drain: "[launch] #<n> pid=")
 sc_tick() {
   HOME="$SC_HOME" PATH="$(sc_path)" PIPE="$SC_PIPE" QUEUE="$SC_PIPE/queue" LOGDIR="$SC_HOME/logs/pipeline" \
     SLACK_BOT_TOKEN="" SLACK_ENGINEERING_CHANNEL="" SLACK_WEBHOOK_URL="$SC_WEBHOOK" SENTRY_CAP_BYPASS="" SENTRY_CAP_LABELLED="" \
     /bin/bash "$SUP_SC" >/dev/null 2>&1
-  sleep 0.3
+  sc_wait_launches "$(sc_suplog | grep -cE 'claimed by .*orchestrate\.sh status |\[launch\] #[0-9]+ pid=')"
 }
 # sc_launch <checkout> <issue> [orchestrate.sh flags...] — a hand launch; prints stdout+stderr, returns the exit code.
 # SC_BYPASS / SC_LABELLED / SC_WEBHOOK feed SENTRY_CAP_BYPASS / SENTRY_CAP_LABELLED / SLACK_WEBHOOK_URL.
 sc_launch() {
-  local repo=$1 n=$2 rc; shift 2
-  HOME="$SC_HOME" PATH="$(sc_path)" PIPE="$SC_PIPE" QUEUE="$SC_PIPE/queue" LOGDIR="$SC_HOME/logs/pipeline" \
+  local repo=$1 n=$2 rc out before; shift 2
+  before=$(sc_orch_launches)
+  out=$(HOME="$SC_HOME" PATH="$(sc_path)" PIPE="$SC_PIPE" QUEUE="$SC_PIPE/queue" LOGDIR="$SC_HOME/logs/pipeline" \
     SLACK_WEBHOOK_URL="$SC_WEBHOOK" SENTRY_CAP_BYPASS="$SC_BYPASS" SENTRY_CAP_LABELLED="$SC_LABELLED" \
-    /bin/bash "$ORCH_SC" "$@" "$repo" "$n" 2>&1; rc=$?
-  sleep 0.3
+    /bin/bash "$ORCH_SC" "$@" "$repo" "$n" 2>&1); rc=$?
+  printf '%s\n' "$out"
+  case "$out" in *"launched orchestrator for"*) sc_wait_launches $((before + 1)) ;; esac
   return $rc
 }
 # sc_lib <shell code> — runs it with config.sh + pipeline-lib.sh sourced in the fixture environment

@@ -65,14 +65,29 @@ test_s176g_dispatch_launches_sentry_agent_go_issue_labelled_after_intake() {
 }
 
 test_s176g_dispatch_launches_sentry_agent_go_issue_when_auto_go_one() {
-  # a finished intake run with SENTRY_AUTO_GO=1: agent-go is kept and no strip is issued
+  # #182 (code review of PR #683) replaces the earlier expectation "SENTRY_AUTO_GO=1: any agent-go a finished intake run left is
+  # kept". The agent-go that may stand while intake owns the ticket is the one written together with sentry-auto-go (the label
+  # the daily launch cap counts; since #186 the supervisor writes both, here the stub run stands in for that write).
   s176g_env 1 || return 1
+  perl -pi -e 's|\[\{name:"agent-go"\}\]|[{name:"agent-go"},{name:"sentry-auto-go"}]|' "$SI_D/claude"   # the run adds the pair
   si_issue 7 project-a/repo-a user-feedback-intake source:sentry
-  local i; for i in 1 2 3; do si_tick; done   # launch (agent adds agent-go + marker), then the done branch
+  local i; for i in 1 2 3; do si_tick; done   # launch (run adds agent-go + sentry-auto-go + marker), then the done branch
   local calls; calls=$(cat "$SI_D/gh-calls.log"); si_cleanup
-  assert_not_contains "$calls" "issue edit 7 --repo project-a/repo-a --remove-label agent-go" "SENTRY_AUTO_GO=1: no agent-go strip is issued" || return 1
+  assert_not_contains "$calls" "issue edit 7 --repo project-a/repo-a --remove-label agent-go" "SENTRY_AUTO_GO=1: agent-go with sentry-auto-go is not stripped" || return 1
   # agent-go survived to dispatch: step 5 claimed the issue (its claim edit is what consumes the label)
   assert_contains "$calls" "issue edit 7 --add-label agent-in-progress --remove-label agent-go" "SENTRY_AUTO_GO=1: agent-go kept, issue dispatched" || return 1
+}
+
+test_s176g_lone_agent_go_is_stripped_when_auto_go_one() {
+  # #182: SENTRY_AUTO_GO=1 and the run leaves agent-go WITHOUT sentry-auto-go: it would launch outside the daily cap, so the
+  # done branch strips it and step 5 never claims the issue
+  s176g_env 1 || return 1
+  si_issue 7 project-a/repo-a user-feedback-intake source:sentry
+  local i; for i in 1 2 3; do si_tick; done
+  local calls labels; calls=$(cat "$SI_D/gh-calls.log"); labels=$(si_labels 7); si_cleanup
+  assert_contains "$calls" "issue edit 7 --repo project-a/repo-a --remove-label agent-go" "SENTRY_AUTO_GO=1: a lone agent-go is stripped in the intake window" || return 1
+  assert_not_contains "$labels" "agent-go" "the issue no longer carries agent-go" || return 1
+  assert_not_contains "$calls" "issue edit 7 --add-label agent-in-progress --remove-label agent-go" "and it is not dispatched" || return 1
 }
 
 test_s176g_strip_survives_agent_removing_source_sentry_label() {
@@ -180,6 +195,7 @@ test_s176g_live_intake_run_is_stripped_and_nothing_dispatched() {
 run_test test_s176g_strip_removes_adjacent_agent_go_from_sentry_issue
 run_test test_s176g_dispatch_launches_sentry_agent_go_issue_labelled_after_intake
 run_test test_s176g_dispatch_launches_sentry_agent_go_issue_when_auto_go_one
+run_test test_s176g_lone_agent_go_is_stripped_when_auto_go_one
 run_test test_s176g_strip_survives_agent_removing_source_sentry_label
 run_test test_s176g_giveup_branch_strips_agent_go_from_sentry_issue
 run_test test_s176g_label_read_failure_keeps_state_and_retries

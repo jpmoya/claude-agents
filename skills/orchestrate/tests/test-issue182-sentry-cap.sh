@@ -8,7 +8,9 @@
 #   AC4  the launch log is append-only; a missing file counts as zero launches
 #   PM   orchestrate.sh on a sentry-auto-go issue with a full log -> exit 3 with the exact message, no claim comment, no
 #        process; --force does not bypass; SENTRY_CAP_BYPASS=1 does; a source:sentry issue without the label launches;
-#        the launch line is appended after a successful launch; agents/intake.md allow-lists the label
+#        the launch line is appended after a successful launch; agents/intake.md leaves the label to the supervisor
+#   Rev  (code review of PR #683) gate and append are serialised per repo by a mkdir lock with a stale takeover; a launch
+#        counted at queue time gives its place back when the entry is dropped before it started (`released` line)
 #   Obs  a failed read of the launch log or of the issue labels fails closed, is logged with release / environment /
 #        route=sentry-launch-cap and alerts once on the existing Slack webhook, with no secret or issue text
 #
@@ -59,12 +61,19 @@ test_sc_labels_other_outputs_never_carry_sentry_auto_go() {
   assert_eq "$SC_OUT" "add user-feedback,add user-feedback-needs-spec,remove user-feedback-intake," "staff idea unchanged" || return 1
 }
 
-test_sc_intake_md_allow_lists_the_label_only_from_the_helper() {
-  local forb; forb=$(awk '/^## Forbidden/{on=1;next} on{print}' "$ROOT_SC/agents/intake.md")
-  assert_contains "$forb" '`sentry-auto-go`' "intake.md Forbidden/allow-list names sentry-auto-go" || return 1
-  printf '%s\n' "$forb" | grep 'sentry-auto-go' | grep -q 'helper prints it' \
-    || { fail "intake.md: sentry-auto-go must be allowed only 'when the helper prints it'"; return 1; }
-  assert_contains "$forb" "sentry-noise" "control: the #176 allow-list entry is kept" || return 1
+test_sc_intake_md_leaves_the_label_to_the_supervisor() {
+  # since #186 a source:sentry run cannot write labels: sentry-auto-go is the supervisor's, when the helper prints it
+  local md="$ROOT_SC/agents/intake.md" forb line own
+  forb=$(awk '/^## Forbidden/{on=1;next} on{print}' "$md")
+  line=$(printf '%s\n' "$forb" | grep 'sentry-auto-go')
+  own=$(printf '%s\n' "$forb" | grep 'adding any label outside')
+  assert_contains "$forb" '`sentry-auto-go`' "intake.md Forbidden names sentry-auto-go" || return 1
+  assert_contains "$line" "only the supervisor applies" "the label is the supervisor's to apply" || return 1
+  assert_contains "$line" "helper prints it" "and only when the helper prints it" || return 1
+  assert_contains "$own" "sentry-noise" "control: the agent's own label list is still there" || return 1
+  assert_not_contains "$own" "sentry-auto-go" "the agent's own label list does not carry sentry-auto-go" || return 1
+  grep -qF 'Nothing in the decision file can add `agent-go` or `sentry-auto-go`' "$md" \
+    || { fail "intake.md: the decision file can add neither agent-go nor sentry-auto-go"; return 1; }
 }
 
 # ------------------------------------------------------------------------------------------ AC2: config
@@ -284,13 +293,15 @@ test_sc_orch_queued_launch_takes_its_slot_at_queue_time() {
   sc_env 'MAX_CONCURRENT=0' 'SENTRY_AUTO_GO_DAILY_CAP=1'
   sc_issue 7 "$SC_A" agent-go sentry-auto-go; sc_issue 8 "$SC_A" agent-go sentry-auto-go
   local out rc; out=$(sc_launch "$SC_RA" 7); rc=$?
-  local lines q=absent; lines=$(sc_log_lines); ls "$SC_PIPE"/queue/*.json >/dev/null 2>&1 && q=present
+  local lines q=absent slot; lines=$(sc_log_lines); ls "$SC_PIPE"/queue/*.json >/dev/null 2>&1 && q=present
+  slot=$(jq -r '.sentry_slot // "none"' "$SC_PIPE"/queue/*.json 2>/dev/null)
   local out2 rc2; out2=$(sc_launch "$SC_RA" 8); rc2=$?
   sc_cleanup
   assert_eq "$rc" "0" "queued: exit 0" || return 1
   assert_contains "$out" "queued #7" "control: the launch was queued" || return 1
   assert_eq "$q" "present" "queue entry written" || return 1
   assert_eq "$lines" "1" "the queued launch is counted" || return 1
+  assert_eq "$slot" "$SC_A" "the queue entry remembers its counted place" || return 1
   assert_eq "$rc2" "3" "cap 1: the next ticket is refused" || return 1
   assert_contains "$out2" "sentry launch cap reached for $SC_A (1/1 in 24h)" "refusal uses the configured cap" || return 1
 }
@@ -387,10 +398,152 @@ test_sc_orch_failed_label_read_fails_closed_tagged_and_alerted() {
   assert_eq "$lines2" "1" "control: and is counted" || return 1
 }
 
+# ------------------------------------------------------------------------------------------ review of PR #683: releases
+
+test_sc_count_released_line_cancels_the_latest_launch_of_its_ticket() {
+  sc_env; local now a b
+  now=$(date +%s)
+  { printf '%s %s 11\n' "$((now - 500))" "$SC_A"            # launched, stands
+    printf '%s %s 12\n' "$((now - 400))" "$SC_A"            # queued ...
+    printf '%s %s 12 released\n' "$((now - 300))" "$SC_A"   # ... and dropped before it started
+    printf '%s %s 12\n' "$((now - 200))" "$SC_A"            # launched again later: counts
+    printf '%s %s 13 released\n' "$((now - 100))" "$SC_A"   # a release with no launch cancels nothing
+    printf '%s %s 11 released\n' "$((now - 50))" "$SC_B"    # another repo's release does not touch repo A
+    printf '%s %s 14 dropped\n' "$((now - 10))" "$SC_A"; } > "$SC_LOG"   # an unknown 4th field is not a line at all
+  a=$(sc_lib "sentry_launch_count $SC_A"); b=$(sc_lib "sentry_launch_count $SC_B")
+  sc_cleanup
+  assert_eq "$a" "2" "repo A: #11 and the second launch of #12 (hand count: 3 launches - 1 release)" || return 1
+  assert_eq "$b" "0" "repo B: nothing launched" || return 1
+}
+
+test_sc_slot_release_appends_only_for_a_counted_queue_entry() {
+  sc_env; sc_seed "$SC_A" 60
+  printf '{"issue":"900","repo":"/x","reason":"queued","sentry_slot":"%s"}' "$SC_A" > "$SC_PIPE/queue/orch-a.json"
+  printf '{"issue":"7","repo":"/x","reason":"queued"}' > "$SC_PIPE/queue/orch-b.json"
+  printf '{"issue":"8","repo":"/x","reason":"queued","sentry_slot":"evil/repo; rm -rf x"}' > "$SC_PIPE/queue/orch-c.json"
+  : > "$SC_PIPE/queue/orch-d.json"
+  local before after n last first
+  before=$(cat "$SC_LOG")
+  sc_lib "sentry_slot_release '$SC_PIPE/queue/orch-b.json'; sentry_slot_release '$SC_PIPE/queue/orch-c.json'; sentry_slot_release '$SC_PIPE/queue/orch-d.json'; sentry_slot_release '$SC_PIPE/queue/missing.json'"
+  n=$(sc_log_lines)
+  sc_lib "sentry_slot_release '$SC_PIPE/queue/orch-a.json'"
+  after=$(sc_log_lines); last=$(tail -1 "$SC_LOG"); first=$(sed -n 1p "$SC_LOG")
+  local c; c=$(sc_lib "sentry_launch_count $SC_A")
+  sc_cleanup
+  assert_eq "$n" "1" "an entry without a valid sentry_slot (or no entry) releases nothing" || return 1
+  assert_eq "$after" "2" "the counted entry appends one line" || return 1
+  assert_eq "$first" "$before" "the launch line itself is untouched (append-only)" || return 1
+  printf '%s\n' "$last" | grep -qE "^[0-9]+ $SC_A 900 released\$" || { fail "release line shape, got: $last"; return 1; }
+  assert_eq "$c" "0" "the place is free again" || return 1
+}
+
+test_sc_orch_stop_of_a_queued_launch_releases_its_place() {
+  sc_env 'MAX_CONCURRENT=0' 'SENTRY_AUTO_GO_DAILY_CAP=1'
+  sc_issue 7 "$SC_A" agent-go sentry-auto-go; sc_issue 8 "$SC_A" agent-go sentry-auto-go
+  sc_launch "$SC_RA" 7 >/dev/null
+  local c1; c1=$(sc_lib "sentry_launch_count $SC_A")
+  HOME="$SC_HOME" PATH="$(sc_path)" PIPE="$SC_PIPE" QUEUE="$SC_PIPE/queue" LOGDIR="$SC_HOME/logs/pipeline" /bin/bash "$ORCH_SC" stop "$SC_A#7" >/dev/null 2>&1
+  local c2 q=absent; c2=$(sc_lib "sentry_launch_count $SC_A"); ls "$SC_PIPE"/queue/*.json >/dev/null 2>&1 && q=present
+  local rc8; sc_launch "$SC_RA" 8 >/dev/null; rc8=$?
+  sc_cleanup
+  assert_eq "$c1" "1" "control: the queued launch holds the one place" || return 1
+  assert_eq "$q" "absent" "control: stop removed the queue entry" || return 1
+  assert_eq "$c2" "0" "stop of a launch that never started releases its place" || return 1
+  assert_eq "$rc8" "0" "the next ticket is accepted (cap 1)" || return 1
+}
+
+test_sc_orch_relaunch_of_a_queued_launch_counts_once() {
+  # queued (counted), then launched by hand once a slot is free: the queued place is released, the launch counts itself
+  sc_env 'MAX_CONCURRENT=0'
+  sc_issue 7 "$SC_A" agent-go sentry-auto-go
+  sc_launch "$SC_RA" 7 >/dev/null
+  sed -i.bak 's/^MAX_CONCURRENT=0$/MAX_CONCURRENT=3/' "$SC_HOME/.claude/pipeline/config.local.sh"
+  local out rc; out=$(sc_launch "$SC_RA" 7 --force); rc=$?   # --force: the queued launch already put agent-in-progress on
+  local c n lines; c=$(sc_lib "sentry_launch_count $SC_A"); n=$(sc_orch_launches); lines=$(sc_log_lines)
+  sc_cleanup
+  assert_eq "$rc" "0" "the hand launch goes through" || return 1
+  assert_eq "$n" "1" "one orchestrator process" || return 1
+  assert_eq "$lines" "3" "launch, release, launch: three appended lines" || return 1
+  assert_eq "$c" "1" "one ticket, one place" || return 1
+}
+
+# ------------------------------------------------------------------------------------------ review of PR #683: the lock
+
+test_sc_lock_is_exclusive_per_repo_and_released_by_its_holder_only() {
+  sc_env; local held other free foreign hp
+  # the holder is a live process other than the one asking
+  /bin/sleep 60 & hp=$!
+  mkdir "$SC_PIPE/sentry-cap-project-a_repo-a.lock"; echo "$hp $(date +%s)" > "$SC_PIPE/sentry-cap-project-a_repo-a.lock/owner"
+  held=$(SENTRY_CAP_LOCK_WAIT_SECS=1 sc_lib "sentry_cap_lock $SC_A; echo rc=\$?")
+  other=$(SENTRY_CAP_LOCK_WAIT_SECS=1 sc_lib "sentry_cap_lock $SC_B; echo rc=\$?; sentry_cap_unlock; [ -d '$SC_PIPE/sentry-cap-project-b_repo-b.lock' ] && echo left || echo gone")
+  # unlock from a process that does not hold it must leave it alone
+  foreign=$(sc_lib "SENTRY_CAP_LOCK='$SC_PIPE/sentry-cap-project-a_repo-a.lock'; sentry_cap_unlock; [ -d '$SC_PIPE/sentry-cap-project-a_repo-a.lock' ] && echo left || echo gone")
+  kill "$hp" 2>/dev/null; wait "$hp" 2>/dev/null
+  rm -rf "$SC_PIPE/sentry-cap-project-a_repo-a.lock"
+  free=$(SENTRY_CAP_LOCK_WAIT_SECS=1 sc_lib "sentry_cap_lock Project-A/Repo-A; echo rc=\$?; cut -d' ' -f1 \"\$SENTRY_CAP_LOCK/owner\" | grep -c '^[0-9][0-9]*\$'")
+  sc_cleanup
+  assert_eq "$held" "rc=1" "a lock held by a live process is not taken: the wait times out" || return 1
+  assert_eq "$(printf '%s' "$other" | tr '\n' ' ')" "rc=0 gone" "another repo's lock is independent, and unlock removes one's own lock" || return 1
+  assert_eq "$foreign" "left" "unlock never removes a lock another process holds" || return 1
+  assert_eq "$(printf '%s' "$free" | tr '\n' ' ')" "rc=0 1" "once released it is acquired (repo name case-insensitive) and names its holder" || return 1
+}
+
+test_sc_lock_of_a_dead_or_stale_holder_is_taken_over() {
+  sc_env; local dead stale young p=99999
+  while kill -0 "$p" 2>/dev/null; do p=$((p - 1)); done   # a pid with no process
+  mkdir "$SC_PIPE/sentry-cap-project-a_repo-a.lock"; echo "$p $(date +%s)" > "$SC_PIPE/sentry-cap-project-a_repo-a.lock/owner"
+  dead=$(SENTRY_CAP_LOCK_WAIT_SECS=1 sc_lib "sentry_cap_lock $SC_A; echo rc=\$?")
+  rm -rf "$SC_PIPE/sentry-cap-project-a_repo-a.lock"
+  # a live holder (this shell) whose lock is 700 s old: older than the 600 s default
+  mkdir "$SC_PIPE/sentry-cap-project-a_repo-a.lock"; echo "$$ $(( $(date +%s) - 700 ))" > "$SC_PIPE/sentry-cap-project-a_repo-a.lock/owner"
+  stale=$(SENTRY_CAP_LOCK_WAIT_SECS=1 sc_lib "sentry_cap_lock $SC_A; echo rc=\$?")
+  rm -rf "$SC_PIPE/sentry-cap-project-a_repo-a.lock"
+  # control: the same live holder at 500 s is still inside the window
+  mkdir "$SC_PIPE/sentry-cap-project-a_repo-a.lock"; echo "$$ $(( $(date +%s) - 500 ))" > "$SC_PIPE/sentry-cap-project-a_repo-a.lock/owner"
+  young=$(SENTRY_CAP_LOCK_WAIT_SECS=1 sc_lib "sentry_cap_lock $SC_A; echo rc=\$?")
+  sc_cleanup
+  assert_eq "$dead" "rc=0" "a lock whose holder process is gone is taken over" || return 1
+  assert_eq "$stale" "rc=0" "a lock older than the stale age is taken over" || return 1
+  assert_eq "$young" "rc=1" "control: a live holder inside the stale age keeps it" || return 1
+}
+
+test_sc_orch_two_launchers_cannot_both_take_the_last_place() {
+  # 2 of 3 used; two hand launches of two tickets start together. Each waits the claim settle time (2 s) between its
+  # gate and its append, so without the lock both would read 2 and both would launch.
+  sc_env 'CLAIM_SETTLE_SECS=2'; sc_seed "$SC_A" 600 1800
+  sc_issue 7 "$SC_A" agent-go sentry-auto-go; sc_issue 8 "$SC_A" agent-go sentry-auto-go
+  ( sc_launch "$SC_RA" 7 > "$SC_D/out-7" 2>&1; echo $? > "$SC_D/rc-7" ) &
+  local p1=$!
+  ( sc_launch "$SC_RA" 8 > "$SC_D/out-8" 2>&1; echo $? > "$SC_D/rc-8" ) &
+  local p2=$!
+  wait "$p1" "$p2"
+  local rcs n c outs locks; rcs=$(cat "$SC_D/rc-7" "$SC_D/rc-8" | sort | tr '\n' ' '); n=$(sc_orch_launches)
+  c=$(sc_lib "sentry_launch_count $SC_A"); outs=$(cat "$SC_D/out-7" "$SC_D/out-8")
+  locks=$(ls -d "$SC_PIPE"/sentry-cap-*.lock 2>/dev/null | wc -l | tr -d ' ')
+  sc_cleanup
+  assert_eq "$rcs" "0 3 " "one launcher gets the last place, the other is refused with exit 3" || return 1
+  assert_eq "$n" "1" "exactly one orchestrator process" || return 1
+  assert_eq "$c" "3" "the window holds 3 launches, not 4" || return 1
+  assert_contains "$outs" "sentry launch cap reached for $SC_A (3/3 in 24h)" "the loser sees the full window" || return 1
+  assert_eq "$locks" "0" "no lock is left behind" || return 1
+}
+
+test_sc_orch_refusals_leave_no_lock_behind() {
+  sc_env; sc_seed "$SC_A" 600 1800 3000
+  sc_issue 7 "$SC_A" agent-go sentry-auto-go
+  sc_launch "$SC_RA" 7 >/dev/null                      # cap reached (exit 3)
+  local l1; l1=$(ls -d "$SC_PIPE"/sentry-cap-*.lock 2>/dev/null | wc -l | tr -d ' ')
+  rm -f "$SC_LOG"; mkdir "$SC_LOG"; sc_launch "$SC_RA" 7 >/dev/null   # unreadable log (exit 1)
+  local l2; l2=$(ls -d "$SC_PIPE"/sentry-cap-*.lock 2>/dev/null | wc -l | tr -d ' ')
+  sc_cleanup
+  assert_eq "$l1" "0" "a cap refusal releases the lock" || return 1
+  assert_eq "$l2" "0" "a fail-closed refusal releases the lock" || return 1
+}
+
 run_test test_sc_labels_sentry_auto_go_on_adds_go_and_sentry_auto_go
 run_test test_sc_labels_sentry_auto_go_off_is_proposed_without_the_label
 run_test test_sc_labels_other_outputs_never_carry_sentry_auto_go
-run_test test_sc_intake_md_allow_lists_the_label_only_from_the_helper
+run_test test_sc_intake_md_leaves_the_label_to_the_supervisor
 run_test test_sc_config_defines_the_cap_with_the_worst_case_spend
 run_test test_sc_config_cap_is_overridable_in_config_local
 run_test test_sc_count_missing_file_is_zero
@@ -410,3 +563,11 @@ run_test test_sc_orch_queued_launch_takes_its_slot_at_queue_time
 run_test test_sc_orch_label_flag_from_the_supervisor_skips_the_label_read
 run_test test_sc_orch_unreadable_launch_log_fails_closed_tagged_and_alerted
 run_test test_sc_orch_failed_label_read_fails_closed_tagged_and_alerted
+run_test test_sc_count_released_line_cancels_the_latest_launch_of_its_ticket
+run_test test_sc_slot_release_appends_only_for_a_counted_queue_entry
+run_test test_sc_orch_stop_of_a_queued_launch_releases_its_place
+run_test test_sc_orch_relaunch_of_a_queued_launch_counts_once
+run_test test_sc_lock_is_exclusive_per_repo_and_released_by_its_holder_only
+run_test test_sc_lock_of_a_dead_or_stale_holder_is_taken_over
+run_test test_sc_orch_two_launchers_cannot_both_take_the_last_place
+run_test test_sc_orch_refusals_leave_no_lock_behind

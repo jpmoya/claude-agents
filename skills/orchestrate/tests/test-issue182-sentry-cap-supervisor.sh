@@ -10,6 +10,8 @@
 #   AC3  a non-Sentry issue dispatches as before, also next to a capped one
 #   AC4  a missing log counts as zero; a launch appends its line only after the claim is won and the run is launched
 #   Obs  an unreadable log fails closed (no launch), logged with release / environment / route=sentry-launch-cap, one alert
+#   Rev  (code review of PR #683) a launch counted when it was queued gives its place back when the drain drops the entry
+#        before it started (tombstone, lost claim) and keeps it when the drain starts it; restarts are not counted
 #
 # Expected values are hand-written from the ticket.
 
@@ -178,6 +180,79 @@ test_scs_unreadable_log_fails_closed_tagged_and_alerted() {
   assert_contains "$cl" "Drive $SC_A#9 through the pipeline" "AC3: the non-Sentry ticket still dispatches" || return 1
 }
 
+test_scs_fx4_hand_release_is_not_throttled_with_auto_go_on_either() {
+  # SENTRY_AUTO_GO=1 and no intake run owning the ticket: JP's agent-go on a source:sentry ticket launches, uncounted
+  sc_env 'SENTRY_AUTO_GO=1'; sc_seed "$SC_A" 600 1800 3000
+  sc_issue 7 "$SC_A" agent-go source:sentry user-feedback bug
+  sc_tick
+  local n lines caps l7; n=$(sc_orch_launches); lines=$(sc_log_lines); caps=$(sc_cap_lines); l7=$(sc_labels 7)
+  sc_cleanup
+  assert_eq "$n" "1" "hand release after intake launches with SENTRY_AUTO_GO=1 and a full log" || return 1
+  assert_eq "$caps" "0" "no cap line" || return 1
+  assert_eq "$lines" "3" "not counted" || return 1
+  assert_eq "$l7" "agent-in-progress,bug,source:sentry,user-feedback" "claimed as any agent-go ticket" || return 1
+}
+
+# sc_queue_counted <issue> — a launch of repo A that orchestrate.sh queued and counted: the queue entry with its sentry_slot
+# key and the launch line, as the queued path writes them
+sc_queue_counted() {
+  jq -nc --arg i "$1" --arg r "$SC_RA" --arg s "$SC_A" --arg t "$(date -u +%FT%TZ)" \
+    '{issue: $i, repo: $r, extra: "", reason: "queued", queued_at: $t, not_before: 0, sentry_slot: $s}' > "$SC_PIPE/queue/orch-project-a_repo-a-$1.json"
+  printf '%s %s %s\n' "$(date +%s)" "$SC_A" "$1" >> "$SC_LOG"
+}
+
+test_scs_drain_purge_of_a_counted_queue_entry_releases_its_place() {
+  sc_env; sc_queue_counted 7
+  touch "$SC_PIPE/orch-project-a_repo-a-7.stopped"      # stopped while queued: the drain purges the entry
+  local c1; c1=$(sc_lib "sentry_launch_count $SC_A")
+  sc_tick
+  local c2 q=absent n log last; c2=$(sc_lib "sentry_launch_count $SC_A"); n=$(sc_orch_launches); log=$(sc_suplog); last=$(tail -1 "$SC_LOG")
+  [ -e "$SC_PIPE/queue/orch-project-a_repo-a-7.json" ] && q=present
+  sc_cleanup
+  assert_eq "$c1" "1" "control: the queued launch holds a place" || return 1
+  assert_contains "$log" "tombstoned, purging queue entry" "control: the drain purged the entry" || return 1
+  assert_eq "$q" "absent" "entry removed" || return 1
+  assert_eq "$n" "0" "nothing launched" || return 1
+  assert_eq "$c2" "0" "the purged entry's place is released" || return 1
+  printf '%s\n' "$last" | grep -qE "^[0-9]+ $SC_A 7 released\$" || { fail "release line shape, got: $last"; return 1; }
+  assert_contains "$log" "$SC_A#7 — queued launch dropped before it started" "the release is logged" || return 1
+}
+
+test_scs_drain_lost_claim_releases_the_place_and_a_drained_launch_keeps_it() {
+  sc_env; touch "$SC_D/rest-comments" "$SC_D/claude-hold"
+  sc_queue_counted 7
+  local t; t=$(python3 -c "import datetime; print((datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(seconds=30)).strftime('%Y-%m-%dT%H:%M:%SZ'))")
+  jq -n --arg t "$t" '[{body: ("**[supervisor] NOTE** claim: otherhost " + $t), createdAt: $t}]' > "$SC_D/comments.json"
+  sc_tick
+  local c_lost n_lost log; c_lost=$(sc_lib "sentry_launch_count $SC_A"); n_lost=$(sc_orch_launches); log=$(sc_suplog)
+  # second half: no competing claim, the drain starts the queued launch; its place stays, nothing is appended
+  echo '[]' > "$SC_D/comments.json"; sc_queue_counted 8
+  local before; before=$(sc_log_lines)
+  sc_tick
+  local c_run n_run after; c_run=$(sc_lib "sentry_launch_count $SC_A"); n_run=$(sc_orch_launches); after=$(sc_log_lines)
+  sc_cleanup
+  assert_contains "$log" "lost claim to otherhost" "control: the drain lost the claim" || return 1
+  assert_eq "$n_lost" "0" "lost claim: not launched" || return 1
+  assert_eq "$c_lost" "0" "lost claim: the queued launch's place is released" || return 1
+  assert_eq "$n_run" "1" "the drain starts the other queued launch" || return 1
+  assert_eq "$after" "$before" "a drained launch appends nothing: it was counted when it was queued" || return 1
+  assert_eq "$c_run" "1" "and keeps its one place" || return 1
+}
+
+test_scs_auto_restart_of_a_launched_ticket_is_not_counted() {
+  # decision on PR #683: the cap bounds new tickets; a restart of one that already launched goes through the drain uncounted,
+  # also with a full window
+  sc_env; touch "$SC_D/rest-comments" "$SC_D/claude-hold"; sc_seed "$SC_A" 600 1800 3000
+  jq -nc --arg r "$SC_RA" --arg t "$(date -u +%FT%TZ)" '{issue: "7", repo: $r, extra: "", reason: "auto-restart", queued_at: $t, not_before: 0}' \
+    > "$SC_PIPE/queue/orch-project-a_repo-a-7.json"
+  sc_tick
+  local n lines c; n=$(sc_orch_launches); lines=$(sc_log_lines); c=$(sc_lib "sentry_launch_count $SC_A")
+  sc_cleanup
+  assert_eq "$n" "1" "the restart is launched though the window is full" || return 1
+  assert_eq "$lines" "3" "and appends no launch line" || return 1
+  assert_eq "$c" "3" "the count is unchanged" || return 1
+}
+
 run_test test_scs_fx1_full_log_same_repo_is_not_launched
 run_test test_scs_fx2_other_repo_is_launched
 run_test test_scs_fx3_entries_older_than_24h_do_not_count
@@ -187,3 +262,7 @@ run_test test_scs_one_cap_line_per_repo_per_tick
 run_test test_scs_cap_fills_from_its_own_launches_and_follows_config
 run_test test_scs_lost_claim_appends_nothing
 run_test test_scs_unreadable_log_fails_closed_tagged_and_alerted
+run_test test_scs_fx4_hand_release_is_not_throttled_with_auto_go_on_either
+run_test test_scs_drain_purge_of_a_counted_queue_entry_releases_its_place
+run_test test_scs_drain_lost_claim_releases_the_place_and_a_drained_launch_keeps_it
+run_test test_scs_auto_restart_of_a_launched_ticket_is_not_counted
