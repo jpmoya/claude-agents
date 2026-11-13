@@ -96,7 +96,10 @@ migrate_legacy_runs() {
 
 count_running() {  # [own run key] — a launcher's own pid reservation (#451) is not a running slot
   local n=0
-  for f in "$PIPE"/orch-*.pid "$PIPE"/intake-*.pid; do   # intake runs (#114) count against MAX_CONCURRENT too
+  # intake runs (#114) and PM spec runs (#115) count against MAX_CONCURRENT too. Spec runs were left out while a live one
+  # kept the tick lock and so stopped every later tick; since ticks run beside it (#182) they need their slot counted, or
+  # each tick could start one more. Goal pids (goal-*.pid) are coordinators and stay out.
+  for f in "$PIPE"/orch-*.pid "$PIPE"/intake-*.pid "$PIPE"/spec-*.pid; do
     [ -e "$f" ] || continue
     [ -n "${1:-}" ] && [ "$f" = "$PIPE/orch-$1.pid" ] && continue
     kill -0 "$(cat "$f")" 2>/dev/null && n=$((n + 1))
