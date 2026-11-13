@@ -81,7 +81,7 @@ SKIP (never queue, including from the FYI category above):
 - Calendar notifications, Gemini meeting notes, Indeed auto-notifications, newsletters/marketing, automated/no-reply senders.
 - Anything already replied to or acknowledged (check thread/DM history for a later outbound message from JP, or a prior queue item already marked sent/acknowledged).
 - Internal Slack chatter between other people that doesn't need JP (i.e. not a DM to him and doesn't @-mention him).
-- Pipeline bot (OpenClaw) status pings that are purely informational — but DO queue ones that explicitly ask JP for a decision/approval.
+- **All OpenClaw (pipeline bot) messages, for now (JP, 2026-11-13) — skip entirely, including ones that ask for a decision/approval.** Re-enable only if JP asks.
 - Emails where JP is only on Cc/Bcc, not To.
 
 ## Step B — triage for new items
