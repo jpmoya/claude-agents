@@ -669,8 +669,8 @@ sentry_slot_release() {
 # sentry_cap_lock <owner/repo> — serialises the gate-to-append section of a sentry-auto-go launch across processes on this
 # host: without it two launchers can both read "one place left" and both launch. mkdir is the lock (atomic, and present on
 # macOS, which has no file-lock binary) and "<pid> <epoch>" inside names the holder. A lock whose holder is gone, or older than
-# SENTRY_CAP_LOCK_STALE_SECS (default 600; a launch holds it through the claim settle wait, some 20 s), is taken over, the
-# same rule as the supervisor's own lock directory. Waits up to SENTRY_CAP_LOCK_WAIT_SECS (default 60), then returns 1
+# SENTRY_CAP_LOCK_STALE_SECS (default 600; a launch holds it through the claim settle wait, some 20 s), is taken over by
+# an atomic rename. Waits up to SENTRY_CAP_LOCK_WAIT_SECS (default 60), then returns 1
 # and the caller refuses the launch. Sets SENTRY_CAP_LOCK; sentry_cap_unlock removes only a lock this process holds.
 SENTRY_CAP_LOCK=""
 sentry_cap_lock() {
@@ -688,8 +688,12 @@ sentry_cap_lock() {
     if { [ -n "$pid" ] && ! ps -p "$pid" >/dev/null 2>&1; } \
        || { [ -n "$ts" ] && [ $(( now - ts )) -ge "${SENTRY_CAP_LOCK_STALE_SECS:-600}" ]; } \
        || { [ -z "$pid" ] && [ -n "$(find "$d" -maxdepth 0 -mmin +10 2>/dev/null)" ]; }; then
-      rm -rf "$d" 2>/dev/null || return 1
-      continue
+      # Take it away with one atomic rename, so two waiters cannot both remove it. What was moved is removed only when it still
+      # names the stale holder: if another waiter was faster and this is already its fresh lock, it goes back untouched.
+      if mv "$d" "$d.stale.$$" 2>/dev/null; then
+        if [ "$(cat "$d.stale.$$/owner" 2>/dev/null)" = "$own" ]; then rm -rf "$d.stale.$$" 2>/dev/null; continue; fi
+        { [ ! -e "$d" ] && mv "$d.stale.$$" "$d" 2>/dev/null; } || rm -rf "$d.stale.$$" 2>/dev/null
+      fi
     fi
     [ "$waited" -lt "${SENTRY_CAP_LOCK_WAIT_SECS:-60}" ] || return 1
     sleep 1; waited=$((waited + 1))

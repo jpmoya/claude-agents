@@ -1857,7 +1857,10 @@ intake_launch() {  # <owner/repo> <local path> <issue> <prompt>
     --agents "$agents" --agent intake)
   ( cd "$tmp" && PIPELINE_ISSUE="$3" PIPELINE_AGENT=intake PIPELINE_REPO="$1" PIPE="$PIPE" INTAKE_TMP="$tmp" CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 \
     nohup $SETSID bash -c 'p=$1; x=$2; shift 2; claude "$@" -p "$p"; echo $? > "$x"' _ "$4 INTAKE_TMP=$tmp INTAKE_WRITES=$mode" "$PIPE/$k.exit" "${args[@]}" \
-    >> "$PIPE/$k.log" 2>&1 9>&- & echo $! > "$PIPE/$k.pid" )
+    >> "$PIPE/$k.log" 2>&1 9>&- & echo $! > "$PIPE/$k.pid" ) 9>&-
+  # ^ the outer 9>&- matters: `cd … && nohup … &` backgrounds an AND-list, so bash keeps a forked copy of this shell waiting on
+  # the run, and that copy (not the nohup child, whose own 9>&- is on its line) inherited the tick's lock fd. Where the lock is
+  # the fd (Linux, or a Mac with the file-lock binary) every tick then exited at the lock for as long as the run lived (#603 class).
   echo "$2" > "$PIPE/$k.path"; echo "$1 $3" > "$PIPE/$k.id"
   echo $(( $(cat "$PIPE/$k.attempts" 2>/dev/null || echo 0) + 1 )) > "$PIPE/$k.attempts"
   date +%s > "$PIPE/$k.launched-at"   # #676: launch epoch; kept across a released (limit/transient) run, cleared at done / give-up
@@ -2124,7 +2127,7 @@ if [ "$launched" -eq 0 ] && [ "$HAS_CAP" -eq 1 ] && [ "${#DISPATCH_REPOS[@]}" -g
       ( cd "$PIPE" && PIPELINE_ISSUE="$num" PIPELINE_AGENT=product-manager PIPELINE_REPO="$owner_repo" PIPE="$PIPE" CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 \
         nohup $SETSID bash -c 'claude --dangerously-skip-permissions --agent product-manager -p "$1"; echo $? > "$2"' _ \
         "Write the spec for $owner_repo#$num as the product-manager (spec-only run for a user-feedback idea): do not add agent-go; do not file dependency follow-ups on this issue; post your READY marker." "$PIPE/$k.exit" \
-        >> "$PIPE/$k.log" 2>&1 9>&- & echo $! > "$PIPE/$k.pid" )
+        >> "$PIPE/$k.log" 2>&1 9>&- & echo $! > "$PIPE/$k.pid" ) 9>&-   # outer 9>&-: see intake_launch (the waiting copy of this shell held the lock fd)
       echo "$owner_repo $num" > "$PIPE/$k.id"; echo $(( $(cat "$PIPE/$k.attempts" 2>/dev/null || echo 0) + 1 )) > "$PIPE/$k.attempts"
       slog "[spec] $owner_repo#$num launched (attempt $(cat "$PIPE/$k.attempts"))"; launched=1; break
     done
