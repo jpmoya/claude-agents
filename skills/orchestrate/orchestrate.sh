@@ -197,6 +197,32 @@ except Exception: print('?')
     if [ -f "$PIPE/orch-$RK.pid" ] && kill -0 "$(cat "$PIPE/orch-$RK.pid")" 2>/dev/null; then
       echo "orchestrator for #$ISSUE already running (pid $(cat "$PIPE/orch-$RK.pid")); use 'stop' first" >&2; exit 1
     fi
+    # #182: daily launch cap for automatically released Sentry tickets (label sentry-auto-go), checked before any claim,
+    # label write or state file. --force is deliberately not consulted; SENTRY_CAP_BYPASS=1 in the environment is JP's
+    # deliberate hand launch. Supervisor step 5 already knows the label from its listing and passes SENTRY_CAP_LABELLED
+    # (no second GitHub read); any other caller reads it here, fresh and over REST (its own budget, #388). A failed
+    # label or launch-log read refuses the launch (fail closed); only the bypass launches without the label, uncounted.
+    SENTRY_CAPPED=${SENTRY_CAP_LABELLED:-}
+    case "$SENTRY_CAPPED" in
+      0|1) ;;
+      *) SENTRY_CAPPED=0
+        if SC_LABELS=$(GH_NOCACHE=1 gh api "repos/$OWNER_REPO/issues/$ISSUE" --jq '[.labels[].name] | join(",")' 2>/dev/null </dev/null); then
+          case ",$SC_LABELS," in *",$LABEL_SENTRY_GO,"*) SENTRY_CAPPED=1 ;; esac
+        elif [ "${SENTRY_CAP_BYPASS:-0}" = 1 ]; then
+          echo "#$ISSUE could not read the issue labels — SENTRY_CAP_BYPASS=1: launching without the sentry launch cap (not counted)" >&2
+        else
+          sentry_cap_fail "$OWNER_REPO" "$ISSUE" "issue label read failed, not launched"
+          echo "#$ISSUE could not read the issue labels for the sentry launch cap — refusing, labels untouched; check gh access, then relaunch" >&2; exit 1
+        fi ;;
+    esac
+    if [ "$SENTRY_CAPPED" = 1 ] && [ "${SENTRY_CAP_BYPASS:-0}" != 1 ]; then
+      SC_RC=0; sentry_cap_gate "$OWNER_REPO" "$ISSUE" || SC_RC=$?
+      if [ "$SC_RC" = 3 ]; then
+        echo "sentry launch cap reached for $OWNER_REPO ($SENTRY_CAP_N/$SENTRY_CAP_MAX in 24h)" >&2; exit 3
+      elif [ "$SC_RC" != 0 ]; then
+        echo "#$ISSUE could not read the sentry launch log — refusing, labels untouched; fix $PIPE/sentry-launches.log, then relaunch" >&2; exit 1
+      fi
+    fi
     # #451: reserve the pid file now so the claim-settle wait below is covered by the liveness check above; every exit
     # before the spawn puts the earlier content back.
     pid_reserve "$RK"
@@ -243,6 +269,9 @@ with open('$QUEUE/orch-$RK.json', 'w') as f:
       echo "queued #$ISSUE ($(count_running "$RK")/$MAX_CONCURRENT slots full, $(mem_available_mb)MB avail) — supervisor will auto-launch when a slot opens"
       echo "check: ~/.claude/skills/orchestrate/orchestrate.sh queue"
       pid_reserve_done; rm -f "$PIPE/orch-$RK.pid"   # queued, not running: a stale dead pid makes the supervisor read this as a run that just ended (#22)
+      # #182: accepted into the queue (claim won, agent-go consumed; the drain starts it with no second check), so the
+      # launch takes its place in the daily window now
+      [ "$SENTRY_CAPPED" != 1 ] || sentry_launch_record "$OWNER_REPO" "$ISSUE" || sentry_cap_fail "$OWNER_REPO" "$ISSUE" "launch log append failed, launch not counted"
       exit 0
     fi
     # The headless session IS the orchestrator (--agent), not a wrapper that calls Agent(orchestrator):
@@ -265,6 +294,8 @@ with open('$QUEUE/orch-$RK.json', 'w') as f:
     echo $! > "$PIPE/orch-$RK.pid"; echo "$REPO" > "$PIPE/orch-$RK.repo"
     date -u +%FT%TZ > "$PIPE/orch-$RK.start"; date -u +%FT%TZ > "$PIPE/orch-$RK.launched-at"
     log_run_launch "$OWNER_REPO" "$ISSUE" "${LAUNCH_REASON:-manual}" 0 "" "$RK"
+    # #182: the launch line is appended only here, after the claim was won and the run started
+    [ "$SENTRY_CAPPED" != 1 ] || sentry_launch_record "$OWNER_REPO" "$ISSUE" || sentry_cap_fail "$OWNER_REPO" "$ISSUE" "launch log append failed, launch not counted"
     report_status_async "launch"   # event push: run launched (design #10 §4.4)
     echo "launched orchestrator for $OWNER_REPO#$ISSUE  pid=$!  log=$PIPE/orch-$RK.log"
     echo "check: ~/.claude/skills/orchestrate/orchestrate.sh status $OWNER_REPO#$ISSUE"

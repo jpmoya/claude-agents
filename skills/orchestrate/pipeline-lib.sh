@@ -617,3 +617,64 @@ pm_closing_reject() {
     | select((.[0] // "") | test("^\\*\\*\\[product-manager\\] REJECTED"))
     | (.[1] // "") | select(test("^Reason: (not-a-bug|cannot-reproduce|duplicate of #[0-9]+)")) | sub("^Reason: "; "")' 2>/dev/null
 }
+
+# --- Daily launch cap for automatically released Sentry tickets (#182) -------------------------------------------
+# $PIPE/sentry-launches.log is append-only, one line per launch of a `sentry-auto-go` ticket: "<epoch> <owner/repo> <issue>".
+# Local state only: the cap never costs a GitHub call. Used by orchestrate.sh (the refusal, the append) and by the
+# supervisor's step 5 (the pre-check that keeps a capped ticket from getting a claim comment).
+
+# sentry_launch_count <owner/repo> — prints how many launches of that repo lie inside the last 86400 s. A missing log is
+# 0. Returns 1, printing nothing, when the log exists but cannot be read (callers fail closed). Lines of any other shape
+# are not counted; repo names compare case-insensitively (GitHub's rule).
+sentry_launch_count() {
+  local r n
+  [ -e "$PIPE/sentry-launches.log" ] || { echo 0; return 0; }
+  [ -f "$PIPE/sentry-launches.log" ] && [ -r "$PIPE/sentry-launches.log" ] || return 1
+  r=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  n=$(awk -v r="$r" -v min="$(( $(date +%s) - 86400 ))" \
+    'NF == 3 && $1 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ && ($1 + 0) > (min + 0) && tolower($2) == r {c++} END {print c + 0}' \
+    "$PIPE/sentry-launches.log" 2>/dev/null) || return 1
+  case "$n" in ''|*[!0-9]*) return 1 ;; esac
+  echo "$n"
+}
+
+# sentry_launch_record <owner/repo> <issue> — appends the launch line; returns 1 when the append failed.
+sentry_launch_record() {
+  { printf '%s %s %s\n' "$(date +%s)" "$1" "$2" >> "$PIPE/sentry-launches.log"; } 2>/dev/null
+}
+
+# sentry_cap_fail <owner/repo> <issue> <what happened> — a launch-log or label read (or the append) failed: one line
+# tagged release=<commit SHA> environment=<host> route=sentry-launch-cap (slog when the caller has it, stderr otherwise),
+# one events row, and one alert on the existing Slack webhook (the supervisor's autoretry_alert when it is defined), at
+# most hourly per host: the supervisor would otherwise repeat it every tick. Repo, issue number and the failing step
+# only: never file content, labels or command output. Always returns 0; refusing the launch is the caller's job.
+sentry_cap_fail() {
+  local rel host line now last
+  rel=$(git -C "$_CLAIM_LIB_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)
+  host=$(hostname -s 2>/dev/null || echo unknown)
+  line="[sentry-cap] $1#$2 — $3: release=$rel environment=$host route=sentry-launch-cap"
+  if declare -F slog >/dev/null 2>&1; then slog "$line"; else echo "$line" >&2; fi
+  pipeline_event error --arg level error --arg route sentry-launch-cap --arg release "$rel" --arg environment "$host" \
+    --arg repo "$1" --argjson issue "$2" --arg msg "$3"
+  now=$(date +%s); last=$(cat "$PIPE/sentry-cap-alert.last" 2>/dev/null) || last=""
+  case "$last" in ''|*[!0-9]*) last=0 ;; esac
+  [ $(( now - last )) -ge 3600 ] || return 0
+  echo "$now" > "$PIPE/sentry-cap-alert.last" 2>/dev/null || true
+  if declare -F autoretry_alert >/dev/null 2>&1; then autoretry_alert "$2" "$3" sentry-launch-cap || true; return 0; fi
+  [ -n "${SLACK_WEBHOOK_URL:-}" ] || return 0
+  curl -s --max-time 10 -X POST -H 'Content-type: application/json' \
+    --data "$(jq -nc --arg t "sentry launch cap: $3 for $1#$2: release=$rel environment=$host route=sentry-launch-cap" '{text:$t}')" \
+    "$SLACK_WEBHOOK_URL" >/dev/null 2>&1 </dev/null || true
+  return 0
+}
+
+# sentry_cap_gate <owner/repo> <issue> — 0: under SENTRY_AUTO_GO_DAILY_CAP, may launch. 3: at or above it (nothing is
+# logged here; the caller words its own refusal). 1: the launch log could not be read — already reported through
+# sentry_cap_fail, the caller must not launch. Sets SENTRY_CAP_N (launches counted) and SENTRY_CAP_MAX (the cap).
+sentry_cap_gate() {
+  SENTRY_CAP_MAX=${SENTRY_AUTO_GO_DAILY_CAP:-3}; SENTRY_CAP_N=""
+  case "$SENTRY_CAP_MAX" in ''|*[!0-9]*) SENTRY_CAP_MAX=3 ;; esac
+  SENTRY_CAP_N=$(sentry_launch_count "$1") || { SENTRY_CAP_N=""; sentry_cap_fail "$1" "$2" "launch log read failed, not launched"; return 1; }
+  [ "$SENTRY_CAP_N" -lt "$SENTRY_CAP_MAX" ] || return 3
+  return 0
+}

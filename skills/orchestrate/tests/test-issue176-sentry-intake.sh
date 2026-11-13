@@ -19,7 +19,8 @@ s176_ops() {
 }
 
 BUG_PROPOSED_S176="add agent-proposed,add bug,add user-feedback,remove user-feedback-intake,"
-BUG_GO_S176="add agent-go,add bug,add user-feedback,remove user-feedback-intake,"
+# #182: the automatic agent-go of a Sentry bug comes with sentry-auto-go (the label the daily launch cap counts)
+BUG_GO_S176="add agent-go,add bug,add sentry-auto-go,add user-feedback,remove user-feedback-intake,"
 
 # --- AC2: config default
 test_s176_ac2_config_defines_sentry_auto_go_zero() {

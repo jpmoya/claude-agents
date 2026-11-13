@@ -2286,25 +2286,48 @@ if [ "$launched" -eq 0 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
           "$PIPE/backlog-priority.json" 2>/dev/null) || prio_json='{}'
         case "$prio_json" in ''|null) prio_json='{}' ;; esac
       fi
-      candidates=$(gh issue list --repo "$owner_repo" --state open --label "$LABEL_GO" --limit 500 \
+      # #182: the same listing also says which candidates carry sentry-auto-go (.s), so the daily launch cap below costs
+      # no extra GitHub read; cand_json keeps the sorted objects, sentry_cands the numbers of the labelled ones.
+      cand_json=$(gh issue list --repo "$owner_repo" --state open --label "$LABEL_GO" --limit 500 \
         --search "$dispatch_search" --json number,labels,milestone \
         --jq "[.[] | select([.labels[].name] | index(\"$LABEL_IN_PROGRESS\") | not) | select(([.labels[].name] | map(. as \$l | $goal_skip_json | index(\$l)) | any(. != null)) | not) $spread_sel]
           | map(. as \$i | ((((\$i.milestone.title? // \"\") | tostring) | capture(\"^v(?<a>[0-9]+)\\\\.(?<b>[0-9]+)\\\\.(?<c>[0-9]+)\")) // null) as \$v
-            | {n: \$i.number, g: ((\$i.labels // []) | any(.name // \"\" | test(\"^goal: \"))), k: (if \$v then [0, (\$v.a|tonumber), (\$v.b|tonumber), (\$v.c|tonumber), \$i.number] else [1, 0, 0, 0, \$i.number] end)})
-          | sort_by(.k)" 2>"$rq_err" \
-        | jq --argjson prio "$prio_json" -f "$HERE/lib/backlog-sort.jq" 2>>"$rq_err") || {
+            | {n: \$i.number, g: ((\$i.labels // []) | any(.name // \"\" | test(\"^goal: \"))), s: ((\$i.labels // []) | any(.name // \"\" | . == \"$LABEL_SENTRY_GO\")), k: (if \$v then [0, (\$v.a|tonumber), (\$v.b|tonumber), (\$v.c|tonumber), \$i.number] else [1, 0, 0, 0, \$i.number] end)})
+          | sort_by(.k)" 2>"$rq_err") \
+        && candidates=$(printf '%s' "$cand_json" | jq --argjson prio "$prio_json" -f "$HERE/lib/backlog-sort.jq" 2>>"$rq_err") \
+        && sentry_cands=$(printf '%s' "$cand_json" | jq -r '[.[] | select(.s) | .n | tostring] | join(" ")' 2>>"$rq_err") || {
         slog "[dispatch] $owner_repo — listing or release sort failed ($rq_tags): $(head -c 300 "$rq_err" | tr '\n' ' ')"
         notify_engineering 0 ":warning:" "dispatch listing/sort failed for $owner_repo ($rq_tags)" "$owner_repo"; rm -f "$rq_err"; continue; }
       rm -f "$rq_err"
       cand_n=$(printf '%s\n' "$candidates" | grep -c '[0-9]')
       [ "$cand_n" -ge 500 ] && slog "[dispatch] $owner_repo — candidate list reached the 500 cap; later tickets are not visible this tick"
       # #247 end
+      # #182 begin
+      sentry_gate=""   # this repo's cap decision, made at its first sentry-auto-go candidate: 0 launch, 3 capped, 1 log unreadable
+      # #182 end
       for num in $candidates; do
         rk=$(run_key "$owner_repo" "$num")
         # local state: alive or queued here → not a candidate
         if [ -f "$PIPE/orch-$rk.pid" ] && kill -0 "$(cat "$PIPE/orch-$rk.pid")" 2>/dev/null; then continue; fi
         [ -f "$QUEUE/orch-$rk.json" ] && continue
 
+        # #182 begin
+        # Daily launch cap for automatically released Sentry tickets: a sentry-auto-go candidate is skipped this tick,
+        # before any claim comment, while the repo's launches of the last 24 h ($PIPE/sentry-launches.log, local) are at
+        # or above SENTRY_AUTO_GO_DAILY_CAP. Labels stay as they are, so it launches when the window frees; other
+        # candidates go on. Decided once per repo per tick (one slog line); an unreadable log fails closed the same way
+        # (logged and alerted by sentry_cap_gate). orchestrate.sh re-checks and appends the launch line; it is told the
+        # label through SENTRY_CAP_LABELLED so it does not read it again.
+        export SENTRY_CAP_LABELLED=0
+        case " $sentry_cands " in *" $num "*)
+          SENTRY_CAP_LABELLED=1
+          if [ -z "$sentry_gate" ]; then
+            sentry_gate=0; sentry_cap_gate "$owner_repo" "$num" || sentry_gate=$?
+            [ "$sentry_gate" != 3 ] || slog "[dispatch] $owner_repo#$num — sentry launch cap reached ($SENTRY_CAP_N/$SENTRY_CAP_MAX in 24h), sentry-auto-go tickets of this repo wait (labels untouched)"
+          fi
+          [ "$sentry_gate" = 0 ] || continue ;;
+        esac
+        # #182 end
         ts=$(date -u +%FT%TZ)
         (cd "$local_path" && gh issue comment "$num" --body "**[supervisor] NOTE** claim: $HOST $ts" >/dev/null 2>&1) || { slog "[dispatch] $owner_repo#$num — claim comment failed"; continue; }
         sleep "$CLAIM_SETTLE_SECS"
@@ -2320,6 +2343,9 @@ if [ "$launched" -eq 0 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
         launched=1
         break
       done
+      # #182 begin
+      unset SENTRY_CAP_LABELLED   # meant for the launch above only: nothing started later in the tick may inherit it
+      # #182 end
     done
   fi
 fi
