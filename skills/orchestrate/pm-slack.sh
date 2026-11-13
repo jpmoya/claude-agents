@@ -19,6 +19,7 @@ source "$HERE/../../hooks/pipeline-markers.sh" 2>/dev/null || source "$HOME/.cla
 [ -n "${PM_SLACK_BOT_TOKEN:-}" ] || exit 0
 JP_ID="${PM_SLACK_USER_ID:-U0A8FPA9V0E}"
 REMIND_AFTER_SECS=86400
+REMIND_RETRY_SECS=1800   # a sweep that failed (Slack post, or an unreadable issue state) is not retried sooner (#677)
 SD="$PIPE/pm-slack"
 ASKS="$SD/asks.tsv"      # repo \t issue \t channel \t ts \t asked_at \t status(open|answered) \t reminded(0|1) \t kind(""|mockup-skip, #470)
 LASTREAD="$SD/last-read"
@@ -132,32 +133,35 @@ cmd_ask() {
 # old that was never reminded; a mockup-skip ask is non-blocking and never due. The issue state of each due ask is read once:
 # closed -> stored `answered`, no reminder; unreadable -> left for the next poll. The rest get ONE DM for the whole sweep, one
 # line per ask, then reminded=1 — the flag cmd_ask's own reminder uses, so an ask is reminded once in total. A failed post
-# leaves reminded=0 (retried next poll): one tagged stderr line each time, one webhook alert per failure streak (tags only —
-# never the token, the ask text or JP's reply).
+# leaves reminded=0: one tagged stderr line, one webhook alert per failure streak (tags only — never the token, the ask text
+# or JP's reply). A failed sweep (post failed, or a state was unreadable) writes "<epoch> <post|read>" to remind-failed and
+# is retried REMIND_RETRY_SECS later, never on every 2-minute poll: no GitHub read at all inside that window.
 remind_sweep() {
-  local ch=$1 now due row repo issue rch ts asked st rem kind state lines="" sent="" tags
+  local ch=$1 now due row repo issue rch ts asked st rem kind state lines="" sent="" tags prev pkind unread=0
   now=$(date +%s)
+  { read -r prev pkind < "$SD/remind-failed"; } 2>/dev/null || { prev=""; pkind=""; }
+  case "$prev" in ''|*[!0-9]*) ;; *) [ $(( now - prev )) -ge "$REMIND_RETRY_SECS" ] || return 0 ;; esac
   due=$(awk -F'\t' -v now="$now" -v after="$REMIND_AFTER_SECS" '$6 == "open" && $7 == "0" && $8 != "mockup-skip" && now - $5 >= after' "$ASKS" 2>/dev/null)
-  [ -n "$due" ] || return 0
+  [ -n "$due" ] || { rm -f "$SD/remind-failed"; return 0; }
   while IFS= read -r row <&4; do
     IFS="$TAB" read -r repo issue rch ts asked st rem kind <<< "$row"
-    state=$(gh issue view "$issue" --repo "$repo" --json state --jq .state 2>/dev/null </dev/null) || continue
+    state=$(gh issue view "$issue" --repo "$repo" --json state --jq .state 2>/dev/null </dev/null) || { unread=1; continue; }
     if [ "$state" = CLOSED ]; then set_ask "$repo" "$issue" "$rch" "$ts" "$asked" answered "$rem" "$kind"; continue; fi
     lines="$lines#$issue · ${repo##*/} — waiting $(( (now - asked) / 86400 ))d — https://github.com/$repo/issues/$issue"$'\n'
     sent="$sent$row"$'\n'
   done 4<<< "$due"
+  if [ "$unread" = 1 ]; then echo "$now read" > "$SD/remind-failed"; else rm -f "$SD/remind-failed"; fi
   [ -n "$lines" ] || return 0
   if ! post "$ch" "Still waiting on your answer:"$'\n'"$lines"$'\n'"Reply here with #<issue> and your answer."; then
     tags="release=$(git -C "$HERE" rev-parse HEAD 2>/dev/null || echo unknown) environment=$(hostname -s 2>/dev/null || echo unknown) route=pm-slack/remind"
     echo "pm-slack: reminder post failed: $tags" >&2
-    if [ ! -e "$SD/remind-failed" ]; then
-      : > "$SD/remind-failed"
+    echo "$now post" > "$SD/remind-failed"
+    if [ "$pkind" != post ]; then   # first failure of the streak
       [ -z "${SLACK_WEBHOOK_URL:-}" ] || curl -s --max-time 10 -X POST -H 'Content-type: application/json' \
         --data "$(jq -nc --arg t "pm-slack reminder post failed: $tags" '{text:$t}')" "$SLACK_WEBHOOK_URL" >/dev/null 2>&1 </dev/null || true
     fi
     return 0
   fi
-  rm -f "$SD/remind-failed"
   while IFS= read -r row <&4; do
     [ -n "$row" ] || continue
     IFS="$TAB" read -r repo issue rch ts asked st rem kind <<< "$row"

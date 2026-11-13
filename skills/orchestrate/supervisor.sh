@@ -892,16 +892,19 @@ PY
 # shipped to the integration branch. State: orch-<rk>.startgate = the unmet refs, one per line, written only when the
 # supervisor's own check found one (so a run that stops for another structural reason is never relaunched in a loop).
 # startgate_unmet <repo dir> <refs, one per line> — prints the refs not met yet. Returns 2 on a failed read, printing that ref only.
+# A dependency closed as not planned (or as a duplicate) never shipped: like promote_deferred, closure alone does not meet the
+# gate and the run stays held for JP.
 startgate_unmet() {
   local repo=$1 slug g gr gn st out=""
   slug=$(repo_slug "$repo")
   while IFS= read -r g; do
     [ -n "$g" ] || continue
     case "$g" in "#"*) gr=$slug ;; *) gr=${g%#*} ;; esac; gn=${g##*#}
-    st=$(gh api "repos/$gr/issues/$gn" 2>/dev/null </dev/null | jq -r '(.state // "") | ascii_upcase' 2>/dev/null) || st=""
+    st=$(gh api "repos/$gr/issues/$gn" 2>/dev/null </dev/null | jq -r '"\((.state // "") | ascii_upcase) \(.state_reason // "")"' 2>/dev/null) || st=""
     case "$st" in
-      CLOSED) ;;
-      OPEN|REOPENED)
+      "CLOSED not_planned"|"CLOSED duplicate") out="$out$g"$'\n' ;;
+      "CLOSED "*) ;;
+      "OPEN "*|"REOPENED "*)
         "$HERE/dep-shipped.sh" "$gr" "$gn" >/dev/null 2>&1 </dev/null
         case $? in 0) ;; 1) out="$out$g"$'\n' ;; *) printf '%s\n' "$g"; return 2 ;; esac ;;
       *) printf '%s\n' "$g"; return 2 ;;

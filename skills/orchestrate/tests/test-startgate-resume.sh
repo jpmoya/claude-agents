@@ -174,6 +174,14 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 case "$*" in
   "issue comment"*"start-gate cleared"*)
     if [ -f "$HERE/sg-comment-fail" ]; then printf '%s\n' "FAILED $*" >> "$HERE/gh-calls.log"; echo "HTTP 500" >&2; exit 1; fi ;;
+  "api repos/"*"/issues/"[0-9]*)   # sg-closed-as-<n> = the state_reason of a CLOSED dependency (the ar2 stub serves none)
+    all="$*"; n=${all##*/issues/}
+    case "$n" in *[!0-9]*) ;; *)
+      if [ -f "$HERE/sg-closed-as-$n" ]; then
+        printf '%s\n' "$*" >> "$HERE/gh-calls.log"
+        jq -nc --arg r "$(cat "$HERE/sg-closed-as-$n")" '{state: "closed", state_reason: $r, body: ""}'; exit 0
+      fi ;;
+    esac ;;
 esac
 exec "$HERE/gh-ar2" "$@"
 GH_EOF
@@ -269,6 +277,32 @@ test_sg_closed_gate_resumes_too() {
   sq_cleanup
   assert_eq "$q" "present" "a closed dependency meets the gate" || return 1
   assert_eq "$evals" "0" "closed: dep-shipped.sh is not consulted" || return 1
+}
+
+# closure alone does not meet the gate when the dependency was closed as not planned (same rule as promote_deferred)
+test_sg_dependency_closed_as_not_planned_does_not_resume() {
+  local reason
+  for reason in not_planned duplicate; do
+    sg_run_env full
+    sg_held_on "#5"
+    echo "$reason" > "$SQ_GH/sg-closed-as-5"
+    echo issue-5-x > "$SQ_GH/gh-pr-merged"   # even a merged issue-5- PR: the closed-not-planned state decides, as in promote
+    ar2_tick
+    local q held sg notes; q=$(sq_present "$(rkp "$SQ_PIPE/queue/orch-42.json")"); held=$(sq_present "$(sg_file held)"); sg=$(sg_startgate); notes=$(sg_notes)
+    sq_cleanup
+    assert_eq "$q" "absent" "closed as $reason: not relaunched" || return 1
+    assert_eq "$held" "present" "closed as $reason: stays held for JP" || return 1
+    assert_eq "$sg" "#5" "closed as $reason: .startgate kept" || return 1
+    assert_eq "$notes" "0" "closed as $reason: no NOTE" || return 1
+  done
+}
+test_sg_dependency_closed_as_completed_resumes() {
+  sg_run_env full
+  sg_held_on "#5"
+  echo completed > "$SQ_GH/sg-closed-as-5"
+  ar2_tick
+  local q; q=$(sq_present "$(rkp "$SQ_PIPE/queue/orch-42.json")"); sq_cleanup
+  assert_eq "$q" "present" "closed as completed meets the gate" || return 1
 }
 
 test_sg_still_unshipped_stays_held_without_a_note() {
@@ -467,6 +501,8 @@ run_test test_sg_structural_stop_on_open_unshipped_gate_writes_startgate
 run_test test_sg_hold_then_shipped_resumes_and_launches_exactly_once
 run_test test_sg_resume_writes_the_queue_entry_like_the_loopcap_resume
 run_test test_sg_closed_gate_resumes_too
+run_test test_sg_dependency_closed_as_not_planned_does_not_resume
+run_test test_sg_dependency_closed_as_completed_resumes
 run_test test_sg_still_unshipped_stays_held_without_a_note
 run_test test_sg_two_gates_one_unmet_stays_held
 run_test test_sg_two_passes_inside_the_throttle_make_one_evaluation

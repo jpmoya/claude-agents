@@ -6,6 +6,7 @@
 # without running its cases when this file runs first or on its own. asks.tsv rows are written directly:
 #   repo \t issue \t channel \t ts \t asked_at \t status \t reminded \t kind
 # Hand arithmetic: now = PMS_T0. A asked 25h ago -> floor(25/24) = 1d; F asked 50h ago -> 2d.
+# A failed sweep is retried REMIND_RETRY_SECS (1800) later, not on the next poll: the tests move the fake clock (PMS_NOW).
 # Prefix pmr_ / PMR_. Placeholder repo names only.
 
 HERE_PMR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -109,11 +110,16 @@ test_pmr_slack_failure_leaves_the_ask_unreminded_and_logs_tags() {
   pmr_setup; pmr_rows_a_to_e
   touch "$PMS_DATA/fail-chat.postMessage"
   pms_run poll
-  local out=$PMS_OUT a_rem d_st; a_rem=$(pmr_field 41 7); d_st=$(pmr_field 44 6)
+  local out=$PMS_OUT a_rem d_st reads1; a_rem=$(pmr_field 41 7); d_st=$(pmr_field 44 6); reads1=$(pms_gh_n "issue view")
   rm -f "$PMS_DATA/fail-chat.postMessage"
-  pms_run poll
+  PMS_NOW=$((PMS_T0 + 120)); pms_run poll     # the next 2-minute poll: inside the retry window
+  local a_mid n_mid reads_mid; a_mid=$(pmr_field 41 7); n_mid=$(grep -c '^chat.postMessage ' "$PMS_DATA/calls.log"); reads_mid=$(pms_gh_n "issue view")
+  PMS_NOW=$((PMS_T0 + 1801)); pms_run poll    # past REMIND_RETRY_SECS
   local a_rem2 n2; a_rem2=$(pmr_field 41 7); n2=$(grep -c '^chat.postMessage ' "$PMS_DATA/calls.log")
   pmr_cleanup
+  assert_eq "$a_mid" "0" "inside the 30-minute window the failed sweep is not retried" || return 1
+  assert_eq "$n_mid" "1" "no second Slack post inside the window" || return 1
+  assert_eq "$reads_mid" "$reads1" "no GitHub read at all inside the window" || return 1
   assert_eq "$a_rem" "0" "failed Slack post: A stays reminded=0" || return 1
   assert_eq "$d_st" "answered" "the closed issue is still stored answered" || return 1
   local line; line=$(printf '%s\n' "$out" | grep -F 'route=pm-slack/remind' | head -1)
@@ -123,7 +129,7 @@ test_pmr_slack_failure_leaves_the_ask_unreminded_and_logs_tags() {
   assert_contains "$line" "release=" "release tag" || return 1
   assert_not_contains "$out" "fake-not-a-real-token" "the token is never printed" || return 1
   assert_not_contains "$line" "Blocked" "the ask text is never in the tagged line" || return 1
-  assert_eq "$a_rem2" "1" "the next poll retries and reminds" || return 1
+  assert_eq "$a_rem2" "1" "the first poll past the window retries and reminds" || return 1
   assert_eq "$n2" "2" "one failed post + one successful retry" || return 1
 }
 
@@ -134,16 +140,17 @@ test_pmr_slack_failure_alerts_the_webhook_once_per_streak() {
   # the fake curl logs any slack.com/api/<method> URL: this webhook URL shows up as method "webhook-alert"
   echo 'SLACK_WEBHOOK_URL="https://hooks.slack.com/api/webhook-alert"' >> "$PMS_HOME/.claude/pipeline/config.local.sh"
   touch "$PMS_DATA/fail-chat.postMessage"
-  pms_run poll; pms_run poll
-  local n line; n=$(pms_n webhook-alert); line=$(pms_lines webhook-alert | head -1)
+  pms_run poll; PMS_NOW=$((PMS_T0 + 1801)); pms_run poll     # two failed attempts, one retry window apart
+  local n line posts; n=$(pms_n webhook-alert); line=$(pms_lines webhook-alert | head -1); posts=$(pms_n chat.postMessage)
   rm -f "$PMS_DATA/fail-chat.postMessage"
-  pms_run poll
+  PMS_NOW=$((PMS_T0 + 3602)); pms_run poll                   # delivered: the streak ends
   touch "$PMS_DATA/fail-chat.postMessage"
   pmr_row "$PMS_REPO_A" 48 25 open 0
-  pms_run poll
+  PMS_NOW=$((PMS_T0 + 3722)); pms_run poll
   local n2; n2=$(pms_n webhook-alert)
   pmr_cleanup
-  assert_eq "$n" "1" "two failing polls in a row: one webhook alert" || return 1
+  assert_eq "$posts" "2" "control: both attempts reached Slack" || return 1
+  assert_eq "$n" "1" "two failed attempts in a row: one webhook alert" || return 1
   assert_contains "$line" "route=pm-slack/remind" "alert carries the route tag" || return 1
   assert_contains "$line" "release=" "alert carries the release tag" || return 1
   assert_contains "$line" "environment=" "alert carries the environment tag" || return 1
@@ -157,10 +164,19 @@ test_pmr_unreadable_issue_state_is_not_reminded_this_poll() {
   echo 1 > "$PMS_BIN/gh-issue-view-rc-41"
   pms_run poll
   local n a_rem a_st; n=$(pms_n chat.postMessage); a_rem=$(pmr_field 41 7); a_st=$(pmr_field 41 6)
+  rm -f "$PMS_BIN/gh-issue-view-rc-41"
+  PMS_NOW=$((PMS_T0 + 120)); pms_run poll
+  local n_mid reads_mid; n_mid=$(pms_n chat.postMessage); reads_mid=$(pmr_state_reads 41)
+  PMS_NOW=$((PMS_T0 + 1801)); pms_run poll
+  local n_late rem_late; n_late=$(pms_n chat.postMessage); rem_late=$(pmr_field 41 7)
   pmr_cleanup
   assert_eq "$n" "0" "state unknown: no reminder this poll" || return 1
-  assert_eq "$a_rem" "0" "state unknown: retried next poll" || return 1
+  assert_eq "$a_rem" "0" "state unknown: left for a later poll" || return 1
   assert_eq "$a_st" "open" "state unknown: never rewritten answered" || return 1
+  assert_eq "$n_mid" "0" "inside the 30-minute window: no retry" || return 1
+  assert_eq "$reads_mid" "1" "inside the window the issue is not read again" || return 1
+  assert_eq "$n_late" "1" "past the window: read again and reminded" || return 1
+  assert_eq "$rem_late" "1" "stored reminded=1" || return 1
 }
 
 # the flag is shared with `ask`: after the sweep reminded an ask, `ask` on the same issue never posts a second reminder
