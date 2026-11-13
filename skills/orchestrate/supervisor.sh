@@ -1804,13 +1804,16 @@ intake_key() { printf 'intake-%s-%s' "${1//\//_}" "$2"; }
 #                          It also stops ~/.claude/agents and the settings hooks loading, hence --agents and --settings below.
 #   --strict-mcp-config    no MCP servers (--tools only limits built-in tools).
 #   Edit(//<dir>/**)       the Write tool is checked against Edit rules (a Write(path) rule matches nothing); `//` = absolute path.
-# Staff feedback (INTAKE_WRITES=gh): gh issue view|list|edit|comment|close, the two helpers, Read, writes inside INTAKE_TMP.
-# source:sentry (INTAKE_WRITES=decision-file): no write-capable gh command at all, only gh issue view|list, Read and writes inside
-#   INTAKE_TMP; the run leaves decision.json there and intake_apply_decision applies it. A prefix pin on `gh issue edit <N> --repo
-#   <o/r>` cannot hold: gh takes several issue numbers and the last of two --repo flags wins.
+# No bare Read in either lane: the run's working directory is its INTAKE_TMP and Read/Edit are allowed only there, so the Read tool
+#   and the CLI's built-in read-only Bash commands (cat, head, ls, grep ...) cannot reach config, keys or .env files; deny rules
+#   name those places as well, and deny `gh ... --body-file <path>` (gh reads that file itself, outside any Read rule).
+# Staff feedback (INTAKE_WRITES=gh): gh issue view|list|edit|comment|close and the two helpers.
+# source:sentry (INTAKE_WRITES=decision-file): no Bash tool at all, only Read and Write inside INTAKE_TMP. The supervisor puts
+#   issue.json and candidates.json there before the launch; the run leaves decision.json and intake_apply_decision applies it.
+#   A prefix pin on `gh issue edit <N> --repo <o/r>` cannot hold: gh takes several issue numbers and the last of two --repo wins.
 INTAKE_TMP_ROOT="${INTAKE_TMP_ROOT:-$LOGDIR/intake-tmp}"   # not under $PIPE: the CLI refuses writes below any `.claude` dir whatever the allow rule
 intake_launch() {  # <owner/repo> <local path> <issue> <prompt>
-  local k lbls nowrite=0 tmp helpers agent_md agents allow mode hm args; k=$(intake_key "$1" "$3")
+  local k lbls nowrite=0 tmp helpers agent_md agents allow tools mode hm args; k=$(intake_key "$1" "$3")
   echo 0 > "$PIPE/$(run_key "$1" "$3")-intake-before.txt"; rm -f "$PIPE/$k.exit" "$PIPE/$k.exit-seen"
   # #176: remember a source:sentry issue at launch, so the agent removing the label cannot turn the agent-go strip into a no-op
   lbls=$(gh issue view "$3" --repo "$1" --json labels --jq '[.labels[].name] | join(" ")' 2>/dev/null) || nowrite=1   # unreadable: never the wider list
@@ -1829,20 +1832,28 @@ intake_launch() {  # <owner/repo> <local path> <issue> <prompt>
     select(length > 0) | {intake: ({description: fmv("description"), prompt: ., tools: (fmv("tools") | split(",") | map(gsub("^\\s+|\\s+$"; "") | select(. != "")))}
       + (fmv("model") | if . != "" then {model: .} else {} end) + (fmv("effort") | if . != "" then {effort: .} else {} end))}')
   [ -n "$agents" ] || slog "[intake] $1#$3 agent definition unreadable ($agent_md) — the run will fail"
-  if [ "$nowrite" = 1 ]; then   # no handoff Stop hook either: the run cannot post a marker, the supervisor does
-    mode=decision-file; hm=""; allow=("Bash(gh issue view:*)" "Bash(gh issue list:*)" "Read" "Edit(/$tmp/**)")
+  if [ "$nowrite" = 1 ]; then   # no Bash, and no handoff Stop hook either: the run cannot post a marker, the supervisor does
+    mode=decision-file; hm=""; tools="Read,Write"; allow=("Read(/$tmp/**)" "Edit(/$tmp/**)")
+    # everything the run may know about GitHub, fetched for it: the issue, and the other source:sentry issues to match duplicates on
+    gh issue view "$3" --repo "$1" --json number,title,body,labels,state,comments > "$tmp/issue.json" 2>/dev/null || rm -f "$tmp/issue.json"
+    gh issue list --repo "$1" --state all --label source:sentry --limit 100 --json number,title,state,body \
+      --jq "[.[] | select(.number != $3) | {number, title, state, sentry_issue: [(.body // \"\") | split(\"\\n\")[] | select(startswith(\"Sentry-Issue:\"))], body_head: ((.body // \"\")[0:600])}]" \
+      > "$tmp/candidates.json" 2>/dev/null || rm -f "$tmp/candidates.json"
   else
-    mode=gh; hm='{"type":"command","command":"~/.claude/hooks/require-handoff-marker.sh"},'
+    mode=gh; hm='{"type":"command","command":"~/.claude/hooks/require-handoff-marker.sh"},'; tools="Bash,Read,Write"
     allow=("Bash(gh issue view:*)" "Bash(gh issue list:*)" "Bash(gh issue edit:*)" "Bash(gh issue comment:*)" "Bash(gh issue close:*)"
       "Bash(~/$helpers/intake-labels.sh:*)" "Bash(~/$helpers/find-duplicates.sh:*)"
       "Bash($HOME/$helpers/intake-labels.sh:*)" "Bash($HOME/$helpers/find-duplicates.sh:*)"
-      "Read" "Edit(/$tmp/**)")
+      "Read(/$tmp/**)" "Edit(/$tmp/**)")
   fi
-  args=(--permission-mode default --tools "Bash,Read,Write" --allowedTools "${allow[@]}"
+  args=(--permission-mode default --tools "$tools" --allowedTools "${allow[@]}"
+    --disallowedTools "Read(~/.claude/**)" "Read(~/.config/**)" "Read(~/.ssh/**)" "Read(//**/.env*)" "Read(//**/config.local.sh)"
+    'Bash(gh * --body-file */*)' 'Bash(gh * --body-file *..*)' 'Bash(gh * --body-file *~*)' 'Bash(gh * --body-file *$*)'
+    'Bash(gh *--body-file=*)' 'Bash(gh * -F*)' 'Bash(*find-duplicates.sh*--body-file*)' 'Bash(security:*)'
     --setting-sources "" --strict-mcp-config
     --settings '{"hooks":{"SessionStart":[{"matcher":"","hooks":[{"type":"command","command":"~/.claude/hooks/report-status-hook.sh"}]}],"Stop":[{"matcher":"","hooks":['"$hm"'{"type":"command","command":"~/.claude/hooks/report-status-hook.sh"}]}]}}'
     --agents "$agents" --agent intake)
-  ( cd "$PIPE" && PIPELINE_ISSUE="$3" PIPELINE_AGENT=intake PIPELINE_REPO="$1" PIPE="$PIPE" INTAKE_TMP="$tmp" CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 \
+  ( cd "$tmp" && PIPELINE_ISSUE="$3" PIPELINE_AGENT=intake PIPELINE_REPO="$1" PIPE="$PIPE" INTAKE_TMP="$tmp" CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 \
     nohup $SETSID bash -c 'p=$1; x=$2; shift 2; claude "$@" -p "$p"; echo $? > "$x"' _ "$4 INTAKE_TMP=$tmp INTAKE_WRITES=$mode" "$PIPE/$k.exit" "${args[@]}" \
     >> "$PIPE/$k.log" 2>&1 9>&- & echo $! > "$PIPE/$k.pid" )
   echo "$2" > "$PIPE/$k.path"; echo "$1 $3" > "$PIPE/$k.id"
@@ -1853,34 +1864,63 @@ intake_launch() {  # <owner/repo> <local path> <issue> <prompt>
 # #186: a source:sentry run cannot write to GitHub. It leaves $INTAKE_TMP/decision.json and the supervisor applies it here, to this
 # issue only (repo and number come from the run's .id file, never from the decision):
 #   {"verdict": "bug|noise|duplicate|blocked", "title": "...", "body_file": "body.md", "comment_file": "comment.md", "duplicate_of": N}
-# Refused as a whole: any other key, an unknown verdict, a title over one line / 200 chars, a file name that is not a plain file
-# in the run's directory, a body that drops a Sentry-Issue: line, a duplicate target that is not another issue of this repo.
+# Refused as a whole, each with its own logged reason: a decision.json that is a symlink, over 8192 bytes or not one JSON object,
+# any other key, an unknown verdict, a title over one line / 200 chars, a file name that is not a plain file in the run's
+# directory, a duplicate_of that is not a whole number or does not go with the duplicate verdict, a body that drops a
+# Sentry-Issue: line, a duplicate target that is not another issue of this repo (a PR is not), and a
+# title, body or comment that carries something shaped like a credential or the value of a secret this shell holds (TOKEN /
+# SECRET / KEY / PASSWORD ... variables from the environment and config, and gh's own token). Values are compared in the shell
+# and never printed: the log line names the variable, not its value.
 # Labels come from intake-labels.sh for the verdict, kept only when on the fixed list below: the decision cannot name a label,
 # and agent-go appears only when SENTRY_AUTO_GO=1 makes the helper print it. Title and body are applied for `bug` only.
 # The marker comment goes last and is the commit point: every earlier write is idempotent and is repeated on a retry.
 # Returns 0 applied; 1 nothing valid to apply (no marker follows, so the run is a failed attempt: the #676 path);
 # 2 a GitHub read or write failed (state kept, retried next tick).
 intake_apply_decision() {  # <owner/repo> <issue>
-  local repo=$1 n=$2 d f norm v="" title="" dup=0 bf="" cf="" why="" l cur line marker adds="" ea
+  local repo=$1 n=$2 d f norm v="" title="" dup=0 bf="" cf="" why="" l cur line marker adds="" ea sec val
   d=$(cd "$INTAKE_TMP_ROOT/${repo//\//_}-$n" 2>/dev/null && pwd -P) || return 1
   f="$d/decision.json"
-  [ -f "$f" ] && [ ! -L "$f" ] || return 1
-  norm=$(head -c 8192 "$f" | jq -c '
-    select(type == "object")
-    | select((keys - ["verdict","title","body_file","comment_file","duplicate_of"]) == [])
-    | select(.verdict as $v | ["bug","noise","duplicate","blocked"] | index($v))
-    | select((.title // "") | type == "string" and length <= 200 and (test("[\\n\\r]") | not))
-    | select([.body_file // "", .comment_file // ""] | all(type == "string" and test("^([A-Za-z0-9][A-Za-z0-9._-]{0,80})?$")))
-    | select((.duplicate_of // 0) | type == "number" and . == floor and . >= 0)
-    | select((.verdict == "duplicate") == ((.duplicate_of // 0) > 0))
-    | {verdict, title: (.title // ""), body_file: (.body_file // ""), comment_file: (.comment_file // ""), duplicate_of: (.duplicate_of // 0)}' 2>/dev/null)
-  if [ -z "$norm" ]; then why="not a JSON object with only the known keys, verdicts and values"; else
+  if [ -L "$f" ]; then why="decision.json is a symbolic link"
+  elif [ ! -f "$f" ]; then return 1
+  elif [ "$(wc -c < "$f")" -gt 8192 ]; then why="decision.json is over 8192 bytes"
+  else
+    norm=$(jq -cs '
+      ["verdict","title","body_file","comment_file","duplicate_of"] as $known
+      | if length != 1 or (.[0] | type) != "object" then {error: "not one JSON object"} else .[0]
+      | if (keys - $known) != [] then {error: ("unknown key " + ([(keys - $known)[] | gsub("[^A-Za-z0-9_-]"; "?")] | join(", ") | .[0:60]))}
+        elif (.verdict as $v | ["bug","noise","duplicate","blocked"] | index($v)) == null then {error: "unknown verdict"}
+        elif ((.title // "") | (type == "string" and length <= 200 and (test("[\\n\\r]") | not))) | not then {error: "title is not one line of at most 200 characters"}
+        elif ([.body_file // "", .comment_file // ""] | all(type == "string" and test("^([A-Za-z0-9][A-Za-z0-9._-]{0,80})?$"))) | not then {error: "body_file / comment_file is not a plain file name"}
+        elif ((.duplicate_of // 0) | (type == "number" and . == floor and . >= 0)) | not then {error: "duplicate_of is not a positive whole number"}
+        elif (.verdict == "duplicate") != ((.duplicate_of // 0) > 0) then {error: "duplicate_of goes with the duplicate verdict, and only with it"}
+        else {verdict, title: (.title // ""), body_file: (.body_file // ""), comment_file: (.comment_file // ""), duplicate_of: (.duplicate_of // 0)} end
+        end' "$f" 2>/dev/null)
+    if [ -z "$norm" ]; then why="not valid JSON"; else why=$(printf '%s' "$norm" | jq -r '.error // ""' 2>/dev/null); fi
+  fi
+  if [ -z "$why" ]; then
     v=$(printf '%s' "$norm" | jq -r .verdict); title=$(printf '%s' "$norm" | jq -r .title); dup=$(printf '%s' "$norm" | jq -r .duplicate_of)
     bf=$(printf '%s' "$norm" | jq -r .body_file); cf=$(printf '%s' "$norm" | jq -r .comment_file)
     for l in "$bf" "$cf"; do
       [ -z "$l" ] && continue
       [ -f "$d/$l" ] && [ ! -L "$d/$l" ] && [ "$(wc -c < "$d/$l")" -le 60000 ] || why="$l is not a plain file in the run directory (or is too large)"
     done
+  fi
+  if [ -z "$why" ]; then   # nothing that looks like, or is, a credential is ever published (title, body, comment)
+    sec=$(gh auth token 2>/dev/null) || sec=""
+    for l in "" "$bf" "$cf"; do
+      if [ -z "$l" ]; then cur=$title; l="the title"; else cur=$(cat "$d/$l" 2>/dev/null); fi
+      [ -n "$cur" ] || continue
+      if grep -qE 'gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|(^|[^A-Za-z0-9])sk-[A-Za-z0-9_-]{16,}|AKIA[0-9A-Z]{16}|xox[bp]-[A-Za-z0-9-]{10,}|-----BEGIN' <<< "$cur"; then   # here-string, not a pipe: pipefail + grep -q leaving early would hide a match
+        why="$l carries something shaped like a credential"; break
+      fi
+      if [ "${#sec}" -ge 10 ]; then case "$cur" in *"$sec"*) why="$l carries the value of a secret (gh auth token)"; break ;; esac; fi
+      for line in $(compgen -v); do
+        case "$line" in *TOKEN*|*SECRET*|*PASSWORD*|*PASSWD*|*CREDENTIAL*|*WEBHOOK*|*DSN*|*API_KEY*|*_KEY|*_KEY_*|*_PAT|*_PAT_*) ;; *) continue ;; esac
+        val=${!line:-}; [ "${#val}" -ge 10 ] || continue
+        case "$cur" in *"$val"*) why="$l carries the value of a secret (\$$line)"; break 2 ;; esac
+      done
+    done
+    sec=""; val=""
   fi
   if [ -z "$why" ] && [ "$v" = duplicate ]; then
     if [ "$dup" = "$n" ]; then why="duplicate of itself"; else
@@ -1890,10 +1930,12 @@ intake_apply_decision() {  # <owner/repo> <issue>
   fi
   if [ -z "$why" ] && [ "$v" = bug ] && [ -n "$bf" ]; then
     cur=$(gh issue view "$n" --repo "$repo" --json body --jq .body 2>/dev/null) || return 2
+    val=$(tr -d '\r' < "$d/$bf")
     while IFS= read -r line; do
       line=${line%$'\r'}
-      case "$line" in "Sentry-Issue:"*) tr -d '\r' < "$d/$bf" | grep -qxF -- "$line" || why="the new body drops a Sentry-Issue: line" ;; esac
+      case "$line" in "Sentry-Issue:"*) grep -qxF -- "$line" <<< "$val" || why="the new body drops a Sentry-Issue: line" ;; esac
     done <<< "$cur"
+    val=""
   fi
   if [ -n "$why" ]; then
     slog "[intake] $repo#$n decision file refused: $why"; mv "$f" "$d/decision.refused" 2>/dev/null; return 1
