@@ -1804,18 +1804,20 @@ intake_key() { printf 'intake-%s-%s' "${1//\//_}" "$2"; }
 #                          It also stops ~/.claude/agents and the settings hooks loading, hence --agents and --settings below.
 #   --strict-mcp-config    no MCP servers (--tools only limits built-in tools).
 #   Edit(//<dir>/**)       the Write tool is checked against Edit rules (a Write(path) rule matches nothing); `//` = absolute path.
+# Staff feedback (INTAKE_WRITES=gh): gh issue view|list|edit|comment|close, the two helpers, Read, writes inside INTAKE_TMP.
+# source:sentry (INTAKE_WRITES=decision-file): no write-capable gh command at all, only gh issue view|list, Read and writes inside
+#   INTAKE_TMP; the run leaves decision.json there and intake_apply_decision applies it. A prefix pin on `gh issue edit <N> --repo
+#   <o/r>` cannot hold: gh takes several issue numbers and the last of two --repo flags wins.
 INTAKE_TMP_ROOT="${INTAKE_TMP_ROOT:-$LOGDIR/intake-tmp}"   # not under $PIPE: the CLI refuses writes below any `.claude` dir whatever the allow rule
 intake_launch() {  # <owner/repo> <local path> <issue> <prompt>
-  local k lbls pinned=0 tmp ed cm cl helpers agent_md agents args; k=$(intake_key "$1" "$3")
+  local k lbls nowrite=0 tmp helpers agent_md agents allow mode hm args; k=$(intake_key "$1" "$3")
   echo 0 > "$PIPE/$(run_key "$1" "$3")-intake-before.txt"; rm -f "$PIPE/$k.exit" "$PIPE/$k.exit-seen"
   # #176: remember a source:sentry issue at launch, so the agent removing the label cannot turn the agent-go strip into a no-op
-  lbls=$(gh issue view "$3" --repo "$1" --json labels --jq '[.labels[].name] | join(" ")' 2>/dev/null) || pinned=1   # unreadable: never the wider list
+  lbls=$(gh issue view "$3" --repo "$1" --json labels --jq '[.labels[].name] | join(" ")' 2>/dev/null) || nowrite=1   # unreadable: never the wider list
   case " $lbls " in *" source:sentry "*) touch "$PIPE/$k.sentry" ;; esac
-  # #186: a Sentry run may edit, comment on and close only its own issue (injected text must not reach another issue's labels);
-  # staff-feedback runs keep the open patterns, duplicate handling edits the canonical issue
-  [ -e "$PIPE/$k.sentry" ] && pinned=1
-  ed="gh issue edit"; cm="gh issue comment"; cl="gh issue close"
-  if [ "$pinned" = 1 ]; then ed="$ed $3 --repo $1"; cm="$cm $3 --repo $1"; cl="$cl $3 --repo $1"; fi
+  # #186: a Sentry run gets no command that writes to GitHub (injected text must not reach any issue's labels, this one included);
+  # staff-feedback runs keep the gh issue write commands, duplicate handling edits the canonical issue
+  [ -e "$PIPE/$k.sentry" ] && nowrite=1
   tmp="$INTAKE_TMP_ROOT/${1//\//_}-$3"; rm -rf "${tmp:?}"   # per issue: <owner_repo>-<n>, fresh for every launch
   mkdir -p "$tmp" && tmp=$(cd "$tmp" && pwd -P) || slog "[intake] $1#$3 could not create $tmp — the run cannot write its body file"
   helpers=".claude/skills/orchestrate"   # the helpers by the path intake.md names (~/) and by the same path expanded
@@ -1827,21 +1829,100 @@ intake_launch() {  # <owner/repo> <local path> <issue> <prompt>
     select(length > 0) | {intake: ({description: fmv("description"), prompt: ., tools: (fmv("tools") | split(",") | map(gsub("^\\s+|\\s+$"; "") | select(. != "")))}
       + (fmv("model") | if . != "" then {model: .} else {} end) + (fmv("effort") | if . != "" then {effort: .} else {} end))}')
   [ -n "$agents" ] || slog "[intake] $1#$3 agent definition unreadable ($agent_md) — the run will fail"
-  args=(--permission-mode default --tools "Bash,Read,Write" --allowedTools
-    "Bash(gh issue view:*)" "Bash(gh issue list:*)" "Bash($ed:*)" "Bash($cm:*)" "Bash($cl:*)"
-    "Bash(~/$helpers/intake-labels.sh:*)" "Bash(~/$helpers/find-duplicates.sh:*)"
-    "Bash($HOME/$helpers/intake-labels.sh:*)" "Bash($HOME/$helpers/find-duplicates.sh:*)"
-    "Read" "Edit(/$tmp/**)"
+  if [ "$nowrite" = 1 ]; then   # no handoff Stop hook either: the run cannot post a marker, the supervisor does
+    mode=decision-file; hm=""; allow=("Bash(gh issue view:*)" "Bash(gh issue list:*)" "Read" "Edit(/$tmp/**)")
+  else
+    mode=gh; hm='{"type":"command","command":"~/.claude/hooks/require-handoff-marker.sh"},'
+    allow=("Bash(gh issue view:*)" "Bash(gh issue list:*)" "Bash(gh issue edit:*)" "Bash(gh issue comment:*)" "Bash(gh issue close:*)"
+      "Bash(~/$helpers/intake-labels.sh:*)" "Bash(~/$helpers/find-duplicates.sh:*)"
+      "Bash($HOME/$helpers/intake-labels.sh:*)" "Bash($HOME/$helpers/find-duplicates.sh:*)"
+      "Read" "Edit(/$tmp/**)")
+  fi
+  args=(--permission-mode default --tools "Bash,Read,Write" --allowedTools "${allow[@]}"
     --setting-sources "" --strict-mcp-config
-    --settings '{"hooks":{"SessionStart":[{"matcher":"","hooks":[{"type":"command","command":"~/.claude/hooks/report-status-hook.sh"}]}],"Stop":[{"matcher":"","hooks":[{"type":"command","command":"~/.claude/hooks/require-handoff-marker.sh"},{"type":"command","command":"~/.claude/hooks/report-status-hook.sh"}]}]}}'
+    --settings '{"hooks":{"SessionStart":[{"matcher":"","hooks":[{"type":"command","command":"~/.claude/hooks/report-status-hook.sh"}]}],"Stop":[{"matcher":"","hooks":['"$hm"'{"type":"command","command":"~/.claude/hooks/report-status-hook.sh"}]}]}}'
     --agents "$agents" --agent intake)
   ( cd "$PIPE" && PIPELINE_ISSUE="$3" PIPELINE_AGENT=intake PIPELINE_REPO="$1" PIPE="$PIPE" INTAKE_TMP="$tmp" CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 \
-    nohup $SETSID bash -c 'p=$1; x=$2; shift 2; claude "$@" -p "$p"; echo $? > "$x"' _ "$4 INTAKE_TMP=$tmp" "$PIPE/$k.exit" "${args[@]}" \
+    nohup $SETSID bash -c 'p=$1; x=$2; shift 2; claude "$@" -p "$p"; echo $? > "$x"' _ "$4 INTAKE_TMP=$tmp INTAKE_WRITES=$mode" "$PIPE/$k.exit" "${args[@]}" \
     >> "$PIPE/$k.log" 2>&1 9>&- & echo $! > "$PIPE/$k.pid" )
   echo "$2" > "$PIPE/$k.path"; echo "$1 $3" > "$PIPE/$k.id"
   echo $(( $(cat "$PIPE/$k.attempts" 2>/dev/null || echo 0) + 1 )) > "$PIPE/$k.attempts"
   date +%s > "$PIPE/$k.launched-at"   # #676: launch epoch; kept across a released (limit/transient) run, cleared at done / give-up
   slog "[intake] $1#$3 launched (attempt $(cat "$PIPE/$k.attempts"))"
+}
+# #186: a source:sentry run cannot write to GitHub. It leaves $INTAKE_TMP/decision.json and the supervisor applies it here, to this
+# issue only (repo and number come from the run's .id file, never from the decision):
+#   {"verdict": "bug|noise|duplicate|blocked", "title": "...", "body_file": "body.md", "comment_file": "comment.md", "duplicate_of": N}
+# Refused as a whole: any other key, an unknown verdict, a title over one line / 200 chars, a file name that is not a plain file
+# in the run's directory, a body that drops a Sentry-Issue: line, a duplicate target that is not another issue of this repo.
+# Labels come from intake-labels.sh for the verdict, kept only when on the fixed list below: the decision cannot name a label,
+# and agent-go appears only when SENTRY_AUTO_GO=1 makes the helper print it. Title and body are applied for `bug` only.
+# The marker comment goes last and is the commit point: every earlier write is idempotent and is repeated on a retry.
+# Returns 0 applied; 1 nothing valid to apply (no marker follows, so the run is a failed attempt: the #676 path);
+# 2 a GitHub read or write failed (state kept, retried next tick).
+intake_apply_decision() {  # <owner/repo> <issue>
+  local repo=$1 n=$2 d f norm v="" title="" dup=0 bf="" cf="" why="" l cur line marker adds="" ea
+  d=$(cd "$INTAKE_TMP_ROOT/${repo//\//_}-$n" 2>/dev/null && pwd -P) || return 1
+  f="$d/decision.json"
+  [ -f "$f" ] && [ ! -L "$f" ] || return 1
+  norm=$(head -c 8192 "$f" | jq -c '
+    select(type == "object")
+    | select((keys - ["verdict","title","body_file","comment_file","duplicate_of"]) == [])
+    | select(.verdict as $v | ["bug","noise","duplicate","blocked"] | index($v))
+    | select((.title // "") | type == "string" and length <= 200 and (test("[\\n\\r]") | not))
+    | select([.body_file // "", .comment_file // ""] | all(type == "string" and test("^([A-Za-z0-9][A-Za-z0-9._-]{0,80})?$")))
+    | select((.duplicate_of // 0) | type == "number" and . == floor and . >= 0)
+    | select((.verdict == "duplicate") == ((.duplicate_of // 0) > 0))
+    | {verdict, title: (.title // ""), body_file: (.body_file // ""), comment_file: (.comment_file // ""), duplicate_of: (.duplicate_of // 0)}' 2>/dev/null)
+  if [ -z "$norm" ]; then why="not a JSON object with only the known keys, verdicts and values"; else
+    v=$(printf '%s' "$norm" | jq -r .verdict); title=$(printf '%s' "$norm" | jq -r .title); dup=$(printf '%s' "$norm" | jq -r .duplicate_of)
+    bf=$(printf '%s' "$norm" | jq -r .body_file); cf=$(printf '%s' "$norm" | jq -r .comment_file)
+    for l in "$bf" "$cf"; do
+      [ -z "$l" ] && continue
+      [ -f "$d/$l" ] && [ ! -L "$d/$l" ] && [ "$(wc -c < "$d/$l")" -le 60000 ] || why="$l is not a plain file in the run directory (or is too large)"
+    done
+  fi
+  if [ -z "$why" ] && [ "$v" = duplicate ]; then
+    if [ "$dup" = "$n" ]; then why="duplicate of itself"; else
+      cur=$(gh issue view "$dup" --repo "$repo" --json number,url --jq 'select(.url | test("/issues/[0-9]+$")) | .number' 2>/dev/null)
+      [ "$cur" = "$dup" ] || why="duplicate target #$dup is not an issue of $repo"
+    fi
+  fi
+  if [ -z "$why" ] && [ "$v" = bug ] && [ -n "$bf" ]; then
+    cur=$(gh issue view "$n" --repo "$repo" --json body --jq .body 2>/dev/null) || return 2
+    while IFS= read -r line; do
+      line=${line%$'\r'}
+      case "$line" in "Sentry-Issue:"*) tr -d '\r' < "$d/$bf" | grep -qxF -- "$line" || why="the new body drops a Sentry-Issue: line" ;; esac
+    done <<< "$cur"
+  fi
+  if [ -n "$why" ]; then
+    slog "[intake] $repo#$n decision file refused: $why"; mv "$f" "$d/decision.refused" 2>/dev/null; return 1
+  fi
+  if [ "$v" = bug ] && { [ -n "$title" ] || [ -n "$bf" ]; }; then
+    ea=(issue edit "$n" --repo "$repo"); [ -n "$title" ] && ea+=(--title "$title"); [ -n "$bf" ] && ea+=(--body-file "$d/$bf")
+    gh "${ea[@]}" >/dev/null 2>&1 || return 2
+  fi
+  case "$v" in bug|noise)
+    while read -r l cur; do   # the helper's "add <label>" lines; user-feedback-intake was already swapped out at the claim
+      [ "$l" = add ] || continue
+      case "$cur" in
+        user-feedback|bug|"$LABEL_PROPOSED"|sentry-noise) adds="$adds${adds:+,}$cur" ;;
+        "$LABEL_GO") [ "${SENTRY_AUTO_GO:-0}" = 1 ] && adds="$adds${adds:+,}$cur" ;;
+      esac
+    done <<< "$("$HERE/intake-labels.sh" "$v" sentry 2>/dev/null)"
+    [ -n "$adds" ] || return 2
+    gh issue edit "$n" --repo "$repo" --add-label "$adds" >/dev/null 2>&1 || return 2 ;;
+  esac
+  case "$v" in noise|duplicate) gh issue close "$n" --repo "$repo" --reason "not planned" >/dev/null 2>&1 || return 2 ;; esac
+  case "$v" in
+    bug) marker="**[intake] TRIAGED BUG**" ;; noise) marker="**[intake] NOISE**" ;;
+    duplicate) marker="**[intake] DUPLICATE** of #$dup" ;; *) marker="**[intake] BLOCKED**" ;;
+  esac
+  { printf '%s\n' "$marker"; [ -n "$cf" ] && head -c 6000 "$d/$cf"; } > "$d/.intake-comment.md" 2>/dev/null
+  gh issue comment "$n" --repo "$repo" --body-file "$d/.intake-comment.md" >/dev/null 2>&1 || return 2
+  mv "$f" "$d/decision.applied" 2>/dev/null
+  slog "[intake] $repo#$n decision applied by the supervisor: $v"
+  return 0
 }
 # code-enforced gate (#176): the intake agent reads attacker-influenced text, so a source:sentry issue never keeps agent-go
 # unless SENTRY_AUTO_GO=1, whatever the agent did. Returns 1 when the label read fails (caller retries next tick), else 0.
@@ -1871,6 +1952,9 @@ for idf in "$PIPE"/intake-*.id; do   # runs that have exited: healthy -> clear s
     sentry_strip_go "$i_repo" "$i_num" || launched=1   # live run: strip an injected agent-go before step 5 can dispatch it (also strips a hand-added one until intake finishes); a failed strip holds dispatch this tick
     continue
   fi
+  # #186: an exited source:sentry run wrote nothing to GitHub: apply the decision file it left (validated, this issue only) before
+  # looking for the marker. Nothing valid to apply leaves no marker, so the run goes down the failed-attempt path below.
+  if [ -e "$PIPE/$k.sentry" ]; then intake_apply_decision "$i_repo" "$i_num"; [ $? -eq 2 ] && continue; fi
   # done = a terminal marker (a NEEDS INFO-only run that died before labelling is not done) or the issue already carries user-feedback
   have=$(gh issue view "$i_num" --repo "$i_repo" --json comments,labels \
     --jq "([.comments[].body | split(\"\\n\")[0] | select(test(\"^\\\\*\\\\*\\\\[intake\\\\] (TRIAGED BUG|TRIAGED IDEA|DUPLICATE|NOISE|BLOCKED)\"))] | length) + ([(.labels // [])[].name | select(. == \"user-feedback\")] | length)" 2>/dev/null) || continue

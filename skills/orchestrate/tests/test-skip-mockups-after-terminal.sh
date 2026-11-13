@@ -240,7 +240,10 @@ test_st_ac8_no_new_mechanism() {
   # Exactly these names are allowed; any other new function or per-run state file still fails this guard.
   local allow_677='startgate_unmet|startgate_hold|startgate_resume|jp_gate_remind|touch_held'
   local files_677='orch-\$rk\.(startgate|autoretry-check)"'
-  assert_not_contains "$(printf '%s' "$added" | grep -E '^\+[a-zA-Z_][a-zA-Z0-9_]*\(\) *\{' | grep -vE "^\+($allow_676|$allow_677)\(\) *\{" || true)" "()" "AC8: no new function definitions" || return 1
+  # #186 (intake CLI allow-list): a source:sentry run has no write command, so the supervisor applies the decision file it
+  # leaves. That one function is allowed (coordinator direction on PR #681); any other new function still fails this guard.
+  local allow_186='intake_apply_decision'
+  assert_not_contains "$(printf '%s' "$added" | grep -E '^\+[a-zA-Z_][a-zA-Z0-9_]*\(\) *\{' | grep -vE "^\+($allow_676|$allow_677|$allow_186)\(\) *\{" || true)" "()" "AC8: no new function definitions" || return 1
   assert_eq "$(printf '%s' "$added" | grep -vE "$files_677" | grep -cE 'touch .*orch-.*\.[a-z-]+"|> *"\$PIPE/orch-\$[a-z]+\.[a-z-]+"' || true)" "0" "AC8: no new per-run state file" || return 1
   assert_eq "$(printf '%s' "$added" | grep -cE '^\+[^#]*(no_progress_count|[a-z_]*_counter)[a-z_]*=' || true)" "0" "AC8: no new counter" || return 1
 }
