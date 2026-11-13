@@ -1791,8 +1791,7 @@ fi
 
 # 3c. Spec — PM-only run (#115) for one `user-feedback-needs-spec` idea: claim, swap in agent-in-progress, launch `claude --agent product-manager -p`.
 #     Never adds agent-go and never starts an orchestrator. When the PM exits, drop agent-in-progress + needs-spec and add agent-proposed (JP's digest).
-#     Any PM routing marker except REJECTED blocks a launch, as do two REJECTED needs-spec (a PM REJECTED needs-spec is how a fix reaches here). State: PIPE/spec-<owner_repo>-<n>.*
-#     A run that exits with no PM marker is classified like an intake run (#676, fb_* above): limit / transient exits are released without counting; two failed runs give up, with a NOTE, for 6h (4 cycles at most).
+#     Any PM routing marker except REJECTED blocks a launch, as do two REJECTED needs-spec (a PM REJECTED needs-spec is how a fix reaches here). State: PIPE/spec-<owner_repo>-<n>.* A run that exits with no PM marker is classified like an intake run (#676, fb_* above): limit / transient exits are released without counting; two failed runs give up, with a NOTE, for 6h (4 cycles at most).
 spec_key() { printf 'spec-%s-%s' "${1//\//_}" "$2"; }
 spec_pm_markers() {  # <owner/repo> <issue> → PM routing markers other than REJECTED, +1 once two REJECTED needs-spec are on the issue (re-reject loop stop)
   gh issue view "$2" --repo "$1" --json comments 2>/dev/null | spec_pm_markers_json
@@ -1818,9 +1817,8 @@ for idf in "$PIPE"/spec-*.id; do   # exited PM runs: marker posted -> hand the s
   if [ "$m" != 0 ]; then
     gh issue edit "$s_num" --repo "$s_repo" --remove-label "$LABEL_IN_PROGRESS" --remove-label user-feedback-needs-spec --add-label "$LABEL_PROPOSED" >/dev/null 2>&1
     rm -f "$PIPE/$k".{id,pid,path,attempts,exit,launched-at,transients,retry-after}; slog "[spec] $s_repo#$s_num spec written, moved to $LABEL_PROPOSED"
-  elif fb_cls=$(fb_exit_class "$k"); [ "$fb_cls" != failed ]; then
-    fb_release spec "$k" "$s_repo" "$s_num" "$fb_cls" || continue   # #676: a limit or transient exit is released, never counted
   else
+    fb_cls=$(fb_exit_class "$k"); [ "$fb_cls" = failed ] || { fb_release spec "$k" "$s_repo" "$s_num" "$fb_cls"; continue; }   # #676: a limit or transient exit is released, never counted
     gh issue edit "$s_num" --repo "$s_repo" --remove-label "$LABEL_IN_PROGRESS" >/dev/null 2>&1; rm -f "$PIPE/$k".{id,pid,path,exit}
     [ "$(cat "$PIPE/$k.attempts" 2>/dev/null || echo 1)" -ge 2 ] && fb_giveup spec "$k" "$s_repo" "$s_num"   # #676: NOTE, cycle count, a give-up that expires
   fi
@@ -1835,15 +1833,13 @@ if [ "$launched" -eq 0 ] && [ "$HAS_CAP" -eq 1 ] && [ "${#DISPATCH_REPOS[@]}" -g
     for num in $(gh issue list --repo "$owner_repo" --state open --label user-feedback-needs-spec --limit 50 --json number,labels \
         --jq ".[] | select([.labels[].name] | (index(\"$LABEL_IN_PROGRESS\") or index(\"$LABEL_GO\") or index(\"source:sentry\")) | not) | .number" 2>/dev/null); do
       case "$num" in ''|*[!0-9]*) continue ;; esac
-      k=$(spec_key "$owner_repo" "$num"); [ -e "$PIPE/$k.id" ] && continue
-      fb_claimable "$k" || continue   # #676: a give-up younger than 6h (or the final one), or a transient wait not over yet
+      k=$(spec_key "$owner_repo" "$num"); [ -e "$PIPE/$k.id" ] && continue; fb_claimable "$k" || continue   # #676: a give-up younger than 6h (or the final one), or a transient wait not over yet
       [ "$(spec_pm_markers "$owner_repo" "$num")" = 0 ] || continue
       gh issue comment "$num" --repo "$owner_repo" --body "**[supervisor] NOTE** claim: $HOST $(date -u +%FT%TZ)" >/dev/null 2>&1 || continue
       sleep "$CLAIM_SETTLE_SECS"
       winner=$(claim_winner "$local_path" "$num")
       [ "$winner" = "$HOST" ] || { slog "[spec] $owner_repo#$num — lost claim to ${winner:-?}"; continue; }
-      gh issue edit "$num" --repo "$owner_repo" --add-label "$LABEL_IN_PROGRESS" >/dev/null 2>&1
-      rm -f "$PIPE/$k.exit" "$PIPE/$k.retry-after"; date +%s > "$PIPE/$k.launched-at"   # #676: this run's own exit code; launch epoch
+      gh issue edit "$num" --repo "$owner_repo" --add-label "$LABEL_IN_PROGRESS" >/dev/null 2>&1; rm -f "$PIPE/$k.exit" "$PIPE/$k.retry-after"; date +%s > "$PIPE/$k.launched-at"   # #676: this run's own exit code; launch epoch
       ( cd "$PIPE" && PIPELINE_ISSUE="$num" PIPELINE_AGENT=product-manager PIPELINE_REPO="$owner_repo" PIPE="$PIPE" CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 \
         nohup $SETSID bash -c 'claude --dangerously-skip-permissions --agent product-manager -p "$1"; echo $? > "$2"' _ \
         "Write the spec for $owner_repo#$num as the product-manager (spec-only run for a user-feedback idea): do not add agent-go; do not file dependency follow-ups on this issue; post your READY marker." "$PIPE/$k.exit" \
