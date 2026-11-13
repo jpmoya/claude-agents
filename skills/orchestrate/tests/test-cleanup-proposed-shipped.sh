@@ -1,6 +1,7 @@
 # Issue #676 (a), Expected Behavior 4 — cleanup-proposed-shipped.sh [--dry-run] <owner/repo>...: the one-time, idempotent
-# removal of `agent-proposed` from open issues the pipeline already implemented or shipped (IMPLEMENTED / DEPLOYED /
-# DEPLOYED TO STAGING / APPLIED as a comment's first line). A ticket whose only routing marker is a PM READY keeps the label.
+# removal of `agent-proposed` from open issues the pipeline has in flight or has shipped: the latest stage marker comes from
+# an engineering-or-later stage (test-writer, test-reviewer, fullstack-developer, code-reviewer, deployer, infra track).
+# A ticket whose latest stage marker is a spec-stage one (PM, intake, design, architect), or that has none, keeps the label.
 #
 # gh stub with label state (so a second run really sees the first run's writes), fixture files in the sandbox HOME:
 #   issues.json          [{number, repo, labels:[{name}]}] — `issue list --label L` filters it, `issue edit --remove-label` rewrites it
@@ -123,7 +124,7 @@ test_cps_latest_routing_marker_decides() {
   cps_home
   cps_issue 30 project-a/repo-a agent-proposed   # shipped, then specified again by the PM: waiting for JP, label kept
   cps_comment 30 "**[deployer] DEPLOYED**"; cps_comment 30 "**[product-manager] READY FOR ENGINEERING**"
-  cps_issue 31 project-a/repo-a agent-proposed   # implemented, review still open: the latest marker is the reviewer's
+  cps_issue 31 project-a/repo-a agent-proposed   # implemented, review failed: in a fix cycle, i.e. in flight
   cps_comment 31 "**[fullstack-developer] IMPLEMENTED**"; cps_comment 31 "**[code-reviewer] FAIL**"
   cps_issue 32 project-a/repo-a agent-proposed   # re-specified, then shipped again: the latest marker is the deployer's
   cps_comment 32 "**[deployer] DEPLOYED**"; cps_comment 32 "**[product-manager] READY FOR ENGINEERING**"; cps_comment 32 "**[deployer] DEPLOYED TO STAGING**"
@@ -136,9 +137,54 @@ test_cps_latest_routing_marker_decides() {
   assert_eq "$rc" "0" "latest marker: exit 0" || return 1
   assert_eq "$l30" "agent-proposed" "DEPLOYED then a PM READY: re-specified, label kept" || return 1
   assert_contains "$out" "project-a/repo-a#30 kept" "re-specified ticket reported as kept" || return 1
-  assert_eq "$l31" "agent-proposed" "IMPLEMENTED then a reviewer marker: the latest marker is not a shipped one, label kept" || return 1
+  assert_eq "$l31" "" "IMPLEMENTED then [code-reviewer] FAIL: in flight, label removed" || return 1
   assert_eq "$l32" "" "READY then DEPLOYED TO STAGING: the latest marker is shipped, label removed" || return 1
   assert_eq "$l33" "" "comments and NOTEs after DEPLOYED are not routing markers: label removed" || return 1
+}
+
+# cps_latest <n> <marker first line>... — an agent-proposed issue whose comments are these lines, in order
+cps_latest() { local n=$1 m; shift; cps_issue "$n" project-a/repo-a agent-proposed; for m in "$@"; do cps_comment "$n" "$m"; done; }
+
+test_cps_engineering_or_later_stage_removes_the_label() {
+  # the stranding bug: a ticket the pipeline has in flight (any engineering-or-later stage) or shipped must lose agent-proposed
+  cps_home
+  cps_latest 40 "**[product-manager] READY FOR ENGINEERING**" "**[test-writer] TESTS WRITTEN**"
+  cps_latest 41 "**[test-writer] TESTS WRITTEN**" "**[test-reviewer] TESTS APPROVED**"
+  cps_latest 42 "**[fullstack-developer] IMPLEMENTED**" "**[code-reviewer] PASS**"
+  cps_latest 43 "**[fullstack-developer] IMPLEMENTED**" "**[test-reviewer] FAIL**"
+  cps_latest 44 "$(printf '**[fullstack-developer] BLOCKED**\nBlocked on: ci_red — x')"
+  cps_latest 45 "$(printf '**[deployer] BLOCKED**\nBlocked on: merge_conflict — x')"
+  cps_latest 46 "**[infra-planner] PLAN READY**" "**[infra-reviewer] PLAN PASS**" "**[infra-operator] AWAITING GO**"
+  cps_latest 47 "**[deployer] DEPLOYED TO STAGING**" "**[jp] GO**"                          # JP's answer is not a stage
+  cps_latest 48 "**[fullstack-developer] BLOCKED**" "$(printf '**[delivery-lead] DECISION**\nResolves: https://example.invalid/x#issuecomment-1')"
+  cps_run project-a/repo-a
+  local n left="" out=$CPS_OUT rc=$CPS_RC
+  for n in 40 41 42 43 44 45 46 47 48; do [ -z "$(cps_labels "$n")" ] || left="$left $n"; done
+  cps_cleanup
+  assert_eq "$rc" "0" "engineering or later: exit 0" || return 1
+  assert_eq "$left" "" "engineering or later: agent-proposed removed from every in-flight / shipped ticket (still labelled:$left)" || return 1
+  assert_eq "$(printf '%s\n' "$out" | grep -c ' removed$')" "9" "engineering or later: nine removed lines" || return 1
+}
+
+test_cps_spec_stage_or_no_marker_keeps_the_label() {
+  # a ticket that is specified (or re-specified) and waiting for approval keeps agent-proposed
+  cps_home
+  cps_latest 50 "**[intake] TRIAGED BUG**"
+  cps_latest 51 "**[product-manager] READY FOR ARCHITECTURE**"
+  cps_latest 52 "**[product-manager] READY FOR ENGINEERING**" "**[ux-flow-designer] USER FLOW READY**"
+  cps_latest 53 "**[ui-ux-designer] MOCKUPS PENDING APPROVAL**" "**[jp] MOCKUPS APPROVED**"   # still a design-stage ticket
+  cps_latest 54 "**[solutions-architect] READY FOR ENGINEERING**"
+  cps_latest 55 "**[deployer] DEPLOYED**" "**[fullstack-developer] NOTE** follow-up" "**[product-manager] EFFORT APPROVAL NEEDED**"
+  cps_latest 56 "$(printf '**[orchestrator] BLOCKED**\nBlocked on: unsupported_project — x')"   # no stage marker at all
+  cps_latest 57 "Could we also cover the mobile view?"
+  cps_run project-a/repo-a
+  local n lost="" out=$CPS_OUT rc=$CPS_RC writes; writes=$(cps_writes)
+  for n in 50 51 52 53 54 55 56 57; do [ "$(cps_labels "$n")" = "agent-proposed" ] || lost="$lost $n"; done
+  cps_cleanup
+  assert_eq "$rc" "0" "spec stage: exit 0" || return 1
+  assert_eq "$lost" "" "spec stage / no stage marker: agent-proposed kept (lost on:$lost)" || return 1
+  assert_eq "$writes" "0" "spec stage: zero writes" || return 1
+  assert_eq "$(printf '%s\n' "$out" | grep -c ' kept$')" "8" "spec stage: eight kept lines" || return 1
 }
 
 test_cps_second_run_issues_zero_writes() {
@@ -237,6 +283,8 @@ echo "-- cleanup-proposed-shipped.sh (#676)"
 run_test test_cps_removes_label_on_implemented_and_deployed_only
 run_test test_cps_applied_marker_also_removes
 run_test test_cps_latest_routing_marker_decides
+run_test test_cps_engineering_or_later_stage_removes_the_label
+run_test test_cps_spec_stage_or_no_marker_keeps_the_label
 run_test test_cps_second_run_issues_zero_writes
 run_test test_cps_dry_run_makes_no_write
 run_test test_cps_failed_comments_read_exits_1_and_writes_nothing_for_that_issue

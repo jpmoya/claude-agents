@@ -1,17 +1,20 @@
 #!/usr/bin/env bash
-# One-time cleanup (#676): remove `agent-proposed` from open issues the pipeline already implemented or shipped.
+# One-time cleanup (#676): remove `agent-proposed` from open issues the pipeline already has in flight or has shipped.
 # scan-backlog.sh relabelled in-flight and shipped tickets when its claim search came back incomplete (43 on 2026-11-06),
 # and goal-lib.sh then reads such a ticket as "not approved yet". Nothing ever removed the label.
 #
 # Usage: cleanup-proposed-shipped.sh [--dry-run] <owner/repo>...
 #
-# For each open issue labelled agent-proposed, one comments read. When the issue's LATEST routing marker (the first line of a
-# comment, any agent) starts with `**[fullstack-developer] IMPLEMENTED`, `**[deployer] DEPLOYED` (covers DEPLOYED TO STAGING)
-# or `**[infra-operator] APPLIED`, the label is removed. Anything else keeps it: a ticket whose latest marker is a
-# `[product-manager] READY …` (a specified idea waiting for JP, put there by supervisor step 3c — including one that shipped
-# earlier and was re-specified since), a ticket still in review, a ticket with no marker. One line per issue on stdout:
-# `<owner/repo>#<n> removed | kept | would remove |
-# read failed | write failed`. Idempotent: a second run finds nothing left to remove. --dry-run makes no write.
+# For each open issue labelled agent-proposed, one comments read. The issue's LATEST stage marker decides (the first line of
+# a comment that is a routing marker of a pipeline stage; jp / delivery-lead / orchestrator markers are answers, not stages,
+# and are skipped):
+#   engineering or later — test-writer, test-reviewer, fullstack-developer, code-reviewer, deployer, infra-planner,
+#     infra-reviewer, infra-operator (so TESTS WRITTEN, IMPLEMENTED, PASS/FAIL, DEPLOYED, DEPLOYED TO STAGING, APPLIED …):
+#     the ticket is in flight or shipped, the label is removed.
+#   spec stage — product-manager, intake, ux-flow-designer, ui-ux-designer, solutions-architect — or no stage marker:
+#     the label is kept. That is a specified idea waiting for JP (put there by supervisor step 3c), including a ticket that
+#     shipped earlier and was re-specified since.
+# One line per issue on stdout: `<owner/repo>#<n> removed | kept | would remove | read failed | write failed`. Idempotent: a second run finds nothing left to remove. --dry-run makes no write.
 # Exit 1 when any read or write failed, 2 on a usage error or a refused repo (nothing is touched), else 0.
 # Refuses Business-Intelligence and direct-route repos. Failure lines are tagged release (commit SHA), environment (host) and
 # route=cleanup-proposed on stderr; a real run with failures posts one message to the existing SLACK_WEBHOOK_URL.
@@ -43,18 +46,20 @@ fail() {  # <ref> <read|write>
   echo "cleanup-proposed-shipped: $1 $2 failed: $tags" >&2
 }
 
-# shipped <owner/repo> <issue> → 0 when the issue's LATEST routing marker (any agent, marker_re) is an implemented/shipped one,
-# 1 when it is anything else or there is none, 2 when the comments read failed or is not a comment list. The latest marker
-# decides, never an older one: a ticket that shipped and was later re-specified (a PM READY after the DEPLOYED) is waiting
-# for JP again and keeps its label.
+# shipped <owner/repo> <issue> → 0 when the issue's LATEST stage marker (marker_re; jp / delivery-lead / legacy project-manager
+# / orchestrator markers skipped) comes from an engineering-or-later stage: in flight or shipped. 1 when it comes from a spec
+# stage or there is none, 2 when the comments read failed or is not a comment list. The latest one decides, never an older
+# one: a ticket that shipped and was later re-specified (a PM READY after the DEPLOYED) is waiting for JP again.
+ENG_STAGES='["test-writer","test-reviewer","fullstack-developer","code-reviewer","deployer","infra-planner","infra-reviewer","infra-operator"]'
 shipped() {
   local raw n
   raw=$(GH_NOCACHE=1 gh api "repos/$1/issues/$2/comments?per_page=100" --paginate 2>/dev/null </dev/null) || return 2
-  n=$(printf '%s' "$raw" | jq -s --arg re "$(marker_re)" '
+  n=$(printf '%s' "$raw" | jq -s --arg re "$(marker_re)" --argjson eng "$ENG_STAGES" '
     [.[] | if type == "array" then .[] else error("not a comment list") end
      | if type == "object" then ((.body // "") | tostring | split("\n")[0] // "" | rtrimstr("\r")) else error("not a comment") end
-     | select(test($re))] | (last // "")
-    | if startswith("**[fullstack-developer] IMPLEMENTED") or startswith("**[deployer] DEPLOYED") or startswith("**[infra-operator] APPLIED") then 1 else 0 end' 2>/dev/null) || return 2
+     | select(test($re)) | (capture("^\\*\\*\\[(?<a>[a-z-]+)\\]") | .a)
+     | select(. != "jp" and . != "delivery-lead" and . != "project-manager" and . != "orchestrator")] | (last // "") as $stage
+    | if ($eng | index($stage)) != null then 1 else 0 end' 2>/dev/null) || return 2
   case "$n" in 1) return 0 ;; 0) return 1 ;; esac
   return 2
 }
