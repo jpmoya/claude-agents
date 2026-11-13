@@ -65,6 +65,21 @@ skip_mockups_marker_body() {  # skip_mockups_marker_body <jp-reply-text> → the
   printf '%s\n%s' "**[jp] SKIP MOCKUPS**" "JP said: \"$text\""
 }
 
+jp_mockups_preapproved_jq() {  # #677: prints a jq filter (true/false) over an issue's comments — ONE JSON array, oldest first, REST or `gh issue view` shape — run with `--arg a <issue author login>`. True only when JP's relayed approval was posted BEFORE the mockups and still stands: (1) a comment by the issue author whose first line is the `**[jp] MOCKUPS APPROVED**` relay marker with nothing after it, and whose second line is `JP said: "<non-empty>"`; (2) it comes after the latest `[product-manager] READY FOR (ARCHITECTURE|ENGINEERING)` marker; (3) the issue has exactly one `[ui-ux-designer] MOCKUPS PENDING APPROVAL` marker and the approval comes before it (after a revision round only an approval after the newest stamp counts: jp_go); (4) no later comment by the issue author is revision feedback, i.e. every later one is an agent line (`**[…`) or an approval (jp_approval_re). Same trust level as SKIP MOCKUPS (author + exact first line + `JP said:`); a bare approval word before the stamp never counts. Order is the array order (issuecomment id order), never createdAt (#560). An unknown author ("") or a missing PM READY fails closed.
+  printf '%s' '
+    def lg: ((.user | objects | .login) // (.author | objects | .login) // null);
+    def ls: (if (.body | type) == "string" then (.body | split("\n") | map(rtrimstr("\r"))) else [""] end);
+    [range(0; length) as $i | .[$i] | {i: $i, u: lg, l0: (ls[0] // ""), l1: (ls[1] // ""), b: (if (.body | type) == "string" then .body else "" end)}] as $c
+    | ([$c[] | select(.l0 | test("^\\*\\*\\[product-manager\\] READY FOR (ARCHITECTURE|ENGINEERING)(\\*\\*|:| |$)")) | .i] | max) as $ready
+    | [$c[] | select(.l0 | test("^\\*\\*\\[ui-ux-designer\\] MOCKUPS PENDING APPROVAL(\\*\\*|:| |$)")) | .i] as $stamps
+    | if $a == "" or $ready == null or ($stamps | length) != 1 then false else
+        ([$c[] | select(.u == $a and .i > $ready and .i < $stamps[0] and (.l0 | test("^\\*\\*\\[jp\\] MOCKUPS APPROVED\\*\\*[[:space:]]*$"))
+                        and (.l1 | test("^JP said: \".+\"$")))] | last) as $ap
+        | $ap != null and ([$c[] | select(.i > $ap.i and .u == $a and (.l0 | startswith("**[") | not) and (.b | test('
+  jp_approval_re | jq -Rs .
+  printf '%s' ') | not))] | length == 0) end'
+}
+
 marker_re() {  # marker_re [agent] → jq (oniguruma) regex for a valid first line; no agent = any agent, each with its own markers
   # jp's markers are gates: the first line must be the marker and nothing else (trailing whitespace/CR ok),
   # the same "exactly" rule the orchestrator applies (#202). Other agents keep the `**`/`:`/space/EOL suffix.

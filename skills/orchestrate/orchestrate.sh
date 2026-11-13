@@ -226,7 +226,7 @@ except Exception: print('?')
     (cd "$REPO" && gh issue edit "$ISSUE" --add-label "$LABEL_IN_PROGRESS" --remove-label "$LABEL_GO" --remove-label "$LABEL_PROPOSED" 2>/dev/null) || true
     rm -f "$QUEUE/orch-$RK.json"   # a manual launch supersedes a queued one; never both
     # Clear tombstones and restart state on manual launch
-    rm -f "$PIPE/orch-$RK".{stopped,held,done,closed,release,marker,milestone,alert,label-cleared,start,exit,exit-logged} "$PIPE/orch-$RK.restarts"
+    rm -f "$PIPE/orch-$RK".{stopped,held,done,closed,release,marker,milestone,alert,label-cleared,start,exit,exit-logged,startgate,jp-reminded} "$PIPE/orch-$RK.restarts"
     # Persist on both the launch and queued paths: supervisor.sh rebuilds the queue JSON from this file.
     printf '%s' "$EXTRA" > "$PIPE/orch-$RK.extra"
     # Ticket title for the status board (#29) — fetched once here, before the capacity check so a queued run has it

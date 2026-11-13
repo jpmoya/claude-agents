@@ -24,6 +24,7 @@ MIN_RUN_SECS=180                            # shorter runs are transient (rate l
 TRANSIENT_BACKOFF=(300 600 1200 1800 3600)
 RATE_LIMIT_BACKOFF_SECS=3600                # weekly/unrecognised usage limit: wait this long before the restart, not counted toward stalled
 GRACE_PERIOD_SECS=1200                      # BLOCKED younger than this may be a subagent race — wait
+JP_GATE_REMIND_SECS=86400                   # a run parked "waiting on JP" this long gets one #engineering reminder per hold (#677)
 
 # Intake agent (#114): 1 = a triaged bug gets agent-go directly (default since #115); 0 = bug gets agent-proposed instead
 INTAKE_AUTO_GO=1

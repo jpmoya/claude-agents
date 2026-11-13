@@ -471,7 +471,9 @@ test_gi_ac4_orchestrator_jp_go_untouched() {
 
 test_gi_ac4_orchestrator_mockups_approved_lines_untouched() {
   # Re-pinned for the fast-lane single-loop change: only the description line and the READY FOR ENGINEERING row's fast-lane dispatch prompt changed (the MOCKUPS APPROVED wording itself is untouched).
-  assert_eq "$(grep -F 'MOCKUPS APPROVED' "$ORCH_GI" | gi_sha)" "dfe62694e71d4953a07eb3a157b9aa69c66530f002b2901cdf816aeb0687b456" "AC4: MOCKUPS APPROVED lines"
+  # Re-pinned for #677 (a `[jp] MOCKUPS APPROVED` relay posted before the stamp counts): the ticket adds the pre-approval sentence to the
+  # mockup-gate rows and the `jp_preapproved` helper next to `jp_go`; every pre-existing sentence in these lines is byte-identical.
+  assert_eq "$(grep -F 'MOCKUPS APPROVED' "$ORCH_GI" | gi_sha)" "9ee0a99293ca54bbce954389013c59601ea0add57374e9566aa18ea2082c682c" "AC4: MOCKUPS APPROVED lines"
 }
 
 test_gi_ac4_orchestrator_needs_jp_lines_untouched() {

@@ -158,6 +158,9 @@ case "$1" in
     [ -n "$repo" ] || repo=$(cwd_repo)
     jq -nc --arg r "$repo" '{nameWithOwner: $r}' | emit_jq "$jqx"; exit 0 ;;
   label) exit 0 ;;
+  pr)   # #677: dep-shipped.sh's merged-PR list — $S/merged-prs.json, default none
+    [ "$2" = list ] || { echo "fake gh: unsupported: $*" >&2; exit 1; }
+    cat "$S/merged-prs.json" 2>/dev/null || echo '[]'; exit 0 ;;
   api) ;;
   *) echo "fake gh: unsupported: $*" >&2; exit 1 ;;
 esac
@@ -192,7 +195,12 @@ if [ "$method" = GET ] && [ "$obj" != "{}" ]; then
   for k in $(printf '%s' "$obj" | jq -r 'keys[]'); do q="$q&$k=$(printf '%s' "$obj" | jq -r --arg k "$k" '.[$k]')"; done
 fi
 emit() { if [ -n "$expr" ]; then jq -r "$expr"; else cat; fi; }
-case "$p" in repos/*/*/*) ;; *) echo "fake gh: unexpected path $p" >&2; exit 1 ;; esac
+case "$p" in
+  repos/*/*/branches/staging) echo "gh: Branch not found (HTTP 404)" >&2; exit 1 ;;   # #677: no staging branch in the fake world
+  repos/*/*/*) ;;
+  repos/*/*) echo '{"default_branch":"main"}' | emit; exit 0 ;;   # #677: the repo itself (default branch)
+  *) echo "fake gh: unexpected path $p" >&2; exit 1 ;;
+esac
 owner=$(printf '%s' "$p" | cut -d/ -f2); repo=$(printf '%s' "$p" | cut -d/ -f3); seg=$(printf '%s' "$p" | cut -d/ -f4-)
 rk="${owner}_${repo}"; D="$S/issues/$rk"; mkdir -p "$D"
 if [ "$method" != GET ]; then printf '%s %s %s\n' "$method" "$p" "$obj" >> "$HERE/writes.log"; fi
