@@ -233,8 +233,15 @@ test_st_ac8_no_new_mechanism() {
   # #676 (feedback tickets never strand) mandates shared intake/spec retry helpers and the unowned-feedback digest finding in
   # supervisor.sh. Exactly these names are allowed (code review of PR #680); any other new function still fails this guard.
   local allow_676='fb_exit_class|fb_iso|fb_limit_active|fb_release|fb_giveup|fb_claimable|sw_tags|sw_repo_dir|sw_has_local_run|sw_feedback_gate|sw_unowned_feedback'
-  assert_not_contains "$(printf '%s' "$added" | grep -E '^\+[a-zA-Z_][a-zA-Z0-9_]*\(\) *\{' | grep -vE "^\+($allow_676)\(\) *\{" || true)" "()" "AC8: no new function definitions" || return 1
-  assert_eq "$(printf '%s' "$added" | grep -cE 'touch .*orch-.*\.[a-z-]+"|> *"\$PIPE/orch-\$[a-z]+\.[a-z-]+"' || true)" "0" "AC8: no new per-run state file" || return 1
+  # #677 (start-gate met when shipped, held runs resume, JP gates reminded once) mandates the start-gate hold/resume and the
+  # JP-gate reminder in supervisor.sh, with exactly two per-run state files: orch-<rk>.startgate (the unmet refs) and
+  # orch-<rk>.jp-reminded (one reminder per hold); it also stamps the existing orch-<rk>.autoretry-check throttle at hold time.
+  # touch_held is not new: it is the existing one-line function, whose line #677 edits (a new hold drops a stale .startgate).
+  # Exactly these names are allowed; any other new function or per-run state file still fails this guard.
+  local allow_677='startgate_unmet|startgate_hold|startgate_resume|jp_gate_remind|touch_held'
+  local files_677='orch-\$rk\.(startgate|autoretry-check)"'
+  assert_not_contains "$(printf '%s' "$added" | grep -E '^\+[a-zA-Z_][a-zA-Z0-9_]*\(\) *\{' | grep -vE "^\+($allow_676|$allow_677)\(\) *\{" || true)" "()" "AC8: no new function definitions" || return 1
+  assert_eq "$(printf '%s' "$added" | grep -vE "$files_677" | grep -cE 'touch .*orch-.*\.[a-z-]+"|> *"\$PIPE/orch-\$[a-z]+\.[a-z-]+"' || true)" "0" "AC8: no new per-run state file" || return 1
   assert_eq "$(printf '%s' "$added" | grep -cE '^\+[^#]*(no_progress_count|[a-z_]*_counter)[a-z_]*=' || true)" "0" "AC8: no new counter" || return 1
 }
 

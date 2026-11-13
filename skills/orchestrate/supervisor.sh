@@ -1,7 +1,8 @@
 #!/bin/bash
 # Stateless supervisor tick — cron runs it every 2 min (VM even minutes, Mac odd minutes). One tick does, in order:
 #   0b. worktree sweep (time-gated to once per 30 min): remove merged, clean-enough ad hoc worktrees under DISPATCH_REPOS
-#   1. restart exited non-terminal local orchestrators with backoff
+#   1. restart exited non-terminal local orchestrators with backoff; 1b: requeue held runs whose machine-clearable cause
+#      (CI, merge conflict, dependency, start-gate #677) has cleared, remind JP once of a run waiting on him (#677)
 #   2. drain the local launch queue
 #   3. label lifecycle: drop agent-in-progress on issues this machine finished, parked, or abandoned
 #   4. label reconciliation: clear orphaned agent-in-progress labels (no local pid, no queue, stale marker)
@@ -44,7 +45,8 @@ PY
 }
 slog() { printf '[%s] %s\n' "$(date -u +%FT%TZ)" "$*" >> "$SLOG"; }
 # #341: every .held creation logs its path and caller (log line only, no behaviour change)
-touch_held() { touch "$1"; slog "[held-touch] path=$1 caller=${FUNCNAME[1]:-main}:${BASH_LINENO[0]}"; }
+# #677: a new hold never inherits an earlier hold's start-gate file (step 1 writes a fresh one right after, when it applies)
+touch_held() { touch "$1"; rm -f "${1%.held}.startgate"; slog "[held-touch] path=$1 caller=${FUNCNAME[1]:-main}:${BASH_LINENO[0]}"; }
 # #632: config.sh dropped these direct-route repos from both repo lists at load (a host config that still names one is
 # harmless; every step below iterates the filtered arrays). One line per drop so the stale entry gets cleaned up.
 while read -r dr_list dr_repo; do [ -n "$dr_repo" ] && slog "[config] dropped direct-route repo $dr_repo from $dr_list"; done <<< "${DIRECT_ROUTE_DROPPED:-}"
@@ -429,9 +431,9 @@ sw_disk_pressure() {
 # the only local write is the per-repo Slack stamp below.
 SW_FEEDBACK_NOTIFY_SECS=86400   # one #engineering message per repo per day, or sooner when the set of tickets changes
 
-# sw_tags — release (commit SHA) / environment (host) / route tags of a digest failure line
+# sw_tags [route] — release (commit SHA) / environment (host) / route tags of a failure line (default route: the digest's)
 sw_tags() {
-  printf 'release=%s environment=%s route=supervisor-tick' "$(git -C "$HERE" rev-parse HEAD 2>/dev/null || echo unknown)" "$(hostname -s 2>/dev/null || echo unknown)"
+  printf 'release=%s environment=%s route=%s' "$(git -C "$HERE" rev-parse HEAD 2>/dev/null || echo unknown)" "$(hostname -s 2>/dev/null || echo unknown)" "${1:-supervisor-tick}"
 }
 
 # sw_repo_dir <owner/repo> → this host's checkout of it (DISPATCH_REPOS), else the name itself (a path that does not exist)
@@ -695,6 +697,7 @@ notify_engineering() {  # post a pipeline event to #engineering; requires SLACK_
     slog "[slack] #$issue — posted to engineering"
   else
     slog "[slack] #$issue — post failed: $(echo "$resp" | python3 -c "import json,sys; print(json.load(sys.stdin).get('error','unknown'))" 2>/dev/null || echo 'curl error')"
+    return 1   # #677: the JP-gate reminder retries a failed post; every other caller ignores the status
   fi
 }
 
@@ -884,6 +887,101 @@ sys.exit(1)
 PY
 }
 # #178 end
+# --- Start-gate holds resume by themselves, JP gates are reminded once (#677) ---------------------------------------
+# A start-gate (`Depends on <ref> for starting work`) is met when the dependency issue is closed or dep-shipped.sh says it
+# shipped to the integration branch. State: orch-<rk>.startgate = the unmet refs, one per line, written only when the
+# supervisor's own check found one (so a run that stops for another structural reason is never relaunched in a loop).
+# startgate_unmet <repo dir> <refs, one per line> — prints the refs not met yet. Returns 2 on a failed read, printing that ref only.
+# A dependency closed as not planned (or as a duplicate) never shipped: like promote_deferred, closure alone does not meet the
+# gate and the run stays held for JP.
+startgate_unmet() {
+  local repo=$1 slug g gr gn st out=""
+  slug=$(repo_slug "$repo")
+  while IFS= read -r g; do
+    [ -n "$g" ] || continue
+    case "$g" in "#"*) gr=$slug ;; *) gr=${g%#*} ;; esac; gn=${g##*#}
+    st=$(gh api "repos/$gr/issues/$gn" 2>/dev/null </dev/null | jq -r '"\((.state // "") | ascii_upcase) \(.state_reason // "")"' 2>/dev/null) || st=""
+    case "$st" in
+      "CLOSED not_planned"|"CLOSED duplicate") out="$out$g"$'\n' ;;
+      "CLOSED "*) ;;
+      "OPEN "*|"REOPENED "*)
+        "$HERE/dep-shipped.sh" "$gr" "$gn" >/dev/null 2>&1 </dev/null
+        case $? in 0) ;; 1) out="$out$g"$'\n' ;; *) printf '%s\n' "$g"; return 2 ;; esac ;;
+      *) printf '%s\n' "$g"; return 2 ;;
+    esac
+  done <<< "$2"
+  printf '%s' "$out"
+}
+# startgate_hold <repo dir> <issue> <rk> — step 1, on a structural stop: read the start-gate refs from the issue body (same
+# parse as goal-lib.sh) and, when at least one is unmet, write them to orch-<rk>.startgate and print them comma-separated.
+# A failed gate read writes every ref (step 1b checks again); a failed body read writes nothing (plain structural hold).
+startgate_hold() {
+  local repo=$1 issue=$2 rk=$3 body refs unmet
+  body=$(gh api "repos/$(repo_slug "$repo")/issues/$issue" 2>/dev/null </dev/null | jq -r '.body // ""' 2>/dev/null) || {
+    slog "[held] #$issue — start-gate check: issue body read failed; $(sw_tags supervisor/startgate)"
+    autoretry_alert "$issue" "start-gate body read" startgate; return 0; }
+  refs=$(printf '%s\n' "$body" | grep -oE 'Depends on [A-Za-z0-9._/-]*#[0-9]+ for starting work' | sed -E 's/^Depends on ([^ ]+) for starting work$/\1/' | awk '!seen[$0]++')
+  [ -n "$refs" ] || return 0
+  unmet=$(startgate_unmet "$repo" "$refs") || unmet=$refs
+  [ -n "$unmet" ] || return 0
+  printf '%s\n' "$unmet" > "$PIPE/orch-$rk.startgate"
+  touch "$PIPE/orch-$rk.autoretry-check" 2>/dev/null || true   # just evaluated: step 1b looks again one throttle window from now
+  printf '%s' "$unmet" | tr '\n' ' ' | sed -e 's/ $//' -e 's/ /, /g'
+}
+# startgate_resume <rk> <issue> <repo dir> — step 1b: at most once per AUTORETRY_THROTTLE_SECS re-check the refs of a held run's
+# .startgate. All met: NOTE on the issue, .held / .startgate removed, relaunch queued (the loop-cap resume's queue entry).
+# A NOTE that cannot be posted or a failed read leaves the run held for the next pass.
+startgate_resume() {
+  local rk=$1 issue=$2 repo=$3 f="$PIPE/orch-$1.startgate" stamp="$PIPE/orch-$1.autoretry-check" last refs unmet shown
+  last=$(file_mtime "$stamp")
+  if [ -n "$last" ] && [ $(( $(date +%s) - last )) -lt "$AUTORETRY_THROTTLE_SECS" ]; then return 0; fi
+  touch "$stamp" 2>/dev/null || true   # throttle failed checks too
+  refs=$(grep . "$f" 2>/dev/null) || { rm -f "$f"; return 0; }
+  unmet=$(startgate_unmet "$repo" "$refs") || {
+    slog "[startgate-resume] #$issue — start-gate $unmet read failed, staying held; $(sw_tags supervisor/startgate)"
+    autoretry_alert "$issue" "start-gate read" startgate; return 0; }
+  [ -z "$unmet" ] || return 0
+  shown=$(printf '%s' "$refs" | tr '\n' ' ' | sed -e 's/ $//' -e 's/ /, /g')
+  if ! (cd "$repo" && gh issue comment "$issue" --body "**[supervisor] NOTE** start-gate cleared: $shown — relaunching" >/dev/null 2>&1 </dev/null); then
+    slog "[startgate-resume] #$issue — NOTE post failed, staying held; $(sw_tags supervisor/startgate)"
+    autoretry_alert "$issue" "start-gate NOTE post" startgate; return 0
+  fi
+  rm -f "$PIPE/orch-$rk.held" "$PIPE/orch-$rk.alert" "$f"
+  python3 - "$issue" "$repo" "$QUEUE/orch-$rk.json" "$(date -u +%FT%TZ)" "$PIPE/orch-$rk.extra" <<'PY' 2>/dev/null
+import json, sys
+issue, repo, out, ts, ex = sys.argv[1:6]
+try: extra = open(ex).read()
+except Exception: extra = ''
+json.dump({'issue': issue, 'repo': repo, 'extra': extra, 'reason': 'queued', 'queued_at': ts, 'not_before': 0}, open(out, 'w'))
+PY
+  slog "[startgate-resume] #$issue — start-gate cleared: $shown, relaunching"
+  report_status_async "auto-retry"
+}
+# jp_gate_remind <rk> <issue> <repo dir> — step 1b, local state only: a run parked with a "waiting on JP" alert for
+# JP_GATE_REMIND_SECS (counted from the newer of .held and the alert) gets ONE #engineering reminder per hold. The stamp
+# orch-<rk>.jp-reminded counts for the hold it is newer than. Skipped while this host's asks.tsv has an open ask for the same
+# repo and issue (pm-slack's DM sweep reminds that one). A failed post is stamped "failed" and retried one throttle window later.
+jp_gate_remind() {
+  local rk=$1 issue=$2 repo=$3 af="$PIPE/orch-$1.alert" st="$PIPE/orch-$1.jp-reminded" now since a s slug reason
+  grep -q 'waiting on JP' "$af" 2>/dev/null || return 0
+  now=$(date +%s); since=$(file_mtime "$PIPE/orch-$rk.held"); a=$(file_mtime "$af")
+  [ -n "$since" ] && [ -n "$a" ] || return 0
+  [ "$a" -gt "$since" ] && since=$a
+  [ $(( now - since )) -ge "${JP_GATE_REMIND_SECS:-86400}" ] || return 0
+  s=$(file_mtime "$st")
+  if [ -n "$s" ] && [ "$s" -ge "$since" ]; then
+    grep -q '^failed' "$st" 2>/dev/null && [ $(( now - s )) -ge "$AUTORETRY_THROTTLE_SECS" ] || return 0
+  fi
+  slug=$(repo_slug "$repo")
+  awk -F'\t' -v r="$slug" -v i="$issue" '$1 == r && $2 == i && $6 == "open" {f = 1} END {exit !f}' "$PIPE/pm-slack/asks.tsv" 2>/dev/null && return 0
+  reason=$(head -1 "$af"); reason=${reason#*waiting on JP — }; reason=${reason%%; relaunch*}
+  if notify_engineering "$issue" ":hand:" "Reminder — still waiting on you ($(( (now - since) / 86400 ))d): $reason" "$slug"; then
+    echo sent > "$st"
+  else
+    echo failed > "$st"
+    slog "[jp-gate-remind] #$issue — reminder post failed, retried later; $(sw_tags supervisor/jp-gate-remind)"
+  fi
+}
 # --- Main tick ---
 
 # GitHub API budget (gh-budget.sh): one quota line per tick (times in Europe/Madrid) and the tier flags the steps
@@ -1128,7 +1226,10 @@ PY
       hand-to-jp) hold_reason="hand-to-jp: PR passed review, waiting on JP's merge" ;;
       *) hold_reason="structural stop (start-gate / closed PR)" ;;
     esac
-    slog "[held] #$issue — $hold_reason, needs a relaunch after it is resolved"
+    # #677: a structural stop on an unmet start-gate is re-checked by step 1b and resumes by itself
+    sg_refs=""; [ "$found_stage" = structural ] && sg_refs=$(startgate_hold "$repo" "$issue" "$rk")
+    if [ -n "$sg_refs" ]; then slog "[held] #$issue — start-gate: waits on $sg_refs, resumes when shipped"
+    else slog "[held] #$issue — $hold_reason, needs a relaunch after it is resolved"; fi
     if [ "$found_stage" = "hand-to-jp" ]; then   # route supervisor/hold/hand-to-jp; payload = issue number + stage only
       notify_engineering "$issue" ":hand:" "Waiting on you — hand-to-jp, PR passed review (route supervisor/hold/hand-to-jp)" \
         "$(cd "$repo" && gh api repos/{owner}/{repo} --jq .full_name 2>/dev/null || echo "unknown")"
@@ -1230,6 +1331,8 @@ _RS_PS_CACHED=0; _RS_PS_CACHE=""   # step 1 scan done (#624): later steps scan f
 # (autoretry_classes in hooks/pipeline-markers.sh) is requeued once the cause has cleared. At most
 # AUTORETRY_MAX per run, one cause-check per AUTORETRY_THROTTLE_SECS per run. Never touches JP gates
 # (needs_jp, unparsable class, other, unsupported_project, AWAITING GO, EFFORT, MOCKUPS, spend hold).
+# #677, same pass over the .held files: a run held on a start-gate (orch-<rk>.startgate) is relaunched once its dependencies
+# are closed or shipped (startgate_resume), and a run waiting on JP for JP_GATE_REMIND_SECS is reminded once (jp_gate_remind).
 AUTORETRY_MAX=3
 AUTORETRY_THROTTLE_SECS=1800
 
@@ -1377,6 +1480,8 @@ for f in "$PIPE"/orch-*.held; do
   repo=$(cat "$PIPE/orch-$rk.repo" 2>/dev/null || echo "")
   [ -n "$repo" ] || continue
   [ -f "$PIPE/orch-$rk.stopped" ] || [ -f "$PIPE/orch-$rk.done" ] && continue
+  jp_gate_remind "$rk" "$issue" "$repo"   # #677: one reminder per JP-gate hold
+  if [ -f "$PIPE/orch-$rk.startgate" ]; then startgate_resume "$rk" "$issue" "$repo"; continue; fi   # #677: held on a start-gate
   n=$(tr -dc '0-9' 2>/dev/null < "$PIPE/orch-$rk.autoretry"); n=${n:-0}
   is_lc=0; held_by_loopcap "$rk" "$issue" && is_lc=1
   [ "$n" -lt "$AUTORETRY_MAX" ] || [ "$is_lc" -eq 1 ] || continue
@@ -1856,30 +1961,33 @@ goal_step
 if [ "${T_NORMAL:-1}" = 1 ] && gh_tick_due adopt-blockers "${GOAL_ADOPT_SECS:-300}"; then GH_CLASS=normal goal_fb_adopt_blockers >/dev/null 2>&1 || true; fi
 
 # 3e. Promote deferred children (#315) — a ticket filed with the PM deferral NOTE ("approval inherited from <ref> — agent-go deferred:
-#     start-gate #N open") gets agent-go once every start-gate is CLOSED as completed. Launch permission only: no JP-only gate is answered here.
+#     start-gate #N open") gets agent-go once every start-gate is CLOSED as completed or, still open, shipped to the integration branch (#677). Launch permission only: no JP-only gate is answered here.
 #     Only deferral NOTEs from OWNER/MEMBER/COLLABORATOR comments count (public repos: outsiders cannot trigger a launch).
 #     Never Business-Intelligence, never source:sentry; a gate closed "not planned" is left for JP. Idempotent: the supervisor NOTE stops repeats.
 promote_gate_state() {  # <owner/repo> <gate ref owner/repo#N> → open | completed | notplanned | error
+  # #677: an open gate that shipped to the integration branch (dep-shipped.sh) is completed too, with exit status 3 (the NOTE says "shipped")
   local g=$2 gr gn st
   gr="${g%#*}"; gn="${g##*#}"
   st=$(gh issue view "$gn" --repo "$gr" --json state,stateReason --jq '[.state, (.stateReason // "")] | join(" ")' 2>/dev/null) || { echo error; return; }
   case "$st" in
-    "OPEN "*|"REOPENED "*) echo open ;;
+    "OPEN "*|"REOPENED "*)
+      "$HERE/dep-shipped.sh" "$gr" "$gn" >/dev/null 2>&1 </dev/null
+      case $? in 0) echo completed; return 3 ;; 1) echo open ;; *) echo error ;; esac ;;
     "CLOSED COMPLETED") echo completed ;;
     "CLOSED "*) echo notplanned ;;
     *) echo error ;;
   esac
 }
 promote_deferred() {
-  local entry owner_repo line num ref gates g st ok why seen
+  local entry owner_repo line num ref gates g st ok why seen how
   for entry in "${DISPATCH_REPOS[@]}"; do
     owner_repo="${entry%%:*}"
     case "$owner_repo" in */Business-Intelligence) continue ;; esac
     while IFS=$'\t' read -r num ref gates; do
       case "$num" in ''|*[!0-9]*) continue ;; esac
-      ok=1; why=""
+      ok=1; why=""; how=closed
       for g in $gates; do
-        st=$(promote_gate_state "$owner_repo" "$g")
+        how=closed; st=$(promote_gate_state "$owner_repo" "$g"); [ $? -eq 3 ] && how=shipped   # the NOTE names the last gate
         case "$st" in
           completed) ;;
           open) ok=0; break ;;
@@ -1890,15 +1998,17 @@ promote_deferred() {
       if [ "$ok" -ne 1 ]; then
         if [ -n "$why" ]; then
           seen="promote-${owner_repo//\//_}-$num.${why%%,*}"; seen="$PIPE/${seen//[ #\/]/_}"
-          [ -e "$seen" ] || { slog "[promote] $owner_repo#$num — not promoted: $why"; case "$why" in *"read failed"*) autoretry_alert "$num" "promote $owner_repo: $why" ;; esac; : > "$seen"; }
+          [ -e "$seen" ] || { case "$why" in
+            *"read failed"*) slog "[promote] $owner_repo#$num — not promoted: $why; $(sw_tags supervisor/promote)"; autoretry_alert "$num" "promote $owner_repo: $why" promote ;;
+            *) slog "[promote] $owner_repo#$num — not promoted: $why" ;; esac; : > "$seen"; }
         fi
         continue
       fi
       if gh issue edit "$num" --repo "$owner_repo" --add-label "$LABEL_GO" --remove-label "$LABEL_PROPOSED" >/dev/null 2>&1; then
-        gh issue comment "$num" --repo "$owner_repo" --body "**[supervisor] NOTE** approval inherited from $ref — start-gate #${gates##*#} closed" >/dev/null 2>&1 \
+        gh issue comment "$num" --repo "$owner_repo" --body "**[supervisor] NOTE** approval inherited from $ref — start-gate #${gates##*#} $how" >/dev/null 2>&1 \
           || slog "[promote] $owner_repo#$num — $LABEL_GO added but promotion NOTE post failed"
         rm -f "$PIPE/promote-${owner_repo//\//_}-$num.labelfail"
-        slog "[promote] $owner_repo#$num — start-gate(s) closed, added $LABEL_GO (approval inherited from $ref)"
+        slog "[promote] $owner_repo#$num — start-gate(s) $how, added $LABEL_GO (approval inherited from $ref)"
       else
         slog "[promote] $owner_repo#$num — failed to add $LABEL_GO, will retry next tick"
         seen="$PIPE/promote-${owner_repo//\//_}-$num.labelfail"
@@ -1907,7 +2017,7 @@ promote_deferred() {
     done < <(gh issue list --repo "$owner_repo" --state open --limit 100 --json number,body,labels,comments --jq '
         .[] | ([.labels[].name]) as $l
         | select(($l | index("'"$LABEL_GO"'") | not) and ($l | index("'"$LABEL_IN_PROGRESS"'") | not) and ($l | index("source:sentry") | not))
-        | select([.comments[].body | split("\n")[0] | select(test("^\\*\\*\\[supervisor\\] NOTE\\*\\* approval inherited from .* — start-gate #[0-9]+ closed$"))] | length == 0)
+        | select([.comments[].body | split("\n")[0] | select(test("^\\*\\*\\[supervisor\\] NOTE\\*\\* approval inherited from .* — start-gate #[0-9]+ (closed|shipped)$"))] | length == 0)
         | [.comments[] | select((.authorAssociation // "OWNER") as $a | ["OWNER","MEMBER","COLLABORATOR"] | index($a)) | .body | split("\n")[0] | capture("^\\*\\*\\[product-manager\\] NOTE\\*\\* approval inherited from (?<ref>[^ ]+) — agent-go deferred: start-gate (?<g>[A-Za-z0-9._/-]*#[0-9]+) open$")] as $d
         | select($d | length > 0)
         | ([$d[].g, (.body | [scan("Depends on ([A-Za-z0-9._/-]*#[0-9]+) for starting work") | .[0]][])]
@@ -2040,7 +2150,7 @@ if [ "$launched" -eq 0 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
           continue
         fi
         # Won: a re-dispatch is JP's explicit "go again", so clear local tombstones like a manual launch does.
-        rm -f "$PIPE/orch-$rk".{stopped,held,done,closed,marker,milestone,alert,label-cleared} "$PIPE/orch-$rk.restarts"
+        rm -f "$PIPE/orch-$rk".{stopped,held,done,closed,marker,milestone,alert,label-cleared,startgate,jp-reminded} "$PIPE/orch-$rk.restarts"
         out=$(LAUNCH_REASON=agent-go "$(dirname "${BASH_SOURCE[0]}")/orchestrate.sh" --force "$local_path" "$num" 2>&1 | tail -1)
         slog "[dispatch] $owner_repo#$num — claimed by $HOST, candidates=$cand_n, $out"
         launched=1

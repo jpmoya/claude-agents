@@ -30,6 +30,11 @@ printf '%s\n' "$*" >> "$D/gh.log"
 if [ "$1" = "repo" ] && [ "$2" = "view" ]; then
   case "$3" in old-org/scheduler) echo new-org/ops-tool ;; *) echo "$3" ;; esac; exit 0
 fi
+if [ "$1" = "pr" ]; then   # #677: dep-shipped.sh's merged-PR list ($D/merged-prs.json, default none; $D/pr-fail = the read fails)
+  [ -e "$D/pr-fail" ] && { echo "HTTP 502" >&2; exit 1; }
+  [ "$2" = "list" ] || { echo "fake gh: unexpected $*" >&2; exit 1; }
+  cat "$D/merged-prs.json" 2>/dev/null || echo '[]'; exit 0
+fi
 [ "$1" = "api" ] || { echo "fake gh: unexpected $*" >&2; exit 1; }
 shift
 args=(); jqx=""
@@ -57,6 +62,9 @@ case "$p" in
     fi
     [ -s "$D/issue-${r//\//_}-$n.json" ] || { echo "HTTP 404 Not Found" >&2; exit 1; }
     emit "$D/issue-${r//\//_}-$n.json" ;;
+  repos/*/*/branches/staging) echo "gh: Branch not found (HTTP 404)" >&2; exit 1 ;;   # #677: no staging branch, the default branch is the integration branch
+  repos/*/*/*) echo "fake gh: unexpected path $p" >&2; exit 1 ;;
+  repos/*/*) echo '{"default_branch":"main"}' ;;
   *) echo "fake gh: unexpected path $p" >&2; exit 1 ;;
 esac
 EOF2
@@ -150,6 +158,7 @@ test_ro_ac1_start_gate_body_comes_from_the_listing() {
   jq -n '[{number:6,state:"open",labels:[],user:{login:"jpmoya"},body:"Depends on proj/repo-a#9 for starting work"}]' > "$RO_DIR/list-proj_repo-a.json"
   echo '[]' > "$RO_DIR/comments-proj_repo-a-6.json"
   jq -n '{number:9,state:"open",labels:[],user:{login:"jpmoya"},body:""}' > "$RO_DIR/issue-proj_repo-a-9.json"
+  echo '[]' > "$RO_DIR/comments-proj_repo-a-9.json"   # #677: the open gate is also asked "shipped?" (dep-shipped.sh reads #9's comments)
   ro_run "goal_eval $RO_MS_ID $RO_MS_SPEC; printf '%s' \"\$GE_REFS\""
   assert_contains "$RO_OUT" "proj/repo-a#6	waiting_jp	waits on proj/repo-a#9" "AC1: start-gate parsed from the listing's body" \
     && assert_eq "$(ro_issue_reads proj/repo-a 6)" "0" "AC1: #6 itself is never re-read" || rc=1

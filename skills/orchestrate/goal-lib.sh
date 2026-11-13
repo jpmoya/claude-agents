@@ -769,7 +769,8 @@ _goal_ticket_eval() {
     esac
   fi
   # #428: an approved ticket that has not started (no routing marker) and whose "Depends on <ref> for starting work"
-  # gate is still open cannot move (same parse as supervisor.sh promote_deferred): waiting, not active.
+  # gate is not met cannot move (same parse as supervisor.sh promote_deferred): waiting, not active. #677: a gate is met when
+  # the dependency is closed OR shipped to the integration branch (dep-shipped.sh: 0 shipped, 1 not, anything else a failed read).
   if [ "$cls" = active ] && [ "$first" = none ]; then
     local g gr gn gst
     while IFS= read -r g; do
@@ -777,7 +778,9 @@ _goal_ticket_eval() {
       case "$g" in "#"*) gr="$repo"; gn="${g#\#}" ;; *) gr="${g%#*}"; gn="${g##*#}" ;; esac
       gst=$(gh api "repos/$(_goal_rest_slug "$gr")/issues/$gn" --jq '(.state // "") | ascii_upcase' 2>/dev/null) || return 1
       case "$gst" in
-        OPEN|REOPENED) cls=waiting_jp; why="waits on $g (start-gate still open)"; break ;;
+        OPEN|REOPENED)
+          "$_GOAL_LIB_DIR/dep-shipped.sh" "$(_goal_rest_slug "$gr")" "$gn" >/dev/null 2>&1 </dev/null
+          case $? in 0) ;; 1) cls=waiting_jp; why="waits on $g (not shipped yet)"; break ;; *) return 1 ;; esac ;;
         CLOSED) ;;
         *) return 1 ;;
       esac
