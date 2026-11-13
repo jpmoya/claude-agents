@@ -1819,7 +1819,7 @@ for idf in "$PIPE"/spec-*.id; do   # exited PM runs: marker posted -> hand the s
     rm -f "$PIPE/$k".{id,pid,path,attempts,exit,launched-at,transients,retry-after}; slog "[spec] $s_repo#$s_num spec written, moved to $LABEL_PROPOSED"
   else
     fb_cls=$(fb_exit_class "$k"); [ "$fb_cls" = failed ] || { fb_release spec "$k" "$s_repo" "$s_num" "$fb_cls"; continue; }   # #676: a limit or transient exit is released, never counted
-    gh issue edit "$s_num" --repo "$s_repo" --remove-label "$LABEL_IN_PROGRESS" >/dev/null 2>&1; rm -f "$PIPE/$k".{id,pid,path,exit}
+    gh issue edit "$s_num" --repo "$s_repo" --remove-label "$LABEL_IN_PROGRESS" >/dev/null 2>&1 || { slog "[spec] $s_repo#$s_num label write failed — release retried next tick"; continue; }; rm -f "$PIPE/$k".{id,pid,path,exit}   # #676: state is kept until agent-in-progress is really off
     [ "$(cat "$PIPE/$k.attempts" 2>/dev/null || echo 1)" -ge 2 ] && fb_giveup spec "$k" "$s_repo" "$s_num"   # #676: NOTE, cycle count, a give-up that expires
   fi
 done

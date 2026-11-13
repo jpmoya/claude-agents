@@ -118,6 +118,29 @@ test_cps_applied_marker_also_removes() {
   assert_eq "$l8" "agent-proposed" "a marker on line 2 is not a first-line marker: kept" || return 1
 }
 
+test_cps_latest_routing_marker_decides() {
+  # code review of PR #680: an older shipped marker must not strip the label of a ticket that was re-specified since
+  cps_home
+  cps_issue 30 project-a/repo-a agent-proposed   # shipped, then specified again by the PM: waiting for JP, label kept
+  cps_comment 30 "**[deployer] DEPLOYED**"; cps_comment 30 "**[product-manager] READY FOR ENGINEERING**"
+  cps_issue 31 project-a/repo-a agent-proposed   # implemented, review still open: the latest marker is the reviewer's
+  cps_comment 31 "**[fullstack-developer] IMPLEMENTED**"; cps_comment 31 "**[code-reviewer] FAIL**"
+  cps_issue 32 project-a/repo-a agent-proposed   # re-specified, then shipped again: the latest marker is the deployer's
+  cps_comment 32 "**[deployer] DEPLOYED**"; cps_comment 32 "**[product-manager] READY FOR ENGINEERING**"; cps_comment 32 "**[deployer] DEPLOYED TO STAGING**"
+  cps_issue 33 project-a/repo-a agent-proposed   # shipped, then only chatter and inert lines: still the latest ROUTING marker
+  cps_comment 33 "**[deployer] DEPLOYED**"; cps_comment 33 "Thanks, looks good"
+  cps_comment 33 "**[supervisor] NOTE** claim: Claude 2026-11-06T00:00:00Z"; cps_comment 33 "**[fullstack-developer] NOTE** follow-up filed"
+  cps_run project-a/repo-a
+  local l30 l31 l32 l33 out=$CPS_OUT rc=$CPS_RC; l30=$(cps_labels 30); l31=$(cps_labels 31); l32=$(cps_labels 32); l33=$(cps_labels 33)
+  cps_cleanup
+  assert_eq "$rc" "0" "latest marker: exit 0" || return 1
+  assert_eq "$l30" "agent-proposed" "DEPLOYED then a PM READY: re-specified, label kept" || return 1
+  assert_contains "$out" "project-a/repo-a#30 kept" "re-specified ticket reported as kept" || return 1
+  assert_eq "$l31" "agent-proposed" "IMPLEMENTED then a reviewer marker: the latest marker is not a shipped one, label kept" || return 1
+  assert_eq "$l32" "" "READY then DEPLOYED TO STAGING: the latest marker is shipped, label removed" || return 1
+  assert_eq "$l33" "" "comments and NOTEs after DEPLOYED are not routing markers: label removed" || return 1
+}
+
 test_cps_second_run_issues_zero_writes() {
   cps_fixture
   cps_run project-a/repo-a
@@ -213,6 +236,7 @@ test_cps_refuses_business_intelligence_and_direct_route_repos() {
 echo "-- cleanup-proposed-shipped.sh (#676)"
 run_test test_cps_removes_label_on_implemented_and_deployed_only
 run_test test_cps_applied_marker_also_removes
+run_test test_cps_latest_routing_marker_decides
 run_test test_cps_second_run_issues_zero_writes
 run_test test_cps_dry_run_makes_no_write
 run_test test_cps_failed_comments_read_exits_1_and_writes_nothing_for_that_issue

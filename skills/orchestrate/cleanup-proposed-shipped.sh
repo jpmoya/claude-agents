@@ -5,10 +5,12 @@
 #
 # Usage: cleanup-proposed-shipped.sh [--dry-run] <owner/repo>...
 #
-# For each open issue labelled agent-proposed, one comments read. When any comment's first line starts with
-# `**[fullstack-developer] IMPLEMENTED`, `**[deployer] DEPLOYED` (covers DEPLOYED TO STAGING) or `**[infra-operator] APPLIED`,
-# the label is removed. A ticket whose only routing marker is a `[product-manager] READY …` (a specified idea waiting for JP,
-# put there by supervisor step 3c) keeps it. One line per issue on stdout: `<owner/repo>#<n> removed | kept | would remove |
+# For each open issue labelled agent-proposed, one comments read. When the issue's LATEST routing marker (the first line of a
+# comment, any agent) starts with `**[fullstack-developer] IMPLEMENTED`, `**[deployer] DEPLOYED` (covers DEPLOYED TO STAGING)
+# or `**[infra-operator] APPLIED`, the label is removed. Anything else keeps it: a ticket whose latest marker is a
+# `[product-manager] READY …` (a specified idea waiting for JP, put there by supervisor step 3c — including one that shipped
+# earlier and was re-specified since), a ticket still in review, a ticket with no marker. One line per issue on stdout:
+# `<owner/repo>#<n> removed | kept | would remove |
 # read failed | write failed`. Idempotent: a second run finds nothing left to remove. --dry-run makes no write.
 # Exit 1 when any read or write failed, 2 on a usage error or a refused repo (nothing is touched), else 0.
 # Refuses Business-Intelligence and direct-route repos. Failure lines are tagged release (commit SHA), environment (host) and
@@ -16,6 +18,8 @@
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 source "$HERE/config.sh"
+# routing-marker vocabulary (marker_re), shared with the supervisor and the scan
+source "$HERE/../../hooks/pipeline-markers.sh" 2>/dev/null || source "$HOME/.claude/hooks/pipeline-markers.sh"
 
 dry=0; repos=()
 for a in "$@"; do
@@ -39,16 +43,20 @@ fail() {  # <ref> <read|write>
   echo "cleanup-proposed-shipped: $1 $2 failed: $tags" >&2
 }
 
-# shipped <owner/repo> <issue> → 0 implemented/shipped, 1 not, 2 the comments read failed or is not a comment list
+# shipped <owner/repo> <issue> → 0 when the issue's LATEST routing marker (any agent, marker_re) is an implemented/shipped one,
+# 1 when it is anything else or there is none, 2 when the comments read failed or is not a comment list. The latest marker
+# decides, never an older one: a ticket that shipped and was later re-specified (a PM READY after the DEPLOYED) is waiting
+# for JP again and keeps its label.
 shipped() {
   local raw n
   raw=$(GH_NOCACHE=1 gh api "repos/$1/issues/$2/comments?per_page=100" --paginate 2>/dev/null </dev/null) || return 2
-  n=$(printf '%s' "$raw" | jq -s '
+  n=$(printf '%s' "$raw" | jq -s --arg re "$(marker_re)" '
     [.[] | if type == "array" then .[] else error("not a comment list") end
-     | if type == "object" then ((.body // "") | tostring | split("\n")[0] // "") else error("not a comment") end
-     | select(startswith("**[fullstack-developer] IMPLEMENTED") or startswith("**[deployer] DEPLOYED") or startswith("**[infra-operator] APPLIED"))] | length' 2>/dev/null) || return 2
-  case "$n" in ''|*[!0-9]*) return 2 ;; 0) return 1 ;; esac
-  return 0
+     | if type == "object" then ((.body // "") | tostring | split("\n")[0] // "" | rtrimstr("\r")) else error("not a comment") end
+     | select(test($re))] | (last // "")
+    | if startswith("**[fullstack-developer] IMPLEMENTED") or startswith("**[deployer] DEPLOYED") or startswith("**[infra-operator] APPLIED") then 1 else 0 end' 2>/dev/null) || return 2
+  case "$n" in 1) return 0 ;; 0) return 1 ;; esac
+  return 2
 }
 
 for repo in "${repos[@]}"; do

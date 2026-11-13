@@ -60,6 +60,8 @@ X
 #!/bin/bash
 D="$(cd "$(dirname "$0")" && pwd)"
 case "$*" in
+  "issue edit "*"--remove-label agent-in-progress"*)   # $D/unlabel-fail: the write that takes agent-in-progress off fails
+    [ -f "$D/unlabel-fail" ] && { echo "$*" >> "$D/gh-calls.log"; exit 1; };;
   "issue view "*"--json labels --jq"*)
     echo "$*" >> "$D/gh-calls.log"
     n=$3; jqx=${@: -1}
@@ -434,6 +436,89 @@ test_igr_spec_failed_twice_gives_up_with_spec_note() {
   assert_eq "$readds" "0" "spec failed: no label re-added" || return 1
 }
 
+test_igr_spec_weekly_limit_stamps_one_hour() {
+  igr_env; igr_mode weekly; si_issue 9 project-a/repo-a user-feedback-needs-spec
+  igr_ticks 2
+  local lim attempts gave labels; lim=$(igr_file "$SI_PIPE/intake-limit-until"); attempts=$(igr_file "$(igr_sk 9).attempts")
+  gave=$(igr_present "$(igr_sk 9).gaveup"); labels=$(si_labels 9)
+  si_cleanup
+  igr_near "$lim" 3600 || { fail "spec limit (weekly): waits RATE_LIMIT_BACKOFF_SECS (1h), got [$lim]"; return 1; }
+  assert_eq "$attempts" "0" "spec limit (weekly): not counted" || return 1
+  assert_eq "$gave" "absent" "spec limit (weekly): never a give-up" || return 1
+  assert_eq "$labels" "user-feedback-needs-spec" "spec limit (weekly): released" || return 1
+}
+
+test_igr_spec_fourth_transient_in_a_cycle_is_handled_as_failed() {
+  igr_env; igr_mode kill; si_issue 9 project-a/repo-a user-feedback-needs-spec
+  igr_tick
+  echo 3 > "$(igr_sk 9).transients"   # three transient exits already used in this cycle
+  igr_tick   # handled as failed: the existing flow releases it and the same tick claims it again (attempt 2)
+  local runs retry transients attempts; runs=$(igr_runs product-manager); retry=$(igr_present "$(igr_sk 9).retry-after")
+  transients=$(igr_file "$(igr_sk 9).transients"); attempts=$(igr_file "$(igr_sk 9).attempts")
+  igr_tick   # the second run dies too: attempts is 2, give up
+  local gave giveups; gave=$(igr_present "$(igr_sk 9).gaveup"); giveups=$(igr_file "$(igr_sk 9).giveups")
+  si_cleanup
+  assert_eq "$runs" "2" "spec 4th transient: handled as failed — relaunched at once, no backoff" || return 1
+  assert_eq "$retry" "absent" "spec 4th transient: no .retry-after" || return 1
+  assert_eq "$transients" "3" "spec 4th transient: .transients stays at the cap" || return 1
+  assert_eq "$attempts" "2" "spec 4th transient: counted as an attempt" || return 1
+  assert_eq "$gave" "present" "spec 4th transient: the next failure gives up" || return 1
+  assert_eq "$giveups" "1" "spec 4th transient: give-up cycle 1" || return 1
+}
+
+# Code review of PR #680: a failed label write must never leave agent-in-progress on an issue whose local state is gone
+# (no host would list it again). State is kept and the write is retried on the next tick, for the spec step as for intake.
+test_igr_spec_failed_label_write_keeps_state_and_retries() {
+  igr_env; si_issue 9 project-a/repo-a user-feedback-needs-spec     # PM exits 0 with no marker
+  igr_tick
+  touch "$SI_D/unlabel-fail"
+  igr_ticks 2
+  local id1 runs1 labels1 gave1; id1=$(igr_present "$(igr_sk 9).id"); runs1=$(igr_runs product-manager); labels1=$(si_labels 9); gave1=$(igr_present "$(igr_sk 9).gaveup")
+  rm -f "$SI_D/unlabel-fail"
+  igr_tick   # the write works: released, and claimed again in the same tick (attempt 2)
+  local runs2; runs2=$(igr_runs product-manager)
+  touch "$SI_D/unlabel-fail"
+  igr_ticks 2   # second failed run: the give-up must wait for the label write too
+  local id3 gave3 notes3 labels3; id3=$(igr_present "$(igr_sk 9).id"); gave3=$(igr_present "$(igr_sk 9).gaveup"); notes3=$(igr_notes | grep -c .); labels3=$(si_labels 9)
+  rm -f "$SI_D/unlabel-fail"
+  igr_tick
+  local gave4 notes4 labels4 id4 log; gave4=$(igr_present "$(igr_sk 9).gaveup"); notes4=$(igr_notes | grep -c .); labels4=$(si_labels 9); id4=$(igr_present "$(igr_sk 9).id"); log=$(igr_log)
+  si_cleanup
+  assert_eq "$id1" "present" "spec: run state kept while the label write fails" || return 1
+  assert_eq "$labels1" "agent-in-progress,user-feedback-needs-spec" "precondition: agent-in-progress is still on the issue" || return 1
+  assert_eq "$runs1" "1" "spec: nothing relaunched while the label write fails" || return 1
+  assert_eq "$gave1" "absent" "spec: no give-up while the label write fails" || return 1
+  assert_contains "$log" "[spec] project-a/repo-a#9 label write failed" "spec: the failed write is logged" || return 1
+  assert_eq "$runs2" "2" "spec: released and claimed again once the write works" || return 1
+  assert_eq "$id3" "present" "spec give-up: run state kept while the label write fails" || return 1
+  assert_eq "$gave3" "absent" "spec give-up: not parked while agent-in-progress is still on" || return 1
+  assert_eq "$notes3" "0" "spec give-up: no NOTE before the label write succeeded" || return 1
+  assert_contains "$labels3" "agent-in-progress" "precondition: agent-in-progress still on before the retry" || return 1
+  assert_eq "$gave4" "present" "spec give-up: parked once the write works" || return 1
+  assert_eq "$notes4" "1" "spec give-up: one NOTE" || return 1
+  assert_eq "$labels4" "user-feedback-needs-spec" "spec give-up: agent-in-progress is off" || return 1
+  assert_eq "$id4" "absent" "spec give-up: run state cleared" || return 1
+}
+
+test_igr_intake_giveup_label_write_failure_keeps_state_and_retries() {
+  igr_env; si_issue 7 project-a/repo-a user-feedback-intake     # exit 0, no marker, twice
+  igr_ticks 4   # run, grace, recovery run, grace: the next tick is the give-up
+  touch "$SI_D/unlabel-fail"
+  igr_ticks 2
+  local id1 gave1 notes1 labels1; id1=$(igr_present "$(igr_k 7).id"); gave1=$(igr_present "$(igr_k 7).gaveup"); notes1=$(igr_notes | grep -c .); labels1=$(si_labels 7)
+  rm -f "$SI_D/unlabel-fail"
+  igr_tick
+  local gave2 notes2 labels2; gave2=$(igr_present "$(igr_k 7).gaveup"); notes2=$(igr_notes | grep -c .); labels2=$(si_labels 7)
+  si_cleanup
+  assert_eq "$id1" "present" "intake give-up: run state kept while the label write fails" || return 1
+  assert_eq "$gave1" "absent" "intake give-up: not parked while agent-in-progress is still on" || return 1
+  assert_eq "$notes1" "0" "intake give-up: no NOTE before the label write succeeded" || return 1
+  assert_eq "$labels1" "agent-in-progress" "precondition: agent-in-progress still on" || return 1
+  assert_eq "$gave2" "present" "intake give-up: parked once the write works" || return 1
+  assert_eq "$notes2" "1" "intake give-up: one NOTE" || return 1
+  assert_eq "$labels2" "user-feedback-intake" "intake give-up: back in the intake queue" || return 1
+}
+
 test_igr_spec_giveup_expiry_and_final_cycle() {
   igr_env; si_issue 9 project-a/repo-a user-feedback-needs-spec
   touch "$(igr_sk 9).gaveup"; echo 3 > "$(igr_sk 9).giveups"; echo 2 > "$(igr_sk 9).attempts"
@@ -514,4 +599,8 @@ run_test test_igr_healthy_run_clears_the_cycle_state
 run_test test_igr_spec_limit_exit_releases_without_counting
 run_test test_igr_spec_transient_exit_backs_off
 run_test test_igr_spec_failed_twice_gives_up_with_spec_note
+run_test test_igr_spec_weekly_limit_stamps_one_hour
+run_test test_igr_spec_fourth_transient_in_a_cycle_is_handled_as_failed
+run_test test_igr_spec_failed_label_write_keeps_state_and_retries
+run_test test_igr_intake_giveup_label_write_failure_keeps_state_and_retries
 run_test test_igr_spec_giveup_expiry_and_final_cycle
