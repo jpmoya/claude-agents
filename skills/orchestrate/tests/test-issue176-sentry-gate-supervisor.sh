@@ -65,14 +65,29 @@ test_s176g_dispatch_launches_sentry_agent_go_issue_labelled_after_intake() {
 }
 
 test_s176g_dispatch_launches_sentry_agent_go_issue_when_auto_go_one() {
-  # a finished intake run with SENTRY_AUTO_GO=1: agent-go is kept and no strip is issued
+  # #182 (code review of PR #683) replaces the earlier expectation "SENTRY_AUTO_GO=1: any agent-go a finished intake run left is
+  # kept". The agent-go that may stand while intake owns the ticket is the one written together with sentry-auto-go (the label
+  # the daily launch cap counts; since #186 the supervisor writes both, here the stub run stands in for that write).
   s176g_env 1 || return 1
+  perl -pi -e 's|\[\{name:"agent-go"\}\]|[{name:"agent-go"},{name:"sentry-auto-go"}]|' "$SI_D/claude"   # the run adds the pair
   si_issue 7 project-a/repo-a user-feedback-intake source:sentry
-  local i; for i in 1 2 3; do si_tick; done   # launch (agent adds agent-go + marker), then the done branch
+  local i; for i in 1 2 3; do si_tick; done   # launch (run adds agent-go + sentry-auto-go + marker), then the done branch
   local calls; calls=$(cat "$SI_D/gh-calls.log"); si_cleanup
-  assert_not_contains "$calls" "issue edit 7 --repo project-a/repo-a --remove-label agent-go" "SENTRY_AUTO_GO=1: no agent-go strip is issued" || return 1
+  assert_not_contains "$calls" "issue edit 7 --repo project-a/repo-a --remove-label agent-go" "SENTRY_AUTO_GO=1: agent-go with sentry-auto-go is not stripped" || return 1
   # agent-go survived to dispatch: step 5 claimed the issue (its claim edit is what consumes the label)
   assert_contains "$calls" "issue edit 7 --add-label agent-in-progress --remove-label agent-go" "SENTRY_AUTO_GO=1: agent-go kept, issue dispatched" || return 1
+}
+
+test_s176g_lone_agent_go_is_stripped_when_auto_go_one() {
+  # #182: SENTRY_AUTO_GO=1 and the run leaves agent-go WITHOUT sentry-auto-go: it would launch outside the daily cap, so the
+  # done branch strips it and step 5 never claims the issue
+  s176g_env 1 || return 1
+  si_issue 7 project-a/repo-a user-feedback-intake source:sentry
+  local i; for i in 1 2 3; do si_tick; done
+  local calls labels; calls=$(cat "$SI_D/gh-calls.log"); labels=$(si_labels 7); si_cleanup
+  assert_contains "$calls" "issue edit 7 --repo project-a/repo-a --remove-label agent-go" "SENTRY_AUTO_GO=1: a lone agent-go is stripped in the intake window" || return 1
+  assert_not_contains "$labels" "agent-go" "the issue no longer carries agent-go" || return 1
+  assert_not_contains "$calls" "issue edit 7 --add-label agent-in-progress --remove-label agent-go" "and it is not dispatched" || return 1
 }
 
 test_s176g_strip_survives_agent_removing_source_sentry_label() {
@@ -177,12 +192,73 @@ test_s176g_live_intake_run_is_stripped_and_nothing_dispatched() {
   assert_eq "$other" "0" "the tick dispatched nothing" || return 1
 }
 
+# s176g_wait_label <issue> <label> — up to 5 s until the detached stub run has put <label> on the issue
+s176g_wait_label() {
+  local i=0
+  while [ "$i" -lt 50 ]; do case ",$(si_labels "$1")," in *",$2,"*) return 0 ;; esac; sleep 0.1; i=$((i + 1)); done
+  return 1
+}
+
+test_s176g_live_intake_run_does_not_hold_the_tick_lock() {
+  # #182 (re-review of PR #683): the test above was red on every host where the tick lock is a file descriptor (Linux, a Mac
+  # with the file-lock binary from Homebrew, which its PATH fixture does not hide). Cause, in the code: intake_launch
+  # backgrounds `cd … && nohup … &`, an AND-list, so a forked copy of the supervisor waits on the run and kept the lock fd
+  # open; every tick then exited at the lock while the run lived, and the live-run strip never ran. Plain si_tick here:
+  # whatever lock this host uses, the tick after a launch must run while the intake run is still alive.
+  s176g_env || return 1
+  touch "$SI_D/hang"
+  si_issue 7 project-a/repo-a user-feedback-intake source:sentry
+  si_tick                                   # launches intake; the run adds agent-go then stays alive (20 s)
+  s176g_wait_label 7 agent-go || { si_cleanup; fail "precondition: the live run never added agent-go"; return 1; }
+  local alive=no; kill -0 "$(cat "$SI_PIPE"/intake-*.pid 2>/dev/null)" 2>/dev/null && alive=yes
+  si_tick
+  local labels calls log other; labels=$(si_labels 7); calls=$(cat "$SI_D/gh-calls.log"); log=$(cat "$SI_HOME/logs/pipeline/supervisor.log" 2>/dev/null)
+  other=$(grep -vc -- '--agent intake' "$SI_D/claude.log")
+  si_cleanup
+  assert_eq "$alive" "yes" "precondition: the intake run is still alive at the second tick" || return 1
+  assert_contains "$calls" "issue edit 7 --repo project-a/repo-a --remove-label agent-go" "the second tick ran and issued the live-run strip" || return 1
+  assert_contains "$log" "source:sentry carried agent-go with SENTRY_AUTO_GO=0 — removed" "the strip is in the second tick's log" || return 1
+  assert_not_contains "$labels" "agent-go" "agent-go stripped while intake is still running" || return 1
+  assert_eq "$other" "0" "nothing was dispatched" || return 1
+}
+
+test_s176g_live_lone_agent_go_is_stripped_when_auto_go_one() {
+  # #182: the same live window with SENTRY_AUTO_GO=1: a lone agent-go (no sentry-auto-go) must not wait for dispatch
+  s176g_env 1 || return 1
+  touch "$SI_D/hang"
+  si_issue 7 project-a/repo-a user-feedback-intake source:sentry
+  si_tick
+  s176g_wait_label 7 agent-go || { si_cleanup; fail "precondition: the live run never added agent-go"; return 1; }
+  si_tick
+  local labels calls log other; labels=$(si_labels 7); calls=$(cat "$SI_D/gh-calls.log"); log=$(cat "$SI_HOME/logs/pipeline/supervisor.log" 2>/dev/null)
+  other=$(grep -vc -- '--agent intake' "$SI_D/claude.log")
+  si_cleanup
+  assert_contains "$calls" "issue edit 7 --repo project-a/repo-a --remove-label agent-go" "SENTRY_AUTO_GO=1, live run: the lone agent-go is stripped" || return 1
+  assert_contains "$log" "carried agent-go without sentry-auto-go during intake" "logged with its reason" || return 1
+  assert_not_contains "$labels" "agent-go" "agent-go gone while intake is still running" || return 1
+  assert_eq "$other" "0" "nothing was dispatched" || return 1
+}
+
+test_s176g_launch_subshells_close_the_lock_fd() {
+  # static half: both detached launches written as `( cd … && … nohup … & echo $! > pid )` (intake, spec) close fd 9 on the
+  # subshell itself, not only on the nohup command inside it
+  local sup="$SUP_SI" all bad
+  all=$(grep -c '& echo \$! > "\$PIPE/\$k.pid" )' "$sup")
+  bad=$(grep '& echo \$! > "\$PIPE/\$k.pid" )' "$sup" | grep -vc '\$k.pid" ) 9>&-')
+  assert_eq "$all" "2" "control: the intake and the spec launch are found" || return 1
+  assert_eq "$bad" "0" "each launch subshell closes fd 9 itself: ) 9>&-" || return 1
+}
+
 run_test test_s176g_strip_removes_adjacent_agent_go_from_sentry_issue
 run_test test_s176g_dispatch_launches_sentry_agent_go_issue_labelled_after_intake
 run_test test_s176g_dispatch_launches_sentry_agent_go_issue_when_auto_go_one
+run_test test_s176g_lone_agent_go_is_stripped_when_auto_go_one
 run_test test_s176g_strip_survives_agent_removing_source_sentry_label
 run_test test_s176g_giveup_branch_strips_agent_go_from_sentry_issue
 run_test test_s176g_label_read_failure_keeps_state_and_retries
 run_test test_s176g_giveup_strip_failure_keeps_state_and_retries
 run_test test_s176g_live_intake_run_is_stripped_and_nothing_dispatched
+run_test test_s176g_live_intake_run_does_not_hold_the_tick_lock
+run_test test_s176g_live_lone_agent_go_is_stripped_when_auto_go_one
+run_test test_s176g_launch_subshells_close_the_lock_fd
 run_test test_s176g_failed_strip_blocks_same_tick_dispatch

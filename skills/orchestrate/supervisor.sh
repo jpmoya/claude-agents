@@ -1609,12 +1609,14 @@ if [ "$launched" -eq 0 ] && [ "$HAS_CAP" -eq 1 ]; then
     case "$q_rk" in *[!0-9]*) ;; *) q_rk=$(rk_of "$(python3 -c "import json; print(json.load(open('$qf'))['repo'])" 2>/dev/null)" "$q_issue") ;; esac   # legacy queue name: never write legacy names
     # Skip if tombstoned (stopped, held, or done)
     if [ -f "$PIPE/orch-$q_rk.stopped" ] || [ -f "$PIPE/orch-$q_rk.held" ] || [ -f "$PIPE/orch-$q_rk.done" ]; then
+      sentry_slot_release "$qf"   # #182: a launch counted at queue time that never started gives its place back
       rm -f "$qf"
       slog "[drain-skip] #$q_issue — tombstoned, purging queue entry"
       continue
     fi
     # Skip if already running
     if [ -f "$PIPE/orch-$q_rk.pid" ] && kill -0 "$(cat "$PIPE/orch-$q_rk.pid")" 2>/dev/null; then
+      sentry_slot_release "$qf"   # #182
       rm -f "$qf"
       slog "[drain-skip] #$q_issue — already running, purging queue entry"  # #551
       continue
@@ -1661,7 +1663,7 @@ except Exception:
     do_launch "$q_repo" "$best_issue" "$q_extra" "$restart_n" "$q_reason" "$q_wait" "$best_rk"
     case $? in
       0) rm -f "$best_qf"; launched=1 ;;
-      1) rm -f "$best_qf" ;;   # #438: the other host holds the claim; drop our queue entry
+      1) sentry_slot_release "$best_qf"; rm -f "$best_qf" ;;   # #438: the other host holds the claim; drop our queue entry (#182: and its counted place)
       *) : ;;                  # #438: claim unreadable; keep the entry for the next tick
     esac
   fi
@@ -1855,7 +1857,10 @@ intake_launch() {  # <owner/repo> <local path> <issue> <prompt>
     --agents "$agents" --agent intake)
   ( cd "$tmp" && PIPELINE_ISSUE="$3" PIPELINE_AGENT=intake PIPELINE_REPO="$1" PIPE="$PIPE" INTAKE_TMP="$tmp" CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 \
     nohup $SETSID bash -c 'p=$1; x=$2; shift 2; claude "$@" -p "$p"; echo $? > "$x"' _ "$4 INTAKE_TMP=$tmp INTAKE_WRITES=$mode" "$PIPE/$k.exit" "${args[@]}" \
-    >> "$PIPE/$k.log" 2>&1 9>&- & echo $! > "$PIPE/$k.pid" )
+    >> "$PIPE/$k.log" 2>&1 9>&- & echo $! > "$PIPE/$k.pid" ) 9>&-
+  # ^ the outer 9>&- matters: `cd … && nohup … &` backgrounds an AND-list, so bash keeps a forked copy of this shell waiting on
+  # the run, and that copy (not the nohup child, whose own 9>&- is on its line) inherited the tick's lock fd. Where the lock is
+  # the fd (Linux, or a Mac with the file-lock binary) every tick then exited at the lock for as long as the run lived (#603 class).
   echo "$2" > "$PIPE/$k.path"; echo "$1 $3" > "$PIPE/$k.id"
   echo $(( $(cat "$PIPE/$k.attempts" 2>/dev/null || echo 0) + 1 )) > "$PIPE/$k.attempts"
   date +%s > "$PIPE/$k.launched-at"   # #676: launch epoch; kept across a released (limit/transient) run, cleared at done / give-up
@@ -1872,7 +1877,8 @@ intake_launch() {  # <owner/repo> <local path> <issue> <prompt>
 # SECRET / KEY / PASSWORD ... variables from the environment and config, and gh's own token). Values are compared in the shell
 # and never printed: the log line names the variable, not its value.
 # Labels come from intake-labels.sh for the verdict, kept only when on the fixed list below: the decision cannot name a label,
-# and agent-go appears only when SENTRY_AUTO_GO=1 makes the helper print it. Title and body are applied for `bug` only.
+# and agent-go appears only when SENTRY_AUTO_GO=1 makes the helper print it, in the same write as sentry-auto-go (#182: the
+# label the daily launch cap counts; this is its only writer). Title and body are applied for `bug` only.
 # The marker comment goes last and is the commit point: every earlier write is idempotent and is repeated on a retry.
 # Returns 0 applied; 1 nothing valid to apply (no marker follows, so the run is a failed attempt: the #676 path);
 # 2 a GitHub read or write failed (state kept, retried next tick).
@@ -1949,11 +1955,14 @@ intake_apply_decision() {  # <owner/repo> <issue>
       [ "$l" = add ] || continue
       case "$cur" in
         user-feedback|bug|"$LABEL_PROPOSED"|sentry-noise) adds="$adds${adds:+,}$cur" ;;
-        "$LABEL_GO") [ "${SENTRY_AUTO_GO:-0}" = 1 ] && adds="$adds${adds:+,}$cur" ;;
+        "$LABEL_GO"|"$LABEL_SENTRY_GO") [ "${SENTRY_AUTO_GO:-0}" = 1 ] && adds="$adds${adds:+,}$cur" ;;
       esac
     done <<< "$("$HERE/intake-labels.sh" "$v" sentry 2>/dev/null)"
     [ -n "$adds" ] || return 2
-    gh issue edit "$n" --repo "$repo" --add-label "$adds" >/dev/null 2>&1 || return 2 ;;
+    # #182: one write for the whole set, so agent-go never lands without sentry-auto-go (a label missing in the repo fails
+    # the write: nothing is added, the tick retries, and the line below says why)
+    gh issue edit "$n" --repo "$repo" --add-label "$adds" >/dev/null 2>&1 || {
+      slog "[intake] $repo#$n label write failed ($adds) — retried next tick; every label must exist in the repo"; return 2; } ;;
   esac
   case "$v" in noise|duplicate) gh issue close "$n" --repo "$repo" --reason "not planned" >/dev/null 2>&1 || return 2 ;; esac
   case "$v" in
@@ -1968,17 +1977,23 @@ intake_apply_decision() {  # <owner/repo> <issue>
 }
 # code-enforced gate (#176): the intake agent reads attacker-influenced text, so a source:sentry issue never keeps agent-go
 # unless SENTRY_AUTO_GO=1, whatever the agent did. Returns 1 when the label read fails (caller retries next tick), else 0.
+# #182: with SENTRY_AUTO_GO=1 the only agent-go that may stand while intake owns the issue is the one intake_apply_decision
+# wrote together with sentry-auto-go. A lone agent-go there would launch outside the daily cap, so it is stripped as well
+# (also a hand release made inside that window, as with SENTRY_AUTO_GO=0; after intake is done a hand release stands and
+# is never throttled). Only runs launched as source:sentry (.sentry) are read, so a staff-feedback run costs no extra call.
 sentry_strip_go() {  # <owner/repo> <issue>
-  [ "${SENTRY_AUTO_GO:-0}" = 1 ] && return 0
   local lbls k; k=$(intake_key "$1" "$2")
+  if [ "${SENTRY_AUTO_GO:-0}" = 1 ] && [ ! -e "$PIPE/$k.sentry" ]; then return 0; fi
   lbls=$(gh issue view "$2" --repo "$1" --json labels --jq '[.labels[].name] | join(" ")' 2>/dev/null) || {
     slog "[intake] $1#$2 label read failed — will retry the source:sentry $LABEL_GO strip next tick"; return 1; }
   # sentry = recorded at launch (survives the agent removing the label) OR labelled now
   if [ -e "$PIPE/$k.sentry" ]; then lbls="$lbls source:sentry"; fi
   case " $lbls " in *" source:sentry "*)
     case " $lbls " in *" $LABEL_GO "*)
+      if [ "${SENTRY_AUTO_GO:-0}" = 1 ]; then case " $lbls " in *" $LABEL_SENTRY_GO "*) return 0 ;; esac; fi
       if gh issue edit "$2" --repo "$1" --remove-label "$LABEL_GO" >/dev/null 2>&1; then
-        slog "[intake] $1#$2 source:sentry carried $LABEL_GO with SENTRY_AUTO_GO=0 — removed"
+        if [ "${SENTRY_AUTO_GO:-0}" = 1 ]; then slog "[intake] $1#$2 source:sentry carried $LABEL_GO without $LABEL_SENTRY_GO during intake — removed (it would launch outside the daily cap)"
+        else slog "[intake] $1#$2 source:sentry carried $LABEL_GO with SENTRY_AUTO_GO=0 — removed"; fi
       else
         slog "[intake] $1#$2 failed to remove $LABEL_GO from source:sentry issue — will retry next tick"; return 1
       fi ;;
@@ -2112,7 +2127,7 @@ if [ "$launched" -eq 0 ] && [ "$HAS_CAP" -eq 1 ] && [ "${#DISPATCH_REPOS[@]}" -g
       ( cd "$PIPE" && PIPELINE_ISSUE="$num" PIPELINE_AGENT=product-manager PIPELINE_REPO="$owner_repo" PIPE="$PIPE" CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 \
         nohup $SETSID bash -c 'claude --dangerously-skip-permissions --agent product-manager -p "$1"; echo $? > "$2"' _ \
         "Write the spec for $owner_repo#$num as the product-manager (spec-only run for a user-feedback idea): do not add agent-go; do not file dependency follow-ups on this issue; post your READY marker." "$PIPE/$k.exit" \
-        >> "$PIPE/$k.log" 2>&1 9>&- & echo $! > "$PIPE/$k.pid" )
+        >> "$PIPE/$k.log" 2>&1 9>&- & echo $! > "$PIPE/$k.pid" ) 9>&-   # outer 9>&-: see intake_launch (the waiting copy of this shell held the lock fd)
       echo "$owner_repo $num" > "$PIPE/$k.id"; echo $(( $(cat "$PIPE/$k.attempts" 2>/dev/null || echo 0) + 1 )) > "$PIPE/$k.attempts"
       slog "[spec] $owner_repo#$num launched (attempt $(cat "$PIPE/$k.attempts"))"; launched=1; break
     done
@@ -2286,25 +2301,48 @@ if [ "$launched" -eq 0 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
           "$PIPE/backlog-priority.json" 2>/dev/null) || prio_json='{}'
         case "$prio_json" in ''|null) prio_json='{}' ;; esac
       fi
-      candidates=$(gh issue list --repo "$owner_repo" --state open --label "$LABEL_GO" --limit 500 \
+      # #182: the same listing also says which candidates carry sentry-auto-go (.s), so the daily launch cap below costs
+      # no extra GitHub read; cand_json keeps the sorted objects, sentry_cands the numbers of the labelled ones.
+      cand_json=$(gh issue list --repo "$owner_repo" --state open --label "$LABEL_GO" --limit 500 \
         --search "$dispatch_search" --json number,labels,milestone \
         --jq "[.[] | select([.labels[].name] | index(\"$LABEL_IN_PROGRESS\") | not) | select(([.labels[].name] | map(. as \$l | $goal_skip_json | index(\$l)) | any(. != null)) | not) $spread_sel]
           | map(. as \$i | ((((\$i.milestone.title? // \"\") | tostring) | capture(\"^v(?<a>[0-9]+)\\\\.(?<b>[0-9]+)\\\\.(?<c>[0-9]+)\")) // null) as \$v
-            | {n: \$i.number, g: ((\$i.labels // []) | any(.name // \"\" | test(\"^goal: \"))), k: (if \$v then [0, (\$v.a|tonumber), (\$v.b|tonumber), (\$v.c|tonumber), \$i.number] else [1, 0, 0, 0, \$i.number] end)})
-          | sort_by(.k)" 2>"$rq_err" \
-        | jq --argjson prio "$prio_json" -f "$HERE/lib/backlog-sort.jq" 2>>"$rq_err") || {
+            | {n: \$i.number, g: ((\$i.labels // []) | any(.name // \"\" | test(\"^goal: \"))), s: ((\$i.labels // []) | any(.name // \"\" | . == \"$LABEL_SENTRY_GO\")), k: (if \$v then [0, (\$v.a|tonumber), (\$v.b|tonumber), (\$v.c|tonumber), \$i.number] else [1, 0, 0, 0, \$i.number] end)})
+          | sort_by(.k)" 2>"$rq_err") \
+        && candidates=$(printf '%s' "$cand_json" | jq --argjson prio "$prio_json" -f "$HERE/lib/backlog-sort.jq" 2>>"$rq_err") \
+        && sentry_cands=$(printf '%s' "$cand_json" | jq -r '[.[] | select(.s) | .n | tostring] | join(" ")' 2>>"$rq_err") || {
         slog "[dispatch] $owner_repo — listing or release sort failed ($rq_tags): $(head -c 300 "$rq_err" | tr '\n' ' ')"
         notify_engineering 0 ":warning:" "dispatch listing/sort failed for $owner_repo ($rq_tags)" "$owner_repo"; rm -f "$rq_err"; continue; }
       rm -f "$rq_err"
       cand_n=$(printf '%s\n' "$candidates" | grep -c '[0-9]')
       [ "$cand_n" -ge 500 ] && slog "[dispatch] $owner_repo — candidate list reached the 500 cap; later tickets are not visible this tick"
       # #247 end
+      # #182 begin
+      sentry_gate=""   # this repo's cap decision, made at its first sentry-auto-go candidate: 0 launch, 3 capped, 1 log unreadable
+      # #182 end
       for num in $candidates; do
         rk=$(run_key "$owner_repo" "$num")
         # local state: alive or queued here → not a candidate
         if [ -f "$PIPE/orch-$rk.pid" ] && kill -0 "$(cat "$PIPE/orch-$rk.pid")" 2>/dev/null; then continue; fi
         [ -f "$QUEUE/orch-$rk.json" ] && continue
 
+        # #182 begin
+        # Daily launch cap for automatically released Sentry tickets: a sentry-auto-go candidate is skipped this tick,
+        # before any claim comment, while the repo's launches of the last 24 h ($PIPE/sentry-launches.log, local) are at
+        # or above SENTRY_AUTO_GO_DAILY_CAP. Labels stay as they are, so it launches when the window frees; other
+        # candidates go on. Decided once per repo per tick (one slog line); an unreadable log fails closed the same way
+        # (logged and alerted by sentry_cap_gate). orchestrate.sh re-checks and appends the launch line; it is told the
+        # label through SENTRY_CAP_LABELLED so it does not read it again.
+        export SENTRY_CAP_LABELLED=0
+        case " $sentry_cands " in *" $num "*)
+          SENTRY_CAP_LABELLED=1
+          if [ -z "$sentry_gate" ]; then
+            sentry_gate=0; sentry_cap_gate "$owner_repo" "$num" || sentry_gate=$?
+            [ "$sentry_gate" != 3 ] || slog "[dispatch] $owner_repo#$num — sentry launch cap reached ($SENTRY_CAP_N/$SENTRY_CAP_MAX in 24h), sentry-auto-go tickets of this repo wait (labels untouched)"
+          fi
+          [ "$sentry_gate" = 0 ] || continue ;;
+        esac
+        # #182 end
         ts=$(date -u +%FT%TZ)
         (cd "$local_path" && gh issue comment "$num" --body "**[supervisor] NOTE** claim: $HOST $ts" >/dev/null 2>&1) || { slog "[dispatch] $owner_repo#$num — claim comment failed"; continue; }
         sleep "$CLAIM_SETTLE_SECS"
@@ -2320,6 +2358,9 @@ if [ "$launched" -eq 0 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
         launched=1
         break
       done
+      # #182 begin
+      unset SENTRY_CAP_LABELLED   # meant for the launch above only: nothing started later in the tick may inherit it
+      # #182 end
     done
   fi
 fi

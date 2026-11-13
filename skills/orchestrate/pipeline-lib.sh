@@ -96,7 +96,10 @@ migrate_legacy_runs() {
 
 count_running() {  # [own run key] — a launcher's own pid reservation (#451) is not a running slot
   local n=0
-  for f in "$PIPE"/orch-*.pid "$PIPE"/intake-*.pid; do   # intake runs (#114) count against MAX_CONCURRENT too
+  # intake runs (#114) and PM spec runs (#115) count against MAX_CONCURRENT too. Spec runs were left out while a live one
+  # kept the tick lock and so stopped every later tick; since ticks run beside it (#182) they need their slot counted, or
+  # each tick could start one more. Goal pids (goal-*.pid) are coordinators and stay out.
+  for f in "$PIPE"/orch-*.pid "$PIPE"/intake-*.pid "$PIPE"/spec-*.pid; do
     [ -e "$f" ] || continue
     [ -n "${1:-}" ] && [ "$f" = "$PIPE/orch-$1.pid" ] && continue
     kill -0 "$(cat "$f")" 2>/dev/null && n=$((n + 1))
@@ -616,4 +619,128 @@ pm_closing_reject() {
   jq -r --arg re "$(marker_re product-manager)" '[.comments[].body | split("\n") | select(.[0] | test($re))] | last // []
     | select((.[0] // "") | test("^\\*\\*\\[product-manager\\] REJECTED"))
     | (.[1] // "") | select(test("^Reason: (not-a-bug|cannot-reproduce|duplicate of #[0-9]+)")) | sub("^Reason: "; "")' 2>/dev/null
+}
+
+# --- Daily launch cap for automatically released Sentry tickets (#182) -------------------------------------------
+# $PIPE/sentry-launches.log is append-only. A launch of a `sentry-auto-go` ticket is "<epoch> <owner/repo> <issue>"; a launch
+# counted when it was queued and then dropped before it started is cancelled by "<epoch> <owner/repo> <issue> released".
+# Local state only: the cap never costs a GitHub call. Used by orchestrate.sh (the refusal, the append) and by the
+# supervisor's step 5 (the pre-check that keeps a capped ticket from getting a claim comment). Automatic restarts and
+# queue drains of a ticket that already launched go through the supervisor's do_launch and are not counted again.
+
+# sentry_launch_count <owner/repo> — prints how many launches of that repo lie inside the last 86400 s, each `released`
+# line cancelling the latest launch line of its ticket. A missing log is 0. Returns 1, printing nothing, when the log
+# exists but cannot be read (callers fail closed). Lines of any other shape are not counted; repo names compare
+# case-insensitively (GitHub's rule).
+sentry_launch_count() {
+  local r n
+  [ -e "$PIPE/sentry-launches.log" ] || { echo 0; return 0; }
+  [ -f "$PIPE/sentry-launches.log" ] && [ -r "$PIPE/sentry-launches.log" ] || return 1
+  r=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  n=$(awk -v r="$r" -v min="$(( $(date +%s) - 86400 ))" '
+    (NF == 3 || NF == 4) && $1 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ && tolower($2) == r {
+      if (NF == 3) { n[$3]++; t[$3 "," n[$3]] = $1 }
+      else if ($4 == "released" && n[$3] > 0) n[$3]--
+    }
+    END { for (i in n) for (j = 1; j <= n[i]; j++) if ((t[i "," j] + 0) > (min + 0)) c++; print c + 0 }' \
+    "$PIPE/sentry-launches.log" 2>/dev/null) || return 1
+  case "$n" in ''|*[!0-9]*) return 1 ;; esac
+  echo "$n"
+}
+
+# sentry_launch_record <owner/repo> <issue> — appends the launch line; returns 1 when the append failed.
+sentry_launch_record() {
+  { printf '%s %s %s\n' "$(date +%s)" "$1" "$2" >> "$PIPE/sentry-launches.log"; } 2>/dev/null
+}
+
+# sentry_slot_release <queue entry json> — a launch that was counted when it was queued (orchestrate.sh found no free slot
+# and wrote the entry with a sentry_slot key) and is dropped before it ever started gives its place back: one `released`
+# line. No-op for any other entry. Call it before removing the entry. Never fails the caller.
+sentry_slot_release() {
+  local slot issue
+  [ -f "$1" ] || return 0
+  slot=$(jq -r '(.sentry_slot // "") | tostring' "$1" 2>/dev/null) || return 0
+  issue=$(jq -r '(.issue // "") | tostring' "$1" 2>/dev/null) || return 0
+  case "$slot" in */*) ;; *) return 0 ;; esac
+  case "$slot" in *[!A-Za-z0-9._/-]*) return 0 ;; esac
+  case "$issue" in ''|*[!0-9]*) return 0 ;; esac
+  { printf '%s %s %s released\n' "$(date +%s)" "$slot" "$issue" >> "$PIPE/sentry-launches.log"; } 2>/dev/null || return 0
+  if declare -F slog >/dev/null 2>&1; then slog "[sentry-cap] $slot#$issue — queued launch dropped before it started, its place in the daily window is released"; fi
+  return 0
+}
+
+# sentry_cap_lock <owner/repo> — serialises the gate-to-append section of a sentry-auto-go launch across processes on this
+# host: without it two launchers can both read "one place left" and both launch. mkdir is the lock (atomic, and present on
+# macOS, which has no file-lock binary) and "<pid> <epoch>" inside names the holder. A lock whose holder is gone, or older than
+# SENTRY_CAP_LOCK_STALE_SECS (default 600; a launch holds it through the claim settle wait, some 20 s), is taken over by
+# an atomic rename. Waits up to SENTRY_CAP_LOCK_WAIT_SECS (default 60), then returns 1
+# and the caller refuses the launch. Sets SENTRY_CAP_LOCK; sentry_cap_unlock removes only a lock this process holds.
+SENTRY_CAP_LOCK=""
+sentry_cap_lock() {
+  local d own pid ts now waited=0
+  d="$PIPE/sentry-cap-$(printf '%s' "$1" | tr '[:upper:]/' '[:lower:]_').lock"
+  while :; do
+    if mkdir "$d" 2>/dev/null; then
+      echo "$$ $(date +%s)" > "$d/owner" 2>/dev/null || true
+      SENTRY_CAP_LOCK=$d; return 0
+    fi
+    own=$(cat "$d/owner" 2>/dev/null) || own=""
+    pid=${own%% *}; ts=${own##* }; now=$(date +%s)
+    case "$pid" in ''|*[!0-9]*) pid="" ;; esac
+    case "$ts" in ''|*[!0-9]*) ts="" ;; esac
+    if { [ -n "$pid" ] && ! ps -p "$pid" >/dev/null 2>&1; } \
+       || { [ -n "$ts" ] && [ $(( now - ts )) -ge "${SENTRY_CAP_LOCK_STALE_SECS:-600}" ]; } \
+       || { [ -z "$pid" ] && [ -n "$(find "$d" -maxdepth 0 -mmin +10 2>/dev/null)" ]; }; then
+      # Take it away with one atomic rename, so two waiters cannot both remove it. What was moved is removed only when it still
+      # names the stale holder: if another waiter was faster and this is already its fresh lock, it goes back untouched.
+      if mv "$d" "$d.stale.$$" 2>/dev/null; then
+        if [ "$(cat "$d.stale.$$/owner" 2>/dev/null)" = "$own" ]; then rm -rf "$d.stale.$$" 2>/dev/null; continue; fi
+        { [ ! -e "$d" ] && mv "$d.stale.$$" "$d" 2>/dev/null; } || rm -rf "$d.stale.$$" 2>/dev/null
+      fi
+    fi
+    [ "$waited" -lt "${SENTRY_CAP_LOCK_WAIT_SECS:-60}" ] || return 1
+    sleep 1; waited=$((waited + 1))
+  done
+}
+sentry_cap_unlock() {
+  [ -n "${SENTRY_CAP_LOCK:-}" ] || return 0
+  local own; own=$(cat "$SENTRY_CAP_LOCK/owner" 2>/dev/null) || own=""
+  if [ "${own%% *}" = "$$" ]; then rm -rf "$SENTRY_CAP_LOCK" 2>/dev/null || true; fi
+  SENTRY_CAP_LOCK=""; return 0
+}
+
+# sentry_cap_fail <owner/repo> <issue> <what happened> — a launch-log or label read (or the append) failed: one line
+# tagged release=<commit SHA> environment=<host> route=sentry-launch-cap (slog when the caller has it, stderr otherwise),
+# one events row, and one alert on the existing Slack webhook (the supervisor's autoretry_alert when it is defined), at
+# most hourly per host: the supervisor would otherwise repeat it every tick. Repo, issue number and the failing step
+# only: never file content, labels or command output. Always returns 0; refusing the launch is the caller's job.
+sentry_cap_fail() {
+  local rel host line now last
+  rel=$(git -C "$_CLAIM_LIB_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)
+  host=$(hostname -s 2>/dev/null || echo unknown)
+  line="[sentry-cap] $1#$2 — $3: release=$rel environment=$host route=sentry-launch-cap"
+  if declare -F slog >/dev/null 2>&1; then slog "$line"; else echo "$line" >&2; fi
+  pipeline_event error --arg level error --arg route sentry-launch-cap --arg release "$rel" --arg environment "$host" \
+    --arg repo "$1" --argjson issue "$2" --arg msg "$3"
+  now=$(date +%s); last=$(cat "$PIPE/sentry-cap-alert.last" 2>/dev/null) || last=""
+  case "$last" in ''|*[!0-9]*) last=0 ;; esac
+  [ $(( now - last )) -ge 3600 ] || return 0
+  echo "$now" > "$PIPE/sentry-cap-alert.last" 2>/dev/null || true
+  if declare -F autoretry_alert >/dev/null 2>&1; then autoretry_alert "$2" "$3" sentry-launch-cap || true; return 0; fi
+  [ -n "${SLACK_WEBHOOK_URL:-}" ] || return 0
+  curl -s --max-time 10 -X POST -H 'Content-type: application/json' \
+    --data "$(jq -nc --arg t "sentry launch cap: $3 for $1#$2: release=$rel environment=$host route=sentry-launch-cap" '{text:$t}')" \
+    "$SLACK_WEBHOOK_URL" >/dev/null 2>&1 </dev/null || true
+  return 0
+}
+
+# sentry_cap_gate <owner/repo> <issue> — 0: under SENTRY_AUTO_GO_DAILY_CAP, may launch. 3: at or above it (nothing is
+# logged here; the caller words its own refusal). 1: the launch log could not be read — already reported through
+# sentry_cap_fail, the caller must not launch. Sets SENTRY_CAP_N (launches counted) and SENTRY_CAP_MAX (the cap).
+sentry_cap_gate() {
+  SENTRY_CAP_MAX=${SENTRY_AUTO_GO_DAILY_CAP:-3}; SENTRY_CAP_N=""
+  case "$SENTRY_CAP_MAX" in ''|*[!0-9]*) SENTRY_CAP_MAX=3 ;; esac
+  SENTRY_CAP_N=$(sentry_launch_count "$1") || { SENTRY_CAP_N=""; sentry_cap_fail "$1" "$2" "launch log read failed, not launched"; return 1; }
+  [ "$SENTRY_CAP_N" -lt "$SENTRY_CAP_MAX" ] || return 3
+  return 0
 }
