@@ -6,11 +6,13 @@
 #        the four not-allowed cases, a failed write, a live run
 #   AC3  no path leaves agent-go on a Sentry issue whose newest intake marker is not TRIAGED BUG, flag at 0 or 1
 #   AC4  SHARED_DISPATCH_ENABLED=0: a triaged Sentry bug is dispatched by step 5 (it carries user-feedback)
-#   AC5  spec step and deferred promotion take a source:sentry ticket; goal grants and the scan still refuse it
+#   AC5  the spec step takes a source:sentry ticket; goal grants, the scan and (code review of PR #686) deferred promotion
+#        still refuse it: only intake_apply_decision and the gate grant a Sentry ticket, always with sentry-auto-go
 #   AC6  agents/orchestrator.md carries the untrusted-data sentence and its condition
 #   AC7  docs no longer say Sentry bugs default to agent-proposed, and each names the gate
 #   Obs  a failed gate read or write is logged with release / environment / route=supervisor/sentry-gate and alerted once
 #        when it fails on three consecutive ticks
+#   Rev  (code review of PR #686) a failed gate makes step 5 skip that one issue; every other issue is dispatched as usual
 #
 # Where the ticket's text predates #186 and #182 the merged behaviour is pinned instead (each case says so):
 #   - since #186 a source:sentry run has no Bash, so "the agent changed the labels" is built by a stub run that rewrites the fake
@@ -308,20 +310,26 @@ test_sag_gate_not_allowed_with_the_kill_switch() {
 
 # ---------------------------------------------------------------------------------------------- AC2 / Obs: a failed gate
 
-test_sag_gate_write_failure_keeps_state_holds_dispatch_and_is_tagged() {
-  # the run left agent-go and dropped agent-in-progress: only the gate stands between the label and step 5
+test_sag_gate_write_failure_skips_only_that_issue_and_is_tagged() {
+  # the run left agent-go and dropped agent-in-progress: only the gate stands between the label and step 5.
+  # Code review of PR #686: the failed gate holds this one issue, not the host. #9 (a plain agent-go ticket, after #8 in
+  # step 5's order) is dispatched in the very tick the gate of #8 fails.
   sag_env
   itr_issue 8 user-feedback-intake source:sentry
   sag_run 8 '**[intake] BLOCKED**' source:sentry agent-go
   itr_tick
-  touch "$ITR_D/sag-write-fail"; itr_tick
-  local id claims n labels line slog rc=0
-  id=$(sag_id); claims=$(sag_claims 8); n=$(sag_orch); labels=$(itr_labels 8)
-  line=$(sag_slog | grep 'sentry gate failed' | tail -1)
+  itr_issue 9 agent-go
+  touch "$ITR_D/sag-write-fail"; itr_tick; sag_wait_orch 1
+  local id claims n labels line slog cl rc=0
+  id=$(sag_id); claims=$(sag_claims 8); n=$(sag_orch); labels=$(itr_labels 8); slog=$(sag_slog); cl=$(cat "$ITR_D/claude.log")
+  line=$(printf '%s\n' "$slog" | grep 'sentry gate failed' | tail -1)
   assert_eq "$id" "kept" "failure: the intake state is kept for the next tick" \
     && assert_eq "$labels" "agent-go,source:sentry" "failure control: the write did not land" \
-    && assert_eq "$claims" "1" "failure: only the intake claim, no step-5 claim in the same tick" \
-    && assert_eq "$n" "0" "failure: nothing dispatched" \
+    && assert_eq "$claims" "1" "failure: only the intake claim on #8, no step-5 claim in the same tick" \
+    && assert_not_contains "$cl" "Drive $SAG_R#8 through the pipeline" "failure: #8 is not dispatched" \
+    && assert_contains "$slog" "[dispatch] $SAG_R#9 — claimed by" "failure: another issue is still claimed in the same tick" \
+    && assert_contains "$cl" "Drive $SAG_R#9 through the pipeline" "failure: and launched" \
+    && assert_eq "$n" "1" "failure: exactly one launch this tick (#9)" \
     || rc=1
   if [ "$rc" = 0 ]; then
     printf '%s\n' "$line" | grep -qE "\[intake\] $SAG_R#8 sentry gate failed: release=[0-9a-f]{40} environment=[^ ]+ route=supervisor/sentry-gate" \
@@ -331,11 +339,11 @@ test_sag_gate_write_failure_keeps_state_holds_dispatch_and_is_tagged() {
   [ "$rc" = 0 ] && { assert_not_contains "$line" "release=v" "failure: release is never a vX.Y.Z" || rc=1; }
   if [ "$rc" = 0 ]; then
     rm -f "$ITR_D/sag-write-fail"; itr_tick
-    labels=$(itr_labels 8); id=$(sag_id); slog=$(sag_slog); n=$(sag_orch)
+    labels=$(itr_labels 8); id=$(sag_id); slog=$(sag_slog); cl=$(cat "$ITR_D/claude.log")
     assert_eq "$labels" "source:sentry" "retry: agent-go removed once the write works" \
       && assert_eq "$id" "cleared" "retry: the run is done" \
       && assert_contains "$slog" "[intake] $SAG_R#8 sentry gate: -agent-go" "retry: the change is logged" \
-      && assert_eq "$n" "0" "retry: nothing dispatched" \
+      && assert_not_contains "$cl" "Drive $SAG_R#8 through the pipeline" "retry: #8 was never dispatched" \
       || rc=1
   fi
   itr_cleanup; return $rc
@@ -457,20 +465,21 @@ test_sag_ac5_spec_step_claims_a_sentry_needs_spec_ticket() {
   itr_cleanup; return $rc
 }
 
-test_sag_ac5_deferred_sentry_child_is_promoted_only_with_the_flag_on() {
-  local R=$SAG_R on off note_on note_off ctl rc=0
-  pc_env; pc_issue 10 $R COMPLETED "gate"
-  pc_issue 21 $R OPEN "child" agent-proposed source:sentry; pc_note 21 $R 10
-  si_tick; on=$(si_labels 21); note_on=$(pc_promos 21); si_cleanup
-  pc_env; echo 'SENTRY_AUTO_GO=0' >> "$SI_HOME/.claude/pipeline/config.local.sh"; pc_issue 10 $R COMPLETED "gate"
-  pc_issue 21 $R OPEN "child" agent-proposed source:sentry; pc_note 21 $R 10
-  pc_issue 22 $R OPEN "child" agent-proposed; pc_note 22 $R 10
-  si_tick; off=$(si_labels 21); note_off=$(pc_promos 21); ctl=$(si_labels 22); si_cleanup
-  assert_eq "$on" "agent-go,source:sentry" "AC5: SENTRY_AUTO_GO=1 (default): the deferred source:sentry child is promoted" || rc=1
-  assert_contains "$note_on" "start-gate #10 closed" "AC5: with its promotion NOTE" || rc=1
-  assert_eq "$ctl" "agent-go" "AC5 control (flag 0): a plain child is still promoted" || rc=1
-  assert_eq "$off" "agent-proposed,source:sentry" "AC5: SENTRY_AUTO_GO=0: the source:sentry child is left alone" || rc=1
-  assert_eq "$note_off" "" "AC5: SENTRY_AUTO_GO=0: no promotion NOTE" || rc=1
+test_sag_ac5_deferred_sentry_child_is_never_promoted_whatever_the_flag() {
+  # Code review of PR #686 overrides the ticket's decision 4: promote_deferred writes agent-go alone, so a promoted Sentry
+  # ticket would launch outside the daily cap (#182 counts sentry-auto-go only) and without a TRIAGED BUG verdict. The
+  # exclusion stays with the flag at 1 (the default) as well as at 0; a plain child in the same tick proves the step ran.
+  local R=$SAG_R v sentry note ctl rc=0
+  for v in "" 1 0; do
+    pc_env; [ -z "$v" ] || echo "SENTRY_AUTO_GO=$v" >> "$SI_HOME/.claude/pipeline/config.local.sh"
+    pc_issue 10 $R COMPLETED "gate"
+    pc_issue 21 $R OPEN "child" agent-proposed source:sentry; pc_note 21 $R 10
+    pc_issue 22 $R OPEN "child" agent-proposed; pc_note 22 $R 10
+    si_tick; sentry=$(si_labels 21); note=$(pc_promos 21); ctl=$(si_labels 22); si_cleanup
+    assert_eq "$ctl" "agent-go" "control (SENTRY_AUTO_GO=${v:-unset}): a plain deferred child is promoted" || rc=1
+    assert_eq "$sentry" "agent-proposed,source:sentry" "SENTRY_AUTO_GO=${v:-unset}: the deferred source:sentry child gets no agent-go" || rc=1
+    assert_eq "$note" "" "SENTRY_AUTO_GO=${v:-unset}: and no promotion NOTE" || rc=1
+  done
   return $rc
 }
 
@@ -512,12 +521,13 @@ test_sag_gate_replaces_the_strip_at_every_call_site() {
   assert_eq "$(grep -c 'sentry_strip_go' "$sup")" "0" "sentry_strip_go is gone from supervisor.sh" || return 1
   assert_eq "$(grep -c '^sentry_label_gate() {' "$sup")" "1" "sentry_label_gate is defined once" || return 1
   assert_eq "$(grep -cE '^    sentry_label_gate "\$i_repo" "\$i_num" live \|\| launched=1( |$)' "$sup")" "1" "live run: a failed gate holds dispatch this tick" || return 1
-  n=$(grep -cE '^    sentry_label_gate "\$i_repo" "\$i_num"( deny)? \|\| \{ launched=1; continue; \}' "$sup")
-  assert_eq "$n" "3" "done, release and give-up branches: a failed gate keeps the state and holds dispatch" || return 1
-  # the two filters: the spec step no longer names source:sentry; the promotion keeps it behind the flag
-  local spec; spec=$(awk '/^# 3c\. Spec/ {p=1} p {print} p && /^$/ {exit}' "$sup")
+  n=$(grep -cE '^    sentry_label_gate "\$i_repo" "\$i_num"( deny)? \|\| continue( |$)' "$sup")
+  assert_eq "$n" "3" "done, release and give-up branches: a failed gate keeps the state of that issue, with no host-wide hold" || return 1
+  # the two filters: the spec step no longer names source:sentry; the promotion keeps it, whatever the flag (code review of PR #686)
+  local spec promo; spec=$(awk '/^# 3c\. Spec/ {p=1} p {print} p && /^$/ {exit}' "$sup"); promo=$(sag_fn "$sup" promote_deferred)
   assert_not_contains "$spec" "source:sentry" "spec step: the source:sentry term is removed" || return 1
-  assert_contains "$(sag_fn "$sup" promote_deferred)" 'SENTRY_AUTO_GO' "promotion: the source:sentry term depends on the flag" || return 1
+  assert_contains "$promo" '($l | index("source:sentry") | not)' "promotion: source:sentry is still excluded" || return 1
+  assert_not_contains "$promo" 'SENTRY_AUTO_GO' "promotion: the exclusion does not depend on the flag" || return 1
 }
 
 # ---------------------------------------------------------------------------------------------- AC6 / AC7: docs
@@ -557,13 +567,13 @@ run_test test_sag_gate_not_allowed_triaged_bug_on_a_closed_issue
 run_test test_sag_gate_not_allowed_newest_marker_decides
 run_test test_sag_gate_not_allowed_giveup_branch_removes_the_go_pair
 run_test test_sag_gate_not_allowed_with_the_kill_switch
-run_test test_sag_gate_write_failure_keeps_state_holds_dispatch_and_is_tagged
+run_test test_sag_gate_write_failure_skips_only_that_issue_and_is_tagged
 run_test test_sag_gate_three_failing_ticks_alert_exactly_once
 run_test test_sag_gate_live_run_with_the_flag_on_makes_no_edit
 run_test test_sag_staff_feedback_run_makes_no_gate_call
 run_test test_sag_ac4_triaged_sentry_bug_dispatches_with_shared_dispatch_off
 run_test test_sag_ac5_spec_step_claims_a_sentry_needs_spec_ticket
-run_test test_sag_ac5_deferred_sentry_child_is_promoted_only_with_the_flag_on
+run_test test_sag_ac5_deferred_sentry_child_is_never_promoted_whatever_the_flag
 run_test test_sag_ac5_goal_grant_still_skips_a_sentry_ticket
 run_test test_sag_ac5_scan_still_refuses_a_sentry_ticket
 run_test test_sag_gate_replaces_the_strip_at_every_call_site

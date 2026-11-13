@@ -1978,8 +1978,9 @@ intake_apply_decision() {  # <owner/repo> <issue>
 }
 # #678 (replaces #176's agent-go strip): the supervisor, not the intake agent, decides the labels of a Sentry ticket. The agent
 # reads attacker-influenced text, so after its run the label state is set from the handoff marker alone, whatever else was
-# done to the issue. sentry_label_gate <owner/repo> <issue> [live|deny]. Returns 1 on a failed read or write (the caller keeps
-# its state, retries next tick and holds dispatch this tick), else 0.
+# done to the issue. sentry_label_gate <owner/repo> <issue> [live|deny]. Returns 1 on a failed read or write, else 0. On 1 the
+# caller keeps the issue's intake state, so the gate is retried next tick and step 5 skips that one issue meanwhile (its
+# intake-*.id is still there); dispatch of every other issue goes on. Only the live call holds the tick's dispatch.
 #   SENTRY_AUTO_GO=1: only runs launched as source:sentry ($PIPE/<k>.sentry, which survives the agent removing the label) are
 #     gated, so a staff-feedback run costs no call. After the run (no 3rd argument) labels, state and comments are read once:
 #       source:sentry is present; fast-lane and user-feedback-needs-spec are absent;
@@ -1988,7 +1989,7 @@ intake_apply_decision() {  # <owner/repo> <issue>
 #       not allowed: agent-go and sentry-auto-go absent, every other label left alone.
 #     `deny` (the run left no marker: release and give-up branches) is the same with allowed forced off, from a labels-only read.
 #     #182 stands: an agent-go WITHOUT sentry-auto-go was not written by the supervisor (intake_apply_decision and this gate
-#     only ever write the two together); it would launch outside the daily cap, so it is removed and the issue is treated as
+#     only ever write the two together; deferred promotion, goal grants and the scan never grant a Sentry ticket); it would launch outside the daily cap, so it is removed and the issue is treated as
 #     not allowed (also a hand release made inside the intake window; after intake is done a hand release stands and is
 #     never throttled). `live` (the intake process is alive) does that one removal and nothing else: the issue carries
 #     agent-in-progress, which step 5 excludes, and the rest waits for the run to end.
@@ -2062,7 +2063,7 @@ for idf in "$PIPE"/intake-*.id; do   # runs that have exited: healthy -> clear s
   have=$(gh issue view "$i_num" --repo "$i_repo" --json comments,labels \
     --jq "([.comments[].body | split(\"\\n\")[0] | select(test(\"^\\\\*\\\\*\\\\[intake\\\\] (TRIAGED BUG|TRIAGED IDEA|DUPLICATE|NOISE|BLOCKED)\"))] | length) + ([(.labels // [])[].name | select(. == \"user-feedback\")] | length)" 2>/dev/null) || continue
   if [ "${have:-0}" -gt 0 ]; then
-    sentry_label_gate "$i_repo" "$i_num" || { launched=1; continue; }   # #678: the label state follows the marker; keep state so the next tick retries the gate; hold dispatch this tick
+    sentry_label_gate "$i_repo" "$i_num" || continue   # #678: the label state follows the marker; a failed gate keeps this issue's state (retried next tick; step 5 skips the issue meanwhile)
     gh issue edit "$i_num" --repo "$i_repo" --remove-label "$LABEL_IN_PROGRESS" >/dev/null 2>&1
     # #186: the supervisor, not the agent, appends the intake.log line (the allow-list has no shell redirection). Same JSON shape as
     # the agent wrote: outcome = the last terminal [intake] marker, lower-case and dashed; labels = the issue's labels now. Best
@@ -2076,7 +2077,7 @@ for idf in "$PIPE"/intake-*.id; do   # runs that have exited: healthy -> clear s
   elif fb_cls=$(fb_exit_class "$k"); [ "$fb_cls" != failed ]; then
     # #676: a limit or transient exit goes back to the intake queue and is never counted. A source:sentry issue is stripped of
     # an injected agent-go first, exactly as in the give-up branch below (the released issue no longer carries agent-in-progress).
-    sentry_label_gate "$i_repo" "$i_num" deny || { launched=1; continue; }
+    sentry_label_gate "$i_repo" "$i_num" deny || continue
     fb_release intake "$k" "$i_repo" "$i_num" "$fb_cls" || continue
   elif [ "$(cat "$PIPE/$k.attempts" 2>/dev/null || echo 1)" -lt 2 ]; then
     fb_limit_active && continue   # #676: nothing is launched while the usage-limit stamp is in the future
@@ -2084,7 +2085,7 @@ for idf in "$PIPE"/intake-*.id; do   # runs that have exited: healthy -> clear s
     intake_launch "$i_repo" "$i_path" "$i_num" "Triage $i_repo#$i_num as the intake agent. A previous run exited without posting an [intake] handoff marker: check the issue state with gh, finish the triage if it is incomplete, and post the handoff marker."
     launched=1
   else
-    sentry_label_gate "$i_repo" "$i_num" deny || { launched=1; continue; }   # keep state (no .gaveup) so the next tick retries the gate; hold dispatch this tick
+    sentry_label_gate "$i_repo" "$i_num" deny || continue   # keep state (no .gaveup) so the next tick retries the gate; step 5 skips the issue meanwhile
     # #676: label first — a failed write keeps the state and is retried next tick, so the issue never ends up parked while it
     # still carries agent-in-progress and no intake label. Then the NOTE, the cycle count and .gaveup (fb_giveup).
     gh issue edit "$i_num" --repo "$i_repo" --remove-label "$LABEL_IN_PROGRESS" --add-label user-feedback-intake >/dev/null 2>&1 \
@@ -2188,7 +2189,7 @@ if [ "${T_NORMAL:-1}" = 1 ] && gh_tick_due adopt-blockers "${GOAL_ADOPT_SECS:-30
 # 3e. Promote deferred children (#315) — a ticket filed with the PM deferral NOTE ("approval inherited from <ref> — agent-go deferred:
 #     start-gate #N open") gets agent-go once every start-gate is CLOSED as completed or, still open, shipped to the integration branch (#677). Launch permission only: no JP-only gate is answered here.
 #     Only deferral NOTEs from OWNER/MEMBER/COLLABORATOR comments count (public repos: outsiders cannot trigger a launch).
-#     Never Business-Intelligence; source:sentry only when SENTRY_AUTO_GO=1 (#678); a gate closed "not planned" is left for JP. Idempotent: the supervisor NOTE stops repeats.
+#     Never Business-Intelligence, never source:sentry; a gate closed "not planned" is left for JP. Idempotent: the supervisor NOTE stops repeats.
 promote_gate_state() {  # <owner/repo> <gate ref owner/repo#N> → open | completed | notplanned | error
   # #677: an open gate that shipped to the integration branch (dep-shipped.sh) is completed too, with exit status 3 (the NOTE says "shipped")
   local g=$2 gr gn st
@@ -2204,8 +2205,7 @@ promote_gate_state() {  # <owner/repo> <gate ref owner/repo#N> → open | comple
   esac
 }
 promote_deferred() {
-  local entry owner_repo line num ref gates g st ok why seen how nosentry=false
-  [ "${SENTRY_AUTO_GO:-0}" = 1 ] && nosentry=true   # #678: with auto-go a Sentry ticket no longer needs JP's own go, so its deferred start-gate is promoted too
+  local entry owner_repo line num ref gates g st ok why seen how
   for entry in "${DISPATCH_REPOS[@]}"; do
     owner_repo="${entry%%:*}"
     case "$owner_repo" in */Business-Intelligence) continue ;; esac
@@ -2242,7 +2242,7 @@ promote_deferred() {
       fi
     done < <(gh issue list --repo "$owner_repo" --state open --limit 100 --json number,body,labels,comments --jq '
         .[] | ([.labels[].name]) as $l
-        | select(($l | index("'"$LABEL_GO"'") | not) and ($l | index("'"$LABEL_IN_PROGRESS"'") | not) and ('"$nosentry"' or ($l | index("source:sentry") | not)))
+        | select(($l | index("'"$LABEL_GO"'") | not) and ($l | index("'"$LABEL_IN_PROGRESS"'") | not) and ($l | index("source:sentry") | not))
         | select([.comments[].body | split("\n")[0] | select(test("^\\*\\*\\[supervisor\\] NOTE\\*\\* approval inherited from .* — start-gate #[0-9]+ (closed|shipped)$"))] | length == 0)
         | [.comments[] | select((.authorAssociation // "OWNER") as $a | ["OWNER","MEMBER","COLLABORATOR"] | index($a)) | .body | split("\n")[0] | capture("^\\*\\*\\[product-manager\\] NOTE\\*\\* approval inherited from (?<ref>[^ ]+) — agent-go deferred: start-gate (?<g>[A-Za-z0-9._/-]*#[0-9]+) open$")] as $d
         | select($d | length > 0)
@@ -2372,6 +2372,9 @@ if [ "$launched" -eq 0 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
         # local state: alive or queued here → not a candidate
         if [ -f "$PIPE/orch-$rk.pid" ] && kill -0 "$(cat "$PIPE/orch-$rk.pid")" 2>/dev/null; then continue; fi
         [ -f "$QUEUE/orch-$rk.json" ] && continue
+        # #678: an intake run (3b) still owns it here: alive, or exited with its label gate not through yet (a failed gate keeps the
+        # state and is retried every tick). Only this issue waits; a failed gate no longer holds the whole step.
+        [ -e "$PIPE/$(intake_key "$owner_repo" "$num").id" ] && continue
 
         # #182 begin
         # Daily launch cap for automatically released Sentry tickets: a sentry-auto-go candidate is skipped this tick,
