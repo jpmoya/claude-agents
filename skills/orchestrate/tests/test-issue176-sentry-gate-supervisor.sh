@@ -1,11 +1,14 @@
 # Issue #176 — code-review fixes: SENTRY_AUTO_GO=0 gate in the supervisor. Reuses the si_* harness of
 # test-intake-supervisor.sh (sourced earlier by the runner). Added by the implementer; not part of the locked set.
+# #678: the default is now SENTRY_AUTO_GO=1 and the gate is sentry_label_gate (was sentry_strip_go). These cases were written
+# with the default at 0, so the fixture now sets 0 itself; every flag-at-0 assertion is unchanged. The gate fixtures for the
+# flag at 1 are in test-sentry-auto-go.sh.
 
-# s176g_env [SENTRY_AUTO_GO value] — si_env plus a claude stub that, in intake mode, posts a marker and adds agent-go
+# s176g_env [SENTRY_AUTO_GO value, default 0] — si_env plus a claude stub that, in intake mode, posts a marker and adds agent-go
 s176g_env() {
   type si_env >/dev/null 2>&1 || { fail "si_env harness missing"; return 1; }
   si_env
-  [ -n "${1:-}" ] && echo "SENTRY_AUTO_GO=$1" >> "$SI_HOME/.claude/pipeline/config.local.sh"
+  echo "SENTRY_AUTO_GO=${1:-0}" >> "$SI_HOME/.claude/pipeline/config.local.sh"
   cat > "$SI_D/claude" <<'X'
 #!/bin/bash
 D="$(cd "$(dirname "$0")" && pwd)"
@@ -38,6 +41,10 @@ case "$*" in
     echo "$*" >> "$D/gh-calls.log"
     n=$3; jqx=${@: -1}
     jq -c --argjson n "$n" '.[]|select(.number==$n)|{labels:.labels}' "$D/issues.json" | jq -r "$jqx"; exit 0;;
+  "issue view "*"--json labels,state,comments --jq"*)   # #678: the gate's one read after a run, flag at 1 (labels + state + comments)
+    echo "$*" >> "$D/gh-calls.log"
+    n=$3; jqx=${@: -1}
+    jq -c --argjson n "$n" --slurpfile c "$D/comments.json" '.[]|select(.number==$n)|{labels:.labels,state:"OPEN",comments:$c[0]}' "$D/issues.json" | jq -r "$jqx"; exit 0;;
 esac
 exec "$D/gh-base" "$@"
 X

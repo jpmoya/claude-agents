@@ -2,7 +2,7 @@
 # orchestrate.sh refusal (the place every launch passes, PM readiness note on the ticket). The supervisor's step-5
 # pre-check is in test-issue182-sentry-cap-supervisor.sh.
 #
-#   AC1  fixture 5: `intake-labels.sh bug sentry` with SENTRY_AUTO_GO=1 -> agent-go + sentry-auto-go; unset -> agent-proposed,
+#   AC1  fixture 5: `intake-labels.sh bug sentry` with SENTRY_AUTO_GO=1 -> agent-go + sentry-auto-go; 0 -> agent-proposed,
 #        no sentry-auto-go; every other #176 output unchanged
 #   AC2  config.sh defines SENTRY_AUTO_GO_DAILY_CAP=3 with a comment stating the worst-case spend (cap x COST_CEILING_USD)
 #   AC4  the launch log is append-only; a missing file counts as zero launches
@@ -43,8 +43,9 @@ test_sc_labels_sentry_auto_go_on_adds_go_and_sentry_auto_go() {
 }
 
 test_sc_labels_sentry_auto_go_off_is_proposed_without_the_label() {
+  # #678: the default is SENTRY_AUTO_GO=1 now, so "off" is always set here (was: also unset, and INTAKE_AUTO_GO=1 alone)
   local e
-  for e in "" "SENTRY_AUTO_GO=0" "INTAKE_AUTO_GO=1"; do
+  for e in "SENTRY_AUTO_GO=0" "$(printf 'INTAKE_AUTO_GO=1\nSENTRY_AUTO_GO=0')"; do
     sc_ops "$e" bug sentry
     assert_eq "$SC_OUT" "add agent-proposed,add bug,add user-feedback,remove user-feedback-intake," \
       "fixture 5: SENTRY_AUTO_GO off ($e) -> agent-proposed, no sentry-auto-go" || return 1

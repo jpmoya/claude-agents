@@ -34,19 +34,22 @@ test_s176_ac4_noise_run_is_cleared_not_retried_or_given_up() {
   assert_not_contains "$labels" "agent-in-progress" "AC4: label gone from the issue" || return 1
 }
 
-test_s176_ac5_sentry_issue_with_needs_spec_label_is_never_spec_launched() {
+test_s176_ac5_sentry_issue_with_needs_spec_label_is_spec_launched_since_678() {
+  # #678 (decision 3) lifts #176's exclusion, with the flag at 0 or 1: a Sentry bug the PM or the developer rejected with
+  # `Reason: needs-spec` gets its spec like any idea instead of sitting forever. Was: "...is_never_spec_launched".
   s176s_env || return 1
-  # #7 (source:sentry) listed first: if it were eligible the spec step would pick it before #8 (positive control)
+  # #7 (source:sentry) listed first: now eligible, so the spec step picks it before #8 (one launch per tick)
   si_issue 7 project-a/repo-a user-feedback-needs-spec source:sentry
   si_issue 8 project-a/repo-a user-feedback-needs-spec
   si_tick
+  local i=0; while ! grep -q 'AGENT=product-manager' "$SI_D/claude.log" && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done   # the spec run is started detached
   local log labels7 labels8; log=$(cat "$SI_D/claude.log"); labels7=$(si_labels 7); labels8=$(si_labels 8)
   si_cleanup
-  assert_not_contains "$log" "ISSUE=7" "AC5: source:sentry issue is never routed to the spec stage" || return 1
-  assert_contains "$log" "ISSUE=8 AGENT=product-manager" "control: a plain needs-spec issue launches the spec run" || return 1
-  assert_eq "$labels7" "source:sentry,user-feedback-needs-spec" "AC5: sentry issue labels untouched by the spec step" || return 1
-  assert_not_contains "$labels8" "source:sentry" "control labels sane" || return 1
+  assert_contains "$log" "ISSUE=7 AGENT=product-manager" "#678: a source:sentry needs-spec issue is routed to the spec stage" || return 1
+  assert_not_contains "$log" "ISSUE=8" "control: one spec launch per tick, the first eligible issue" || return 1
+  assert_eq "$labels7" "agent-in-progress,source:sentry,user-feedback-needs-spec" "#678: the sentry issue is claimed by the spec step, never given agent-go" || return 1
+  assert_eq "$labels8" "user-feedback-needs-spec" "control labels sane" || return 1
 }
 
 run_test test_s176_ac4_noise_run_is_cleared_not_retried_or_given_up
-run_test test_s176_ac5_sentry_issue_with_needs_spec_label_is_never_spec_launched
+run_test test_s176_ac5_sentry_issue_with_needs_spec_label_is_spec_launched_since_678

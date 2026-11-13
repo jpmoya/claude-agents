@@ -248,13 +248,15 @@ test_itr_ac9_sentry_launch_has_no_bash_and_reads_only_its_own_directory() {
 test_itr_ac9_recovery_launch_stays_write_free_after_sentry_label_is_gone() {
   # the label goes away between the two launches: the mode is keyed on the launch-time record, not on the label
   itr_env; touch "$ITR_D/mode-drop-sentry"; itr_issue 8 user-feedback-intake source:sentry   # no decision, no marker: relaunched once
-  local i; for i in 1 2 3 4 5 6; do itr_tick; done
-  local f="$ITR_D/argv-8-2.txt" allowed labels rc=0
-  labels=$(itr_labels 8)
+  # #678: the precondition is read right after the recovery launch (tick 3). With the default SENTRY_AUTO_GO=1 the supervisor's
+  # gate puts source:sentry back when the cycle ends (give-up), so the label is no longer absent after the last tick.
+  local i labels; for i in 1 2 3; do itr_tick; done; labels=$(itr_labels 8); for i in 4 5 6; do itr_tick; done
+  local f="$ITR_D/argv-8-2.txt" allowed rc=0
   [ -f "$f" ] || { itr_cleanup; fail "AC9: expected a recovery launch (second recorded argv)"; return 1; }
   allowed=$(itr_allowed "$f")
   assert_not_contains "$labels" "source:sentry" "precondition: source:sentry was removed after the first launch" \
     && assert_eq "$allowed" "$(itr_expected_sentry "$(cat "$ITR_D/intake-tmp-8.txt")")" "AC9: recovery launch has the same write-free list" \
+    && assert_contains "$(itr_labels 8)" "source:sentry" "#678: the gate re-adds source:sentry once the cycle is over" \
     || rc=1
   itr_cleanup; return $rc
 }
@@ -272,7 +274,8 @@ test_itr_ac9_label_read_failure_at_launch_gives_no_write_command() {
 # ------------------------------------------------------------- stub agent: the supervisor applies a Sentry run's decision
 
 test_itr_sentry_bug_decision_is_applied_to_that_issue_only() {
-  itr_env; itr_issue 8 user-feedback-intake source:sentry; itr_issue 9 bug source:sentry
+  itr_env; echo 'SENTRY_AUTO_GO=0' >> "$ITR_HOME/.claude/pipeline/config.local.sh"   # #678: the default is 1 now; this case pins the flag at 0
+  itr_issue 8 user-feedback-intake source:sentry; itr_issue 9 bug source:sentry
   itr_stage 8 '{"verdict":"bug","title":"Fix crash when opening a visit","body_file":"body.md","comment_file":"comment.md"}' \
     $'Sentry-Issue: 4242\n\n## Symptoms\nOpening a visit crashes.\n\n## Error\nTypeError: x is undefined' 'VisitCard reads id of an undefined visit: 14 events, 3 users.'
   itr_tick
