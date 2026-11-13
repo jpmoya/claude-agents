@@ -48,7 +48,7 @@ test_sci_supervisor_writes_sentry_auto_go_with_agent_go_and_the_launch_is_counte
 
 test_sci_no_sentry_auto_go_without_the_gate_or_for_noise() {
   local adds0 adds_noise rc=0
-  itr_env   # SENTRY_AUTO_GO unset (0)
+  itr_env; echo 'SENTRY_AUTO_GO=0' >> "$ITR_HOME/.claude/pipeline/config.local.sh"   # #678: the default is 1 now, so 0 is set here (was: unset)
   itr_issue 8 user-feedback-intake source:sentry; itr_stage 8 '{"verdict":"bug"}'
   sci_ticks 2; adds0=$(sci_adds); itr_cleanup
   itr_env; echo 'SENTRY_AUTO_GO=1' >> "$ITR_HOME/.claude/pipeline/config.local.sh"

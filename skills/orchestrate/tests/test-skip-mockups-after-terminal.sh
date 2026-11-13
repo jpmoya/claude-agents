@@ -243,7 +243,10 @@ test_st_ac8_no_new_mechanism() {
   # #186 (intake CLI allow-list): a source:sentry run has no write command, so the supervisor applies the decision file it
   # leaves. That one function is allowed (coordinator direction on PR #681); any other new function still fails this guard.
   local allow_186='intake_apply_decision'
-  assert_not_contains "$(printf '%s' "$added" | grep -E '^\+[a-zA-Z_][a-zA-Z0-9_]*\(\) *\{' | grep -vE "^\+($allow_676|$allow_677|$allow_186)\(\) *\{" || true)" "()" "AC8: no new function definitions" || return 1
+  # #678 (Sentry bugs auto-fix): the ticket replaces sentry_strip_go with sentry_label_gate, the one function that sets a Sentry
+  # ticket's labels from the handoff marker (same call sites). That one name is allowed; any other new function still fails.
+  local allow_678='sentry_label_gate'
+  assert_not_contains "$(printf '%s' "$added" | grep -E '^\+[a-zA-Z_][a-zA-Z0-9_]*\(\) *\{' | grep -vE "^\+($allow_676|$allow_677|$allow_186|$allow_678)\(\) *\{" || true)" "()" "AC8: no new function definitions" || return 1
   assert_eq "$(printf '%s' "$added" | grep -vE "$files_677" | grep -cE 'touch .*orch-.*\.[a-z-]+"|> *"\$PIPE/orch-\$[a-z]+\.[a-z-]+"' || true)" "0" "AC8: no new per-run state file" || return 1
   assert_eq "$(printf '%s' "$added" | grep -cE '^\+[^#]*(no_progress_count|[a-z_]*_counter)[a-z_]*=' || true)" "0" "AC8: no new counter" || return 1
 }

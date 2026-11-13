@@ -182,9 +182,10 @@ test_pc_business_intelligence_never_promoted() {
   assert_eq "$pbi" "" "BI child gets no promotion NOTE" || return 1
 }
 
-# --- source:sentry guard
+# --- source:sentry guard (#678: it holds with SENTRY_AUTO_GO=0 only; the default is 1 now, where the child is promoted:
+#     test-sentry-auto-go.sh pins both)
 test_pc_sentry_issue_never_promoted() {
-  pc_env; local R=project-a/repo-a
+  pc_env; echo 'SENTRY_AUTO_GO=0' >> "$SI_HOME/.claude/pipeline/config.local.sh"; local R=project-a/repo-a
   pc_issue 10 $R COMPLETED "gate"
   pc_issue 21 $R OPEN "child" agent-proposed source:sentry; pc_note 21 $R 10
   pc_issue 22 $R OPEN "child" agent-proposed; pc_note 22 $R 10

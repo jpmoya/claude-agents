@@ -37,8 +37,12 @@ INTAKE_LIMIT_BACKOFF_SPEND_SECS=21600
 INTAKE_MAX_TRANSIENT=3
 INTAKE_GAVEUP_RETRY_SECS=21600
 INTAKE_MAX_GIVEUPS=4
-# Sentry-sourced bugs (#176): never follow INTAKE_AUTO_GO. 0 = agent-proposed (JP's digest); 1 = agent-go directly.
-SENTRY_AUTO_GO=0
+# Sentry-sourced bugs (#176): never follow INTAKE_AUTO_GO. 1 = a triaged Sentry bug goes straight to the fix pipeline
+# (agent-go; the default since #678); 0 = agent-proposed for JP (his digest). The supervisor, not the intake agent, sets the
+# labels of a Sentry ticket (intake_apply_decision writes them, sentry_label_gate enforces them from the handoff marker).
+# Kill switch: SENTRY_AUTO_GO=0 in ~/.claude/pipeline/config.local.sh. Worst-case spend per app per day =
+# SENTRY_AUTO_GO_DAILY_CAP x COST_CEILING_USD (below).
+SENTRY_AUTO_GO=1
 # Daily launch cap for automatically released Sentry tickets (#182). With SENTRY_AUTO_GO=1 the label helper adds
 # LABEL_SENTRY_GO next to agent-go; at most this many tickets carrying it are launched per repo in any rolling 24 h
 # (orchestrate.sh refuses with exit 3, supervisor step 5 leaves the ticket queued). Worst-case spend = cap x
