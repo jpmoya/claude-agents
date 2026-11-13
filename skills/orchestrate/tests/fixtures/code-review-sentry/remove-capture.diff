@@ -1,0 +1,14 @@
+diff --git a/src/app/api/visits/[id]/complete/route.ts b/src/app/api/visits/[id]/complete/route.ts
+--- a/src/app/api/visits/[id]/complete/route.ts
++++ b/src/app/api/visits/[id]/complete/route.ts
+@@ -41,9 +41,7 @@ export async function POST(req: Request, { params }: Params) {
+   try {
+     await saveVisitCompletion(visit, payload)
+   } catch (err) {
+-    Sentry.captureException(err, {
+-      tags: { route: 'visits/complete' },
+-    })
++    console.warn('visit completion failed', err)
+     return NextResponse.json({ error: 'save_failed' }, { status: 500 })
+   }
+   return NextResponse.json({ ok: true })

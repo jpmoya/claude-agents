@@ -1,0 +1,16 @@
+diff --git a/src/lib/visits/assign.ts b/src/lib/visits/assign.ts
+--- a/src/lib/visits/assign.ts
++++ b/src/lib/visits/assign.ts
+@@ -22,7 +22,11 @@ export async function assignTechnician(visitId: string, techId: string) {
+   const visit = await loadVisit(visitId)
+   const tech = await loadTechnician(techId)
+ 
+-  await notifyTechnician(tech.id, visit)
++  try {
++    await notifyTechnician(tech.id, visit)
++  } catch {
++    // notification is best-effort
++  }
+ 
+   return { visitId, techId }
+ }
