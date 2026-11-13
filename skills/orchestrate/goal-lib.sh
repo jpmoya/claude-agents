@@ -759,12 +759,6 @@ _goal_ticket_eval() {
       if [ -z "$newest" ] || [[ "$jp_answer_at" > "$newest" ]]; then cls=active; why="you answered — the pipeline will re-check"; fi
     fi
   fi
-  # #677: a `[jp] MOCKUPS APPROVED` relay posted before the single MOCKUPS PENDING APPROVAL stamp is the approval
-  # (jp_mockups_preapproved_jq, hooks/pipeline-markers.sh): active, so the goal's lead relaunches the parked run.
-  if [ "$cls" = waiting_jp ] && [[ "$mk" == *"MOCKUPS PENDING APPROVAL" ]] && [ -n "$author" ] \
-     && printf '%s' "$all_c" | jq -e --arg a "$author" "$(jp_mockups_preapproved_jq)" >/dev/null 2>&1; then
-    cls=active; why="you approved the mockups — the pipeline will re-check"
-  fi
   if [ "$cls" = active ]; then
     case " $labels " in
       *" agent-proposed "*)
