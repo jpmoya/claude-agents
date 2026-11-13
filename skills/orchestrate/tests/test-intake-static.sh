@@ -18,7 +18,8 @@ test_in_ac1_agent_file_frontmatter() {
   assert_contains "$tools" "Bash" "AC1: tools has Bash" || return 1
   assert_contains "$tools" "Read" "AC1: tools has Read" || return 1
   assert_not_contains "$tools" "Edit" "AC1: no Edit tool" || return 1
-  assert_not_contains "$tools" "Write" "AC1: no Write tool" || return 1
+  # #186: the Write tool is in (body file under INTAKE_TMP, confined by the launch's CLI allow-list); #114 had pinned "no Write tool"
+  assert_contains "$tools" "Write" "AC1 (#186): Write tool for the INTAKE_TMP body file" || return 1
 }
 
 test_in_ac1_untrusted_data_rule() {
