@@ -249,7 +249,8 @@ test_n3_4b_good_read_equal_to_last_marker_counts_below_cap() {
 
 test_n3_6a_graphql_down_rest_gate_is_parked_not_restarted() {
   n3_env
-  n3_rest_marker "$N3_GATE"
+  # #701: the mockup gate is skip-by-default now — needs JP's REVIEW MOCKUPS marker to actually park as a gate.
+  n3_page "$SQ_GH" 1 --argjson g "$(n3_c "$N3_GATE")" --argjson r "$(n3_c '**[jp] REVIEW MOCKUPS**')" '[$g, $r]'
   sq_seed_restarts 0 0 "$SQ_READY"
   n3_exit_tick
   local held log queue calls
