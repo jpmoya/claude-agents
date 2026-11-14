@@ -137,7 +137,8 @@ test_aw_ac1_test_writer_note_proceed_is_not_a_go() {
 test_aw_1478_mockups_pending_then_approved_passes() {
   local row sec
   assert_eq "$(aw_jpgo 'approved')" "yes" "1478: author 'approved' after MOCKUPS PENDING APPROVAL is found by jp_go" || return 1
-  row=$(aw_row "$ORCH_AW" '`[ui-ux-designer] MOCKUPS PENDING APPROVAL` + JP approval' 'Proceed to next stage')
+  # #701 moved this row behind "a valid REVIEW MOCKUPS marker + JP approval comment" (skip-by-default now)
+  row=$(aw_row "$ORCH_AW" 'marker + JP approval comment' 'Proceed to next stage')
   [ -n "$row" ] || { fail "1478: mockup approval routing row not found"; return 1; }
   case "$row" in *'jp_go'*) ;; *) fail "1478: routing row must resolve approval with jp_go"; return 1 ;; esac
   case "$row" in *'first line exactly'*|*'a sentence containing "approved" is not an approval'*) fail "1478: row still demands an exact first line / calls 'approved' a non-approval"; return 1 ;; esac
@@ -242,8 +243,11 @@ test_aw_ac2_no_approved_for_file_consumer_bypasses_the_matcher() {
 
 test_aw_ac5_gate_log_lines_name_the_form_checked_not_the_author() {
   local lines pass fail_l
-  lines=$(grep -F '"stage":"mockup-gate"' "$ORCH_AW")
-  pass=$(printf '%s\n' "$lines" | grep -F '"result":"pass"' | head -1)
+  # Scoped to the ## Run log section's own examples (mg_section, same helper test-mockup-gate-exact-marker.sh
+  # uses for AC6): #701 added a second mockup-gate pass example elsewhere in the doc prose (the default-proceed
+  # bullet), which also matches a whole-file grep and is not the "approval word matched" example this pins.
+  lines=$(mg_section "$ORCH_AW" '## Run log' | grep -F '"stage":"mockup-gate"')
+  pass=$(printf '%s\n' "$lines" | grep -F '"result":"pass"' | grep -F 'approval word matched' | head -1)
   fail_l=$(printf '%s\n' "$lines" | grep -F '"result":"fail"' | head -1)
   [ -n "$pass" ] && [ -n "$fail_l" ] || { fail "mockup-gate pass+fail log examples missing in Run log"; return 1; }
   case "$pass" in *'approval word matched'*) ;; *) fail "mockup-gate pass reason must be 'approval word matched'"; return 1 ;; esac
@@ -301,7 +305,8 @@ test_aw_ac5_awaiting_go_refusal_is_logged() {
 
 test_aw_ac4_replaces_mg_ac1_ac2_ac5_mockup_approval_row_names_the_set() {
   local row sec s
-  row=$(aw_row "$ORCH_AW" '`[ui-ux-designer] MOCKUPS PENDING APPROVAL` + JP approval' 'Proceed to next stage')
+  # #701 moved this row behind "a valid REVIEW MOCKUPS marker + JP approval comment" (skip-by-default now)
+  row=$(aw_row "$ORCH_AW" 'marker + JP approval comment' 'Proceed to next stage')
   [ -n "$row" ] || { fail "mockup approval routing row not found"; return 1; }
   for s in 'jp_go' '**[jp] MOCKUPS APPROVED**' 'approved' 'lgtm' 'not an approval'; do
     case "$row" in *"$s"*) ;; *) fail "approval row must contain [$s]"; return 1 ;; esac
