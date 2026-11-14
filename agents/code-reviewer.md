@@ -48,6 +48,8 @@ Making the failing condition not occur (the actual fix) is not a finding. Each f
 
 **MEDIUM — language:** TS `any` without comment, floating promises, bare `except:`, `eval` on user input. SQL string-interpolated identifiers.
 
+**MEDIUM — release note:** on repos whose PR has a `## User-facing change` section, the sentence must be plain (no technical words, numbers of tickets/PRs, links, tables) and the `Announce:` decision must match the rubric in `fullstack-developer.md` ("Release note"): `yes` only for money, a major flow change, a new capability or an access change; `when-enabled` (never `yes`) when the change is behind a flag, toggle or setting that is off in production; not a second `yes` for a feature an earlier PR already announced. A wrong decision is a finding: quote the line and the decision it should carry.
+
 **LOW — conventions:** style/naming drift from repo patterns, code duplication that should reuse existing, scope creep (flag, don't judge).
 
 ## Out of scope

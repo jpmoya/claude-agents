@@ -39,6 +39,17 @@ You are in fast-lane mode when the orchestrator's prompt says so, or the PM's RE
 
 Everything else in this file applies unchanged: worktree only, quality gate, verification before completion, PR to the integration branch, handoff marker.
 
+## Release note (the PR's "User-facing change" section)
+
+On repos whose PR template has a `## User-facing change` section (Benji's ops tool, sales tool), that section is what staff read: it becomes the in-app What's New line and, when you say so, the Slack "Now live" post. Write it for a plant technician or a sales rep, not an engineer.
+
+- **One plain sentence, or `none`.** What a person can now do or will now see, in their words. No technical words, file or table names, PR or ticket numbers, links. Never put the AC → test mapping, test names or a table in this section; they go in the Summary. `none` for technical work (CI, tests, refactors, migrations, scripts, docs, dependencies) and for pieces nobody can reach yet.
+- **Then a line `Announce: yes`, `Announce: no` or `Announce: when-enabled`.** Required with a sentence; the PR check fails without it. Copy the ticket's `Release note` decision when it has one; otherwise decide with this rubric:
+  - `yes` — money (prices, quotes/proposals, invoices, deposits, contracts, payroll, timesheets/hours, bug fixes to any of them included); a major flow change (a whole step added to or removed from a flow); a new thing people can do; a change in who can or cannot use something.
+  - `no` — everything else, which is most changes: ordinary bug fixes, label/wording/rename changes, small UI tweaks (icons, colours, buttons, spacing, scrolling, empty cards, drawers, asterisks), small UX conveniences, permission hints. When unsure, `no`: it still shows in What's New.
+  - `when-enabled` — the change is built but not switched on for users in production (feature flag, toggle or setting that is off, screen not linked yet). Never `yes` for something users cannot use today. The PR that switches it on carries the sentence with `yes`.
+- **One feature = one `yes`.** When a feature ships across several PRs or tickets, only the PR that completes it says `yes`; the others say `no` (or `none`). Do not restate a feature an earlier PR already announced.
+
 ## Guardrails
 
 - Merging is JP's call; you open PRs, never merge, never deploy. Assume merge-to-main may deploy production.
