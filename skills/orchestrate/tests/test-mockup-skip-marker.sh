@@ -110,7 +110,7 @@ test_sm_marker_in_launch_text_stays_a_gate() {
 # ------------------------------------------------------------------ status text (AC7)
 # Real status path: reconcile-status.sh (writes orch-N.needs) -> report-status.sh --print (runs[] JSON).
 # A held run whose newest routing marker is MOCKUPS PENDING APPROVAL, then one candidate comment (all by the pipeline account
-# `jpmoya` unless stated). CONTRACT: the published run object carries the text "mockups skipped by JP" and never "Approve mockups".
+# `jpmoya` unless stated). CONTRACT: the published run object carries the text "mockups skipped (default or JP)" and never "Approve mockups".
 SM_GATE_T="2026-09-20T10:00:00Z"; SM_LATER_T="2026-09-21T10:00:00Z"
 # sm_status <candidate body> <candidate author> [review] — prints the run's published JSON object (issue 501).
 # #701: pass a non-empty 3rd arg to prepend a `**[jp] REVIEW MOCKUPS**` comment (before the gate) so the control
@@ -133,29 +133,29 @@ sm_status() {
 test_sm_status_shows_mockups_skipped_by_jp_not_approve_mockups() {
   local r; r=$(sm_status "$SM_VALID" jpmoya)
   assert_ne "$r" "NORUN" "control: the held run is published" || return 1
-  assert_contains "$r" "mockups skipped by JP" "skipped ticket shows the skipped text" || return 1
+  assert_contains "$r" "mockups skipped (default or JP)" "skipped ticket shows the skipped text" || return 1
   assert_not_contains "$r" "Approve mockups" "skipped ticket is not 'Approve mockups'" || return 1
 }
 test_sm_status_without_marker_still_says_approve_mockups() {
-  # #701: REVIEW MOCKUPS opts in — without it skip-by-default already shows "mockups skipped by JP" (see
+  # #701: REVIEW MOCKUPS opts in — without it skip-by-default already shows "mockups skipped (default or JP)" (see
   # test_sm_status_no_marker_now_shows_skipped below), which is the whole point of this ticket's flip.
   local r; r=$(sm_status 'unrelated chatter' jpmoya review)
   assert_contains "$r" "Approve mockups" "no marker, REVIEW MOCKUPS opted in: gate label unchanged" || return 1
-  assert_not_contains "$r" "mockups skipped by JP" "no marker, REVIEW MOCKUPS opted in: no skipped text" || return 1
+  assert_not_contains "$r" "mockups skipped (default or JP)" "no marker, REVIEW MOCKUPS opted in: no skipped text" || return 1
 }
 test_sm_status_no_marker_now_shows_skipped() {
   local r; r=$(sm_status 'unrelated chatter' jpmoya)
-  assert_contains "$r" "mockups skipped by JP" "#701: no marker at all now defaults to skipped" || return 1
+  assert_contains "$r" "mockups skipped (default or JP)" "#701: no marker at all now defaults to skipped" || return 1
   assert_not_contains "$r" "Approve mockups" "#701: no marker at all is not 'Approve mockups'" || return 1
 }
 test_sm_status_non_author_marker_now_shows_skipped() {
   local r; r=$(sm_status "$SM_VALID" someone-else)
-  assert_contains "$r" "mockups skipped by JP" "non-author marker now counts (#700)" || return 1
+  assert_contains "$r" "mockups skipped (default or JP)" "non-author marker now counts (#700)" || return 1
   assert_not_contains "$r" "Approve mockups" "non-author marker: not 'Approve mockups'" || return 1
 }
 test_sm_status_marker_without_quote_now_shows_skipped() {
   local r; r=$(sm_status '**[jp] SKIP MOCKUPS**' jpmoya)
-  assert_contains "$r" "mockups skipped by JP" "no JP said line still counts (#700)" || return 1
+  assert_contains "$r" "mockups skipped (default or JP)" "no JP said line still counts (#700)" || return 1
   assert_not_contains "$r" "Approve mockups" "no JP said line: not 'Approve mockups'" || return 1
 }
 

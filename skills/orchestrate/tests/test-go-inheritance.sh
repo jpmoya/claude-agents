@@ -470,11 +470,13 @@ test_gi_ac4_orchestrator_jp_go_untouched() {
 }
 
 test_gi_ac4_orchestrator_mockups_approved_lines_untouched() {
-  # Re-pinned for #701 (mockup gate flipped to skip-by-default): only the "MOCKUPS PENDING APPROVAL + JP approval
-  # comment" row gained a leading sentence noting it is only reached when `**[jp] REVIEW MOCKUPS**` made the row
-  # above terminal; the MOCKUPS APPROVED wording itself (the legacy-marker mention, jp_go, the approval-word set,
-  # the gate-section outcome text) is untouched.
-  assert_eq "$(grep -F 'MOCKUPS APPROVED' "$ORCH_GI" | gi_sha)" "7b29f540297bbbfb66d9635765fe76eca027aa794b6c19b989f6d25c8b32a934" "AC4: MOCKUPS APPROVED lines"
+  # Re-pinned for #701 (mockup gate flipped to skip-by-default): the "MOCKUPS PENDING APPROVAL + JP approval comment"
+  # row gained a leading sentence noting it is only reached when `**[jp] REVIEW MOCKUPS**` made the row above
+  # terminal; the "READY FOR ENGINEERING" row's mention of `**[jp] MOCKUPS APPROVED**` gained clarifying context
+  # about the new default; the "JP revision feedback" row gained a scoping clause (it now only applies while
+  # REVIEW MOCKUPS makes the gate terminal). The MOCKUPS APPROVED wording itself (the legacy-marker mention, jp_go,
+  # the approval-word set, the gate-section outcome text) is untouched — only surrounding context was added.
+  assert_eq "$(grep -F 'MOCKUPS APPROVED' "$ORCH_GI" | gi_sha)" "7a95c9bde7d3c4990ca7f5b71bc190a646cd837696ae3564208b40d8d91a9693" "AC4: MOCKUPS APPROVED lines"
 }
 
 test_gi_ac4_orchestrator_needs_jp_lines_untouched() {

@@ -66,6 +66,18 @@ skip_mockups_marker_body() {  # skip_mockups_marker_body <jp-reply-text> → the
   printf '%s\n%s' "**[jp] SKIP MOCKUPS**" "JP said: \"$text\""
 }
 
+jp_review_mockups_words() { echo 'review( it| them| mockups| the mockups)?|have a look|take a look|want to see (it|them)'; }  # JP's plain-language reply choosing to keep reviewing mockups, since #701 flipped the default to skip (the mirror of jp_skip_mockups_words)
+
+is_jp_review_mockups_reply() {  # is_jp_review_mockups_reply <text> → exit 0 when text is a plain-language JP reply choosing to keep the mockup review gate. Used only against a JP Slack reply to pm-slack.sh's mockup-skip ask (#701 note: the ask's wording and kind stay the same; only the default flipped). Never a substitute for the `**[jp] REVIEW MOCKUPS**` marker itself. A reply recognized as BOTH a skip and a review phrase (contradictory) is ambiguous — no marker, same safe-failure shape as is_jp_skip_mockups_reply.
+  if is_jp_skip_mockups_reply "$1"; then return 1; fi
+  jq -ne --arg b "$1" --arg w "$(jp_review_mockups_words)" '$b | test("(?i)(?:^|[^a-z])(?:" + $w + ")(?:$|[^a-z])")' >/dev/null
+}
+
+review_mockups_marker_body() {  # review_mockups_marker_body <jp-reply-text> → the canonical two-line `**[jp] REVIEW MOCKUPS**` body with JP's reply echoed verbatim on line 2, same shape as skip_mockups_marker_body. This marker is a raw-comment flag read directly by marker_last_jq (#701) — it is never added to markers_for/marker_re, so it can never stand in as an approval or a routing marker elsewhere.
+  local text; text=$(printf '%s' "$1" | tr '\r\n' '  ')
+  printf '%s\n%s' "**[jp] REVIEW MOCKUPS**" "JP said: \"$text\""
+}
+
 marker_re() {  # marker_re [agent] → jq (oniguruma) regex for a valid first line; no agent = any agent, each with its own markers
   # jp's markers are gates: the first line must be the marker and nothing else (trailing whitespace/CR ok),
   # the same "exactly" rule the orchestrator applies (#202). Other agents keep the `**`/`:`/space/EOL suffix.
