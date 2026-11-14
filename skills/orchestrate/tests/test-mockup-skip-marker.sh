@@ -55,8 +55,16 @@ test_sm_agents_cannot_post_skip_mockups_as_agent_marker() {
 test_sm_valid_marker_after_pending_clears_gate() {
   sm_thread jpmoya "$SM_VALID"; mg_tick; mg_assert_not_gate "valid skip after MOCKUPS PENDING" || return 1
 }
+# sm_thread_review <author> <body> — like sm_thread, but opens with `**[jp] REVIEW MOCKUPS**` so the gate is
+# opted back into the terminal path (#701: skip-by-default would otherwise make every negative fixture moot —
+# the gate would already have auto-advanced regardless of what the candidate comment says).
+sm_thread_review() {
+  mg_thread '**[jp] REVIEW MOCKUPS**' "$SM_PEND" "$2"
+  jq --arg a "$1" 'map(.author = {login: "jpmoya"}) | .[-1].author.login = $a' "$MG_GH/gh-issue-comments-json" > "$MG_GH/x.tmp" \
+    && mv "$MG_GH/x.tmp" "$MG_GH/gh-issue-comments-json"
+}
 # sm_neg <label> <body> — one negative fixture per test, so a failure names it
-sm_neg() { sm_thread jpmoya "$2"; mg_tick; mg_assert_gate "negative fixture: $1" || return 1; }
+sm_neg() { sm_thread_review jpmoya "$2"; mg_tick; mg_assert_gate "negative fixture: $1" || return 1; }
 test_sm_negative_prose_sentence_stays_a_gate() { sm_neg "prose sentence" "I'd skip mockups here"; }
 test_sm_negative_trailing_text_stays_a_gate() { sm_neg "trailing text on first line" $'**[jp] SKIP MOCKUPS** please\nJP said: "skip it"'; }
 test_sm_negative_delivery_lead_decision_stays_a_gate() { sm_neg "delivery-lead DECISION" $'**[delivery-lead] DECISION**\nResolves: https://x/1\n**[jp] SKIP MOCKUPS**\nJP said: "skip it"'; }
@@ -73,7 +81,9 @@ test_sm_valid_marker_before_pending_clears_gate() {
   mg_tick; mg_assert_not_gate "valid skip posted before MOCKUPS PENDING" || return 1
 }
 test_sm_marker_only_in_pm_ready_comment_stays_a_gate() {
-  mg_thread '**[product-manager] READY FOR ENGINEERING**'$'\n''UI change: yes'$'\n''**[jp] SKIP MOCKUPS**'$'\n''JP said: "skip it"' "$SM_PEND"
+  # #701: REVIEW MOCKUPS opts in first — otherwise skip-by-default already lifts the gate before this fixture's
+  # point (that a SKIP MOCKUPS buried on a later line of another comment doesn't count) can be exercised.
+  mg_thread '**[jp] REVIEW MOCKUPS**' '**[product-manager] READY FOR ENGINEERING**'$'\n''UI change: yes'$'\n''**[jp] SKIP MOCKUPS**'$'\n''JP said: "skip it"' "$SM_PEND"
   jq 'map(.author = {login: "jpmoya"})' "$MG_GH/gh-issue-comments-json" > "$MG_GH/x.tmp" && mv "$MG_GH/x.tmp" "$MG_GH/gh-issue-comments-json"
   mg_tick; mg_assert_gate "marker only in PM READY comment" || return 1
 }
@@ -83,13 +93,15 @@ test_sm_non_author_marker_now_clears_gate() {
   sm_thread someone-else "$SM_VALID"; mg_tick; mg_assert_not_gate "non-author marker now clears the gate (#700)" || return 1
 }
 test_sm_marker_only_in_issue_body_stays_a_gate() {
-  mg_thread "$SM_PEND" 'unrelated chatter'
+  # #701: REVIEW MOCKUPS opts in first — see test_sm_marker_only_in_pm_ready_comment_stays_a_gate.
+  mg_thread '**[jp] REVIEW MOCKUPS**' "$SM_PEND" 'unrelated chatter'
   jq -n --arg b "$SM_VALID" '{body:$b}' > "$MG_GH/gh-issue-body-json" 2>/dev/null
   printf '%s' "$SM_VALID" > "$MG_GH/gh-issue-body"
   mg_tick; mg_assert_gate "marker only in issue body" || return 1
 }
 test_sm_marker_in_launch_text_stays_a_gate() {
-  mg_thread "$SM_PEND" 'unrelated chatter'
+  # #701: REVIEW MOCKUPS opts in first — see test_sm_marker_only_in_pm_ready_comment_stays_a_gate.
+  mg_thread '**[jp] REVIEW MOCKUPS**' "$SM_PEND" 'unrelated chatter'
   printf '%s\n' "$SM_VALID" > "$MG_PIPE/orch-74.brief"
   printf '%s\n' "$SM_VALID" > "$MG_PIPE/orch-74.launch"
   mg_tick; mg_assert_gate "marker only in launch/brief text" || return 1
@@ -98,17 +110,20 @@ test_sm_marker_in_launch_text_stays_a_gate() {
 # ------------------------------------------------------------------ status text (AC7)
 # Real status path: reconcile-status.sh (writes orch-N.needs) -> report-status.sh --print (runs[] JSON).
 # A held run whose newest routing marker is MOCKUPS PENDING APPROVAL, then one candidate comment (all by the pipeline account
-# `jpmoya` unless stated). CONTRACT: the published run object carries the text "mockups skipped by JP" and never "Approve mockups".
+# `jpmoya` unless stated). CONTRACT: the published run object carries the text "mockups skipped (default or JP)" and never "Approve mockups".
 SM_GATE_T="2026-09-20T10:00:00Z"; SM_LATER_T="2026-09-21T10:00:00Z"
-# sm_status <candidate body> <candidate author> — prints the run's published JSON object (issue 501)
+# sm_status <candidate body> <candidate author> [review] — prints the run's published JSON object (issue 501).
+# #701: pass a non-empty 3rd arg to prepend a `**[jp] REVIEW MOCKUPS**` comment (before the gate) so the control
+# case ("no marker" => the terminal gate text) still exercises the terminal path under skip-by-default.
 sm_status() {
-  local P H R B alias="example-owner/project-a" out
+  local P H R B alias="example-owner/project-a" out pre="" t0="2026-09-19T10:00:00Z"
   P=$(new_pipe); H=$(new_home); R="$P/repo-project-a"; B="$H/.local/bin"
   fixture_repo "$R" "$alias"; mk_fake_gh "$B"; echo "$alias" > "$B/gh-name-with-owner"
   printf 'DISPATCH_REPOS=("%s:%s")\nSTATUS_REPO_ALIASES=("%s:project-a")\n' "$alias" "$R" "$alias" > "$H/.claude/pipeline/config.local.sh"
   mk_held "$P" 501 "$R"; printf 'Title of 501\n' > "$P/orch-501.title"
-  jq -nc --arg g "$SM_PEND" --arg c "$1" --arg a "$2" --arg t1 "$SM_GATE_T" --arg t2 "$SM_LATER_T" \
-    '[{body:$g,createdAt:$t1,author:{login:"jpmoya"}},{body:$c,createdAt:$t2,author:{login:$a}}]' > "$B/gh-issue-comments-json-501"
+  [ -z "${3:-}" ] || pre='{body:"**[jp] REVIEW MOCKUPS**",createdAt:$t0,author:{login:"jpmoya"}},'
+  jq -nc --arg g "$SM_PEND" --arg c "$1" --arg a "$2" --arg t0 "$t0" --arg t1 "$SM_GATE_T" --arg t2 "$SM_LATER_T" \
+    "[$pre"'{body:$g,createdAt:$t1,author:{login:"jpmoya"}},{body:$c,createdAt:$t2,author:{login:$a}}]' > "$B/gh-issue-comments-json-501"
   HOME="$H" PATH="$B:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$P" QUEUE="$P/queue" LOGDIR="$H/logs/pipeline" "$HERE_MG/../reconcile-status.sh" --force >/dev/null 2>&1
   out=$(HOME="$H" PATH="$B:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$P" QUEUE="$P/queue" LOGDIR="$H/logs/pipeline" "$HERE_MG/../report-status.sh" --print 2>/dev/null \
     | jq -c '[.runs[] | select((.issue|tostring)=="501")] | .[0] // "NORUN"' 2>/dev/null)
@@ -118,22 +133,29 @@ sm_status() {
 test_sm_status_shows_mockups_skipped_by_jp_not_approve_mockups() {
   local r; r=$(sm_status "$SM_VALID" jpmoya)
   assert_ne "$r" "NORUN" "control: the held run is published" || return 1
-  assert_contains "$r" "mockups skipped by JP" "skipped ticket shows the skipped text" || return 1
+  assert_contains "$r" "mockups skipped (default or JP)" "skipped ticket shows the skipped text" || return 1
   assert_not_contains "$r" "Approve mockups" "skipped ticket is not 'Approve mockups'" || return 1
 }
 test_sm_status_without_marker_still_says_approve_mockups() {
+  # #701: REVIEW MOCKUPS opts in — without it skip-by-default already shows "mockups skipped (default or JP)" (see
+  # test_sm_status_no_marker_now_shows_skipped below), which is the whole point of this ticket's flip.
+  local r; r=$(sm_status 'unrelated chatter' jpmoya review)
+  assert_contains "$r" "Approve mockups" "no marker, REVIEW MOCKUPS opted in: gate label unchanged" || return 1
+  assert_not_contains "$r" "mockups skipped (default or JP)" "no marker, REVIEW MOCKUPS opted in: no skipped text" || return 1
+}
+test_sm_status_no_marker_now_shows_skipped() {
   local r; r=$(sm_status 'unrelated chatter' jpmoya)
-  assert_contains "$r" "Approve mockups" "no marker: gate label unchanged" || return 1
-  assert_not_contains "$r" "mockups skipped by JP" "no marker: no skipped text" || return 1
+  assert_contains "$r" "mockups skipped (default or JP)" "#701: no marker at all now defaults to skipped" || return 1
+  assert_not_contains "$r" "Approve mockups" "#701: no marker at all is not 'Approve mockups'" || return 1
 }
 test_sm_status_non_author_marker_now_shows_skipped() {
   local r; r=$(sm_status "$SM_VALID" someone-else)
-  assert_contains "$r" "mockups skipped by JP" "non-author marker now counts (#700)" || return 1
+  assert_contains "$r" "mockups skipped (default or JP)" "non-author marker now counts (#700)" || return 1
   assert_not_contains "$r" "Approve mockups" "non-author marker: not 'Approve mockups'" || return 1
 }
 test_sm_status_marker_without_quote_now_shows_skipped() {
   local r; r=$(sm_status '**[jp] SKIP MOCKUPS**' jpmoya)
-  assert_contains "$r" "mockups skipped by JP" "no JP said line still counts (#700)" || return 1
+  assert_contains "$r" "mockups skipped (default or JP)" "no JP said line still counts (#700)" || return 1
   assert_not_contains "$r" "Approve mockups" "no JP said line: not 'Approve mockups'" || return 1
 }
 
@@ -224,8 +246,10 @@ test_sm_orchestrate_skill_says_any_channel_satisfies_gate() {
 . "$(dirname "${BASH_SOURCE[0]}")/lib/goal-sandbox.sh"
 # CONTRACT: the goal step reads through REST (`gh api repos/<r>/issues/<n>` .user.login and .../comments .user.login),
 # as _goal_ticket_eval already does; the issue author and the marker author are `jpmoya`.
-# sm_goal_class <author> <body of the comment posted after MOCKUPS PENDING APPROVAL, or "" for none>
+# sm_goal_class <author> <body of the comment posted after MOCKUPS PENDING APPROVAL, or "" for none> [review]
 # prints delivered | waiting_jp | active | none (same outcome reading as gs_classify: registry store / launch).
+# #701: pass a non-empty 3rd arg to post a `**[jp] REVIEW MOCKUPS**` comment before the gate, opting this
+# ticket back into the terminal path under skip-by-default.
 sm_goal_class() {
   local who=$1 body=$2 out=none f
   gs_env
@@ -233,7 +257,12 @@ sm_goal_class() {
   jq -c '.user = {login: "jpmoya"}' "$GS_ST/issues/$GS_A/7.json" > "$GS_ST/issues/$GS_A/7.json.tmp" \
     && mv "$GS_ST/issues/$GS_A/7.json.tmp" "$GS_ST/issues/$GS_A/7.json"
   f="$GS_ST/comments/$GS_A-7.json"
-  jq -nc --arg now "$GS_NOW" --arg p "$SM_PEND"$'\nmockups ready' '[{created_at:$now, user:{login:"jpmoya"}, body:$p}]' > "$f"
+  if [ -n "${3:-}" ]; then
+    jq -nc --arg now "$GS_NOW" '[{created_at:$now, user:{login:"jpmoya"}, body:"**[jp] REVIEW MOCKUPS**"}]' > "$f"
+  else
+    printf '[]' > "$f"
+  fi
+  jq -c --arg now "$GS_NOW" --arg p "$SM_PEND"$'\nmockups ready' '. + [{created_at:$now, user:{login:"jpmoya"}, body:$p}]' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
   if [ -n "$body" ]; then
     jq -c --arg now "$GS_NOW" --arg b "$body" --arg a "$who" '. + [{created_at:$now, user:{login:$a}, body:$b}]' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
   fi
@@ -250,9 +279,13 @@ sm_goal_class() {
 test_sm_goal_valid_marker_is_not_waiting_jp() {
   assert_eq "$(sm_goal_class jpmoya "$SM_VALID")" "active" "goal class: PENDING + valid skip marker" || return 1
 }
-# controls — each must stay "mockups need your approval" (waiting_jp)
+# controls — each must stay "mockups need your approval" (waiting_jp), with REVIEW MOCKUPS opting in (#701)
 test_sm_goal_no_marker_stays_waiting_jp() {
-  assert_eq "$(sm_goal_class jpmoya "")" "waiting_jp" "goal class: PENDING, no marker" || return 1
+  assert_eq "$(sm_goal_class jpmoya "" review)" "waiting_jp" "goal class: PENDING, no marker, REVIEW MOCKUPS opted in" || return 1
+}
+# #701: with no opt-in at all, skip-by-default means the goal step no longer waits on JP for this.
+test_sm_goal_no_marker_at_all_is_active() {
+  assert_eq "$(sm_goal_class jpmoya "")" "active" "#701: goal class: PENDING, no marker, no opt-in" || return 1
 }
 # #700: a non-author marker, and a marker with no `JP said:` line, both now count (same as the valid-marker case).
 test_sm_goal_non_author_marker_now_active() {
@@ -279,6 +312,7 @@ run_test test_sm_marker_only_in_issue_body_stays_a_gate
 run_test test_sm_marker_in_launch_text_stays_a_gate
 run_test test_sm_status_shows_mockups_skipped_by_jp_not_approve_mockups
 run_test test_sm_status_without_marker_still_says_approve_mockups
+run_test test_sm_status_no_marker_now_shows_skipped
 run_test test_sm_status_non_author_marker_now_shows_skipped
 run_test test_sm_status_marker_without_quote_now_shows_skipped
 run_test test_sm_orchestrator_names_marker_and_only_skip_path
@@ -296,6 +330,7 @@ run_test test_sm_developer_does_not_bind_to_mockup_when_none_exists
 run_test test_sm_orchestrate_skill_says_any_channel_satisfies_gate
 run_test test_sm_goal_valid_marker_is_not_waiting_jp
 run_test test_sm_goal_no_marker_stays_waiting_jp
+run_test test_sm_goal_no_marker_at_all_is_active
 run_test test_sm_goal_non_author_marker_now_active
 run_test test_sm_goal_marker_without_quote_now_active
 gs_tree_cleanup
