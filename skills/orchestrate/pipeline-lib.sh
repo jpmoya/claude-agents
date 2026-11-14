@@ -118,10 +118,12 @@ has_capacity() {  # [own run key]
 }
 
 marker_last_jq() {  # prints (no gh call) the jq expression yielding the newest real routing marker first line, or "none"; NOTEs and off-vocabulary lines are inert
-  # #272: a `**[jp] SKIP MOCKUPS**` comment counts only from the issue author (top-level .author.login, else the first comment's author — every gh issue view feeding this now fetches `author`;
-  # REST comments carry .user.login, gh CLI .author.login) AND with a second line `JP said: "<non-empty>"`; any other (incl. malformed author) is dropped. #620: a relayed `**[jp] MOCKUPS APPROVED**` / `**[jp] GO**` likewise counts only from the issue author when it is known (the orchestrator's jp_go re-checks it).
+  # #700: a `**[jp] SKIP MOCKUPS**` comment counts whenever its first line is exactly that string — any author, any
+  # channel (Slack relay, direct GitHub comment, in-session post), no `JP said:` quote required. No per-source trust
+  # distinction (dropped the #272 issue-author + quote check). #620: a relayed `**[jp] MOCKUPS APPROVED**` / `**[jp] GO**`
+  # is unchanged by #700 and still counts only from the issue author when known (the orchestrator's jp_go re-checks it).
   local skip='def lg: ((.author | objects | .login) // (.user | objects | .login)); ((lg // (.comments[0] | lg)) // null) as $ia | '
-  skip="$skip"'[.comments[] | select((.body | type) == "string") | select((.body | split("\n")) as $l | if ($l[0] | rtrimstr("\r") | test("^\\*\\*\\[jp\\] SKIP MOCKUPS\\*\\*[[:space:]]*$")) then (($ia != null) and (lg == $ia) and (($l[1] // "" | rtrimstr("\r")) | test("^JP said: \".+\"$"))) elif ($l[0] | rtrimstr("\r") | test("^\\*\\*\\[jp\\] (MOCKUPS APPROVED|GO)\\*\\*[[:space:]]*$")) then (($ia == null) or (lg == $ia)) else true end)'
+  skip="$skip"'[.comments[] | select((.body | type) == "string") | select((.body | split("\n")) as $l | if ($l[0] | rtrimstr("\r") | test("^\\*\\*\\[jp\\] SKIP MOCKUPS\\*\\*[[:space:]]*$")) then true elif ($l[0] | rtrimstr("\r") | test("^\\*\\*\\[jp\\] (MOCKUPS APPROVED|GO)\\*\\*[[:space:]]*$")) then (($ia == null) or (lg == $ia)) else true end)'
   # a valid skip posted anywhere (even before the gate comment) supersedes a newest MOCKUPS PENDING APPROVAL
   printf '%s | .body | split("\\n")[0] | select(test(%s))] | if ((last // "") | contains("] MOCKUPS PENDING APPROVAL")) and (map(select(rtrimstr("\\r") | test("^\\\\*\\\\*\\\\[jp\\\\] SKIP MOCKUPS\\\\*\\\\*[[:space:]]*$"))) | length > 0) then . + ["**[jp] SKIP MOCKUPS**"] else . end | last // "none"' "$skip" "$(marker_re | jq -Rs .)"
 }

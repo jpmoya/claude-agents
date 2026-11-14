@@ -4,7 +4,8 @@
 # A comment is a routing marker only when line 1 is `**[agent] <one of these>` followed by `**`, `:`,
 # a space or end of line. Anything else — NOTE, the literal word MARKER, an invented COMPLETED — is
 # inert: it never changes pipeline state and never satisfies the handoff hook (claude-agents#5).
-# SKIP MOCKUPS (#272) is honoured only from the issue author with a `JP said:` line 2 (see marker_last_jq).
+# SKIP MOCKUPS is honoured from any author, any channel — exact first line only, no `JP said:` line required
+# (#272, broadened #700; see marker_last_jq).
 # Adding a marker to an agent definition or the routing table means adding it here too.
 
 markers_for() {  # markers_for <agent> → that agent's routing markers, |-separated (empty = unknown agent)

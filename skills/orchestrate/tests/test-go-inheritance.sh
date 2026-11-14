@@ -470,8 +470,10 @@ test_gi_ac4_orchestrator_jp_go_untouched() {
 }
 
 test_gi_ac4_orchestrator_mockups_approved_lines_untouched() {
-  # Re-pinned for the fast-lane single-loop change: only the description line and the READY FOR ENGINEERING row's fast-lane dispatch prompt changed (the MOCKUPS APPROVED wording itself is untouched).
-  assert_eq "$(grep -F 'MOCKUPS APPROVED' "$ORCH_GI" | gi_sha)" "dfe62694e71d4953a07eb3a157b9aa69c66530f002b2901cdf816aeb0687b456" "AC4: MOCKUPS APPROVED lines"
+  # Re-pinned for #700 (skip-mockups marker broadened to any author/channel): only the "MOCKUPS PENDING APPROVAL +
+  # JP approval comment" row's **Skip marker:** clause changed (dropped the issue-author + `JP said:` requirement);
+  # the MOCKUPS APPROVED wording itself (the legacy-marker mention, jp_go, the approval-word set) is untouched.
+  assert_eq "$(grep -F 'MOCKUPS APPROVED' "$ORCH_GI" | gi_sha)" "4ceabd3fd72f56ff3c3e4790ed76554988fe7c17f0eff93de6faf8d028a0ac95" "AC4: MOCKUPS APPROVED lines"
 }
 
 test_gi_ac4_orchestrator_needs_jp_lines_untouched() {

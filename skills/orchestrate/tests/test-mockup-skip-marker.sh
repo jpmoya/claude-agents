@@ -1,12 +1,14 @@
-# Issue #272 — JP-declared upfront skip of the mockup gate: exact first line `**[jp] SKIP MOCKUPS**` +
-# second line `JP said: "<verbatim>"`, from the issue author only. Expected values come from the ticket text.
-# Sorted after test-mockup-gate-exact-marker.sh on purpose: reuses its mg_* harness (issue 74, supervisor tick).
-# Helpers prefixed sm_ / SM_. Placeholder repos only.
+# Issue #272 — JP-declared upfront skip of the mockup gate: exact first line `**[jp] SKIP MOCKUPS**`, originally
+# required a second line `JP said: "<verbatim>"` from the issue author only. Issue #700 dropped both of those
+# requirements: the ONLY requirement now is the exact first line, from any author, posted through any channel
+# (Slack relay, direct GitHub comment, in-session post) — no per-source trust distinction. Expected values come
+# from the ticket text. Sorted after test-mockup-gate-exact-marker.sh on purpose: reuses its mg_* harness (issue 74,
+# supervisor tick). Helpers prefixed sm_ / SM_. Placeholder repos only.
 #
 # CONTRACTS the ticket leaves open (decided here, flagged in the handoff):
 #  - comment fixtures carry `author.login`; the issue author is `jpmoya` (every pipeline comment is posted as that account).
-#  - a malformed/unparseable skip check fails CLOSED (gate stays) and logs one supervisor.log line containing
-#    `[skip-mockups]` and `malformed`, never the `JP said:` quote.
+#  - #700: the author-based malformed-comment safety net (`skip_marker_malformed_log`) is retired along with the
+#    author check it existed to protect — there is no more "fail closed on unreadable author" path for this marker.
 
 ORCH_SM="$ROOT_MG/agents/orchestrator.md"
 PM_SM="$ROOT_MG/agents/product-manager.md"
@@ -57,10 +59,13 @@ test_sm_valid_marker_after_pending_clears_gate() {
 sm_neg() { sm_thread jpmoya "$2"; mg_tick; mg_assert_gate "negative fixture: $1" || return 1; }
 test_sm_negative_prose_sentence_stays_a_gate() { sm_neg "prose sentence" "I'd skip mockups here"; }
 test_sm_negative_trailing_text_stays_a_gate() { sm_neg "trailing text on first line" $'**[jp] SKIP MOCKUPS** please\nJP said: "skip it"'; }
-test_sm_negative_missing_jp_said_stays_a_gate() { sm_neg "no JP said line" $'**[jp] SKIP MOCKUPS**'; }
 test_sm_negative_delivery_lead_decision_stays_a_gate() { sm_neg "delivery-lead DECISION" $'**[delivery-lead] DECISION**\nResolves: https://x/1\n**[jp] SKIP MOCKUPS**\nJP said: "skip it"'; }
 test_sm_negative_pm_note_stays_a_gate() { sm_neg "PM NOTE" $'**[product-manager] NOTE**\n**[jp] SKIP MOCKUPS**\nJP said: "skip it"'; }
-test_sm_negative_empty_quote_stays_a_gate() { sm_neg "empty quote" $'**[jp] SKIP MOCKUPS**\nJP said: ""'; }
+# #700: the exact first line is now the ONLY requirement — no issue-author check, no `JP said:` quote. A bare marker
+# with no second line, and a marker from a non-jpmoya login, both now clear the gate (previously they stayed a gate).
+test_sm_marker_with_no_jp_said_line_clears_gate() {
+  sm_thread jpmoya "$SM_MARK"; mg_tick; mg_assert_not_gate "bare marker, no JP said line, still clears (#700)" || return 1
+}
 # AC3 / ticket default "any order = yes": the marker may precede the gate comment
 test_sm_valid_marker_before_pending_clears_gate() {
   mg_thread "$SM_VALID" "$SM_PEND"
@@ -72,8 +77,10 @@ test_sm_marker_only_in_pm_ready_comment_stays_a_gate() {
   jq 'map(.author = {login: "jpmoya"})' "$MG_GH/gh-issue-comments-json" > "$MG_GH/x.tmp" && mv "$MG_GH/x.tmp" "$MG_GH/gh-issue-comments-json"
   mg_tick; mg_assert_gate "marker only in PM READY comment" || return 1
 }
-test_sm_non_author_marker_stays_a_gate() {
-  sm_thread someone-else "$SM_VALID"; mg_tick; mg_assert_gate "non-author valid-looking marker" || return 1
+# #700 AC1: a SKIP MOCKUPS comment posted by any account (not the issue author — e.g. a Slack-relay bot login, or
+# any other non-session origin) satisfies the gate; the author/channel is no longer checked.
+test_sm_non_author_marker_now_clears_gate() {
+  sm_thread someone-else "$SM_VALID"; mg_tick; mg_assert_not_gate "non-author marker now clears the gate (#700)" || return 1
 }
 test_sm_marker_only_in_issue_body_stays_a_gate() {
   mg_thread "$SM_PEND" 'unrelated chatter'
@@ -86,29 +93,6 @@ test_sm_marker_in_launch_text_stays_a_gate() {
   printf '%s\n' "$SM_VALID" > "$MG_PIPE/orch-74.brief"
   printf '%s\n' "$SM_VALID" > "$MG_PIPE/orch-74.launch"
   mg_tick; mg_assert_gate "marker only in launch/brief text" || return 1
-}
-# sm_slack_fixture — webhook configured + fake curl recording its argv (precedent: test-supervisor-auto-retry.sh)
-sm_slack_fixture() {
-  echo 'SLACK_WEBHOOK_URL="https://hooks.slack.test/T/B/X"' >> "$1/.claude/pipeline/config.local.sh"
-  printf '#!/bin/bash\necho "CALL $*" >> "%s/curl.calls"\nexit 0\n' "$2" > "$2/curl"; chmod +x "$2/curl"
-}
-test_sm_malformed_check_fails_closed_and_reports_with_tags_without_quote() {
-  local log held calls
-  mg_thread "$SM_PEND" $'**[jp] SKIP MOCKUPS**\nJP said: "SECRET-QUOTE-272" \x01\xff'
-  jq 'map(.author = 7)' "$MG_GH/gh-issue-comments-json" > "$MG_GH/x.tmp" && mv "$MG_GH/x.tmp" "$MG_GH/gh-issue-comments-json"
-  sm_slack_fixture "$MG_HOME" "$MG_GH"
-  mg_tick
-  log=$(cat "$MG_HOME/logs/pipeline/supervisor.log" 2>/dev/null)
-  calls=$(grep 'hooks.slack.test' "$MG_GH/curl.calls" 2>/dev/null)
-  held=$(if [ -e "$(rkp "$MG_PIPE/orch-74.held")" ]; then echo present; else echo absent; fi)
-  mg_cleanup
-  assert_eq "$held" present "malformed skip fails closed (gate stays)" || return 1
-  assert_contains "$calls" "route=supervisor/skip-mockups" "Slack alert carries the route tag" || return 1
-  assert_contains "$calls" "release=" "alert carries the release tag" || return 1
-  case "$calls" in *release=unknown*|*"release= "*) fail "release must be the commit SHA: $calls"; return 1 ;; esac
-  case "$calls" in *environment=[a-zA-Z0-9]*) ;; *) fail "environment tag must have a value: $calls"; return 1 ;; esac
-  assert_not_contains "$calls" "SECRET-QUOTE-272" "JP quote never forwarded to Slack" || return 1
-  assert_not_contains "$log" "SECRET-QUOTE-272" "JP quote never in supervisor.log" || return 1
 }
 
 # ------------------------------------------------------------------ status text (AC7)
@@ -142,22 +126,22 @@ test_sm_status_without_marker_still_says_approve_mockups() {
   assert_contains "$r" "Approve mockups" "no marker: gate label unchanged" || return 1
   assert_not_contains "$r" "mockups skipped by JP" "no marker: no skipped text" || return 1
 }
-test_sm_status_non_author_marker_still_says_approve_mockups() {
+test_sm_status_non_author_marker_now_shows_skipped() {
   local r; r=$(sm_status "$SM_VALID" someone-else)
-  assert_contains "$r" "Approve mockups" "non-author marker is ignored by status" || return 1
-  assert_not_contains "$r" "mockups skipped by JP" "non-author marker: no skipped text" || return 1
+  assert_contains "$r" "mockups skipped by JP" "non-author marker now counts (#700)" || return 1
+  assert_not_contains "$r" "Approve mockups" "non-author marker: not 'Approve mockups'" || return 1
 }
-test_sm_status_marker_without_quote_still_says_approve_mockups() {
+test_sm_status_marker_without_quote_now_shows_skipped() {
   local r; r=$(sm_status '**[jp] SKIP MOCKUPS**' jpmoya)
-  assert_contains "$r" "Approve mockups" "no JP said line: ignored by status" || return 1
-  assert_not_contains "$r" "mockups skipped by JP" "no JP said line: no skipped text" || return 1
+  assert_contains "$r" "mockups skipped by JP" "no JP said line still counts (#700)" || return 1
+  assert_not_contains "$r" "Approve mockups" "no JP said line: not 'Approve mockups'" || return 1
 }
 
 # ------------------------------------------------------------------ docs (AC5/AC8/AC9)
 test_sm_orchestrator_names_marker_and_only_skip_path() {
   mg_has "$ORCH_SM" 'only skip path: JP'"'"'s exact `**[jp] SKIP MOCKUPS**` marker' || return 1
   mg_lacks "$ORCH_SM" "there is no skip path" || return 1
-  mg_has "$ORCH_SM" 'JP said:' || return 1
+  mg_has "$ORCH_SM" 'any channel' || return 1   # #700: no longer requires a `JP said:` quote or an issue-author check
 }
 # sm_clause <file> <row-anchor> — what the single line containing <row-anchor> says from its first SKIP MOCKUPS onward
 # (anchors are the stable row keys, not formatting). Empty when the row or the marker is missing.
@@ -171,12 +155,12 @@ sm_needs() {  # <label> <text> <word>... — text must mention every word
   for w in "$@"; do mg_text_has "$l" "$t" "$w" || return 1; done
 }
 test_sm_orchestrator_entry_check_and_sa_row_accept_skip_marker() {
-  # AC5: both rows accept the valid marker in place of approval, and only the valid (exact, JP said:) one
+  # AC5 (#700): both rows accept the valid marker in place of approval, and only the valid (exact first line) one
   local c
   c=$(sm_clause "$ORCH_SM" 'test-writer (first dispatch)')
-  sm_needs "entry check" "$c" "exact" "JP said" || return 1
+  sm_needs "entry check" "$c" "exact" || return 1
   c=$(sm_clause "$ORCH_SM" '| `[solutions-architect] READY FOR ENGINEERING` |')
-  sm_needs "SA row" "$c" "test-writer" "exact" "JP said" || return 1
+  sm_needs "SA row" "$c" "test-writer" "exact" || return 1
 }
 test_sm_orchestrator_architecture_row_skips_design_and_dispatches_sa() {
   # AC2 (:46): marker present -> no ux-flow-designer / ui-ux-designer dispatch, solutions-architect next
@@ -197,7 +181,7 @@ test_sm_orchestrator_user_flow_ready_row_skips_ui_designer() {
 test_sm_orchestrator_gate_row_supersede_by_skip_marker() {
   # AC3 (:52/:53): a valid marker after MOCKUPS PENDING APPROVAL clears the gate, same as approval
   local c; c=$(sm_clause "$ORCH_SM" '| `[ui-ux-designer] MOCKUPS PENDING APPROVAL` + JP approval comment')
-  sm_needs "approval row" "$c" "JP said" "exact" || return 1
+  sm_needs "approval row" "$c" "exact" || return 1
   c=$(sm_clause "$ORCH_SM" '| `[ui-ux-designer] MOCKUPS PENDING APPROVAL` |')
   sm_needs "terminal gate row" "$c" "supersede" || return 1
 }
@@ -206,7 +190,9 @@ test_sm_orchestrator_marker_is_a_noop_on_fast_lane_and_no_ui() {
   mg_text_has "no-op scope" "$t" "no-op" || return 1
   mg_text_has "no-op scope names fast lane" "$t" "fast" || return 1
 }
-test_sm_orchestrator_ignores_non_author_sources() {
+test_sm_orchestrator_ignores_non_comment_sources() {
+  # #700 note: only "which locations are read" (never issue body/PM/launch/delivery-lead) stays restricted;
+  # who/what posts the actual comment, and which channel relayed it, is no longer restricted.
   local t s; t=$(grep -F 'SKIP MOCKUPS' "$ORCH_SM")
   for s in 'issue body' 'launch' 'delivery-lead' 'PM'; do mg_text_has "ignored sources" "$t" "$s" || return 1; done
   mg_text_has "ignored sources are ignored" "$t" "never" || return 1
@@ -228,9 +214,9 @@ test_sm_developer_does_not_bind_to_mockup_when_none_exists() {
   local t; t=$(grep -F 'SKIP MOCKUPS' "$FS_SM")
   sm_needs "fullstack-developer" "$t" "no mockup" "not applied" || return 1
 }
-test_sm_orchestrate_skill_says_main_session_posts_only_when_quoting_jp() {
+test_sm_orchestrate_skill_says_any_channel_satisfies_gate() {
   local t; t=$(grep -F 'SKIP MOCKUPS' "$SKILL_SM")
-  sm_needs "skill" "$t" "quoting JP" "JP said" || return 1
+  sm_needs "skill" "$t" "any channel" "any author" || return 1
 }
 
 # ------------------------------------------------------------------ goal-lib classification (AC7, goal-lib.sh:256)
@@ -268,11 +254,12 @@ test_sm_goal_valid_marker_is_not_waiting_jp() {
 test_sm_goal_no_marker_stays_waiting_jp() {
   assert_eq "$(sm_goal_class jpmoya "")" "waiting_jp" "goal class: PENDING, no marker" || return 1
 }
-test_sm_goal_non_author_marker_stays_waiting_jp() {
-  assert_eq "$(sm_goal_class someone-else "$SM_VALID")" "waiting_jp" "goal class: marker from non-author" || return 1
+# #700: a non-author marker, and a marker with no `JP said:` line, both now count (same as the valid-marker case).
+test_sm_goal_non_author_marker_now_active() {
+  assert_eq "$(sm_goal_class someone-else "$SM_VALID")" "active" "goal class: marker from non-author now counts (#700)" || return 1
 }
-test_sm_goal_marker_without_quote_stays_waiting_jp() {
-  assert_eq "$(sm_goal_class jpmoya "$SM_MARK")" "waiting_jp" "goal class: marker without JP said line" || return 1
+test_sm_goal_marker_without_quote_now_active() {
+  assert_eq "$(sm_goal_class jpmoya "$SM_MARK")" "active" "goal class: marker without JP said line now counts (#700)" || return 1
 }
 
 run_test test_sm_jp_vocabulary_has_skip_mockups_and_keeps_approved
@@ -283,19 +270,17 @@ run_test test_sm_valid_marker_after_pending_clears_gate
 run_test test_sm_valid_marker_before_pending_clears_gate
 run_test test_sm_negative_prose_sentence_stays_a_gate
 run_test test_sm_negative_trailing_text_stays_a_gate
-run_test test_sm_negative_missing_jp_said_stays_a_gate
+run_test test_sm_marker_with_no_jp_said_line_clears_gate
 run_test test_sm_negative_delivery_lead_decision_stays_a_gate
 run_test test_sm_negative_pm_note_stays_a_gate
-run_test test_sm_negative_empty_quote_stays_a_gate
 run_test test_sm_marker_only_in_pm_ready_comment_stays_a_gate
-run_test test_sm_non_author_marker_stays_a_gate
+run_test test_sm_non_author_marker_now_clears_gate
 run_test test_sm_marker_only_in_issue_body_stays_a_gate
 run_test test_sm_marker_in_launch_text_stays_a_gate
-run_test test_sm_malformed_check_fails_closed_and_reports_with_tags_without_quote
 run_test test_sm_status_shows_mockups_skipped_by_jp_not_approve_mockups
 run_test test_sm_status_without_marker_still_says_approve_mockups
-run_test test_sm_status_non_author_marker_still_says_approve_mockups
-run_test test_sm_status_marker_without_quote_still_says_approve_mockups
+run_test test_sm_status_non_author_marker_now_shows_skipped
+run_test test_sm_status_marker_without_quote_now_shows_skipped
 run_test test_sm_orchestrator_names_marker_and_only_skip_path
 run_test test_sm_orchestrator_entry_check_and_sa_row_accept_skip_marker
 run_test test_sm_orchestrator_architecture_row_skips_design_and_dispatches_sa
@@ -303,14 +288,14 @@ run_test test_sm_orchestrator_engineering_row_skips_design_and_goes_to_test_writ
 run_test test_sm_orchestrator_user_flow_ready_row_skips_ui_designer
 run_test test_sm_orchestrator_gate_row_supersede_by_skip_marker
 run_test test_sm_orchestrator_marker_is_a_noop_on_fast_lane_and_no_ui
-run_test test_sm_orchestrator_ignores_non_author_sources
+run_test test_sm_orchestrator_ignores_non_comment_sources
 run_test test_sm_pm_never_writes_or_implies_marker
 run_test test_sm_delivery_lead_decision_is_never_a_skip
 run_test test_sm_designer_describes_skip_and_no_mockup_case
 run_test test_sm_developer_does_not_bind_to_mockup_when_none_exists
-run_test test_sm_orchestrate_skill_says_main_session_posts_only_when_quoting_jp
+run_test test_sm_orchestrate_skill_says_any_channel_satisfies_gate
 run_test test_sm_goal_valid_marker_is_not_waiting_jp
 run_test test_sm_goal_no_marker_stays_waiting_jp
-run_test test_sm_goal_non_author_marker_stays_waiting_jp
-run_test test_sm_goal_marker_without_quote_stays_waiting_jp
+run_test test_sm_goal_non_author_marker_now_active
+run_test test_sm_goal_marker_without_quote_now_active
 gs_tree_cleanup

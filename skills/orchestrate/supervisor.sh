@@ -213,23 +213,6 @@ latest_marker() {  # the GATE marker: newest real routing marker whose agent is 
   echo "?"
 }
 
-# #272: a comment whose first line is the exact skip marker but whose author/body cannot be read is ignored (the gate
-# stays) and logged once per tick. The `JP said:` quote is never logged.
-skip_marker_malformed_log() {
-  local repo=$1 issue=$2 n
-  n=$(issue_info_rest "$repo" "$issue" | jq -r '[.comments[] | select((.body | type) == "string" and (.body | split("\n")[0] | rtrimstr("\r") | test("^\\*\\*\\[jp\\] SKIP MOCKUPS\\*\\*[[:space:]]*$")))
-      | select(((.author | type) != "object") or ((.author.login | type) != "string"))] | length' 2>/dev/null) || n=""
-  case "$n" in ''|0|*[!0-9]*) return 0 ;; esac
-  slog "[skip-mockups] #$issue — malformed SKIP MOCKUPS comment ignored ($n), gate stays"
-  if [ -n "${SLACK_WEBHOOK_URL:-}" ]; then   # tags only (release = commit SHA); never the comment text or the JP quote
-    local rel msg
-    rel=$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --short HEAD 2>/dev/null || echo unknown)
-    msg="skip-mockups marker malformed for #$issue: release=$rel environment=$(hostname -s 2>/dev/null || echo unknown) route=supervisor/skip-mockups"
-    curl -s --max-time 10 -X POST -H 'Content-type: application/json' \
-      --data "$(jq -nc --arg t "$msg" '{text:$t}')" "$SLACK_WEBHOOK_URL" >/dev/null 2>&1 || true
-  fi
-}
-
 # blocked_class_of <issue json with .comments> → the `Blocked on: <class>` word of the latest routing marker when it is a
 # BLOCKED, else empty. One rule for the step-1 gate alert wording (#271) and the auto-retry scan (#250).
 blocked_class_of() {
@@ -1096,7 +1079,6 @@ for f in "$PIPE"/orch-*.pid; do
       # agent-go) after acting. $marker is the gate marker, never a [delivery-lead] (or legacy [project-manager]) one. A run that is already .held is
       # skipped above and stays held — held runs are not polled; the delivery lead relaunches with orchestrate.sh,
       # which clears .held (claude-agents#59).
-      skip_marker_malformed_log "$repo" "$issue"   # #272: at every gate park (not only MOCKUPS PENDING); an extra per-tick fetch would break the one-comments-call-per-tick pin
       # #306: a run auto-retry (step 1b) re-queued keeps its queue entry for the drain; re-holding it here would swallow the retry.
       if [ -f "$QUEUE/orch-$rk.json" ]; then
         slog "[queue-wait] #$issue — gate marker but already queued for relaunch, leaving the queue entry"
