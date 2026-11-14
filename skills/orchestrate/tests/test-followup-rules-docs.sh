@@ -93,10 +93,12 @@ test_fu_ac2_orchestrator_never_hands_filing_a_followup_to_jp() {
   fu_text_has_i "AC2: filing a follow-up is never a next action for JP" "$report" 'never' || return 1
   fu_text_has_i "AC2: the only route is the PM via NEEDS PM REVISION" "$report" 'NEEDS PM REVISION' || return 1
   fu_text_has_i "AC2: orchestrator does not judge — it routes to the product-manager" "$report" 'product-manager' || return 1
-  # R1: no new routing-table row. Baseline at main = 28 table rows starting with "| `[".
+  # R1: no new routing-table row for THIS ticket's own concern. Baseline at main = 28 table rows starting with "| `[".
   # #115: rows that name REJECTED are #115's own routing rows (terminal reasons, needs-spec, inert cases) and are not counted
+  # #701: split the single MOCKUPS PENDING APPROVAL row into two (default no-gate / a valid REVIEW MOCKUPS marker
+  # present) — a real, in-scope row for that later ticket, not a regression of this one's "no new row" guard.
   rows=$(grep '^| `\[' "$ORCH_FU" | grep -vc 'REJECTED')
-  assert_eq "$rows" "29" "R1: orchestrator routing table gains no new row" || return 1
+  assert_eq "$rows" "30" "R1: orchestrator routing table gains no new row (beyond #701's own, counted)" || return 1
 }
 
 test_fu_ac2_solutions_architect_hygiene_findings_are_new_scope_not_dependency_followups() {

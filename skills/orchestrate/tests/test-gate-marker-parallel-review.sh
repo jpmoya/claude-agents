@@ -305,7 +305,8 @@ test_gm_ac8_no_new_mechanism() {
   # #176: also strip `|NOISE` (the marker #176 registers in the intake vocabulary) from both sides, same technique as #115
   extra=$(cd "$ROOT_GM" && diff -U0 <(git show "$base:hooks/pipeline-markers.sh" | sed -e 's/|REJECTED//' -e 's/REJECTED|//' -e 's/|NOISE//') <(sed -e 's/|REJECTED//' -e 's/REJECTED|//' -e 's/|NOISE//' hooks/pipeline-markers.sh) | grep -E '^[-+]' | grep -vE '^(\+\+\+|---) ' \
     | grep -vE '^\+ *intake\) +echo ' | grep -vE '^\+ *delivery-lead\) +echo ' | grep -vE '^\+ *orchestrator\) +echo ' | grep -vE '^[-+] +infra-planner infra-reviewer infra-operator( jp)?( delivery-lead)? project-manager( intake)?( orchestrator)?; do ' \
-    | grep -vE '^\+autoretry_note_re\(\) \{ ' | grep -vF -e '+  printf '"'"'^\\*\\*\\[supervisor\\] NOTE\\*\\* auto-retry ' | grep -vxF '+}' || true)   # #192: also the delivery-lead) case line and the ` delivery-lead` token; the auto-retry NOTE regex (orchestrator markers() reads it; marker_re itself is unchanged)
+    | grep -vE '^\+autoretry_note_re\(\) \{ ' | grep -vF -e '+  printf '"'"'^\\*\\*\\[supervisor\\] NOTE\\*\\* auto-retry ' | grep -vxF '+}' \
+    | grep -vE '^\+review_mockups_re\(\) \{ ' | grep -vE '^\+review_mockups_requested\(\) \{ ' || true)   # #192: also the delivery-lead) case line and the ` delivery-lead` token; the auto-retry NOTE regex (orchestrator markers() reads it; marker_re itself is unchanged). #701: the two new (deliberately non-routing, non-approval) review_mockups_* one-liners
   assert_eq "$extra" "" "AC8: hooks/pipeline-markers.sh changed beyond #114's intake line + token" || return 1
   # supervisor.sh: everything except latest_marker is byte-identical
   # #192: lines naming project-manager / delivery-lead are dropped from both sides before hashing (the rename edits only those)
