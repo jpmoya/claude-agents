@@ -84,11 +84,14 @@ if [ "${CODE_SYNC_ENABLED:-1}" = 1 ]; then
   _cs_exit() {
     [ -n "${LOCKDIR:-}" ] && rmdir "$LOCKDIR" 2>/dev/null
     [ "$CS_STATE" = fixable ] || return 0
-    if code_sync_apply 2>>"$SLOG"; then
+    local cs_err cs_rc=0
+    cs_err=$(code_sync_apply 2>&1) || cs_rc=$?   # git's reason goes to the log AND into the alert detail (#696)
+    [ -n "$cs_err" ] && printf '%s\n' "$cs_err" >> "$SLOG"
+    if [ "$cs_rc" = 0 ]; then
       slog "[code-sync] fast-forwarded to $(git -C "$HERE" rev-parse --short HEAD)"; code_sync_clear_alert
     else
       slog "[code-sync] APPLY FAILED: could not fast-forward to origin/main (git's reason is the line above); this host keeps running old code until it is fixed"
-      code_sync_alert apply_failed "fast-forward to origin/main failed, host still on $(git -C "$HERE" rev-parse --short HEAD 2>/dev/null)"
+      code_sync_alert apply_failed "fast-forward to origin/main failed, host still on $(git -C "$HERE" rev-parse --short HEAD 2>/dev/null)${cs_err:+; $(printf '%s' "$cs_err" | tr '\n' ' ' | sed 's/[ .]*$//')}"
     fi
   }
   trap _cs_exit EXIT

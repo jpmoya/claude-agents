@@ -95,6 +95,26 @@ test_code_sync_nested_settings_json_still_counts_as_dirty() {
   cs_fixture; cs_push one; cs_settings opus h1 > "$CSD/host/skills/orchestrate/settings.json"
   assert_eq "$(cs_run)" stale "only the top-level settings.json is harness-owned"
 }
+# #696: files copied into the checkout before main added them. Untracked, so not stale; but git refuses the fast-forward.
+cs_push_untracked_collision() {
+  ( cd "$CSD/up" && mkdir -p agents && echo a > agents/hr-screener.md && echo b > agents/job-poster.md \
+    && git add -A && git commit -qm "add agents" && git push -q origin HEAD:main )
+  mkdir -p "$CSD/host/agents"; echo a > "$CSD/host/agents/hr-screener.md"; echo b > "$CSD/host/agents/job-poster.md"
+}
+test_code_sync_untracked_collision_is_fixable_and_apply_names_every_blocking_path() {
+  cs_fixture; cs_push_untracked_collision
+  assert_eq "$(cs_run)" fixable "untracked files are not counted as stale" || return 1
+  local err line
+  err=$( cd "$CSD/host/skills/orchestrate" && ./code-sync.sh apply 2>&1 >/dev/null )
+  line=$(printf '%s\n' "$err" | grep 'code-sync: fast-forward failed:')
+  assert_eq "$(printf '%s\n' "$line" | grep -c .)" 1 "git's reason is kept on one line" || return 1
+  assert_contains "$line" "would be overwritten by merge" "git's first line kept" || return 1
+  assert_contains "$line" "agents/hr-screener.md" "first blocking path named" || return 1
+  assert_contains "$line" "agents/job-poster.md" "every blocking path named, not just git's first line" || return 1
+  assert_file_exists "$CSD/host/agents/hr-screener.md" "no auto-move: the untracked file is left where it is" || return 1
+  assert_ne "$(git -C "$CSD/host" rev-parse HEAD)" "$(git -C "$CSD/up" rev-parse HEAD)" "host still on old code"
+}
+
 test_code_sync_why_names_the_dirty_file() {
   cs_fixture; cs_push one; echo "# x" >> "$CSD/host/skills/orchestrate/code-sync.sh"; cs_settings opus h1 > "$CSD/host/settings.json"
   local w tab; tab=$(printf '\t'); w=$( cd "$CSD/host/skills/orchestrate" && ./code-sync.sh why )
@@ -154,6 +174,38 @@ test_code_sync_clear_alert_removes_file_and_posts_recovery_once() {
   assert_contains "$(tail -1 "$CSA_BIN/curl-calls.log")" "recovered" "recovery message" || return 1
   cs_alert_call 'code_sync_clear_alert'
   assert_eq "$(cs_curl_count)" 2 "a healthy tick with no streak posts nothing"
+}
+test_code_sync_apply_failed_alert_says_still_launching_not_refused() {
+  cs_alert_env
+  local d="fast-forward to origin/main failed, host still on abc1234; code-sync: fast-forward failed: error: The following untracked working tree files would be overwritten by merge: agents/x.md, agents/y.md"
+  cs_alert_call "code_sync_alert apply_failed \"$d\""
+  local a c sha; a=$(cat "$CSA_PIPE/code-sync.alert"); c=$(cat "$CSA_BIN/curl-calls.log"); sha=$(git -C "$HERE_CS" rev-parse --short HEAD)
+  assert_contains "$a" "is still launching on old code $sha since" "#696: apply_failed alert says launches go on, on old code <sha>" || return 1
+  assert_contains "$a" "(1 ticks)" "streak counted" || return 1
+  assert_not_contains "$a" "refus" "apply_failed never says refused/refusing" || return 1
+  assert_contains "$a" "agents/x.md, agents/y.md" "alert detail carries git's blocking paths" || return 1
+  assert_contains "$a" "move" "hint for untracked files: move them aside" || return 1
+  assert_not_contains "$a" "git checkout --" "no discard-tracked-edits hint for an untracked collision" || return 1
+  assert_eq "$(grep -c . "$CSA_PIPE/code-sync.alert")" 1 "alert stays one line (status prints it inline)" || return 1
+  assert_contains "$c" "still launching on old code" "Slack says the same" || return 1
+  assert_contains "$c" "reason=apply_failed" "Slack carries the class" || return 1
+  assert_not_contains "$c" "refus" "Slack never says refusing for apply_failed" || return 1
+  assert_not_contains "$c" "agents/x.md" "Slack never carries file names"
+}
+test_code_sync_apply_failed_recovery_says_current_code_not_launching_again() {
+  cs_alert_env
+  cs_alert_call 'code_sync_alert apply_failed "fast-forward to origin/main failed, host still on abc1234"'
+  cs_alert_call 'code_sync_clear_alert'
+  local r; r=$(tail -1 "$CSA_BIN/curl-calls.log")
+  assert_contains "$r" "recovered" "recovery posted" || return 1
+  assert_contains "$r" "now on current pipeline code" "#696: says the host is on current code" || return 1
+  assert_not_contains "$r" "launching again" "launches never stopped, so not 'launching again'" || return 1
+  assert_not_contains "$r" "refus" "and nothing about refusing"
+}
+test_code_sync_stale_recovery_still_says_launching_again() {
+  cs_alert_env
+  cs_alert_call 'code_sync_alert dirty d'; cs_alert_call 'code_sync_clear_alert'
+  assert_contains "$(tail -1 "$CSA_BIN/curl-calls.log")" "launching again" "a stale streak did stop launches: wording unchanged"
 }
 test_code_sync_alert_file_written_without_a_webhook() {
   cs_alert_env
@@ -217,9 +269,33 @@ test_code_sync_supervisor_failed_fast_forward_is_loud() {
   cs_sup_tick
   assert_contains "$(cat "$CSS_HOME/logs/pipeline/supervisor.log" 2>/dev/null)" "[code-sync] APPLY FAILED" "failed fast-forward logged" || return 1
   assert_contains "$(cat "$CSS_PIPE/code-sync.alert" 2>/dev/null)" "apply_failed" "and raised as an alert, not swallowed" || return 1
+  assert_contains "$(cat "$CSS_PIPE/code-sync.alert" 2>/dev/null)" "still launching on old code" "#696: apply_failed wording" || return 1
+  assert_contains "$(cat "$CSS_PIPE/code-sync.alert" 2>/dev/null)" "index.lock" "alert carries git's reason" || return 1
+  assert_not_contains "$(cat "$CSS_PIPE/code-sync.alert" 2>/dev/null)" "refus" "never 'refused' while launching" || return 1
   rm -f "$CSD/host/.git/index.lock"; cs_sup_tick
   cs_head_is_origin "next tick fast-forwards" || return 1
   assert_file_absent "$CSS_PIPE/code-sync.alert" "and clears the alert"
+}
+test_code_sync_supervisor_untracked_collision_says_still_launching_and_names_paths() {
+  cs_sup_fixture; cs_push_untracked_collision
+  cs_sup_tick
+  local log a c; log=$(cat "$CSS_HOME/logs/pipeline/supervisor.log" 2>/dev/null)
+  assert_contains "$log" "[code-sync] APPLY FAILED" "failed fast-forward logged" || return 1
+  assert_not_contains "$log" "[code-sync] STALE" "untracked files never close the guard" || return 1
+  assert_contains "$(printf '%s\n' "$log" | grep 'code-sync: fast-forward failed:')" "agents/hr-screener.md, agents/job-poster.md" "log line names every blocking path" || return 1
+  a=$(cat "$CSS_PIPE/code-sync.alert" 2>/dev/null); c=$(cat "$CSA_BIN/curl-calls.log")
+  assert_contains "$a" "still launching on old code" "#696: alert tells the truth" || return 1
+  assert_not_contains "$a" "refus" "no 'refused to launch' for apply_failed" || return 1
+  assert_contains "$a" "agents/hr-screener.md, agents/job-poster.md" "alert names the blocking paths" || return 1
+  assert_not_contains "$a" "git checkout --" "hint fits an untracked collision" || return 1
+  assert_not_contains "$c" "refus" "Slack does not say refusing" || return 1
+  assert_not_contains "$c" "agents/" "Slack carries no paths" || return 1
+  mkdir -p "$CSD/aside" && mv "$CSD/host/agents/hr-screener.md" "$CSD/host/agents/job-poster.md" "$CSD/aside/"   # the human fix
+  cs_sup_tick
+  cs_head_is_origin "next tick fast-forwards" || return 1
+  assert_file_absent "$CSS_PIPE/code-sync.alert" "alert cleared" || return 1
+  assert_contains "$(tail -1 "$CSA_BIN/curl-calls.log")" "now on current pipeline code" "recovery says current code" || return 1
+  assert_not_contains "$(tail -1 "$CSA_BIN/curl-calls.log")" "launching again" "not 'launching again'"
 }
 test_code_sync_supervisor_tick_not_blocked_by_settings_drift() {
   cs_sup_fixture; cs_push one; cs_settings opus h1 > "$CSD/host/settings.json"
@@ -243,13 +319,18 @@ run_test test_code_sync_settings_drift_clashing_with_upstream_takes_upstream_and
 run_test test_code_sync_settings_drift_on_feature_branch_returns_to_main
 run_test test_code_sync_settings_drift_plus_real_file_is_stale
 run_test test_code_sync_nested_settings_json_still_counts_as_dirty
+run_test test_code_sync_untracked_collision_is_fixable_and_apply_names_every_blocking_path
 run_test test_code_sync_why_names_the_dirty_file
 run_test test_code_sync_alert_file_written_on_refusal_and_slack_throttled
 run_test test_code_sync_alert_three_consecutive_refusals_post_once
 run_test test_code_sync_alert_reposts_after_the_repeat_window
 run_test test_code_sync_clear_alert_removes_file_and_posts_recovery_once
+run_test test_code_sync_apply_failed_alert_says_still_launching_not_refused
+run_test test_code_sync_apply_failed_recovery_says_current_code_not_launching_again
+run_test test_code_sync_stale_recovery_still_says_launching_again
 run_test test_code_sync_alert_file_written_without_a_webhook
 run_test test_code_sync_status_shows_alert_only_when_present
 run_test test_code_sync_supervisor_tick_refuses_loudly_then_recovers
 run_test test_code_sync_supervisor_failed_fast_forward_is_loud
+run_test test_code_sync_supervisor_untracked_collision_says_still_launching_and_names_paths
 run_test test_code_sync_supervisor_tick_not_blocked_by_settings_drift
