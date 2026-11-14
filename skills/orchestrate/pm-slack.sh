@@ -210,6 +210,11 @@ cmd_poll() {
         if [ "$kind" = mockup-skip ] && is_jp_skip_mockups_reply "$mtext"; then
           gh issue comment "$issue" --repo "$repo" --body "$(skip_mockups_marker_body "$mtext")" >/dev/null \
             || { echo "pm-slack: SKIP MOCKUPS bridge comment on $repo#$issue failed" >&2; exit 1; }
+        elif [ "$kind" = mockup-skip ] && is_jp_review_mockups_reply "$mtext"; then
+          # #701: the gate defaults to skip now, so a reply choosing to keep reviewing needs its own bridge —
+          # same deterministic shape as the SKIP bridge above, posted as JP's own account.
+          gh issue comment "$issue" --repo "$repo" --body "$(review_mockups_marker_body "$mtext")" >/dev/null \
+            || { echo "pm-slack: REVIEW MOCKUPS bridge comment on $repo#$issue failed" >&2; exit 1; }
         fi
         IFS="$TAB" read -r _ _ _ ats aat _ rem _ <<< "$matches"
         set_ask "$repo" "$issue" "$mch" "$ats" "$aat" answered "$rem" "$kind"

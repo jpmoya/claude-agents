@@ -41,13 +41,17 @@ Everything else in this file applies unchanged: worktree only, quality gate, ver
 
 ## Release note (the PR's "User-facing change" section)
 
-On repos whose PR template has a `## User-facing change` section (Benji's ops tool, sales tool), that section is what staff read: it becomes the in-app What's New line and, when you say so, the Slack "Now live" post. Write it for a plant technician or a sales rep, not an engineer.
+On repos whose PR template has a `## User-facing change` section (Benji's ops tool, sales tool), that section is what staff read: it becomes the in-app What's New line and, only when it truly qualifies, the Slack "Now live" post. JP wants a handful of Slack lines a month, not a few per release. **The default is `Announce: no`.**
 
-- **One plain sentence, or `none`.** What a person can now do or will now see, in their words. No technical words, file or table names, PR or ticket numbers, links. Never put the AC → test mapping, test names or a table in this section; they go in the Summary. `none` for technical work (CI, tests, refactors, migrations, scripts, docs, dependencies) and for pieces nobody can reach yet.
-- **Then a line `Announce: yes`, `Announce: no` or `Announce: when-enabled`.** Required with a sentence; the PR check fails without it. Copy the ticket's `Release note` decision when it has one; otherwise decide with this rubric:
-  - `yes` — money (prices, quotes/proposals, invoices, deposits, contracts, payroll, timesheets/hours, bug fixes to any of them included); a major flow change (a whole step added to or removed from a flow); a new thing people can do; a change in who can or cannot use something.
-  - `no` — everything else, which is most changes: ordinary bug fixes, label/wording/rename changes, small UI tweaks (icons, colours, buttons, spacing, scrolling, empty cards, drawers, asterisks), small UX conveniences, permission hints. When unsure, `no`: it still shows in What's New.
-  - `when-enabled` — the change is built but not switched on for users in production (feature flag, toggle or setting that is off, screen not linked yet). Never `yes` for something users cannot use today. The PR that switches it on carries the sentence with `yes`.
+- **One plain full sentence, or `none`.** Write what a person can now do or will now see so that a non-technical office manager understands it without context. A full sentence with a subject and a verb, never a title or a label ("Quotes list: Duplicate works again" is wrong; "Staff can duplicate a quote from the quotes list." is the shape). No technical words, file or table names, PR or ticket numbers, links. Never put the AC → test mapping, test names or a table in this section; they go in the Summary. `none` for technical work (CI, tests, refactors, migrations, scripts, docs, dependencies, monitoring, internal tooling) and for pieces nobody can reach yet.
+- **Then exactly one `Announce:` line** (the PR check fails without it). Copy the ticket's `Release note` decision when it has one, then check it against this test; a `yes` must carry its reason and the reason must be true of the sentence as written:
+  - `Announce: no` — the default and the answer for almost everything: bug fixes ("X works again", "Y now follows Z"), wording, labels, renames, UI polish (icons, colours, buttons, spacing, scrolling, cards, drawers), download/export tweaks, performance, reliability, security hardening, login/session, monitoring. It still shows in What's New.
+  - `Announce: yes (money)` — changes what customers or staff are charged, paid, quoted, invoiced or contracted, or how hours/timesheets are recorded or paid. A bug fix qualifies only here, or when users lost data.
+  - `Announce: yes (new capability)` — a NEW thing people can do (not an existing thing made easier, faster or prettier).
+  - `Announce: yes (workflow step)` — a whole step added to or removed from a main workflow.
+  - `Announce: yes (access)` — changes who can see or do something.
+  - `Announce: when-enabled` — built but not switched on for users in production (feature flag, toggle or setting that is off, screen not linked yet). Never `yes` for something users cannot use today. The PR that switches it on carries the sentence with a justified `yes`.
+- **When in doubt, `no`.** If you cannot name which of money / new capability / workflow step / access applies in three words, it is `no`.
 - **One feature = one `yes`.** When a feature ships across several PRs or tickets, only the PR that completes it says `yes`; the others say `no` (or `none`). Do not restate a feature an earlier PR already announced.
 
 ## Guardrails

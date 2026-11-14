@@ -331,13 +331,17 @@ mg_assert_not_gate() {
 }
 
 test_mg_ac5_prose_approval_after_mockups_stays_a_gate() {
-  mg_thread '**[ui-ux-designer] MOCKUPS PENDING APPROVAL**' "approved — MOCKUPS APPROVED on JP's behalf, see thread"
+  # #701: skip-by-default now needs a REVIEW MOCKUPS opt-in for the gate to stand at all — the
+  # prose-approval fixture still must not count as the approval that lifts an opted-in gate.
+  mg_thread '**[jp] REVIEW MOCKUPS**' '**[ui-ux-designer] MOCKUPS PENDING APPROVAL**' "approved — MOCKUPS APPROVED on JP's behalf, see thread"
   mg_tick
   mg_assert_gate "AC5: prose approval" || return 1
 }
 
 test_mg_ac5_skip_mockups_after_mockups_stays_a_gate() {
-  mg_thread '**[ui-ux-designer] MOCKUPS PENDING APPROVAL**' 'skip mockups'
+  # #701: ditto — the free-text "skip mockups" sentence (not the exact `**[jp] SKIP MOCKUPS**`
+  # marker) must not lift an opted-in gate either.
+  mg_thread '**[jp] REVIEW MOCKUPS**' '**[ui-ux-designer] MOCKUPS PENDING APPROVAL**' 'skip mockups'
   mg_tick
   mg_assert_gate "AC5: skip mockups" || return 1
 }
@@ -353,7 +357,8 @@ test_mg_ac1_exact_marker_after_mockups_lifts_the_gate() {
 # AC3: an ordinary agent NOTE comment after MOCKUPS PENDING APPROVAL must not be treated as JP
 # revision feedback — the run stays parked (gate stands), it is not re-dispatched for revision.
 test_mg_ac3_agent_note_after_mockups_stays_parked_not_a_revision() {
-  mg_thread '**[ui-ux-designer] MOCKUPS PENDING APPROVAL**' '**[product-manager] NOTE** relaying: JP is travelling, will review Friday.'
+  # #701: ditto — needs the opt-in or the gate never stands in the first place.
+  mg_thread '**[jp] REVIEW MOCKUPS**' '**[ui-ux-designer] MOCKUPS PENDING APPROVAL**' '**[product-manager] NOTE** relaying: JP is travelling, will review Friday.'
   mg_tick
   mg_assert_gate "AC3: agent NOTE comment" || return 1
 }
@@ -442,8 +447,10 @@ test_mg_202_other_agents_suffix_unchanged() {
 test_mg_202_terminal_kind_gate_with_trailing_text_approval() {
   local lib="$ROOT_MG/skills/orchestrate/pipeline-lib.sh" sup="$ROOT_MG/skills/orchestrate/supervisor.sh" out kind
   # real marker_last_jq over [gate, trailing-text jp approval] must yield the gate, and terminal_kind must call it a gate
+  # #701: REVIEW MOCKUPS opts this fixture into the gate — without it the skip-by-default flip
+  # would make this moot (the gate would already have auto-advanced).
   out=$( . "$MARKERS_MG"; . "$lib"
-    jq -n '{comments:[{body:"**[ui-ux-designer] MOCKUPS PENDING APPROVAL**\nmockups"},{body:"**[jp] MOCKUPS APPROVED** — JP (chat): \"323 approved\""}]}' \
+    jq -n '{comments:[{body:"**[jp] REVIEW MOCKUPS**"},{body:"**[ui-ux-designer] MOCKUPS PENDING APPROVAL**\nmockups"},{body:"**[jp] MOCKUPS APPROVED** — JP (chat): \"323 approved\""}]}' \
       | jq -r "$(marker_last_jq)" )
   assert_eq "$out" '**[ui-ux-designer] MOCKUPS PENDING APPROVAL**' "202: newest marker is the gate, not the approval" || return 1
   kind=$( eval "$(awk '/^terminal_kind\(\) \{/ {p=1} p {print} p && /^}/ {exit}' "$sup")"; terminal_kind "$out" 1 "" . )
