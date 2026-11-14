@@ -9,11 +9,18 @@ RL_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 
 # rl_class <gate comment body> <answer author> <answer body> [<delivery-lead blocked body inserted between gate and answer>]
 # -> classification of #2 (active|waiting_jp)
+# #701: a MOCKUPS PENDING APPROVAL gate is skip-by-default now, so a REVIEW MOCKUPS marker is inserted right after
+# it whenever the gate is that one — otherwise there would be no real gate for any of these "does this count as
+# JP's answer?" fixtures to test against. Posted by jpmoya, right after the gate's own timestamp: goal-lib.sh's
+# jp_answer_at excludes REVIEW MOCKUPS lines from counting as an answer (same fix this ticket made there), so this
+# never itself answers the gate it opens.
 rl_class() {
-  local gate=$1 who=$2 ans=$3 lead=${4:-} out
+  local gate=$1 who=$2 ans=$3 lead=${4:-} out rv=""
+  case "$gate" in *"MOCKUPS PENDING APPROVAL"*) rv='**[jp] REVIEW MOCKUPS**' ;; esac
   ro_setup
-  jq -n --arg g "$gate" --arg w "$who" --arg a "$ans" --arg l "$lead" '
+  jq -n --arg g "$gate" --arg w "$who" --arg a "$ans" --arg l "$lead" --arg rv "$rv" '
     [{created_at:"2026-10-01T12:00:00Z",user:{login:"jpmoya"},body:$g}]
+    + (if $rv == "" then [] else [{created_at:"2026-10-01T12:05:00Z",user:{login:"jpmoya"},body:$rv}] end)
     + (if $l == "" then [] else [{created_at:"2026-10-01T12:30:00Z",user:{login:"jpmoya"},body:$l}] end)
     + [{created_at:"2026-10-01T13:00:00Z",user:{login:$w},body:$a}]' > "$RO_DIR/comments-proj_repo-a-2.json"
   ro_run "goal_eval $RO_MS_ID $RO_MS_SPEC; printf '%s' \"\$GE_REFS\" | grep -F 'proj/repo-a#2'"
@@ -54,9 +61,11 @@ test_rl_jp_marker_from_non_author_does_not_count() {
 test_rl_jp_marker_before_the_gate_does_not_count() {
   local out
   ro_setup
+  # #701: REVIEW MOCKUPS posted right after the gate, same as rl_class — otherwise there is no real gate here either.
   jq -n --arg a "$RL_APPROVE" --arg g "$RL_MOCK" '
     [{created_at:"2026-10-01T11:00:00Z",user:{login:"jpmoya"},body:$a},
-     {created_at:"2026-10-01T12:00:00Z",user:{login:"jpmoya"},body:$g}]' > "$RO_DIR/comments-proj_repo-a-2.json"
+     {created_at:"2026-10-01T12:00:00Z",user:{login:"jpmoya"},body:$g},
+     {created_at:"2026-10-01T12:05:00Z",user:{login:"jpmoya"},body:"**[jp] REVIEW MOCKUPS**"}]' > "$RO_DIR/comments-proj_repo-a-2.json"
   ro_run "goal_eval $RO_MS_ID $RO_MS_SPEC; printf '%s' \"\$GE_REFS\" | grep -F 'proj/repo-a#2'"
   out=$(printf '%s' "$RO_OUT" | awk -F'\t' '{print $2}')
   ro_teardown
@@ -87,8 +96,10 @@ test_rl_jp_lookalike_agent_tag_does_not_count() {  # `**[jp-bot]` is not `**[jp]
 test_rl_jp_answer_at_same_second_as_gate_does_not_count() {  # strict > : answer stamped equal to the gate answers nothing
   local out
   ro_setup
+  # #701: REVIEW MOCKUPS posted for the same reason as rl_class — excluded from jp_answer_at either way.
   jq -n --arg g "$RL_MOCK" --arg a "$RL_JP_FREE" '
     [{created_at:"2026-10-01T12:00:00Z",user:{login:"jpmoya"},body:$g},
+     {created_at:"2026-10-01T12:00:00Z",user:{login:"jpmoya"},body:"**[jp] REVIEW MOCKUPS**"},
      {created_at:"2026-10-01T12:00:00Z",user:{login:"jpmoya"},body:$a}]' > "$RO_DIR/comments-proj_repo-a-2.json"
   ro_run "goal_eval $RO_MS_ID $RO_MS_SPEC; printf '%s' \"\$GE_REFS\" | grep -F 'proj/repo-a#2'"
   out=$(printf '%s' "$RO_OUT" | awk -F'\t' '{print $2}')
