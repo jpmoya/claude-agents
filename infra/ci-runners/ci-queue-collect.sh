@@ -281,10 +281,26 @@ _ciq_collect_repo() {
   # `ciq_categorize`/`pull_requests[0]`/`display_title` are already on the run object. Dedup by
   # id WITHIN this repo (qjson/qlast could in principle overlap); a malformed id/created_at drops
   # just that one run, never the whole repo (same type-guard reasoning as queued-jobs.jsonl).
+  # Code-review finding (#657 follow-up): `ciq_categorize` and the $title extraction below call
+  # ascii_downcase/split on `.name`, `.actor.login`, `.head_branch` and `.display_title` — any ONE
+  # of those being a non-string (e.g. a run object where `name` came back numeric) throws a jq
+  # type error, which (same as a malformed id/created_at) aborts this whole `jq -s` invocation and
+  # silently drops the ENTIRE repo's queued[] contribution via the suppressed `2>/dev/null`, not
+  # just the one bad run. The guard below is widened to cover all four fields, not just id/
+  # created_at: each must be absent/null or a string. `.actor` itself is checked for object-or-
+  # null first so a non-object `actor` (e.g. `actor: 5`) never reaches `.actor.login` at all.
   { printf '%s' "$qjson" | jq -c '.workflow_runs[]?'
     [ -z "$qlast" ] || printf '%s' "$qlast" | jq -c '.workflow_runs[]?'
   } | jq -s -c --arg repo "$repo" "$_CIQ_CATEGORIZE_JQ"'
-      map(select((.id | type) == "number" and (.created_at | type) == "string"))
+      map(select(
+        (.id | type) == "number" and (.created_at | type) == "string"
+        and ((.display_title | type) as $t | $t == "null" or $t == "string")
+        and ((.name | type) as $t | $t == "null" or $t == "string")
+        and ((.head_branch | type) as $t | $t == "null" or $t == "string")
+        and ((.actor | type) as $t
+             | $t == "null"
+               or ($t == "object" and ((.actor.login | type) as $u | $u == "null" or $u == "string")))
+      ))
       | group_by(.id) | map(.[0])
       | map(
           . as $run

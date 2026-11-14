@@ -325,6 +325,84 @@ test_ciql_pr_event_named_staging_stays_pr_not_staging_deploy() {
   assert_eq "$staging" "" "no staging_deploy entry is created" || return 1
 }
 
+test_ciql_staging_in_name_wins_over_main_branch() {
+  # test-reviewer FAIL #703: rule 1 ("name contains 'staging' -> staging_deploy, regardless of
+  # branch") had no fixture that actually reaches it — every staging_deploy fixture in this file
+  # got there via rule 4 (head_branch == staging) instead, so deleting rule 1 entirely would not
+  # fail any test. A deploy/release-named run containing "staging" in its name, on head_branch
+  # "main", can ONLY land on staging_deploy via rule 1 (rule 3 would say prod_deploy on a bare
+  # main-branch deploy/release run; rule 1 must preempt it).
+  local pipe fixdir reposfile rc staging prod
+  pipe=$(mktemp -d); fixdir=$(mktemp -d)
+  _ciql_runners_fixtures "$fixdir"
+  reposfile=$(_ciql_repos_file "$fixdir" "example-owner/project-g")
+  _ciql_one_run_fixture "$fixdir" "example-owner__project-g" 108 "Deploy Staging Preview" "main" "push" ""
+
+  _ciql_run "$pipe" "$fixdir" "$reposfile"; rc=$?
+  staging=$(printf '%s' "$CIQL_OUT" | jq -c '.categories[] | select(.key=="staging_deploy") | .count')
+  prod=$(printf '%s' "$CIQL_OUT" | jq -c '.categories[] | select(.key=="prod_deploy")')
+  rm -rf "$pipe" "$fixdir"
+
+  assert_exit0 "$rc" "collector still exits 0" || return 1
+  assert_eq "$staging" "1" "a deploy-named run with 'staging' in its name, on head_branch main, categorizes staging_deploy via rule 1, not prod_deploy via rule 3" || return 1
+  assert_eq "$prod" "" "no prod_deploy entry is created for the Deploy Staging Preview run" || return 1
+}
+
+test_ciql_cleanup_name_on_main_branch_stays_deploy_release() {
+  # test-reviewer FAIL #703: the "cleanup" denylist term in rule 2 was untested on a branch where
+  # it actually matters — the file's only "cleanup" fixture ran on "chore/housekeeping", where the
+  # fallback rule 5 already gives deploy_release regardless of rule 2. On head_branch "main", rule
+  # 3 would say prod_deploy unless rule 2's "cleanup" denylist preempts it.
+  local pipe fixdir reposfile rc deploy_release prod
+  pipe=$(mktemp -d); fixdir=$(mktemp -d)
+  _ciql_runners_fixtures "$fixdir"
+  reposfile=$(_ciql_repos_file "$fixdir" "example-owner/project-h")
+  _ciql_one_run_fixture "$fixdir" "example-owner__project-h" 109 "Post-release cleanup" "main" "workflow_run" ""
+
+  _ciql_run "$pipe" "$fixdir" "$reposfile"; rc=$?
+  deploy_release=$(printf '%s' "$CIQL_OUT" | jq -c '.categories[] | select(.key=="deploy_release") | .count')
+  prod=$(printf '%s' "$CIQL_OUT" | jq -c '.categories[] | select(.key=="prod_deploy")')
+  rm -rf "$pipe" "$fixdir"
+
+  assert_exit0 "$rc" "collector still exits 0" || return 1
+  assert_eq "$deploy_release" "1" "Post-release cleanup on head_branch main stays deploy_release via rule 2's cleanup denylist, not prod_deploy via rule 3" || return 1
+  assert_eq "$prod" "" "no prod_deploy entry is created for the Post-release cleanup run" || return 1
+}
+
+test_ciql_malformed_queued_run_bad_name_actor_branch_skipped_not_crashing() {
+  # code-reviewer MEDIUM #703: a non-string display_title/name/actor.login/head_branch makes
+  # ciq_categorize (or the $title extraction) throw a jq type error, aborting the whole per-repo
+  # jq invocation and silently dropping the repo's ENTIRE queued[] contribution (not just the one
+  # bad run) via the suppressed `2>/dev/null`. Four queued runs, each malformed in a different one
+  # of those four fields, plus one genuinely valid run — only the valid one must survive.
+  local pipe fixdir reposfile rc queued_len ids
+  pipe=$(mktemp -d); fixdir=$(mktemp -d)
+  _ciql_runners_fixtures "$fixdir"
+  reposfile=$(_ciql_repos_file "$fixdir" "example-owner/project-badtypes")
+  cat > "$fixdir/runs-example-owner__project-badtypes-queued.json" <<'EOF'
+{"workflow_runs":[
+  {"id":401,"name":5,"head_branch":"feature/w","event":"schedule","actor":{"login":"someone"},"created_at":"2026-01-01T00:00:00Z","pull_requests":[]},
+  {"id":402,"name":"CI","head_branch":"feature/w","event":"schedule","actor":5,"created_at":"2026-01-01T00:00:00Z","pull_requests":[]},
+  {"id":403,"name":"CI","head_branch":"feature/w","event":"schedule","actor":{"login":5},"created_at":"2026-01-01T00:00:00Z","pull_requests":[]},
+  {"id":404,"name":"CI","head_branch":true,"event":"schedule","actor":{"login":"someone"},"created_at":"2026-01-01T00:00:00Z","pull_requests":[]},
+  {"id":405,"name":"CI","head_branch":"feature/w","event":"schedule","actor":{"login":"someone"},"created_at":"2026-01-01T00:00:00Z","pull_requests":[]}
+]}
+EOF
+  echo '{"workflow_runs":[]}' > "$fixdir/runs-example-owner__project-badtypes-in_progress.json"
+  for i in 401 402 403 404 405; do
+    echo "{\"jobs\":[{\"id\":$((i + 90000)),\"status\":\"queued\",\"created_at\":\"2026-01-01T00:00:00Z\"}]}" > "$fixdir/jobs-$i.json"
+  done
+
+  _ciql_run "$pipe" "$fixdir" "$reposfile"; rc=$?
+  queued_len=$(printf '%s' "$CIQL_OUT" | jq -c '.categories[] | select(.key=="other") | .queued | length')
+  ids=$(printf '%s' "$CIQL_OUT" | jq -c '[.categories[] | select(.key=="other") | .queued[].run_id]')
+  rm -rf "$pipe" "$fixdir"
+
+  assert_exit0 "$rc" "a non-string name/actor.login/head_branch never aborts the cycle" || return 1
+  assert_eq "$queued_len" "1" "the four malformed runs (401-404) are skipped; only the valid run (405) survives" || return 1
+  assert_eq "$ids" "[405]" "the surviving queued[] entry is the valid run, not any malformed one" || return 1
+}
+
 test_ciql_non_deploy_release_cleanup_name_stays_other() {
   local pipe fixdir reposfile rc other deploy_release
   pipe=$(mktemp -d); fixdir=$(mktemp -d)
@@ -353,4 +431,7 @@ run_test test_ciql_zero_queued_items_empty_categories_no_error
 run_test test_ciql_zero_new_api_calls_exact_count
 run_test test_ciql_malformed_queued_run_skipped_not_crashing
 run_test test_ciql_pr_event_named_staging_stays_pr_not_staging_deploy
+run_test test_ciql_staging_in_name_wins_over_main_branch
+run_test test_ciql_cleanup_name_on_main_branch_stays_deploy_release
+run_test test_ciql_malformed_queued_run_bad_name_actor_branch_skipped_not_crashing
 run_test test_ciql_non_deploy_release_cleanup_name_stays_other
