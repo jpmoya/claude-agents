@@ -122,14 +122,14 @@ launcher_file() {
   local s old new
   s=$(launcher_text)
   if [ "$RESERVE" -gt 0 ]; then
-    old='GHA_LABEL=benjis-ci'
+    old='GHA_LABEL=${GHA_LABEL:-benjis-ci}'
     new="$old
 GHA_BULK_LABEL=$BULK_LABEL
 GHA_RESERVE_SLOTS=$RESERVE   # slots <= this omit the bulk label: kept for PR-blocking jobs (#638)"
     sub_once || return 1
     old='body="{\"name\":'
     new='labels="\"self-hosted\",\"$GHA_LABEL\""
-[ "$slot" -le "$GHA_RESERVE_SLOTS" ] || labels="$labels,\"$GHA_BULK_LABEL\""
+[ "$slot" -le "$GHA_RESERVE_SLOTS" ] || [ "$GHA_LABEL" != benjis-ci ] || labels="$labels,\"$GHA_BULK_LABEL\""   # a slot with its own label (drop-in) never takes the bulk label
 '"$old"
     sub_once || return 1
     old='\"labels\":[\"self-hosted\",\"$GHA_LABEL\"]'
@@ -144,7 +144,7 @@ launcher_text() { render <<'EOF'
 set -euo pipefail
 set +x
 GHA_RUNNER_VERSION=@VERSION@
-GHA_LABEL=benjis-ci
+GHA_LABEL=${GHA_LABEL:-benjis-ci}   # a slot drop-in (Environment=GHA_LABEL=...) may set its own label, e.g. benjis-ci-prod-deploy
 # shellcheck disable=SC1091
 . "${GHA_ROOT:-}/usr/local/lib/gha/common.sh"
 slot=${1:-}
