@@ -76,6 +76,32 @@
 # `gh api` calls: the total number of job lookups per repo stays min(run count, cap), only which
 # runs get them changes.
 #
+# #657: the old single `deploy_release` category bucket conflated a prod merge/deploy with a
+# staging deploy with release housekeeping. `_ciq_categorize` now applies a 5-rule cascade
+# (JP-ruled, see the issue's delivery-lead JP CONFIRMED comment) ONLY once a run's name has
+# already matched the pre-existing deploy|release gate: name contains "staging" -> `staging_deploy`
+# regardless of branch; else name contains "cleanup"/"announce" -> stays `deploy_release`
+# (housekeeping denylist); else `head_branch == "main"` -> `prod_deploy`; else `head_branch ==
+# "staging"` -> `staging_deploy`; else `deploy_release` (unchanged fallback). `head_branch` is
+# already present on every run object the existing queued/in_progress run-list calls return — no
+# new `gh api` call; see _ciq_categorize's own comment for the live-data cases that ruled out the
+# ticket's simpler branch-only rule. `ci_queue.categories[].queued[]` is new: a capped
+# (MAX_CI_QUEUE_QUEUED_ITEMS per category) list, NESTED inside each category entry, of the ACTUAL
+# queued runs behind that category's count — repo, run_id, pr_url (always present, nullable),
+# title (optional), queued_at. Built from the FULL per-repo queued-run list (qjson/qlast — the
+# same `status=queued` run-list responses already fetched for queued_total/`oldest`), NOT from
+# the job-lookup-capped selection used for categories[].count/current_job: that cap
+# (MAX_RUN_LOOKUPS_PER_REPO) exists to bound `gh api` calls, and building queued[] from it would
+# collapse to ~1 item per repo exactly when the runner fleet is busy (the #658 reservation leaves
+# the queued side only 1-2 of the cap's slots under load) — precisely the deep-backlog scenario
+# this ticket exists for. Still zero new `gh api` calls: a `status=queued` run's own `created_at`
+# IS its queued-since timestamp, no job lookup needed. Deduped GLOBALLY by run id in collect_once
+# (the scheduler/benjis-ops-tool repo alias in scripts/ci-metrics.repos means the same physical
+# run can otherwise appear via two entries). Documented limitation: categories[].count stays
+# per-JOB (from the job-lookup-capped loop, unchanged) while `queued[]` is per-RUN from the full
+# list — a category's count and the length of its own `queued[]` can legitimately disagree, by
+# design, not a bug (see _ciq_collect_repo's own comment for the full reasoning).
+#
 # Env (production): CI_QUEUE_COLLECT_ENABLED (gate, read by report-status.sh, not this script),
 #   PIPE, GH_TOKEN (optional — the host's own `gh` auth is used), SLACK_WEBHOOK_URL, SENTRY_DSN,
 #   CI_QUEUE_REPOS_FILE (default: scripts/ci-metrics.repos), CI_QUEUE_ORG (default: Benjis-Plants),
@@ -113,6 +139,7 @@ PROD_DEPLOY_LABEL=${CI_QUEUE_PROD_DEPLOY_LABEL:-benjis-ci-prod-deploy}
 WINDOW_24H_SECS=86400
 WINDOW_72H_SECS=259200
 MAX_SAMPLE_RUNNERS=30   # mirrors status-page/src/validate.js's MAX_CI_QUEUE_RUNNERS cap
+MAX_CI_QUEUE_QUEUED_ITEMS=10   # mirrors status-page/src/validate.js's MAX_CI_QUEUE_QUEUED_ITEMS cap, applied PER category (#657)
 
 repos() { grep -E '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+[[:space:]]*$' "$REPOS_FILE"; }
 
@@ -147,19 +174,60 @@ _ciq_call_shaped() {
   printf '%s' "$body"
 }
 
-# _ciq_categorize — reads one workflow_run JSON object on stdin, prints exactly one
-# CI_QUEUE_CATEGORY_VOCAB key. Precedence: dependabot actor, then a deploy/release workflow name,
-# then a pull_request(_target)-triggered run, else "other" (never silently dropped).
-_ciq_categorize() {
-  jq -r '
+# _CIQ_CATEGORIZE_JQ — the categorize cascade as a reusable jq `def`, shared between
+# _ciq_categorize (per-run, stdin, used by the job-lookup loop) and _ciq_collect_repo's bulk
+# queued-run pass (building ci_queue.categories[].queued[], below) — the cascade lives in exactly
+# ONE place so the two populations can never silently diverge. Precedence: dependabot actor, then
+# a deploy/release workflow name, then a pull_request(_target)-triggered run, else "other" (never
+# silently dropped) — UNCHANGED by #657: the 5-rule cascade below is a SUB-decision made only once
+# a run has already matched the deploy/release name test, so it can never steal a run away from
+# the `pr`/`other` buckets (e.g. a pull_request-triggered run literally named "Staging smoke
+# tests" still categorizes as `pr`, not `staging_deploy` — JP's ruling was about splitting the
+# deploy_release bucket, not reordering this outer precedence).
+#
+# #657 (JP-ruled 5-rule cascade — supersedes the ticket's own simpler "head_branch == main/
+# staging" rule, which live data showed misclassifies a schedule-triggered "Deploy Staging
+# Preview" run (head_branch main, but a staging deploy by name and by what it does) and every
+# workflow_run-triggered "Post-release cleanup"/"Announce release" run (head_branch main,
+# inherited from the deploy it's chained off, not itself a prod-merge event)), checked in this
+# order once a run's name has already matched deploy|release:
+#   1. name contains "staging" (case-insensitive) -> staging_deploy, regardless of branch/event.
+#   2. else name contains "cleanup" or "announce" (case-insensitive) -> deploy_release (release
+#      housekeeping; a denylist, so a future housekeeping workflow named e.g. "*release*" that
+#      isn't caught by either word falls through to rule 3/4 below instead — accepted tradeoff,
+#      JP confirmed, no ticket needed for it).
+#   3. else name matches deploy|release AND head_branch == "main" -> prod_deploy.
+#   4. else name matches deploy|release AND head_branch == "staging" -> staging_deploy.
+#   5. else (matches deploy|release, neither branch) -> deploy_release (unchanged fallback bucket).
+# `head_branch` is already present on every run object the existing queued/in_progress run-list
+# calls return (verified against the REST docs and live data before implementing) — zero new
+# `gh api` calls.
+_CIQ_CATEGORIZE_JQ='
+  def ciq_categorize:
     if ((.actor.login // "") | ascii_downcase | contains("dependabot")) then "dependabot"
-    elif ((.name // "") | ascii_downcase | (contains("deploy") or contains("release"))) then "deploy_release"
+    elif ((.name // "") | ascii_downcase | (contains("deploy") or contains("release"))) then
+      ((.name // "") | ascii_downcase) as $name
+      | if ($name | contains("staging")) then "staging_deploy"
+        elif ($name | (contains("cleanup") or contains("announce"))) then "deploy_release"
+        elif (.head_branch // "") == "main" then "prod_deploy"
+        elif (.head_branch // "") == "staging" then "staging_deploy"
+        else "deploy_release" end
     elif (.event == "pull_request" or .event == "pull_request_target") then "pr"
-    else "other" end'
+    else "other" end;
+'
+
+# _ciq_categorize — reads one workflow_run JSON object on stdin, prints exactly one
+# CI_QUEUE_CATEGORY_VOCAB key (see _CIQ_CATEGORIZE_JQ above for the cascade itself).
+_ciq_categorize() {
+  jq -r "$_CIQ_CATEGORIZE_JQ"'ciq_categorize'
 }
 
 # _ciq_collect_repo <repo> <online-busy-runner-count> — appends one {cat, queued_at} line per
-# queued job to $WORK/queued-jobs.jsonl. Returns 1 (aborting the whole cycle) on any API failure.
+# queued job to $WORK/queued-jobs.jsonl, one {runner_name, repo, run_id, pr_url} line per
+# in_progress job with an assigned runner to $WORK/running-jobs.jsonl, and (#657) one
+# {key, repo, run_id, pr_url, queued_at, title?} line per run in the FULL queued-run list (every
+# `status=queued` run, not just the job-lookup-capped subset) to $WORK/queued-items.jsonl.
+# Returns 1 (aborting the whole cycle) on any API failure.
 #
 # #645 review finding 1 (backlog undercount): two independent bias sources, both fixed here:
 #   (a) GitHub's run-list endpoint always returns newest-first with no ascending-sort query param
@@ -199,6 +267,47 @@ _ciq_collect_repo() {
     qlast=$(_ciq_call_shaped "repos/$repo/actions/runs?status=queued&per_page=$PER_PAGE&page=$page" "runs-${safe}-queued-lastpage.json" workflow_runs) || return 1
   fi
 
+  # #657: build this repo's contribution to ci_queue.categories[].queued[] from the FULL queued
+  # run list (qjson + qlast, already fetched above for queued_total/`oldest` — zero new `gh api`
+  # calls), NOT from the job-lookup-capped selection below. The job-lookup cap
+  # (MAX_RUN_LOOKUPS_PER_REPO) exists to bound `gh api` calls, not to bound how much of the
+  # backlog JP gets to see — building queued[] from that capped set would silently collapse to
+  # ~1 item per repo whenever the runner fleet is busy (the #658 in_progress reservation above
+  # leaves the queued side only 1-2 of the cap's 5 slots under load), which is exactly the deep-
+  # backlog scenario this ticket exists for (verified: 4 busy runners + 4 in_progress runs + 20
+  # queued runs in one repo left only 1 job-lookup slot for 20 queued runs under the old design).
+  # A `status=queued` run needs no job lookup at all to know it's queued or how long: `created_at`
+  # (fractional seconds stripped, same as queued-jobs.jsonl) IS its queued-since timestamp, and
+  # `ciq_categorize`/`pull_requests[0]`/`display_title` are already on the run object. Dedup by
+  # id WITHIN this repo (qjson/qlast could in principle overlap); a malformed id/created_at drops
+  # just that one run, never the whole repo (same type-guard reasoning as queued-jobs.jsonl).
+  { printf '%s' "$qjson" | jq -c '.workflow_runs[]?'
+    [ -z "$qlast" ] || printf '%s' "$qlast" | jq -c '.workflow_runs[]?'
+  } | jq -s -c --arg repo "$repo" "$_CIQ_CATEGORIZE_JQ"'
+      map(select((.id | type) == "number" and (.created_at | type) == "string"))
+      | group_by(.id) | map(.[0])
+      | map(
+          . as $run
+          | ($run.pull_requests[0]) as $pr
+          # split("\n")[0] on an empty string gives [] (not [""]), so .[0] on that is null, not
+          # "" -- the trailing `// ""` catches that case (a missing/empty display_title) so
+          # $title == "" really means "omit the key", never a surprise null downstream.
+          | (($run.display_title // "") | (split("\n")[0] // "") | .[0:140]) as $title
+          | {
+              key: ($run | ciq_categorize),
+              repo: $repo,
+              run_id: $run.id,
+              pr_url: (if $pr == null then null
+                       elif ($pr.html_url // null) != null then $pr.html_url
+                       elif ($pr.number // null) != null then ("https://github.com/" + $repo + "/pull/" + ($pr.number | tostring))
+                       else null end),
+              queued_at: ($run.created_at | sub("\\.[0-9]+Z$"; "Z"))
+            }
+            + (if $title == "" then {} else {title: $title} end)
+        )
+      | .[]
+    ' >> "$WORK/queued-items.jsonl" 2>/dev/null
+
   { printf '%s' "$qjson" | jq -c '.workflow_runs[]? | . + {source:"queued"}' 2>/dev/null
     [ -z "$qlast" ] || printf '%s' "$qlast" | jq -c '.workflow_runs[]? | . + {source:"queued"}' 2>/dev/null
     printf '%s' "$pjson" | jq -c '.workflow_runs[]? | . + {source:"in_progress"}' 2>/dev/null
@@ -226,8 +335,13 @@ _ciq_collect_repo() {
     id=$(printf '%s' "$run" | jq -r '.id')
     cat=$(printf '%s' "$run" | _ciq_categorize)
     jobsjson=$(_ciq_call_shaped "repos/$repo/actions/runs/$id/jobs?filter=latest&per_page=100" "jobs-${id}.json" jobs) || return 1
+    # #657 hardening: a garbled/non-string `created_at` on just one job must never take down
+    # every OTHER (otherwise valid) queued job on this same run — `sub()` throws on a non-string,
+    # which would fail this whole jq invocation (jq aborts on the first error) and silently drop
+    # the lot via the suppressed `2>/dev/null`. The type guard below means a malformed job is
+    # simply skipped, not catastrophic for its run-mates.
     printf '%s' "$jobsjson" | jq -c --arg cat "$cat" '
-      .jobs[]? | select(.status=="queued")
+      .jobs[]? | select(.status=="queued" and (.created_at | type) == "string")
       | {cat: $cat, queued_at: (.created_at | sub("\\.[0-9]+Z$"; "Z"))}
     ' >> "$WORK/queued-jobs.jsonl" 2>/dev/null
 
@@ -444,16 +558,39 @@ collect_once() {
   as_of=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   final=$(jq -n \
     --slurpfile jobs "$WORK/queued-jobs.jsonl" \
+    --slurpfile items "$WORK/queued-items.jsonl" \
     --slurpfile runners "$WORK/runners-out.json" \
     --argjson busy "$busy" \
     --argjson total "$total" \
     --argjson offline "$offline" \
+    --argjson max_items "$MAX_CI_QUEUE_QUEUED_ITEMS" \
     --arg as_of "$as_of" \
     '
     ($jobs) as $j
-    | (["dependabot","deploy_release","pr","other"]
-        | map(. as $k | {key: $k, count: ([$j[] | select(.cat == $k)] | length)})
-        | map(select(.count > 0))) as $cats
+    # #657: dedup $items GLOBALLY by run id (first occurrence wins) BEFORE grouping into
+    # categories — the scheduler/benjis-ops-tool repo alias in scripts/ci-metrics.repos can
+    # otherwise surface the identical physical run twice, once per alias.
+    | ($items | group_by(.run_id) | map(.[0])) as $items_dedup
+    # prod_deploy/staging_deploy split out of the old single deploy_release bucket — this vocab
+    # order must match status-page/src/vocab.js CI_QUEUE_CATEGORY_VOCAB exactly.
+    | ["dependabot","prod_deploy","staging_deploy","deploy_release","pr","other"] as $vocab
+    | ($vocab
+        | map(. as $k
+            # del(.key), not a {repo, run_id, pr_url, title, queued_at} reconstruction — that
+            # object-literal shorthand would materialise title: null for every item with no
+            # title key (the {title} shorthand in jq means title: .title, and indexing a missing
+            # key is null), when the contract (validate.js sanitiseCiQueueQueuedItem) is to OMIT
+            # title entirely when absent. del(.key) strips only the now-redundant key field (the
+            # parent category entry already carries it) and leaves every other field, present or
+            # absent, exactly as queued-items.jsonl wrote it.
+            | ($items_dedup | map(select(.key == $k)) | sort_by([.queued_at, .run_id]) | .[0:$max_items]
+                 | map(del(.key))) as $queued
+            | {key: $k, count: ([$j[] | select(.cat == $k)] | length), queued: $queued})
+        # a category with zero looked-up JOBS this cycle can still have queued[] entries (the
+        # job-lookup cap and the per-repo run selection are independent knobs) — include the
+        # category whenever EITHER signal is non-empty, never drop real queued[] data because
+        # count happened to be 0.
+        | map(select(.count > 0 or (.queued | length) > 0))) as $cats
     | ($j | sort_by(.queued_at) | .[0]) as $o
     | {as_of: $as_of,
        runners_busy: ([$busy, 999] | min),
@@ -579,6 +716,7 @@ main() {
   trap 'rm -rf "$WORK"; rmdir "$LOCKDIR" 2>/dev/null' EXIT
   : > "$WORK/queued-jobs.jsonl"
   : > "$WORK/running-jobs.jsonl"
+  : > "$WORK/queued-items.jsonl"
   : > "$WORK/calls.count"
 
   if collect_once; then
