@@ -1389,14 +1389,17 @@ autoretry_cleared() {
 #   infrastructure: container start failure at "Initialize containers", exit 137 / OOM / Killed,
 #                   ENOSPC ("No space left on device"), runner lost, and the PR-description "User-facing change" format check
 #   real:           assertion errors, tsc errors, lint errors, unit-test failures, and any log it cannot read (never tolerated)
-# On a ci_red or ci_pending (#484) BLOCKED with a failing PR check: first time per PR head, re-run the failed jobs
-# once (gh run rerun --failed) and record the head in $PIPE/orch-<rk>.ci-rerun; later ticks classify each
-# still-failing check from its log. Only if
-# EVERY failing check is infrastructure-class does it return 0 (relaunch) with AR_NOTE naming the tolerated checks, so
+# On a ci_red or ci_pending (#484) BLOCKED with a failing PR check: EVERY failing check is classified from its log
+# FIRST (#708 — classify before any re-run, so a deterministic real failure never gets blindly re-run and read as
+# "pending"). Only when every failing check classifies infrastructure does it re-run the failed jobs once per PR
+# head (gh run rerun --failed), recording the head in $PIPE/orch-<rk>.ci-rerun; a later tick with the same head and
+# still only infrastructure-class failures returns 0 (relaunch) with AR_NOTE naming the tolerated checks, so
 # agents/deployer.md may merge to STAGING only. Any real failure, pending check or read error returns 1 (stay held).
-# #484: on a real (non-infra) classified failure — the only "stay held" outcome that will never clear on its own,
-# as opposed to still-pending checks, a just-issued re-run, or a read error — also sets AR_FINAL=1 so the caller
-# (autoretry_cleared) can tell the two apart and hand the hold off to "waiting on JP" instead of parking it forever.
+# #484/#708: on a real (non-infra) classified failure — the only "stay held" outcome that will never clear on its
+# own, as opposed to still-pending checks, a just-issued re-run, or a read error — also sets AR_FINAL=1 so the
+# caller (autoretry_cleared) can tell the two apart and hand the hold off to "waiting on JP" instead of parking it
+# forever. A real failure is never re-run: no `gh run rerun`, no `[ci-rerun]` log line, no $PIPE/orch-<rk>.ci-rerun
+# write, even on the very first tick for that head.
 ci_infra_gate() {
   local repo=$1 issue=$2 pr=$3 rk stf head checks rows name link run job runs log cls ccrc tol=""
   AR_NOTE=""; AR_FINAL=""
@@ -1408,6 +1411,18 @@ ci_infra_gate() {
   printf '%s' "$checks" | jq -e 'any(.[]; .bucket == "pending")' >/dev/null 2>&1 && return 1   # still running: wait
   rows=$(printf '%s' "$checks" | jq -r '.[] | select(.bucket == "fail") | [.name, (.link // "")] | @tsv' 2>/dev/null)
   [ -n "$rows" ] || return 1
+  while IFS=$'\t' read -r name link; do
+    run=$(printf '%s' "$link" | sed -nE 's#.*/actions/runs/([0-9]+).*#\1#p')
+    job=$(printf '%s' "$link" | sed -nE 's#.*/job/([0-9]+).*#\1#p')
+    [ -n "$run" ] || return 1
+    log=$(cd "$repo" && { if [ -n "$job" ]; then gh run view "$run" --job "$job" --log-failed; else gh run view "$run" --log-failed; fi; } 2>/dev/null </dev/null) || return 1
+    # #484: an empty log is a read error (truncated/slow write), not a classified failure — ci-classify.sh would
+    # call it "real" too, but that is not final: stay held and let a later tick read the log once it is there.
+    [ -n "$(printf '%s' "$log" | tr -d '[:space:]')" ] || return 1
+    cls=$(printf '%s\n' "$log" | "$HERE/ci-classify.sh" "$name"); ccrc=$?
+    if [ "$ccrc" -ne 0 ]; then AR_FINAL=1; return 1; fi   # #484/#708: a real failure — final, never re-run
+    tol="${tol:+$tol; }$name (${cls#infra:})"
+  done <<< "$rows"
   if [ "$(cat "$stf" 2>/dev/null)" != "$head" ]; then
     runs=$(printf '%s\n' "$rows" | sed -nE 's#.*/actions/runs/([0-9]+).*#\1#p' | sort -u)
     [ -n "$runs" ] || return 1
@@ -1419,18 +1434,6 @@ ci_infra_gate() {
     slog "[ci-rerun] #$issue — re-ran failed jobs once on ${head:0:12} (run(s): $(echo $runs))"
     return 1
   fi
-  while IFS=$'\t' read -r name link; do
-    run=$(printf '%s' "$link" | sed -nE 's#.*/actions/runs/([0-9]+).*#\1#p')
-    job=$(printf '%s' "$link" | sed -nE 's#.*/job/([0-9]+).*#\1#p')
-    [ -n "$run" ] || return 1
-    log=$(cd "$repo" && { if [ -n "$job" ]; then gh run view "$run" --job "$job" --log-failed; else gh run view "$run" --log-failed; fi; } 2>/dev/null </dev/null) || return 1
-    # #484: an empty log is a read error (truncated/slow write), not a classified failure — ci-classify.sh would
-    # call it "real" too, but that is not final: stay held and let a later tick read the log once it is there.
-    [ -n "$(printf '%s' "$log" | tr -d '[:space:]')" ] || return 1
-    cls=$(printf '%s\n' "$log" | "$HERE/ci-classify.sh" "$name"); ccrc=$?
-    if [ "$ccrc" -ne 0 ]; then AR_FINAL=1; return 1; fi   # #484: a real failure was actually classified from a readable log — final
-    tol="${tol:+$tol; }$name (${cls#infra:})"
-  done <<< "$rows"
   AR_NOTE="only infrastructure-class checks fail after one re-run of ${head:0:12}: $tol"
   return 0
 }
