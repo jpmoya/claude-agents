@@ -276,10 +276,15 @@ describe('#657 — categories[].queued[] against the real collector', () => {
     writeFileSync(join(fixdir3, 'runners-org.json'), JSON.stringify({ total_count: 0, runners: [] }));
     writeFileSync(join(fixdir3, 'runners-repo.json'), JSON.stringify({ total_count: 0, runners: [] }));
 
-    // A queued run on head_branch main for a deploy|release-named workflow (-> prod_deploy, #657
-    // rule 3), with an attached PR and a display_title, plus one queued job.
+    // Two queued runs:
+    //  - 888001: head_branch main, a deploy|release-named workflow (-> prod_deploy, #657 rule
+    //    3), with an attached PR, a display_title, and a fractional-seconds `created_at` (the
+    //    queued[] source of truth is now the RUN's own `created_at`, not its job's — this
+    //    exercises the same fractional-seconds strip on that field instead).
+    //  - 888002: no `display_title` at all (title omitted, not null — the exact mismatch this
+    //    drift guard exists to catch; see validate.js's sanitiseCiQueueQueuedItem).
     writeFileSync(join(fixdir3, 'runs-owner2__repo2-queued.json'), JSON.stringify({
-      total_count: 1,
+      total_count: 2,
       workflow_runs: [
         {
           id: 888001,
@@ -288,7 +293,17 @@ describe('#657 — categories[].queued[] against the real collector', () => {
           event: 'workflow_run',
           actor: { login: 'jp' },
           display_title: 'Auto-release #888001',
+          created_at: '2026-11-10T10:00:00.500Z',
           pull_requests: [{ number: 7 }],
+        },
+        {
+          id: 888002,
+          name: 'CI',
+          head_branch: 'feature/x',
+          event: 'schedule',
+          actor: { login: 'jp' },
+          created_at: '2026-11-10T09:00:00Z',
+          pull_requests: [],
         },
       ],
     }));
@@ -296,6 +311,10 @@ describe('#657 — categories[].queued[] against the real collector', () => {
     writeFileSync(
       join(fixdir3, 'jobs-888001.json'),
       JSON.stringify({ total_count: 1, jobs: [{ id: 1, status: 'queued', created_at: '2026-11-10T10:00:00.500Z' }] }),
+    );
+    writeFileSync(
+      join(fixdir3, 'jobs-888002.json'),
+      JSON.stringify({ total_count: 1, jobs: [{ id: 2, status: 'queued', created_at: '2026-11-10T09:00:00Z' }] }),
     );
 
     const env3 = {
@@ -337,6 +356,20 @@ describe('#657 — categories[].queued[] against the real collector', () => {
         queued_at: '2026-11-10T10:00:00Z',
       },
     ]);
+  });
+
+  it('a run with no display_title OMITS the title key entirely (never title: null)', () => {
+    const other = raw3.categories.find((c) => c.key === 'other');
+    expect(other).toBeDefined();
+    expect(other.queued).toEqual([
+      {
+        repo: 'owner2/repo2',
+        run_id: 888002,
+        pr_url: null,
+        queued_at: '2026-11-10T09:00:00Z',
+      },
+    ]);
+    expect(other.queued[0]).not.toHaveProperty('title');
   });
 
   it('validateBeatPayload passes the real ci_queue object (with queued[]) through unchanged', () => {
