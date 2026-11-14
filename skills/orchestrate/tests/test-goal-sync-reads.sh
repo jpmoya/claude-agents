@@ -138,10 +138,17 @@ test_ro_ac1_labels_and_author_come_from_the_listing() {
   assert_contains "$RO_OUT" "waiting_jp	not approved yet" "AC1: labels read from the listing row" || rc=1
   ro_teardown
   # author from the listing: JP (issue author) answers a MOCKUPS gate -> active; a non-author answer leaves it waiting_jp
+  # #701: needs JP's REVIEW MOCKUPS marker first — the mockup gate is skip-by-default now, so without it
+  # this would be "active" either way (no real gate to answer), proving nothing about author-from-the-listing.
+  # Posted BEFORE the gate comment (valid any order, same as SKIP MOCKUPS): goal-lib's own #456/#620
+  # "did JP already answer this gate" check only looks at the issue author's LATEST qualifying comment
+  # relative to the gate's own timestamp — posting it after the gate would itself count as JP's answer
+  # and mask the someone-else case this test is actually about.
   local who exp
   for who in jpmoya someone-else; do
     ro_setup
-    jq -n --arg w "$who" '[{created_at:"2026-10-01T12:00:00Z",user:{login:"jpmoya"},body:"**[ui-ux-designer] MOCKUPS PENDING APPROVAL**\nmockups ready"},
+    jq -n --arg w "$who" '[{created_at:"2026-10-01T10:00:00Z",user:{login:"jpmoya"},body:"**[jp] REVIEW MOCKUPS**"},
+                           {created_at:"2026-10-01T12:00:00Z",user:{login:"jpmoya"},body:"**[ui-ux-designer] MOCKUPS PENDING APPROVAL**\nmockups ready"},
                            {created_at:"2026-10-01T13:00:00Z",user:{login:$w},body:"approved"}]' > "$RO_DIR/comments-proj_repo-a-2.json"
     ro_run "goal_eval $RO_MS_ID $RO_MS_SPEC; printf '%s' \"\$GE_REFS\" | grep -F 'proj/repo-a#2'"
     if [ "$who" = jpmoya ]; then exp="active"; else exp="waiting_jp"; fi

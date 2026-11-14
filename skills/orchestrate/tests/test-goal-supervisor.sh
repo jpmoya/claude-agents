@@ -198,7 +198,8 @@ test_gs_557_closed_not_planned_is_not_delivered() {
 }
 
 test_gs_classify_waiting_jp() {
-  gs_check_class waiting_jp "MOCKUPS PENDING APPROVAL" open "" $'**[ui-ux-designer] MOCKUPS PENDING APPROVAL**\nsee mockups' || return 1
+  # #701: the mockup gate is skip-by-default now — needs JP's REVIEW MOCKUPS marker to classify waiting_jp at all.
+  gs_check_class waiting_jp "MOCKUPS PENDING APPROVAL" open "" $'**[ui-ux-designer] MOCKUPS PENDING APPROVAL**\nsee mockups' '**[jp] REVIEW MOCKUPS**' || return 1
   gs_check_class waiting_jp "AWAITING GO" open "" $'**[infra-operator] AWAITING GO**\nplan ready' || return 1
   gs_check_class waiting_jp "EFFORT APPROVAL NEEDED" open "" $'**[product-manager] EFFORT APPROVAL NEEDED**\nbig' || return 1
   gs_check_class waiting_jp "DEPLOYED TO STAGING while still open" open "" $'**[deployer] DEPLOYED TO STAGING**\nstaging up' || return 1
