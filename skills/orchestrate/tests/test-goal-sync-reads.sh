@@ -140,10 +140,9 @@ test_ro_ac1_labels_and_author_come_from_the_listing() {
   # author from the listing: JP (issue author) answers a MOCKUPS gate -> active; a non-author answer leaves it waiting_jp
   # #701: needs JP's REVIEW MOCKUPS marker first — the mockup gate is skip-by-default now, so without it
   # this would be "active" either way (no real gate to answer), proving nothing about author-from-the-listing.
-  # Posted BEFORE the gate comment (valid any order, same as SKIP MOCKUPS): goal-lib's own #456/#620
-  # "did JP already answer this gate" check only looks at the issue author's LATEST qualifying comment
-  # relative to the gate's own timestamp — posting it after the gate would itself count as JP's answer
-  # and mask the someone-else case this test is actually about.
+  # Posted BEFORE the gate comment here (valid any order, same as SKIP MOCKUPS) — position doesn't matter to
+  # goal-lib's own jp_answer_at exclusion (fixed by this ticket: a REVIEW MOCKUPS line never counts as JP's
+  # answer, posted before or after the gate — see test_ro_ac1b below for the after-the-gate case directly).
   local who exp
   for who in jpmoya someone-else; do
     ro_setup
@@ -156,6 +155,20 @@ test_ro_ac1_labels_and_author_come_from_the_listing() {
     assert_eq "$(ro_count '^api( --paginate)? repos/proj/repo-a/issues/[0-9]+( |$)')" "0" "AC1: no issue read ($who)" || rc=1
     ro_teardown
   done
+  return $rc
+}
+
+# #701 direct regression: REVIEW MOCKUPS posted AFTER the gate (the realistic order — JP reviewing
+# mockups that already landed) must never itself read as "JP answered the gate". Without goal-lib's
+# jp_answer_at exclusion this would wrongly classify as active even though no one has approved anything.
+test_ro_ac1b_review_mockups_after_the_gate_is_not_an_answer() {
+  ro_setup; local rc=0
+  jq -n '[{created_at:"2026-10-01T12:00:00Z",user:{login:"jpmoya"},body:"**[ui-ux-designer] MOCKUPS PENDING APPROVAL**\nmockups ready"},
+          {created_at:"2026-10-01T12:30:00Z",user:{login:"jpmoya"},body:"**[jp] REVIEW MOCKUPS**"},
+          {created_at:"2026-10-01T13:00:00Z",user:{login:"someone-else"},body:"approved"}]' > "$RO_DIR/comments-proj_repo-a-2.json"
+  ro_run "goal_eval $RO_MS_ID $RO_MS_SPEC; printf '%s' \"\$GE_REFS\" | grep -F 'proj/repo-a#2'"
+  assert_contains "$RO_OUT" "proj/repo-a#2	waiting_jp" "REVIEW MOCKUPS after the gate is never read as JP's answer" || rc=1
+  ro_teardown
   return $rc
 }
 
@@ -309,6 +322,7 @@ test_ro_ac5_snapshot_is_unchanged() {
 
 run_test test_ro_ac1_scope_listed_tickets_cost_no_issue_read
 run_test test_ro_ac1_labels_and_author_come_from_the_listing
+run_test test_ro_ac1b_review_mockups_after_the_gate_is_not_an_answer
 run_test test_ro_ac1_start_gate_body_comes_from_the_listing
 run_test test_ro_ac1_single_ticket_spec_keeps_its_one_read
 run_test test_ro_ac2_blocked_latest_ticket_costs_one_comments_fetch_and_no_issue_read
