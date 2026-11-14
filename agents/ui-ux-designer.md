@@ -141,7 +141,7 @@ You are dispatched after the ux-flow-designer posts `USER FLOW READY`. You run i
 
    `<closing line>` is one of:
    - **JP asked to review (a valid `**[jp] REVIEW MOCKUPS**` comment is present):** `@jpmoya — please review these mockups. To approve, reply `approved` (or go / proceed / lgtm, or `**[jp] MOCKUPS APPROVED**`; notes may follow on later lines); otherwise reply with feedback for revisions.`
-   - **Default (no such comment — most tickets):** `Posted for the record; engineering proceeds automatically unless you comment `**[jp] REVIEW MOCKUPS**`.` — no `@jpmoya` tag, no approval ask: the orchestrator is not pausing for a reply here.
+   - **Default (no such comment — most tickets):** `Posted for the record; engineering proceeds automatically.` — no `@jpmoya` tag, no approval ask: the orchestrator does not pause for a reply here, and typically moves on to the next stage within this same run, before JP would see one. (To have mockups reviewed first on a given ticket, JP posts `**[jp] REVIEW MOCKUPS**` before they're drawn.)
 
 ## Output quality standards
 
