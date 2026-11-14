@@ -88,6 +88,36 @@ test_mro_marker_last_jq_never_promotes_review_mockups() {
   assert_eq "$out" '**[ui-ux-designer] MOCKUPS PENDING APPROVAL**' "REVIEW MOCKUPS never supersedes the gate marker the way SKIP MOCKUPS does" || return 1
 }
 
+# ---------------------------------------------------------------------------------------- AC1/AC2: supervisor tick (real dd/mg-style behavior)
+# Reuses mg_thread / mg_tick / mg_assert_gate / mg_assert_not_gate from test-mockup-gate-exact-marker.sh
+# (same shell), and test_mg_202's awk-extraction trick for a direct terminal_kind call.
+
+test_mro_ac1_tick_default_restarts_not_held() {
+  mg_thread '**[ui-ux-designer] MOCKUPS PENDING APPROVAL**'
+  mg_tick
+  mg_assert_not_gate "AC1: no REVIEW MOCKUPS marker, tick restarts (no Slack/chat ask, no pause)" || return 1
+}
+
+test_mro_ac2_tick_review_requested_stays_held() {
+  mg_thread '**[ui-ux-designer] MOCKUPS PENDING APPROVAL**' '**[jp] REVIEW MOCKUPS**'
+  mg_tick
+  mg_assert_gate "AC2: JP asked to review, tick holds and waits on JP" || return 1
+}
+
+test_mro_terminal_kind_default_is_not_a_gate() {
+  local sup="$ROOT_MG/skills/orchestrate/supervisor.sh" kind
+  kind=$( eval "$(awk '/^terminal_kind\(\) \{/ {p=1} p {print} p && /^}/ {exit}' "$sup")"
+    terminal_kind '**[ui-ux-designer] MOCKUPS PENDING APPROVAL**' 1 "" . 0 )
+  assert_eq "$kind" "" "AC1: terminal_kind with review_requested=0 is not a gate" || return 1
+}
+
+test_mro_terminal_kind_requested_is_a_gate() {
+  local sup="$ROOT_MG/skills/orchestrate/supervisor.sh" kind
+  kind=$( eval "$(awk '/^terminal_kind\(\) \{/ {p=1} p {print} p && /^}/ {exit}' "$sup")"
+    terminal_kind '**[ui-ux-designer] MOCKUPS PENDING APPROVAL**' 1 "" . 1 )
+  assert_eq "$kind" "gate" "AC2: terminal_kind with review_requested=1 stays a gate" || return 1
+}
+
 # ---------------------------------------------------------------------------------------- docs (AC5)
 
 test_mro_orchestrator_doc_default_is_not_a_gate() {
@@ -109,6 +139,10 @@ test_mro_orchestrator_doc_default_pass_logged() {
   mg_has "$ORCH_MG" '"reason":"no review requested; proceeding by default"' || return 1
 }
 
+run_test test_mro_ac1_tick_default_restarts_not_held
+run_test test_mro_ac2_tick_review_requested_stays_held
+run_test test_mro_terminal_kind_default_is_not_a_gate
+run_test test_mro_terminal_kind_requested_is_a_gate
 run_test test_mro_exact_marker_detected_anywhere_any_author
 run_test test_mro_absent_or_prose_not_detected
 run_test test_mro_crlf_and_trailing_whitespace_tolerated
