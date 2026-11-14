@@ -40,7 +40,7 @@ export const PIPELINES = [
         inputs: [
           "User flow (or PM spec)",
           "Repo design system",
-          "Waits for **[jp] MOCKUPS APPROVED**",
+          "Posts mockups for the record; proceeds automatically unless JP posted **[jp] REVIEW MOCKUPS**",
         ],
       },
       {
@@ -48,7 +48,7 @@ export const PIPELINES = [
         when: { label: "UI change: yes" },
         inputs: [
           "ui-ux-designer mockups posted on the issue",
-          "JP's approval comment",
+          "Only reached when JP posted **[jp] REVIEW MOCKUPS**: his approval comment",
         ],
       },
       {
@@ -87,10 +87,10 @@ export const PIPELINES = [
   },
   {
     id: "mockup-skip",
-    title: "Mockup gate shortcut",
+    title: "Mockup gate: skip-by-default",
     group: "main",
     summary:
-      "Planned shortcut for the full lane above: some tickets will skip the mockup-approval wait and go straight to engineering.",
+      "The mockup-approval wait shown in the full lane above is no longer the default: mockups are still posted for the record, but the pipeline proceeds straight to engineering unless JP explicitly asked to review this ticket's mockups (**[jp] REVIEW MOCKUPS**).",
     stages: [
       {
         name: "product-manager",
@@ -99,7 +99,7 @@ export const PIPELINES = [
       {
         name: "fullstack-developer",
         when: { label: "Upfront skip of mockup gate", coming: true },
-        inputs: ["READY FOR ENGINEERING with the skip rule (planned)"],
+        inputs: ["READY FOR ENGINEERING; mockup gate already cleared by default"],
       },
     ],
   },
