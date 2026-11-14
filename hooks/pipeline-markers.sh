@@ -65,6 +65,31 @@ skip_mockups_marker_body() {  # skip_mockups_marker_body <jp-reply-text> → the
   printf '%s\n%s' "**[jp] SKIP MOCKUPS**" "JP said: \"$text\""
 }
 
+# review_mockups_re — the exact first-line form of JP's opt-in "I want to review the mockups on this
+# ticket" signal (#701: the mockup gate is skip-by-default, so an explicit request is what makes it
+# pause). Deliberately NOT one of markers_for jp / marker_re's vocabulary and NOT part of
+# jp_approval_re's legacy alternation: it must never become a routing marker in its own right (the
+# newest-comment "gate"), never count as an approval (is_jp_approval) and never satisfy jp_go for an
+# unrelated BLOCKED/AWAITING GO. It is read only by review_mockups_requested below, from the
+# orchestrator's own bash block and from supervisor.sh/goal-lib.sh's terminal_kind call sites.
+# No `JP said:` quote or author check is required (unlike SKIP MOCKUPS, which fails CLOSED to protect
+# against an unintended skip): an unverified or forged REVIEW MOCKUPS line only ever produces today's
+# existing default — a pause — never a worse outcome, so "exact first line, any author" is enough
+# (the same accepted-forgery-limit posture already documented for SKIP MOCKUPS: agents never write a
+# `[jp] …` first line).
+review_mockups_re() { printf '%s' '^\*\*\[jp\] REVIEW MOCKUPS\*\*[[:space:]]*$'; }
+
+# review_mockups_requested <comments-json array> → exit 0 when any comment's first line matches
+# review_mockups_re, anywhere in the thread (same "posted at any time before engineering starts"
+# posture as the SKIP MOCKUPS marker). Argument is a JSON array of {body,...} objects (the same shape
+# latest_marker/marker_last_jq's callers already hold) — never fetched again here, so callers must
+# pass comments they already have.
+review_mockups_requested() {
+  jq -e --arg re "$(review_mockups_re)" \
+    '[.[] | select((.body | type) == "string") | (.body | split("\n")[0] | rtrimstr("\r")) | select(test($re))] | length > 0' \
+    <<< "$1" >/dev/null 2>&1
+}
+
 marker_re() {  # marker_re [agent] → jq (oniguruma) regex for a valid first line; no agent = any agent, each with its own markers
   # jp's markers are gates: the first line must be the marker and nothing else (trailing whitespace/CR ok),
   # the same "exactly" rule the orchestrator applies (#202). Other agents keep the `**`/`:`/space/EOL suffix.

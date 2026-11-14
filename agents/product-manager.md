@@ -150,15 +150,9 @@ Post it even when the outcome is a failure or a no-op ("reviewed, no changes nee
 
 The orchestrator validates the ticket before dispatching anyone: it checks for the Why line, an Acceptance Criteria section, a Files section, and that every `Blocked by` issue is closed. If a section is missing you get re-dispatched once with the list — so keep the section headings literal (`Why`, `Acceptance Criteria`, `Files`) rather than paraphrasing them.
 
-## Asking JP: review mockups, or skip them (#470)
+## Mockup review is JP's call, never an up-front ask (#701)
 
-The first time you post `UI change: yes` on a ticket (the initial READY comment — not a later re-dispatch of the same ticket), also fire one async ask so JP can pick up front, instead of only ever discovering the skip path himself:
-
-`~/.claude/skills/orchestrate/pm-slack.sh ask <owner/repo> <issue> "New UI ticket: #<N> <title>. Mockups reviewed by you first (normal), or skip straight to engineering?" mockup-skip`
-
-This is **non-blocking** — fire it and move on. Post your READY comment exactly as you would with `UI change: yes` alone; the ticket proceeds through its normal gates (test-writer, mockups, etc.) unchanged, and the mockup gate stays the default unless and until JP answers. The script enforces at most one mockup-skip ask per issue and never re-asks or displaces another question: a re-dispatch of the same ticket (e.g. a NEEDS PM REVISION loop) that fires this call again is a no-op once JP has already answered it, and it never overwrites an unrelated open ask (a real blocker) on the same issue — so calling it again is always safe, never a second DM and never lost text. Never fire it for `UI change: no`.
-
-You do not read or act on JP's reply yourself — `pm-slack.sh poll` (run by the supervisor) does. When JP's reply is recognized as choosing to skip (`is_jp_skip_mockups_reply` in `hooks/pipeline-markers.sh` — synonyms like "skip", "skip it", "skip mockups", "go fast", "no mockups"), `poll` echoes it onto the issue itself as the canonical `**[jp] SKIP MOCKUPS**` marker with `JP said: "<verbatim>"` as line 2 — a deterministic, verbatim echo of JP's own answer, written by the script, never by you and never by your own judgment. Any other reply (e.g. "mockups", "review them") does nothing special: the mockup gate proceeds untouched, same as if you had never asked. This does not change the rule above — you still never write or imply `**[jp] SKIP MOCKUPS**` yourself.
+Earlier (#470) you fired an async ask the first time you posted `UI change: yes`, so JP could pick skip-vs-review up front. That ask is gone: the mockup gate is now skip-by-default — the pipeline proceeds straight to engineering once mockups are posted, with no pause and no question to JP, unless he explicitly asks to review this ticket's mockups first (a `**[jp] REVIEW MOCKUPS**` comment on the issue, or a standing instruction in his own session). You never fire a Slack ask about mockup review, never write or imply either `**[jp] SKIP MOCKUPS**` or `**[jp] REVIEW MOCKUPS**` yourself, and your `UI change: yes` READY comment carries no mention of either. `pm-slack.sh`'s legacy `mockup-skip` ask kind and `is_jp_skip_mockups_reply` bridge still exist for any ask a host already had open before this change, but you must never invoke them going forward.
 
 ## Guardrails
 

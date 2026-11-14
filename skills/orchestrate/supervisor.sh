@@ -457,11 +457,12 @@ sw_has_local_run() {
   return 1
 }
 
-# sw_feedback_gate <owner/repo> <issue> → latest_marker's output for the ticket (the gate marker's first line, "none" when
-# there is no routing marker; a later delivery-lead decision on a 2nd line) from ONE comments read. The issue author is read
-# only when a [jp] marker is in the thread (latest_marker's own rule). Returns 1 when the read failed.
+# sw_feedback_gate <owner/repo> <issue> → three lines, always: the gate marker's first line ("none" when there is no
+# routing marker), a later delivery-lead decision (empty if none), and #701's mockups-review-requested flag (0/1) —
+# all from ONE comments read. The issue author is read only when a [jp] marker is in the thread (latest_marker's own
+# rule). Returns 1 when the read failed.
 sw_feedback_gate() {
-  local raw author="" out
+  local raw author="" out gate dec rawn rr=0
   raw=$(gh api "repos/$1/issues/$2/comments?per_page=100" --paginate 2>/dev/null </dev/null) || return 1
   [ -n "$raw" ] || return 1
   if grep -qE 'SKIP MOCKUPS|\[jp\] (MOCKUPS APPROVED|GO)' <<< "$raw"; then
@@ -469,7 +470,17 @@ sw_feedback_gate() {
   fi
   out=$(latest_marker "$1" "$2" "$raw" "$author") || return 1
   case "$out" in ''|'?'*) return 1 ;; esac
-  printf '%s\n' "$out"
+  gate=$(sed -n 1p <<< "$out"); dec=$(sed -n 2p <<< "$out")
+  case "$gate" in
+    *"] MOCKUPS PENDING APPROVAL")
+      # #701: fail closed to "1" (gate stays) unless the check runs cleanly and says "not requested".
+      rr=1
+      if rawn=$(printf '%s' "$raw" | jq -s '[.[] | if type == "array" then .[] else . end]' 2>/dev/null); then
+        review_mockups_requested "$rawn" || rr=0
+      fi
+      ;;
+  esac
+  printf '%s\n%s\n%s\n' "$gate" "$dec" "$rr"
 }
 
 # sw_unowned_feedback <threshold_secs> — one line per open feedback ticket that is idle past the threshold and has no owner:
@@ -480,7 +491,7 @@ sw_feedback_gate() {
 # the cheaper checks passed. One #engineering message per repo, at most once per SW_FEEDBACK_NOTIFY_SECS or when the set of
 # unowned tickets changes ($PIPE/stale-feedback-<owner_repo>.notified holds the sorted refs).
 sw_unowned_feedback() {
-  local threshold=$1 hours repo rows rc now kind num upd labels upd_ep age_s reason m gate decision rk tk
+  local threshold=$1 hours repo rows rc now kind num upd labels upd_ep age_s reason m gate decision rk tk review_req
   local refs incomplete stamp set_now prev last n shown
   hours=$((threshold / 3600))
   while IFS= read -r repo; do
@@ -521,12 +532,12 @@ sw_unowned_feedback() {
           sw_alert "feedback marker ($repo#$num)"
           continue
         fi
-        gate=$(sed -n 1p <<< "$m"); decision=$(sed -n 2p <<< "$m")
+        gate=$(sed -n 1p <<< "$m"); decision=$(sed -n 2p <<< "$m"); review_req=$(sed -n 3p <<< "$m")
         if [ "$gate" = none ]; then
           reason="never started (no approval label, no marker)"
         else
           rk=$(run_key "$repo" "$num")   # terminal_kind reads $rk (the run's .start, for the BLOCKED grace window)
-          tk=$(terminal_kind "$gate" "$num" "$decision" "$(sw_repo_dir "$repo")" </dev/null)
+          tk=$(terminal_kind "$gate" "$num" "$decision" "$(sw_repo_dir "$repo")" "$review_req" </dev/null)
           [ -z "$tk" ] || continue       # a gate (waiting on JP), done or inside the grace window: it has an owner
           reason="stopped mid-pipeline after $(printf '%s' "$gate" | cut -c1-160)"
         fi
@@ -591,18 +602,28 @@ rejected_ok() {
 # "done" covers DEPLOYED / DEPLOYED TO STAGING / APPLIED and the architect's SPLIT (children run their own pipelines; #118).
 # "done" here means the pipeline RUN is over, not that the ticket is on production: a deployer merge to staging ends the run
 # too. Goal scope counting (goal-lib.sh _goal_ticket_eval) reads the DEPLOYED body and keeps a staging merge out of "delivered".
-# terminal_kind <gate marker> <issue> [<delivery-lead marker posted after it>] [<repo dir>] → prints "done" / "gate" /
-# "grace" (BLOCKED inside the grace window: wait) / "" (not terminal). It judges the GATE marker. A later
-# `[delivery-lead] DECISION` / `JP CONFIRMED` (legacy spelling `[project-manager]` accepted) lifts exactly one gate — a code-track BLOCKED — so the run takes the
-# normal restart path and the orchestrator validates and relays the decision. It never lifts MOCKUPS PENDING APPROVAL,
-# AWAITING GO, EFFORT APPROVAL NEEDED or an infra-reviewer BLOCKED. An infra planner/operator BLOCKED is lifted only when
-# infra_staging_only holds (staging-only ticket, no JP-only item; claude-agents#89); otherwise it stays with JP.
+# terminal_kind <gate marker> <issue> [<delivery-lead marker posted after it>] [<repo dir>] [<mockups review requested 0|1>]
+# → prints "done" / "gate" / "grace" (BLOCKED inside the grace window: wait) / "" (not terminal). It judges the GATE
+# marker. A later `[delivery-lead] DECISION` / `JP CONFIRMED` (legacy spelling `[project-manager]` accepted) lifts
+# exactly one gate — a code-track BLOCKED — so the run takes the normal restart path and the orchestrator validates
+# and relays the decision. It never lifts AWAITING GO, EFFORT APPROVAL NEEDED or an infra-reviewer BLOCKED. An infra
+# planner/operator BLOCKED is lifted only when infra_staging_only holds (staging-only ticket, no JP-only item;
+# claude-agents#89); otherwise it stays with JP.
+# MOCKUPS PENDING APPROVAL (#701): skip-by-default — it is a gate only when the 5th argument says JP explicitly
+# asked to review this ticket's mockups (a valid `**[jp] REVIEW MOCKUPS**` marker, see hooks/pipeline-markers.sh's
+# review_mockups_requested — the caller computes this from comments it already fetched and passes the 0/1 flag; this
+# function never fetches anything itself). Default (no review requested) is "" (not terminal): the orchestrator keeps
+# going as if the mockups were approved. A later decision never lifts this gate either way, same as before.
 terminal_kind() {
-  local marker=$1 issue=${2:-} decision=${3:-} repo=${4:-.}
+  local marker=$1 issue=${2:-} decision=${3:-} repo=${4:-.} review_requested=${5:-0}
   marker=${marker%%\*\*}   # markers are bold ("**[deployer] DEPLOYED**"): strip the trailing bold so the $-anchors below match
   [[ "$marker" =~ \]\ (DEPLOYED|DEPLOYED\ TO\ STAGING|APPLIED|SPLIT)$ ]] && { echo done; return; }
   [[ "$marker" =~ \]\ REJECTED ]] && { rejected_ok "$repo" "$issue" && echo done || echo ""; return; }   # #115: valid only on user-feedback, from PM/developer, with a known Reason
-  [[ "$marker" =~ \]\ (MOCKUPS\ PENDING\ APPROVAL|AWAITING\ GO|EFFORT\ APPROVAL\ NEEDED)$ ]] && { echo gate; return; }
+  if [[ "$marker" =~ \]\ MOCKUPS\ PENDING\ APPROVAL$ ]]; then
+    [ "$review_requested" = 1 ] && { echo gate; return; }
+    echo ""; return
+  fi
+  [[ "$marker" =~ \]\ (AWAITING\ GO|EFFORT\ APPROVAL\ NEEDED)$ ]] && { echo gate; return; }
   if [[ "$marker" =~ \]\ BLOCKED ]]; then
     # delegated decision recorded after a code-track BLOCKED: not a gate. An infra planner/operator BLOCKED is lifted
     # only when infra_staging_only succeeds (claude-agents#89); infra-reviewer BLOCKED always stays a gate.
@@ -1079,10 +1100,32 @@ for f in "$PIPE"/orch-*.pid; do
     continue
   fi
 
-  marker=$(latest_marker "$repo" "$issue")
+  # #701: one comments-only read, shared by latest_marker (as its pre-fetched `pre` arg — it still fetches the
+  # author itself, conditionally, exactly as before) and the mockups-review-requested check below, so this adds
+  # no extra per-tick fetch over what latest_marker already did on its own. A failed read falls back to
+  # latest_marker's own (also possibly failing) internal fetch for the marker itself — same as before #701 — but
+  # never guesses review-requested: if the gate marker turns out to be MOCKUPS PENDING APPROVAL and this read
+  # failed, defer the whole ticket to the next tick rather than risk a false "not requested" (which would skip a
+  # pause JP asked for) or a false "requested" (which would park the ticket forever — held runs are never
+  # repolled, see the `.held` check above).
+  mc_slug=$(repo_slug "$repo")
+  mc_raw=""
+  [ -n "$mc_slug" ] && mc_raw=$(gh api "repos/$mc_slug/issues/$issue/comments?per_page=100" --paginate 2>/dev/null </dev/null)
+  marker=$(latest_marker "$repo" "$issue" "$mc_raw" "")
   decision=""
   case "$marker" in *$'\n'*) decision=${marker#*$'\n'}; marker=${marker%%$'\n'*} ;; esac   # line 2 = [delivery-lead] (or legacy [project-manager]) marker after the gate marker
-  case "$(terminal_kind "$marker" "$issue" "$decision" "$repo")" in
+  review_req=0
+  case "$marker" in
+    *"] MOCKUPS PENDING APPROVAL")
+      if [ -n "$mc_raw" ] && mc_all=$(printf '%s' "$mc_raw" | jq -s '[.[] | if type == "array" then .[] else . end]' 2>/dev/null) && [ -n "$mc_all" ]; then
+        review_mockups_requested "$mc_all" && review_req=1
+      else
+        slog "[mockup-review-unknown] #$issue — could not confirm review-requested state this tick; deferring"
+        continue
+      fi
+      ;;
+  esac
+  case "$(terminal_kind "$marker" "$issue" "$decision" "$repo" "$review_req")" in
     done)
       touch "$PIPE/orch-$rk.done"
       slog "[done] #$issue — terminal marker: $marker"

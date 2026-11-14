@@ -711,7 +711,9 @@ _goal_ticket_eval() {
     # #621: same prefix rule as supervisor.sh blocked_class_of (^Blocked on: <class>( |$)) — "needs_jp — <reason>" counts
     if [[ "$l2" =~ ^Blocked\ on:\ needs_jp(\ |$) ]]; then cls=waiting_jp; why="blocked on a decision only you can make"; fi
   else
-    tk=$(terminal_kind "$first" "$n" "" "$checkout")
+    local review_req=0
+    [[ "$mk" =~ \]\ MOCKUPS\ PENDING\ APPROVAL$ ]] && review_mockups_requested "$all_c" && review_req=1   # #701: $all_c already fetched above, no extra read
+    tk=$(terminal_kind "$first" "$n" "" "$checkout" "$review_req")
     case "$tk" in
       done) cls=delivered ;;
       gate)

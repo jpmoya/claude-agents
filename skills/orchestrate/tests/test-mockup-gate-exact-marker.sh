@@ -52,8 +52,11 @@
 # Characterisation cases (pass BEFORE and AFTER the change — do not "fix" them to fail first):
 #   AC1/AC5's marker_re() cases and AC7 (marker_re()/markers_for already discriminate an exact
 #   `**[jp] MOCKUPS APPROVED**` first line from prose — that is exactly why AC7 can require zero
-#   new mechanisms), and the supervisor-level "MOCKUPS PENDING APPROVAL is always a gate" behavior
-#   in terminal_kind(), which does not change under this ticket.
+#   new mechanisms), and the supervisor-level "MOCKUPS PENDING APPROVAL is a gate when JP asked to
+#   review" behavior in terminal_kind() for THIS ticket (#74's own characterisation, that it was
+#   unconditionally always a gate, was superseded by #701: the gate is skip-by-default now, and
+#   test_mg_202_terminal_kind_gate_with_trailing_text_approval below exercises the review-requested
+#   case to keep pinning the invariant this ticket actually cares about).
 # Every other case fails until the ticket is implemented.
 #
 # Doc-contract cases read tracked files only (fixed-string / literal grep). Helpers/vars are
@@ -446,7 +449,9 @@ test_mg_202_terminal_kind_gate_with_trailing_text_approval() {
     jq -n '{comments:[{body:"**[ui-ux-designer] MOCKUPS PENDING APPROVAL**\nmockups"},{body:"**[jp] MOCKUPS APPROVED** — JP (chat): \"323 approved\""}]}' \
       | jq -r "$(marker_last_jq)" )
   assert_eq "$out" '**[ui-ux-designer] MOCKUPS PENDING APPROVAL**' "202: newest marker is the gate, not the approval" || return 1
-  kind=$( eval "$(awk '/^terminal_kind\(\) \{/ {p=1} p {print} p && /^}/ {exit}' "$sup")"; terminal_kind "$out" 1 "" . )
+  # #701: the mockup gate is skip-by-default; pass review_requested=1 (JP asked to review) to exercise the
+  # same "an approval needs an exact marker line" invariant this test pins — not the default auto-advance case.
+  kind=$( eval "$(awk '/^terminal_kind\(\) \{/ {p=1} p {print} p && /^}/ {exit}' "$sup")"; terminal_kind "$out" 1 "" . 1 )
   assert_eq "$kind" gate "202: terminal_kind → gate (held), not a restart" || return 1
 }
 

@@ -45,10 +45,10 @@ build() { local body=$1; shift; printf '%s\n' "$@" | jq -s --arg b "$body" '{bod
 
 # scenario: kind(planner|operator) → sets BLK marker + comment 3 body
 DEC=$'**[project-manager] DECISION**\nResolves: '"${U}3"$'\nproceed.'
-run_kind() { # <blocked marker> <decision-line1>
-  terminal_kind "$1" 7 "$2"; }
-check_kind() { # <name> <expected> <marker> <decision-line1>
-  local got; got=$(run_kind "$3" "$4" 2>/dev/null)
+run_kind() { # <blocked marker> <decision-line1> [<review_requested 0|1>, #701]
+  terminal_kind "$1" 7 "$2" . "${3:-0}"; }
+check_kind() { # <name> <expected> <marker> <decision-line1> [<review_requested 0|1>, #701]
+  local got; got=$(run_kind "$3" "$4" "${5:-0}" 2>/dev/null)
   [ "$got" = "$2" ] && ok || bad "$1" "expected [$2] got [$got]"; }
 check_helper() { # <name> <expected-rc>
   infra_staging_only acme/widgets 7 "${U}3" >/dev/null 2>&1; local rc=$?
@@ -117,7 +117,9 @@ for m in '**[solutions-architect] SPLIT**' '**[deployer] DEPLOYED**' '**[deploye
   check_kind "terminal done: $m" done "$m" ''
 done
 check_kind "AWAITING GO still gate" gate '**[infra-operator] AWAITING GO**' ''
-check_kind "MOCKUPS PENDING APPROVAL still gate" gate '**[ui-ux-designer] MOCKUPS PENDING APPROVAL**' ''
+# #701: mockup gate is skip-by-default — not a gate unless JP explicitly asked to review this ticket's mockups.
+check_kind "MOCKUPS PENDING APPROVAL, no review requested (default): not a gate" "" '**[ui-ux-designer] MOCKUPS PENDING APPROVAL**' '' 0
+check_kind "MOCKUPS PENDING APPROVAL, review requested: still gate" gate '**[ui-ux-designer] MOCKUPS PENDING APPROVAL**' '' 1
 grep -q 'Split into sub-issues' "$SUP" && ok || bad "#118: done branch has SPLIT-specific Slack text" "missing"
 grep -E '^\| `\[solutions-architect\] SPLIT`.*Terminal' "$HERE/../../../agents/orchestrator.md" >/dev/null && ok || bad "#118: orchestrator.md SPLIT row labelled Terminal" "missing"
 
@@ -164,7 +166,8 @@ build $'Why: x\nno scope line' "$(c 1 2026-01-01T00:00:00Z "$PLAN_OK")" "$(c 3 2
 check_helper "i192 neg: body lacks Scope line" 1
 check_kind "i192 neg: infra-reviewer BLOCKED + delivery-lead decision" gate "$RV" '**[delivery-lead] DECISION**'
 check_kind "i192 neg: AWAITING GO + delivery-lead decision" gate '**[infra-operator] AWAITING GO**' '**[delivery-lead] DECISION**'
-check_kind "i192 neg: MOCKUPS PENDING APPROVAL + delivery-lead decision" gate '**[ui-ux-designer] MOCKUPS PENDING APPROVAL**' '**[delivery-lead] DECISION**'
+# #701: a decision never lifts a genuinely-gated (review-requested) MOCKUPS PENDING APPROVAL — same carve-out as before.
+check_kind "i192 neg: MOCKUPS PENDING APPROVAL + delivery-lead decision (review requested)" gate '**[ui-ux-designer] MOCKUPS PENDING APPROVAL**' '**[delivery-lead] DECISION**' 1
 check_kind "i192 code-track BLOCKED + delivery-lead decision resumes" "" '**[fullstack-developer] BLOCKED**' '**[delivery-lead] DECISION**'
 
 echo "terminal_kind.test.sh: $PASS passed, $FAIL failed"

@@ -162,20 +162,21 @@ test_msa_skip_mockups_regex_matches_synonyms_and_rejects_glued_words() {
 }
 
 # ---------------------------------------------------------------- product-manager.md docs
-test_msa_pm_doc_describes_the_mockup_skip_ask() {
-  mg_has "$PM_MSA" "pm-slack.sh ask" || return 1
-  mg_has "$PM_MSA" "mockup-skip" || return 1
-  mg_has "$PM_MSA" "UI change: yes" || return 1
-  mg_has "$PM_MSA" "non-blocking" || return 1
-  mg_has "$PM_MSA" "is_jp_skip_mockups_reply" || return 1
+# #701: the up-front "skip mockup review?" ask is removed — the gate is skip-by-default now, so there is
+# nothing to ask up front. These three assertions are inverted from #470's originals (see git history for
+# the pre-#701 versions) to pin the removal, not the ask.
+test_msa_pm_doc_no_longer_fires_the_mockup_skip_ask() {
+  mg_has "$PM_MSA" "That ask is gone" || return 1
+  mg_has "$PM_MSA" "skip-by-default" || return 1
+  ! grep -qF 'pm-slack.sh ask <owner/repo> <issue> "New UI ticket' "$PM_MSA" || { fail "doc must not describe firing the up-front ask"; return 1; }
 }
-test_msa_pm_doc_never_fires_for_ui_change_no() {
-  mg_has "$PM_MSA" "Never fire it for \`UI change: no\`" || return 1
+test_msa_pm_doc_never_writes_either_mockup_marker() {
+  mg_has "$PM_MSA" "never write or imply either" || return 1
+  mg_has "$PM_MSA" "REVIEW MOCKUPS" || return 1
 }
-test_msa_pm_doc_marker_is_posted_by_the_script_not_the_pm() {
-  local t; t=$(grep -F 'written by the script' "$PM_MSA")
-  [ -n "$t" ] || { fail "doc must say the marker is written by the script, not the PM"; return 1; }
-  assert_contains "$t" "never by you" "doc keeps the PM-never-writes invariant explicit here too" || return 1
+test_msa_pm_doc_legacy_ask_kept_inert_not_invoked() {
+  mg_has "$PM_MSA" "legacy \`mockup-skip\` ask kind" || return 1
+  mg_has "$PM_MSA" "never invoke them going forward" || return 1
 }
 
 run_test test_msa_ask_with_mockup_skip_kind_posts_once_and_records_kind
@@ -186,8 +187,8 @@ run_test test_msa_ordinary_ask_skip_text_never_posts_marker
 run_test test_msa_poll_negated_skip_reply_never_posts_marker
 run_test test_msa_reask_with_new_kind_overwrites_stale_kind
 run_test test_msa_skip_mockups_regex_matches_synonyms_and_rejects_glued_words
-run_test test_msa_pm_doc_describes_the_mockup_skip_ask
-run_test test_msa_pm_doc_never_fires_for_ui_change_no
+run_test test_msa_pm_doc_no_longer_fires_the_mockup_skip_ask
+run_test test_msa_pm_doc_never_writes_either_mockup_marker
 msa_gate_accepts() {  # msa_gate_accepts <jp-reply-text> — builds the comment via the SAME skip_mockups_marker_body
   # pm-slack.sh calls, feeds it to the real gate matcher (marker_last_jq) and prints what the gate resolves to.
   local body; body=$( . "$MARKERS_MSA"; skip_mockups_marker_body "$1" )
@@ -216,4 +217,4 @@ test_msa_bridge_posted_body_clears_the_real_gate_for_a_multiline_reply() {
 }
 run_test test_msa_bridge_posted_body_clears_the_real_gate_for_a_multiline_reply
 
-run_test test_msa_pm_doc_marker_is_posted_by_the_script_not_the_pm
+run_test test_msa_pm_doc_legacy_ask_kept_inert_not_invoked
