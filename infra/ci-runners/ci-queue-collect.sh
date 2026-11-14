@@ -108,6 +108,10 @@ PIPE=${PIPE:-$HOME/.claude/pipeline/state}
 OUT=${CI_QUEUE_OUT:-$PIPE/status-ci.json}
 ATTEMPT_FILE=${CI_QUEUE_ATTEMPT_FILE:-$PIPE/ci-queue-collect.attempt}
 STATE_FILE=${CI_QUEUE_STATE_FILE:-$PIPE/ci-queue-collect.state}
+# Shared with the daily ci-metrics.sh->Slack pipeline's own repo list (read-only here, never
+# written) — #660's live metrics fetch (_ciq_collect_metrics_once) reuses this same `repos()` loop,
+# so editing this file for the Slack pipeline also changes which repos the live metrics cover. No
+# call is ever made INTO that pipeline (PR #713 review, LOW) — only the file is shared.
 REPOS_FILE=${CI_QUEUE_REPOS_FILE:-$HERE/../../scripts/ci-metrics.repos}
 ORG=${CI_QUEUE_ORG:-Benjis-Plants}
 SELF_REPO=${CI_QUEUE_SELF_REPO:-jpmoya/claude-agents}
@@ -690,15 +694,23 @@ print(datetime.datetime.fromtimestamp(int(sys.argv[1]), tz=datetime.timezone.utc
 
   jq -e 'any(.[]; ._bad == true)' "$WORK/metrics-runs-dedup.json" >/dev/null 2>&1 && return 1
 
-  # Pass/fail rate eligibility: excludes null (never-concluded/in-progress-looking, per the
-  # issue's own fixture) AND GitHub's "didn't really run to a pass/fail verdict" conclusions —
-  # cancelled (a PR-concurrency-group supersede is routine, not a CI failure), skipped (a path
-  # filter decided not to run it), neutral, and stale. Verified live against benjis-ops-tool/
-  # benjis-sales-tool completed runs before writing this: `cancelled`/`skipped` are common real
-  # conclusion VALUES (strings, never null) — treating only literal `null` as "not a failure"
-  # would have left these dragging the rate down as failures, contrary to the issue's intent.
-  # Everything else not excluded (success, failure, timed_out, action_required, startup_failure)
-  # counts; `success` is the only pass. `.conclusion as $c | ...` (not `$excluded | index(.conclusion)`
+  # Eligibility (PR #713 review, MEDIUM — made the SAME run-status filter drive both duration AND
+  # pass/fail rate, so the two halves of the metric never disagree): excludes null
+  # (never-concluded/in-progress-looking, per the issue's own fixture) AND GitHub's "didn't really
+  # run to a pass/fail verdict" conclusions — cancelled (a PR-concurrency-group supersede is
+  # routine, not a CI failure), skipped (a path filter decided not to run it), neutral, and stale.
+  # Verified live against benjis-ops-tool/benjis-sales-tool completed runs before writing this:
+  # `cancelled`/`skipped` are common real conclusion VALUES (strings, never null) — treating only
+  # literal `null` as "not a failure" would have left these dragging the rate down as failures,
+  # contrary to the issue's intent. A run this excludes also finished in seconds (a supersede or a
+  # skip), so counting it toward duration would drag avg/p50/p90 down too — this is applied BEFORE
+  # `group_by(.cat)`, not just to the `_today` pass-rate subset, so a category whose runs are ALL
+  # cancelled/skipped is simply absent from $durable (never appears in group_by's output), the
+  # same "zero eligible runs -> category omitted" shape as zero completed runs, with no explicit
+  # empty-check needed. Everything else not excluded (success, failure, timed_out,
+  # action_required, startup_failure) counts; `success` is the only pass. `elig` is a single `def`
+  # (not inlined separately per callsite) so duration, the per-category rate and the overall rate
+  # can never drift apart again. `.conclusion as $c | ...` (not `$excluded | index(.conclusion)`
   # piped straight off `$excluded`) — jq's `|` rebinds the input to `$excluded` itself, so
   # `.conclusion` on the next line would index the ARRAY, not the run; binding it to a variable
   # first is required, not stylistic.
@@ -708,15 +720,20 @@ print(datetime.datetime.fromtimestamp(int(sys.argv[1]), tz=datetime.timezone.utc
   # ALL categories at once (categories are disjoint, so this is not a re-aggregation of the
   # per-category rates — a category-count-weighted average of already-computed rates would double
   # count nothing today against nine successes from a prior day sitting in the same 100-run page).
+  #
+  # Duration itself is a ROLLING window (every fetched completed run, not just today's), so $durable
+  # is never further filtered by `._today` — only the pass-rate legs (`$overall_eligible`/
+  # `$eligible` below) add that restriction on top of `elig`.
   local metrics_json
   metrics_json=$(jq -c --arg as_of "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
-    ["cancelled", "skipped", "neutral", "stale"] as $excluded
-    | (map(select(._bad != true))) as $all
-    | ($all | map(select(._today and (.conclusion as $c | $c != null and (($excluded | index($c)) == null))))) as $overall_eligible
+    def elig: (.conclusion as $c | $c != null and ((["cancelled", "skipped", "neutral", "stale"] | index($c)) == null));
+    (map(select(._bad != true))) as $all
+    | ($all | map(select(elig))) as $durable
+    | ($durable | map(select(._today))) as $overall_eligible
     | ($overall_eligible | length) as $overall_n
     | (if $overall_n == 0 then null
        else (100 * ([$overall_eligible[] | select(.conclusion == "success")] | length) / $overall_n | round) end) as $overall_pr
-    | ($all
+    | ($durable
        | group_by(.cat)
        | map(
           (sort_by(._dur) | map(._dur)) as $durs
@@ -724,7 +741,7 @@ print(datetime.datetime.fromtimestamp(int(sys.argv[1]), tz=datetime.timezone.utc
           | (($durs | add) / $n | round) as $avg
           | ($durs[([(($n * 50 / 100) | ceil), 1] | max) - 1]) as $p50
           | ($durs[([(($n * 90 / 100) | ceil), 1] | max) - 1]) as $p90
-          | (map(select(._today and (.conclusion as $c | $c != null and (($excluded | index($c)) == null))))) as $eligible
+          | (map(select(._today))) as $eligible
           | ($eligible | length) as $ecount
           | (if $ecount == 0 then null
              else (100 * ([$eligible[] | select(.conclusion == "success")] | length) / $ecount | round) end) as $pr
@@ -770,21 +787,50 @@ _ciq_collect_metrics() {
 # of whether metrics itself is enabled/due this cycle: the runner/queue-age signals below come
 # from data collect_once already has in hand; only the pass-rate leg needs $metrics, and simply
 # never fires when there's no metrics data yet (never treated as "wrong" by its absence).
+#
+# PR #713 review (MEDIUM): this function cannot see the collector's own process health — it only
+# ever runs AS PART OF a cycle that is already succeeding (collect_once calls it right before
+# writing $OUT, same cycle). Two honesty gaps that follow from that, and how each is covered:
+#   (a) cold start — metrics enabled but $METRICS_OUT has never once been written, so the mtime
+#       check below never fires and health silently read "ok" forever even if every metrics
+#       attempt has been failing since the feature was turned on. Fixed below: the existing
+#       consecutive-failure streak (_ciq_metrics_read_fails, already tracked for Sentry/Slack) is
+#       also checked against CI_QUEUE_DOWN_STALE_CYCLES, which is current by the time this runs
+#       (_ciq_collect_metrics always runs first in collect_once) and needs no prior snapshot to
+#       exist.
+#   (b) collector death — if collect_once itself stops completing (an earlier step keeps failing,
+#       or the invoking cron/launchd job stops firing), this function is never called again and
+#       NOTHING in $OUT, including its frozen `ci_health`, can self-report that staleness — a
+#       dead process cannot update the one field that would say so. This is deliberately NOT
+#       solved here: it is already solved one layer up, consumer-side, by
+#       skills/orchestrate/report-status.sh's `_rs_ci_queue_json` (STATUS_CI_STALE_SECS, 20 min
+#       default), which drops the ENTIRE `ci_queue` key (not just `ci_health`) once `status-ci.json`
+#       itself goes stale — a stronger, more honest signal than a stale embedded `ci_health: ok`
+#       would ever be, from the one place that's actually still running to notice.
 _ciq_compute_health() {
   local busy=$1 total=$2 qfile=$3 metrics=$4 now
 
   if [ "$total" -le 0 ] 2>/dev/null; then echo down; return; fi
 
   # down (b): metrics have been persistently failing to refresh for CI_QUEUE_DOWN_STALE_CYCLES of
-  # their own CI_QUEUE_METRICS_INTERVAL_SECS cadence. Only evaluated when metrics is enabled AND a
-  # prior snapshot already exists — an absent snapshot (metrics never once ran yet, e.g. right
-  # after this feature is first turned on) must never read as "down" on its own (no false alarm on
-  # a cold start).
-  if [ "${CI_QUEUE_METRICS_ENABLED:-0}" = "1" ] && [ -e "$METRICS_OUT" ]; then
-    local mage
-    mage=$(_ciq_age "$METRICS_OUT")
-    if [ -n "$mage" ] && [ "$mage" -gt $(( CI_QUEUE_DOWN_STALE_CYCLES * CI_QUEUE_METRICS_INTERVAL_SECS )) ] 2>/dev/null; then
-      echo down; return
+  # their own CI_QUEUE_METRICS_INTERVAL_SECS cadence. Covers both a stale-but-existing snapshot
+  # (mtime check, needs a prior snapshot) AND a cold start that has never once succeeded (fails
+  # streak, needs no prior snapshot) — either path alone must never false-alarm on its own: a
+  # brand-new enable with zero attempts yet (mtime absent, fails streak 0) stays "ok" until one of
+  # the two actually crosses the threshold.
+  if [ "${CI_QUEUE_METRICS_ENABLED:-0}" = "1" ]; then
+    if [ -e "$METRICS_OUT" ]; then
+      local mage
+      mage=$(_ciq_age "$METRICS_OUT")
+      if [ -n "$mage" ] && [ "$mage" -gt $(( CI_QUEUE_DOWN_STALE_CYCLES * CI_QUEUE_METRICS_INTERVAL_SECS )) ] 2>/dev/null; then
+        echo down; return
+      fi
+    else
+      local mfails
+      mfails=$(_ciq_metrics_read_fails)
+      if [ -n "$mfails" ] && [ "$mfails" -ge "$CI_QUEUE_DOWN_STALE_CYCLES" ] 2>/dev/null; then
+        echo down; return
+      fi
     fi
   fi
 
@@ -792,7 +838,10 @@ _ciq_compute_health() {
 
   # degraded (a): the oldest queued job has been waiting past the threshold while nobody is busy
   # (a genuinely stuck queue, not just a momentary blip) — reuses the SAME queued-jobs file the
-  # main `oldest` field is built from, zero new data collection.
+  # main `oldest` field is built from, zero new data collection. Known limit (PR #713 review, LOW):
+  # this only fires when `$busy` (ONLINE runners busy, across the whole org) is zero, so a job
+  # stuck behind a busy GENERAL runner while a category-specific runner sits idle is never flagged
+  # this way — acceptable for a heuristic, not comprehensive incident detection (per the issue).
   if [ "$busy" -le 0 ] 2>/dev/null && [ -s "$qfile" ]; then
     local oldest_at age2
     oldest_at=$(jq -rs 'sort_by(.queued_at) | .[0].queued_at // empty' "$qfile" 2>/dev/null)

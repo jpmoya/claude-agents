@@ -416,6 +416,14 @@ function sanitiseCiMetricsCategory(raw) {
  * here only ever drops this ONE key (never `ci_queue` as a whole) — see the comment above.
  * Returns null to omit the key.
  *
+ * `categories[]` follows this file's "sanitise by reconstruction" convention (same as
+ * `ci_queue.runners[]` below): one malformed entry drops only THAT entry, never the whole
+ * `ci_metrics` object (fixed per PR #713 review — a single bad category, e.g. a negative
+ * `avg_secs`, must not blank every category and the overall pass rate). A duplicate category key
+ * is the same shape: the duplicate entry is dropped and the first occurrence of that key wins,
+ * rather than dropping everything. `as_of`/`pass_rate_pct`/`pass_rate_n` stay whole-drop — they
+ * are top-level fields of `ci_metrics` itself, not entries in a reconstructed list.
+ *
  * `pass_rate_pct`/`pass_rate_n` are the issue's "today's OVERALL pass/fail rate" — computed by
  * the collector from today's eligible runs across ALL 4 categories at once (never a weighted
  * average re-derived from the per-category rates below, which would let a stale prior-day run
@@ -427,10 +435,15 @@ function sanitiseCiMetrics(raw) {
   if (!isPlainObject(raw)) return null;
   if (!isIsoTimestamp(raw.as_of)) return null;
   if (!Array.isArray(raw.categories) || raw.categories.length > MAX_CI_METRICS_CATEGORIES) return null;
-  const categories = raw.categories.map(sanitiseCiMetricsCategory);
-  if (categories.some((c) => c === null)) return null;
-  const keys = categories.map((c) => c.key);
-  if (new Set(keys).size !== keys.length) return null; // no duplicate category keys
+  const seenKeys = new Set();
+  const categories = [];
+  for (const rawCategory of raw.categories) {
+    const category = sanitiseCiMetricsCategory(rawCategory);
+    if (category === null) continue; // drop only this bad entry
+    if (seenKeys.has(category.key)) continue; // duplicate key: keep the first occurrence only
+    seenKeys.add(category.key);
+    categories.push(category);
+  }
   const passRate = sanitiseMetricsPassRate(raw.pass_rate_pct);
   if (passRate === undefined) return null;
   if (!isIntInRange(raw.pass_rate_n, 0, MAX_METRICS_N)) return null;

@@ -139,6 +139,9 @@ test_ciqm_ac_duration_and_pass_rate_per_category() {
 }
 
 # ---- AC: conclusion:null excluded from pass/fail rate, not counted as a failure ---------------
+# Reworked per PR #713 review (MEDIUM): a null-conclusion run is now ALSO excluded from n/duration
+# (same eligibility filter as pass_rate, and as cancelled/skipped below) -- it never really ran to
+# a verdict, so it shouldn't drag the category's avg/p50/p90 either.
 test_ciqm_ac_null_conclusion_excluded_from_pass_rate_not_a_failure() {
   local pipe fixdir reposfile out cat
   pipe=$(mktemp -d); fixdir=$(mktemp -d); reposfile=$(mktemp)
@@ -155,7 +158,7 @@ test_ciqm_ac_null_conclusion_excluded_from_pass_rate_not_a_failure() {
   rm -rf "$pipe" "$fixdir"; rm -f "$reposfile"
 
   cat=$(printf '%s' "$out" | jq -c '.ci_metrics.categories[] | select(.key=="sales_tool_pr")')
-  assert_eq "$(printf '%s' "$cat" | jq '.n')" "2" "null-conclusion run still counts toward n/duration" || return 1
+  assert_eq "$(printf '%s' "$cat" | jq '.n')" "1" "null-conclusion run is excluded from n/duration too (only the 1 success counts)" || return 1
   assert_eq "$(printf '%s' "$cat" | jq '.pass_rate_pct')" "100" "null-conclusion run excluded from the pass_rate denominator (1/1, not 1/2)" || return 1
 }
 
@@ -205,15 +208,27 @@ test_ciqm_ac_dedup_by_id_across_the_scheduler_ops_tool_alias() {
 }
 
 # ---- AC: exactly 1 status=completed call per tracked repo per metrics cycle -------------------
+# test-reviewer finding (PR #713, Tier 2 coverage gap): proving this with EMPTY completed-run
+# fixtures can't catch a regression that adds a per-run lookup (e.g. a `/jobs` call per completed
+# run, mirroring the queue path's own per-job lookups) — with zero runs in the response, such a
+# lookup loop would never execute even if it existed. Each repo below gets multiple completed runs
+# (several categories, several ids) so a broken "no per-job lookups" guarantee would actually fire
+# extra calls and this assertion would catch it.
 test_ciqm_ac_exactly_one_completed_call_per_repo() {
   local pipe fixdir reposfile calls_off calls_on
   pipe=$(mktemp -d); fixdir=$(mktemp -d); reposfile=$(mktemp)
   _ciqm_repos_file "$reposfile" "Benjis-Plants/benjis-sales-tool" "Benjis-Plants/benjis-ops-tool" "jpmoya/claude-agents"
   _ciqm_empty_queue_fixtures "$fixdir" "Benjis-Plants/benjis-sales-tool" "Benjis-Plants/benjis-ops-tool" "jpmoya/claude-agents"
   _ciqm_online_runners "$fixdir" 1 0
-  _ciqm_write_completed "$fixdir" "Benjis-Plants/benjis-sales-tool"
-  _ciqm_write_completed "$fixdir" "Benjis-Plants/benjis-ops-tool"
-  _ciqm_write_completed "$fixdir" "jpmoya/claude-agents"
+  _ciqm_write_completed "$fixdir" "Benjis-Plants/benjis-sales-tool" \
+    "$(_ciqm_run_obj 1 Benjis-Plants/benjis-sales-tool "CI" pull_request feature-a success "2026-11-10T09:00:00Z" "2026-11-10T09:01:00Z")" \
+    "$(_ciqm_run_obj 2 Benjis-Plants/benjis-sales-tool "CI" pull_request feature-b failure "2026-11-10T09:00:00Z" "2026-11-10T09:02:00Z")"
+  _ciqm_write_completed "$fixdir" "Benjis-Plants/benjis-ops-tool" \
+    "$(_ciqm_run_obj 3 Benjis-Plants/benjis-ops-tool "Deploy to production" push main success "2026-11-10T09:00:00Z" "2026-11-10T09:08:00Z")" \
+    "$(_ciqm_run_obj 4 Benjis-Plants/benjis-ops-tool "Deploy to staging" push staging success "2026-11-10T09:00:00Z" "2026-11-10T09:00:50Z")" \
+    "$(_ciqm_run_obj 5 Benjis-Plants/benjis-ops-tool "CI" pull_request feature-c success "2026-11-10T09:00:00Z" "2026-11-10T09:00:20Z")"
+  _ciqm_write_completed "$fixdir" "jpmoya/claude-agents" \
+    "$(_ciqm_run_obj 6 jpmoya/claude-agents "CI" pull_request feature-d success "2026-11-10T09:00:00Z" "2026-11-10T09:00:30Z")"
 
   # Baseline: metrics disabled (default) -> queue-only call count.
   ( CI_QUEUE_FORCE=1 CI_QUEUE_OUT="$pipe/status-ci.json" CI_QUEUE_ATTEMPT_FILE="$pipe/attempt" \
@@ -226,7 +241,7 @@ test_ciqm_ac_exactly_one_completed_call_per_repo() {
   calls_on=$(_ciqm_calls "$pipe")
   rm -rf "$pipe" "$fixdir"; rm -f "$reposfile"
 
-  assert_eq "$((calls_on - calls_off))" "3" "AC: metrics adds exactly 1 completed-run call per tracked repo (3 repos -> +3)" || return 1
+  assert_eq "$((calls_on - calls_off))" "3" "AC: metrics adds exactly 1 completed-run call per tracked repo, even with multiple completed runs per repo (3 repos -> +3, no per-run lookups)" || return 1
 }
 
 # ---- AC: all runners offline -> ci_health down -------------------------------------------------
@@ -288,7 +303,7 @@ test_ciqm_ac_ok_when_nothing_is_wrong() {
 
 # ---- AC: malformed status=completed response -> previous ci_metrics/ci_health kept untouched --
 test_ciqm_ac_malformed_completed_response_keeps_previous_snapshot() {
-  local pipe fixdir reposfile before_metrics before_health after_metrics after_health out
+  local pipe fixdir reposfile before_metrics before_health after_metrics after_health out out1
   pipe=$(mktemp -d); fixdir=$(mktemp -d); reposfile=$(mktemp)
   _ciqm_repos_file "$reposfile" "Benjis-Plants/benjis-sales-tool"
   _ciqm_empty_queue_fixtures "$fixdir" "Benjis-Plants/benjis-sales-tool"
@@ -298,17 +313,29 @@ test_ciqm_ac_malformed_completed_response_keeps_previous_snapshot() {
 
   _ciqm_run "$pipe" "$fixdir" "$reposfile" CI_QUEUE_NOW=1794308400 >/dev/null
   before_metrics=$(cat "$pipe/ci-metrics.json" 2>/dev/null)
+  out1=$(cat "$pipe/status-ci.json" 2>/dev/null)
+  before_health=$(printf '%s' "$out1" | jq -r '.ci_health')
 
   # Next cycle: malformed (missing "workflow_runs") completed response.
   echo '{}' > "$fixdir/runs-Benjis-Plants__benjis-sales-tool-completed.json"
   _ciqm_run "$pipe" "$fixdir" "$reposfile" CI_QUEUE_NOW=1794308700 >/dev/null
   after_metrics=$(cat "$pipe/ci-metrics.json" 2>/dev/null)
   out=$(cat "$pipe/status-ci.json" 2>/dev/null)
+  after_health=$(printf '%s' "$out" | jq -r '.ci_health')
   rm -rf "$pipe" "$fixdir"; rm -f "$reposfile"
 
   assert_eq "$before_metrics" "$after_metrics" "a malformed completed-runs response leaves the previous ci_metrics snapshot byte-identical" || return 1
   assert_ne "$out" "" "the rest of the cycle (ci_queue itself) still succeeds and writes \$OUT" || return 1
   assert_eq "$(printf '%s' "$out" | jq -c '.ci_metrics')" "$(printf '%s' "$after_metrics" | jq -c .)" "the carried-forward ci_metrics still rides along in \$OUT" || return 1
+  # test-reviewer finding (PR #713, Tier 2 coverage gap): the AC also covers ci_health being left
+  # untouched by a malformed completed-runs response, not just ci_metrics — both snapshots here are
+  # computed fresh each cycle from the same still-good runner/queue signals, so ci_health staying
+  # "ok" across the malformed cycle is the honest expectation (not a frozen carry-forward like
+  # ci_metrics, since ci_health has no API dependency of its own on this path).
+  # jq -r on a missing key prints the literal string "null", not empty -- assert the real expected
+  # value directly rather than a non-empty guard that a "null" string would also satisfy.
+  assert_eq "$before_health" "ok" "sanity: the first cycle really did compute a real ci_health value (online+busy runner, nothing wrong)" || return 1
+  assert_eq "$before_health" "$after_health" "ci_health is unaffected by a malformed completed-runs response (still computed from the unaffected runner/queue signals)" || return 1
 }
 
 # ---- AC: metrics disabled by default -- zero behavior change for an un-opted-in invocation ----
@@ -414,6 +441,9 @@ test_ciqm_ac_long_duration_clamped_keeps_category_present() {
 }
 
 # ---- AC: cancelled/skipped are excluded from pass/fail rate, never counted as failures ----------
+# Reworked per PR #713 review (MEDIUM — duration must use the SAME run-status filter as pass
+# rate): cancelled/skipped runs finish in seconds (a supersede or a path-filter skip, not real CI
+# work) and are now excluded from duration/n too, not just from the pass_rate denominator.
 test_ciqm_ac_cancelled_and_skipped_excluded_not_counted_as_failures() {
   local pipe fixdir reposfile out cat
   pipe=$(mktemp -d); fixdir=$(mktemp -d); reposfile=$(mktemp)
@@ -430,8 +460,76 @@ test_ciqm_ac_cancelled_and_skipped_excluded_not_counted_as_failures() {
   cat=$(printf '%s' "$out" | jq -c '.ci_metrics.categories[] | select(.key=="sales_tool_pr")')
   rm -rf "$pipe" "$fixdir"; rm -f "$reposfile"
 
-  assert_eq "$(printf '%s' "$cat" | jq '.n')" "3" "cancelled/skipped runs still count toward n/duration" || return 1
+  assert_eq "$(printf '%s' "$cat" | jq '.n')" "1" "cancelled/skipped runs are excluded from n/duration too, consistent with the pass_rate filter (only the 1 success counts)" || return 1
   assert_eq "$(printf '%s' "$cat" | jq '.pass_rate_pct')" "100" "cancelled/skipped excluded from the pass_rate denominator (1/1, not 1/3)" || return 1
+}
+
+# ---- AC (PR #713 review follow-up): a category whose runs are ALL cancelled/skipped is omitted
+# entirely (zero duration-eligible runs), same "zero eligible runs -> omitted" shape as zero
+# completed runs -- never a jq division-by-zero crash, never a zeroed/null-average entry.
+test_ciqm_ac_category_with_only_cancelled_skipped_is_omitted() {
+  local pipe fixdir reposfile out n key
+  pipe=$(mktemp -d); fixdir=$(mktemp -d); reposfile=$(mktemp)
+  _ciqm_repos_file "$reposfile" "Benjis-Plants/benjis-sales-tool" "Benjis-Plants/benjis-ops-tool"
+  _ciqm_empty_queue_fixtures "$fixdir" "Benjis-Plants/benjis-sales-tool" "Benjis-Plants/benjis-ops-tool"
+  _ciqm_online_runners "$fixdir" 1 1
+  _ciqm_write_completed "$fixdir" "Benjis-Plants/benjis-sales-tool" \
+    "$(_ciqm_run_obj 1 Benjis-Plants/benjis-sales-tool "CI" pull_request feature-a cancelled "2026-11-10T09:00:00Z" "2026-11-10T09:01:00Z")" \
+    "$(_ciqm_run_obj 2 Benjis-Plants/benjis-sales-tool "CI" pull_request feature-b skipped "2026-11-10T09:00:00Z" "2026-11-10T09:01:00Z")"
+  _ciqm_write_completed "$fixdir" "Benjis-Plants/benjis-ops-tool" \
+    "$(_ciqm_run_obj 3 Benjis-Plants/benjis-ops-tool "CI" pull_request feature-c success "2026-11-10T09:00:00Z" "2026-11-10T09:01:00Z")"
+
+  _ciqm_run "$pipe" "$fixdir" "$reposfile" CI_QUEUE_NOW=1794308400 >/dev/null
+  out=$(cat "$pipe/status-ci.json" 2>/dev/null)
+  n=$(printf '%s' "$out" | jq '.ci_metrics.categories | length')
+  key=$(printf '%s' "$out" | jq -r '.ci_metrics.categories[0].key')
+  rm -rf "$pipe" "$fixdir"; rm -f "$reposfile"
+
+  assert_eq "$n" "1" "a category whose runs are all cancelled/skipped is omitted entirely (only ops_tool_pr survives)" || return 1
+  assert_eq "$key" "ops_tool_pr" "the one present category is ops_tool_pr" || return 1
+}
+
+# ---- AC (PR #713 review follow-up): a cancelled/skipped run never drags the surviving avg down --
+test_ciqm_ac_cancelled_run_excluded_from_average_duration() {
+  local pipe fixdir reposfile out cat
+  pipe=$(mktemp -d); fixdir=$(mktemp -d); reposfile=$(mktemp)
+  _ciqm_repos_file "$reposfile" "Benjis-Plants/benjis-sales-tool"
+  _ciqm_empty_queue_fixtures "$fixdir" "Benjis-Plants/benjis-sales-tool"
+  _ciqm_online_runners "$fixdir" 1 1
+  # A real 600s success plus a 5s cancelled run (a concurrency-group supersede) -- the cancelled
+  # run must never drag the category's avg/p50/p90 toward 5s.
+  _ciqm_write_completed "$fixdir" "Benjis-Plants/benjis-sales-tool" \
+    "$(_ciqm_run_obj 1 Benjis-Plants/benjis-sales-tool "CI" pull_request feature-a success "2026-11-10T09:00:00Z" "2026-11-10T09:10:00Z")" \
+    "$(_ciqm_run_obj 2 Benjis-Plants/benjis-sales-tool "CI" pull_request feature-b cancelled "2026-11-10T09:00:00Z" "2026-11-10T09:00:05Z")"
+
+  _ciqm_run "$pipe" "$fixdir" "$reposfile" CI_QUEUE_NOW=1794308400 >/dev/null
+  out=$(cat "$pipe/status-ci.json" 2>/dev/null)
+  cat=$(printf '%s' "$out" | jq -c '.ci_metrics.categories[] | select(.key=="sales_tool_pr")')
+  rm -rf "$pipe" "$fixdir"; rm -f "$reposfile"
+
+  assert_eq "$cat" '{"key":"sales_tool_pr","n":1,"avg_secs":600,"p50_secs":600,"p90_secs":600,"pass_rate_pct":100}' \
+    "the cancelled 5s run is excluded, leaving avg/p50/p90 at the real 600s success (n=1)" || return 1
+}
+
+# ---- AC (PR #713 review follow-up): duration is a ROLLING window, never restricted to today -----
+test_ciqm_ac_prior_day_success_still_counts_toward_duration() {
+  local pipe fixdir reposfile out cat
+  pipe=$(mktemp -d); fixdir=$(mktemp -d); reposfile=$(mktemp)
+  _ciqm_repos_file "$reposfile" "Benjis-Plants/benjis-sales-tool"
+  _ciqm_empty_queue_fixtures "$fixdir" "Benjis-Plants/benjis-sales-tool"
+  _ciqm_online_runners "$fixdir" 1 1
+  # A run that completed the day BEFORE "now" -- not today-eligible for pass_rate, but must still
+  # count toward n/avg/p50/p90 (duration is a rolling window over every fetched completed run).
+  _ciqm_write_completed "$fixdir" "Benjis-Plants/benjis-sales-tool" \
+    "$(_ciqm_run_obj 1 Benjis-Plants/benjis-sales-tool "CI" pull_request feature-a success "2026-11-09T09:00:00Z" "2026-11-09T09:01:40Z")"
+
+  _ciqm_run "$pipe" "$fixdir" "$reposfile" CI_QUEUE_NOW=1794308400 >/dev/null   # "now" is 2026-11-10
+  out=$(cat "$pipe/status-ci.json" 2>/dev/null)
+  cat=$(printf '%s' "$out" | jq -c '.ci_metrics.categories[] | select(.key=="sales_tool_pr")')
+  rm -rf "$pipe" "$fixdir"; rm -f "$reposfile"
+
+  assert_eq "$cat" '{"key":"sales_tool_pr","n":1,"avg_secs":100,"p50_secs":100,"p90_secs":100,"pass_rate_pct":null}' \
+    "a prior-day success still counts toward n/avg/p50/p90 (rolling window), even though it's excluded from pass_rate_pct (not today)" || return 1
 }
 
 # ---- Observability: Sentry capture on a malformed completed-runs response ----------------------
@@ -487,6 +585,11 @@ test_ciqm_ac_missing_timestamp_aborts_keeps_previous_snapshot() {
   after=$(cat "$pipe/ci-metrics.json" 2>/dev/null)
   rm -rf "$pipe" "$fixdir"; rm -f "$reposfile"
 
+  # test-reviewer finding (PR #713, Tier 1 vacuous): without this guard, a reverted/missing
+  # collector never writes ci-metrics.json at all, so before="" and after="" satisfy the equality
+  # below with nothing actually aborted/preserved — this pins that the first cycle really did
+  # write a real snapshot before the second cycle's abort is checked against it.
+  assert_ne "$before" "" "sanity: the first cycle really did write a real ci_metrics snapshot" || return 1
   assert_eq "$before" "$after" "a matched run missing run_started_at aborts the metrics cycle cleanly, previous snapshot byte-identical" || return 1
 }
 
@@ -606,6 +709,36 @@ test_ciqm_ac_stale_metrics_snapshot_is_down() {
   assert_eq "$(printf '%s' "$out" | jq -r '.ci_health')" "down" "a metrics snapshot stale past 3 of its own 15-min cycles -> down" || return 1
 }
 
+# ---- AC (PR #713 review, MEDIUM — cold-start honesty): metrics enabled, never once succeeded, no
+# prior $METRICS_OUT to check staleness against -> ci_health must still read "down" once the
+# consecutive-failure streak reaches CI_QUEUE_DOWN_STALE_CYCLES, not silently "ok" forever just
+# because there's no snapshot file yet.
+test_ciqm_ac_cold_start_down_after_stale_cycles_with_no_prior_snapshot() {
+  local pipe fixdir reposfile out health1 health3 metrics_file
+  pipe=$(mktemp -d); fixdir=$(mktemp -d); reposfile=$(mktemp)
+  _ciqm_repos_file "$reposfile" "Benjis-Plants/benjis-sales-tool"
+  _ciqm_empty_queue_fixtures "$fixdir" "Benjis-Plants/benjis-sales-tool"
+  _ciqm_online_runners "$fixdir" 1 1   # online + busy -- proves this isn't the zero-runners/stuck-queue leg
+  echo '{}' > "$fixdir/runs-Benjis-Plants__benjis-sales-tool-completed.json"   # malformed every cycle, never succeeds
+
+  _ciqm_run "$pipe" "$fixdir" "$reposfile" CI_QUEUE_NOW=1794308400 >/dev/null
+  out=$(cat "$pipe/status-ci.json" 2>/dev/null)
+  health1=$(printf '%s' "$out" | jq -r '.ci_health')
+
+  _ciqm_run "$pipe" "$fixdir" "$reposfile" CI_QUEUE_NOW=1794308400 >/dev/null
+  _ciqm_run "$pipe" "$fixdir" "$reposfile" CI_QUEUE_NOW=1794308400 >/dev/null
+  out=$(cat "$pipe/status-ci.json" 2>/dev/null)
+  health3=$(printf '%s' "$out" | jq -r '.ci_health')
+  metrics_file=$(cat "$pipe/ci-metrics.json" 2>/dev/null)
+  rm -rf "$pipe" "$fixdir"; rm -f "$reposfile"
+
+  assert_eq "$metrics_file" "" "sanity: the collector really never once wrote a successful ci-metrics.json snapshot" || return 1
+  # jq -r on a missing/non-string ci_health would print "null", not empty -- assert the real
+  # expected value ("ok", not just "not down") so a broken/garbage value can't slip through.
+  assert_eq "$health1" "ok" "a single metrics failure, with no prior snapshot, is not yet down (output: $health1)" || return 1
+  assert_eq "$health3" "down" "3 consecutive metrics failures with no prior snapshot -> down (cold-start honesty)" || return 1
+}
+
 run_test test_ciqm_ac_duration_and_pass_rate_per_category
 run_test test_ciqm_ac_null_conclusion_excluded_from_pass_rate_not_a_failure
 run_test test_ciqm_ac_zero_runs_in_category_is_omitted
@@ -619,9 +752,13 @@ run_test test_ciqm_disabled_by_default_adds_zero_calls_and_no_key
 run_test test_ciqm_own_throttle_skips_a_not_yet_due_cycle
 run_test test_ciqm_ac_long_duration_clamped_keeps_category_present
 run_test test_ciqm_ac_cancelled_and_skipped_excluded_not_counted_as_failures
+run_test test_ciqm_ac_category_with_only_cancelled_skipped_is_omitted
+run_test test_ciqm_ac_cancelled_run_excluded_from_average_duration
+run_test test_ciqm_ac_prior_day_success_still_counts_toward_duration
 run_test test_ciqm_obs_sentry_capture_on_malformed_completed_response
 run_test test_ciqm_ac_missing_timestamp_aborts_keeps_previous_snapshot
 run_test test_ciqm_obs_slack_only_on_third_consecutive_metrics_failure
 run_test test_ciqm_ac_low_pass_rate_is_degraded
 run_test test_ciqm_ac_overall_rate_not_weighted_by_stale_category_n
 run_test test_ciqm_ac_stale_metrics_snapshot_is_down
+run_test test_ciqm_ac_cold_start_down_after_stale_cycles_with_no_prior_snapshot

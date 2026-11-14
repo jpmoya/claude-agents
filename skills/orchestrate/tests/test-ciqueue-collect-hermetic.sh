@@ -10,6 +10,14 @@
 HERE_CQH=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 RS_CQH="$HERE_CQH/.."
 
+# repos_file_count — number of owner/repo lines in the collector's default REPOS_FILE
+# (scripts/ci-metrics.repos), same filter the collector's own `repos()` uses (excludes the
+# trailing SLOTS=N line) — lets an end-to-end test assert an exact per-repo call count without
+# hardcoding (or drifting from) that file's current contents.
+repos_file_count() {
+  grep -c -E '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+[[:space:]]*$' "$HERE_CQH/../../../scripts/ci-metrics.repos" 2>/dev/null
+}
+
 # cqh_write_fake_gh <dir> <marker> — proves invocation positively (touches <marker>) rather than
 # by absence of a side effect that might never have fired anyway. Mirrors test-ac6-disabled-noop.sh's
 # fake-curl pattern; this fakes `gh` since ci-queue-collect.sh shells out to `gh api`.
@@ -24,6 +32,33 @@ EOF
   chmod +x "$dir/gh"
   # report-status.sh backgrounds the collector with curl/Sentry+Slack reachable too; a no-op fake
   # curl keeps this hermetic in case a stray failure path tries to phone home.
+  cat > "$dir/curl" <<'EOF'
+#!/bin/bash
+exit 0
+EOF
+  chmod +x "$dir/curl"
+}
+
+# cqh_write_fake_gh_shaped <dir> <callslog> — a `gh` fake shaped enough for the REAL
+# ci-queue-collect.sh to run an entire cycle end to end without a FIXTURE_DIR: any
+# `actions/runners` call gets zero runners, everything else (queued/in_progress/completed run
+# lists, job lookups) gets an empty `workflow_runs`/`jobs` list — every `_ciq_call_shaped` required
+# key is present, so no step aborts early before reaching the metrics gate under test. Every
+# invocation's raw "$*" is appended to <callslog> (test-reviewer finding, PR #713: proves what the
+# collector did or didn't call, not just that it exited 0).
+cqh_write_fake_gh_shaped() {
+  local dir=$1 callslog=$2
+  cat > "$dir/gh" <<EOF
+#!/bin/bash
+echo "\$*" >> "$callslog"
+case "\$*" in
+  *"actions/runners"*) echo '{"total_count":0,"runners":[]}' ;;
+  *"/jobs"*"filter=latest"*) echo '{"jobs":[]}' ;;
+  *) echo '{"workflow_runs":[]}' ;;
+esac
+exit 0
+EOF
+  chmod +x "$dir/gh"
   cat > "$dir/curl" <<'EOF'
 #!/bin/bash
 exit 0
@@ -88,16 +123,55 @@ test_cqh_metrics_enabled_defaults_to_1_via_config_sh() {
   assert_eq "$out" "1" "CI_QUEUE_METRICS_ENABLED, left completely unset, defaults to 1 via config.sh (output: $out)" || return 1
 }
 
-test_cqh_metrics_enabled_host_opt_out_via_config_local_sh() {
-  local home out
-  home=$(new_home)
-  cat > "$home/.claude/pipeline/config.local.sh" <<'EOF'
-CI_QUEUE_METRICS_ENABLED=0
-EOF
-  out=$(HOME="$home" bash -c 'unset CI_QUEUE_METRICS_ENABLED; set -u; . "$1/config.sh"; echo "$CI_QUEUE_METRICS_ENABLED"' _ "$RS_CQH" 2>&1)
-  rm -rf "$home"
+# _cqh_metrics_e2e_completed_calls <config.local.sh-body> -> number of "status=completed" gh
+# invocations made by the REAL collector, launched end to end through the REAL report-status.sh
+# (same launch line #660 touched), under the given host config.local.sh. No FIXTURE_DIR: a shaped
+# fake `gh` (cqh_write_fake_gh_shaped) lets every real step of collect_once succeed so execution
+# actually reaches the metrics gate under test, instead of aborting early on unrelated fixture gaps.
+_cqh_metrics_e2e_completed_calls() {
+  local body=$1 pipe home bindir callslog out
+  pipe=$(new_pipe); home=$(new_home)
+  printf '%s\n' "$body" > "$home/.claude/pipeline/config.local.sh"
+  bindir=$(mktemp -d "${TMPDIR:-/tmp}/orch-test-bin.XXXXXX")
+  callslog=$(mktemp -u "${TMPDIR:-/tmp}/orch-gh-calls.XXXXXX")
+  cqh_write_fake_gh_shaped "$bindir" "$callslog"
 
-  assert_eq "$out" "0" "a host's own config.local.sh setting CI_QUEUE_METRICS_ENABLED=0 opts out, overriding config.sh's default (output: $out)" || return 1
+  ( PIPE="$pipe" HOME="$home" \
+    CI_QUEUE_COLLECT_TEST_DISABLE=0 \
+    STATUS_PUSH_URL="https://example.invalid/beat" STATUS_PUSH_TOKEN="fake-token-value" \
+    PATH="$bindir:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" \
+    "$RS_CQH/report-status.sh" event ) >/dev/null 2>&1
+
+  # 30s, not 10s: this waits on a REAL multi-call collector cycle (runners + 2 calls per tracked
+  # repo + possibly the completed-run call), on a possibly-busy shared CI runner -- cqh_poll_marker
+  # returns as soon as the file appears, so a generous ceiling costs nothing on a fast machine but
+  # avoids a false FAIL from timing rather than a real code bug on a slow/busy one.
+  cqh_poll_marker "$pipe/status-ci.json" 30
+  out=$(grep -c "status=completed" "$callslog" 2>/dev/null)
+  rm -rf "$pipe" "$home" "$bindir"; rm -f "$callslog"
+  printf '%s' "${out:-0}"
+}
+
+# test-reviewer finding (PR #713, Tier 1 vacuous): the config.sh-only version of this test
+# ("source config.sh, check the final value") passed identically even with config.sh fully
+# reverted to pre-#660 — a plain CI_QUEUE_METRICS_ENABLED=0 in config.local.sh survives being
+# sourced regardless of whether config.sh's own default logic exists at all (config.local.sh
+# sourcing predates #660), and an opt-out that suppresses a call which doesn't exist yet proves
+# nothing on its own. Strengthened to run the REAL collector end to end through report-status.sh
+# and compare TWO scenarios: (A) CI_QUEUE_COLLECT_ENABLED=1 alone, metrics left unset — this must
+# make a real `status=completed` call per tracked repo (scripts/ci-metrics.repos), proving the
+# #660 feature exists and defaults ON; a full revert makes this call count 0, going red. (B) the
+# SAME setup plus the host's own CI_QUEUE_METRICS_ENABLED=0 override — this must suppress it
+# entirely, proving the opt-out actually works (not just that config.local.sh survives sourcing).
+test_cqh_metrics_enabled_host_opt_out_via_config_local_sh() {
+  local n_repos n_default n_opt_out
+  n_repos=$(repos_file_count)
+
+  n_default=$(_cqh_metrics_e2e_completed_calls 'CI_QUEUE_COLLECT_ENABLED=1')
+  assert_eq "$n_default" "$n_repos" "metrics defaults ON (no override): one status=completed call per tracked repo (output: $n_default, expected $n_repos)" || return 1
+
+  n_opt_out=$(_cqh_metrics_e2e_completed_calls "$(printf 'CI_QUEUE_COLLECT_ENABLED=1\nCI_QUEUE_METRICS_ENABLED=0\n')")
+  assert_eq "$n_opt_out" "0" "a host's own config.local.sh setting CI_QUEUE_METRICS_ENABLED=0 opts out: zero status=completed calls (output: $n_opt_out)" || return 1
 }
 
 test_cqh_report_status_never_shells_to_gh_end_to_end() {

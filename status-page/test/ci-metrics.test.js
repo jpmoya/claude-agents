@@ -82,21 +82,43 @@ describe('ci_metrics/ci_health absent or malformed: additive, never drops the re
     expect(r.value.ci_queue.ci_metrics).toEqual(validCiMetrics());
   });
 
-  it('a category key not in CI_METRICS_CATEGORY_VOCAB drops ci_metrics only', () => {
+  // PR #713 review (HIGH): a single malformed category must drop only that entry, following the
+  // file's "sanitise by reconstruction" convention — never blank the whole ci_metrics object.
+  it('a category key not in CI_METRICS_CATEGORY_VOCAB drops only that category, ci_metrics survives', () => {
     const ciQueue = validCiQueueWithMetrics();
+    const goodKeys = ciQueue.ci_metrics.categories.slice(1).map((c) => c.key);
     ciQueue.ci_metrics.categories[0] = { ...validCiMetricsCategory(), key: 'spam' };
     const r = validateBeatPayload(validPayload({ ci_queue: ciQueue }));
     expect(r.ok).toBe(true);
-    expect(r.value.ci_queue).not.toHaveProperty('ci_metrics');
+    expect(r.value.ci_queue.ci_metrics.categories.map((c) => c.key)).toEqual(goodKeys);
     expect(r.value.ci_queue.ci_health).toBe('ok');
   });
 
-  it('a duplicate category key drops ci_metrics only', () => {
+  it('a duplicate category key drops the later entry, the first occurrence survives', () => {
     const ciQueue = validCiQueueWithMetrics();
-    ciQueue.ci_metrics.categories[1] = { ...ciQueue.ci_metrics.categories[1], key: ciQueue.ci_metrics.categories[0].key };
+    const firstKey = ciQueue.ci_metrics.categories[0].key;
+    const firstEntry = ciQueue.ci_metrics.categories[0];
+    const expectedKeys = ciQueue.ci_metrics.categories.filter((_, i) => i !== 1).map((c) => c.key);
+    ciQueue.ci_metrics.categories[1] = { ...ciQueue.ci_metrics.categories[1], key: firstKey };
     const r = validateBeatPayload(validPayload({ ci_queue: ciQueue }));
     expect(r.ok).toBe(true);
-    expect(r.value.ci_queue).not.toHaveProperty('ci_metrics');
+    expect(r.value.ci_queue.ci_metrics.categories.map((c) => c.key)).toEqual(expectedKeys);
+    expect(r.value.ci_queue.ci_metrics.categories[0]).toEqual(firstEntry);
+  });
+
+  // PR #713 review regression: one good category plus one malformed category still yields
+  // ci_metrics, with the good category present (the exact repro the HIGH finding verified).
+  it('a valid prod_deploy plus a malformed ops_tool_pr still yields ci_metrics with prod_deploy present', () => {
+    const prodDeploy = validCiMetricsCategory({ key: 'prod_deploy' });
+    const ciQueue = validCiQueueWithMetrics({
+      ci_metrics: validCiMetrics({
+        categories: [prodDeploy, { ...validCiMetricsCategory({ key: 'ops_tool_pr' }), avg_secs: -5 }],
+      }),
+    });
+    const r = validateBeatPayload(validPayload({ ci_queue: ciQueue }));
+    expect(r.ok).toBe(true);
+    expect(r.value.ci_queue).toHaveProperty('ci_metrics');
+    expect(r.value.ci_queue.ci_metrics.categories).toEqual([prodDeploy]);
   });
 
   it('more than 4 category entries drops ci_metrics only', () => {
@@ -118,12 +140,13 @@ describe('ci_metrics/ci_health absent or malformed: additive, never drops the re
     ['pass_rate_pct', -1],
     ['pass_rate_pct', 101],
     ['pass_rate_pct', '50'],
-  ])('an invalid %s (%j) drops ci_metrics only', (field, value) => {
+  ])('an invalid %s (%j) drops only that category, ci_metrics survives', (field, value) => {
     const ciQueue = validCiQueueWithMetrics();
+    const goodKeys = ciQueue.ci_metrics.categories.slice(1).map((c) => c.key);
     ciQueue.ci_metrics.categories[0] = { ...validCiMetricsCategory(), [field]: value };
     const r = validateBeatPayload(validPayload({ ci_queue: ciQueue }));
     expect(r.ok).toBe(true);
-    expect(r.value.ci_queue).not.toHaveProperty('ci_metrics');
+    expect(r.value.ci_queue.ci_metrics.categories.map((c) => c.key)).toEqual(goodKeys);
   });
 
   it('a non-ISO ci_metrics.as_of drops ci_metrics only', () => {
