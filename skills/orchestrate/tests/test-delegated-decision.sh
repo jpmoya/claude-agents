@@ -193,7 +193,9 @@ test_dd_ac4_awaiting_go_then_decision_stays_a_gate() {
 }
 
 test_dd_ac4_mockups_pending_then_jp_confirmed_stays_a_gate() {
-  dd_thread '**[ui-ux-designer] MOCKUPS PENDING APPROVAL**' $'**[project-manager] JP CONFIRMED**\nResolves: https://example.test/c/1'
+  # #701: skip-by-default now — needs JP's REVIEW MOCKUPS marker present to be a gate at all; the carve-out
+  # this pins (a [delivery-lead]/[project-manager] decision never lifts it) is otherwise unchanged.
+  dd_thread '**[ui-ux-designer] MOCKUPS PENDING APPROVAL**' '**[jp] REVIEW MOCKUPS**' $'**[project-manager] JP CONFIRMED**\nResolves: https://example.test/c/1'
   dd_tick
   dd_assert_gate "AC4 MOCKUPS" "MOCKUPS PENDING APPROVAL" "JP CONFIRMED" || return 1
 }
@@ -489,10 +491,19 @@ test_dd_i76_ac3_gate_rows_byte_identical_and_carve_out_keeps_exclusions() {   # 
   old=$(cd "$ROOT_DD" && git show "$base:agents/orchestrator.md" | grep -F '| `[infra-operator] AWAITING GO` + JP go comment')
   assert_ne "$cur" "" "i76 AC3: AWAITING GO + go row present" || return 1
   assert_eq "$cur" "$old" "i76 AC3: AWAITING GO + go row byte-identical" || return 1
-  cur=$(grep '^| `\[ui-ux-designer\] MOCKUPS PENDING APPROVAL`' "$ORCH_DD" | grep -v 'JP approval comment' | sed 's/ \*\*Skip marker:\*\*.* |$/ |/')   # #311: the approval row now resolves via jp_go
-  old=$(cd "$ROOT_DD" && git show "$base:agents/orchestrator.md" | grep '^| `\[ui-ux-designer\] MOCKUPS PENDING APPROVAL`' | grep -v 'JP approval comment' | sed 's/ \*\*Skip marker:\*\*.* |$/ |/')   # #434: base now carries the skip-marker sentence too
-  assert_ne "$cur" "" "i76 AC3: MOCKUPS PENDING APPROVAL rows present" || return 1
-  assert_eq "$cur" "$old" "i76 AC3: MOCKUPS PENDING APPROVAL rows byte-identical" || return 1
+  # #701: MOCKUPS PENDING APPROVAL stopped being an unconditional gate (skip-by-default; a gate only when JP
+  # asked to review), so the row's own text — and which of the two rows carries "JP approval comment" — changed
+  # in scope for that ticket. i76's actual AC3 concern was narrower: the `**Skip marker:**` clause inside these
+  # rows (JP's SKIP MOCKUPS superseding the gate) is #272/#470 territory, not i76's or #701's — pin that clause
+  # itself, verbatim, rather than the whole row.
+  cur=$(grep -oF '**Skip marker:** a valid `**[jp] SKIP MOCKUPS**` marker (exact first line, issue author, `JP said:` line 2) posted at any time will supersede this gate; the run proceeds as if approved.' "$ORCH_DD")
+  old=$(cd "$ROOT_DD" && git show "$base:agents/orchestrator.md" | grep -oF '**Skip marker:** a valid `**[jp] SKIP MOCKUPS**` marker (exact first line, issue author, `JP said:` line 2) posted at any time will supersede this gate; the run proceeds as if approved.')
+  assert_ne "$cur" "" "i76 AC3: MOCKUPS PENDING APPROVAL gate's Skip marker clause present" || return 1
+  assert_eq "$cur" "$old" "i76 AC3: MOCKUPS PENDING APPROVAL gate's Skip marker clause byte-identical" || return 1
+  cur=$(grep -oF '**Skip marker:** a valid `**[jp] SKIP MOCKUPS**` marker (exact first line, issue author, `JP said:` line 2) counts as the approval, with the same next stage.' "$ORCH_DD")
+  old=$(cd "$ROOT_DD" && git show "$base:agents/orchestrator.md" | grep -oF '**Skip marker:** a valid `**[jp] SKIP MOCKUPS**` marker (exact first line, issue author, `JP said:` line 2) counts as the approval, with the same next stage.')
+  assert_ne "$cur" "" "i76 AC3: MOCKUPS PENDING APPROVAL approval row's Skip marker clause present" || return 1
+  assert_eq "$cur" "$old" "i76 AC3: MOCKUPS PENDING APPROVAL approval row's Skip marker clause byte-identical" || return 1
   # issue #144: the row's head now also mentions claude-agents; pin only the unsupported-project sentence (row tail).
   cur=$(grep -F "the project isn't in its supported list" "$ORCH_DD" | sed 's/^.*\(If the deployer posts `BLOCKED` because the project isn.t in its supported list\)/\1/')
   old=$(cd "$ROOT_DD" && git show "$base:agents/orchestrator.md" | grep -F "the project isn't in its supported list" | sed 's/^.*\(If the deployer posts `BLOCKED` because the project isn.t in its supported list\)/\1/')
@@ -680,7 +691,8 @@ test_dd_i192_awaiting_go_then_delivery_lead_decision_stays_a_gate() {
 }
 
 test_dd_i192_mockups_pending_then_delivery_lead_jp_confirmed_stays_a_gate() {
-  dd_thread '**[ui-ux-designer] MOCKUPS PENDING APPROVAL**' $'**[delivery-lead] JP CONFIRMED**\nResolves: https://example.test/c/1'
+  # #701: same REVIEW MOCKUPS requirement as the legacy-spelling AC4 case above.
+  dd_thread '**[ui-ux-designer] MOCKUPS PENDING APPROVAL**' '**[jp] REVIEW MOCKUPS**' $'**[delivery-lead] JP CONFIRMED**\nResolves: https://example.test/c/1'
   dd_tick
   dd_assert_gate "i192 MOCKUPS" "MOCKUPS PENDING APPROVAL" "JP CONFIRMED" || return 1
 }

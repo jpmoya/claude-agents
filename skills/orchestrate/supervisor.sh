@@ -471,7 +471,7 @@ sw_feedback_gate() {
   out=$(latest_marker "$1" "$2" "$raw" "$author") || return 1
   case "$out" in ''|'?'*) return 1 ;; esac
   gate=$(sed -n 1p <<< "$out"); dec=$(sed -n 2p <<< "$out")
-  case "$gate" in
+  case "${gate%%\*\*}" in   # strip the trailing bold first — a literal "**[...]...**" never matches a bare *"] ..." suffix
     *"] MOCKUPS PENDING APPROVAL")
       # #701: fail closed to "1" (gate stays) unless the check runs cleanly and says "not requested".
       rr=1
@@ -1110,12 +1110,14 @@ for f in "$PIPE"/orch-*.pid; do
   # repolled, see the `.held` check above).
   mc_slug=$(repo_slug "$repo")
   mc_raw=""
-  [ -n "$mc_slug" ] && mc_raw=$(gh api "repos/$mc_slug/issues/$issue/comments?per_page=100" --paginate 2>/dev/null </dev/null)
+  if [ -n "$mc_slug" ]; then
+    mc_raw=$(gh api "repos/$mc_slug/issues/$issue/comments?per_page=100" --paginate 2>/dev/null </dev/null) || mc_raw=""   # a failed call's stderr-free stdout (an HTTP error body) must never be read as the comments list
+  fi
   marker=$(latest_marker "$repo" "$issue" "$mc_raw" "")
   decision=""
   case "$marker" in *$'\n'*) decision=${marker#*$'\n'}; marker=${marker%%$'\n'*} ;; esac   # line 2 = [delivery-lead] (or legacy [project-manager]) marker after the gate marker
   review_req=0
-  case "$marker" in
+  case "${marker%%\*\*}" in   # strip the trailing bold first — same reason terminal_kind does (a literal "**[...]...**" never matches a bare *"] ..." suffix)
     *"] MOCKUPS PENDING APPROVAL")
       if [ -n "$mc_raw" ] && mc_all=$(printf '%s' "$mc_raw" | jq -s '[.[] | if type == "array" then .[] else . end]' 2>/dev/null) && [ -n "$mc_all" ]; then
         review_mockups_requested "$mc_all" && review_req=1

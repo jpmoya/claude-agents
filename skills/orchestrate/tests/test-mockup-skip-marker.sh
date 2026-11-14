@@ -17,10 +17,17 @@ SKILL_SM="$HERE_MG/../SKILL.md"
 SM_MARK='**[jp] SKIP MOCKUPS**'
 SM_VALID=$'**[jp] SKIP MOCKUPS**\nJP said: "skip it"'
 SM_PEND='**[ui-ux-designer] MOCKUPS PENDING APPROVAL**'
+# #701: the mockup gate is skip-by-default now, so every fixture below needs JP's REVIEW MOCKUPS
+# marker first to have a real gate at all — otherwise "stays a gate" / "clears the gate" assertions
+# would pass or fail for the wrong reason (the default, with no SKIP MOCKUPS signal either way).
+# This file's own concern (#272/#470: does SKIP MOCKUPS supersede the gate) is unaffected — it is
+# tested here against a genuinely-gated ticket instead of #701's new default-ungated one.
+SM_REVIEW='**[jp] REVIEW MOCKUPS**'
 
-# sm_thread <author> <body> — gate comment then one candidate comment (issue 74), authors set
+# sm_thread <author> <body> — gate comment, REVIEW MOCKUPS (#701), then one candidate comment (issue
+# 74), authors set
 sm_thread() {
-  mg_thread "$SM_PEND" "$2"
+  mg_thread "$SM_PEND" "$SM_REVIEW" "$2"
   jq --arg a "$1" 'map(.author = {login: "jpmoya"}) | .[-1].author.login = $a' "$MG_GH/gh-issue-comments-json" > "$MG_GH/x.tmp" \
     && mv "$MG_GH/x.tmp" "$MG_GH/gh-issue-comments-json"
 }
@@ -63,12 +70,12 @@ test_sm_negative_pm_note_stays_a_gate() { sm_neg "PM NOTE" $'**[product-manager]
 test_sm_negative_empty_quote_stays_a_gate() { sm_neg "empty quote" $'**[jp] SKIP MOCKUPS**\nJP said: ""'; }
 # AC3 / ticket default "any order = yes": the marker may precede the gate comment
 test_sm_valid_marker_before_pending_clears_gate() {
-  mg_thread "$SM_VALID" "$SM_PEND"
+  mg_thread "$SM_REVIEW" "$SM_VALID" "$SM_PEND"
   jq 'map(.author = {login: "jpmoya"})' "$MG_GH/gh-issue-comments-json" > "$MG_GH/x.tmp" && mv "$MG_GH/x.tmp" "$MG_GH/gh-issue-comments-json"
   mg_tick; mg_assert_not_gate "valid skip posted before MOCKUPS PENDING" || return 1
 }
 test_sm_marker_only_in_pm_ready_comment_stays_a_gate() {
-  mg_thread '**[product-manager] READY FOR ENGINEERING**'$'\n''UI change: yes'$'\n''**[jp] SKIP MOCKUPS**'$'\n''JP said: "skip it"' "$SM_PEND"
+  mg_thread '**[product-manager] READY FOR ENGINEERING**'$'\n''UI change: yes'$'\n''**[jp] SKIP MOCKUPS**'$'\n''JP said: "skip it"' "$SM_PEND" "$SM_REVIEW"
   jq 'map(.author = {login: "jpmoya"})' "$MG_GH/gh-issue-comments-json" > "$MG_GH/x.tmp" && mv "$MG_GH/x.tmp" "$MG_GH/gh-issue-comments-json"
   mg_tick; mg_assert_gate "marker only in PM READY comment" || return 1
 }
@@ -76,13 +83,13 @@ test_sm_non_author_marker_stays_a_gate() {
   sm_thread someone-else "$SM_VALID"; mg_tick; mg_assert_gate "non-author valid-looking marker" || return 1
 }
 test_sm_marker_only_in_issue_body_stays_a_gate() {
-  mg_thread "$SM_PEND" 'unrelated chatter'
+  mg_thread "$SM_PEND" "$SM_REVIEW" 'unrelated chatter'
   jq -n --arg b "$SM_VALID" '{body:$b}' > "$MG_GH/gh-issue-body-json" 2>/dev/null
   printf '%s' "$SM_VALID" > "$MG_GH/gh-issue-body"
   mg_tick; mg_assert_gate "marker only in issue body" || return 1
 }
 test_sm_marker_in_launch_text_stays_a_gate() {
-  mg_thread "$SM_PEND" 'unrelated chatter'
+  mg_thread "$SM_PEND" "$SM_REVIEW" 'unrelated chatter'
   printf '%s\n' "$SM_VALID" > "$MG_PIPE/orch-74.brief"
   printf '%s\n' "$SM_VALID" > "$MG_PIPE/orch-74.launch"
   mg_tick; mg_assert_gate "marker only in launch/brief text" || return 1
@@ -94,7 +101,7 @@ sm_slack_fixture() {
 }
 test_sm_malformed_check_fails_closed_and_reports_with_tags_without_quote() {
   local log held calls
-  mg_thread "$SM_PEND" $'**[jp] SKIP MOCKUPS**\nJP said: "SECRET-QUOTE-272" \x01\xff'
+  mg_thread "$SM_PEND" "$SM_REVIEW" $'**[jp] SKIP MOCKUPS**\nJP said: "SECRET-QUOTE-272" \x01\xff'
   jq 'map(.author = 7)' "$MG_GH/gh-issue-comments-json" > "$MG_GH/x.tmp" && mv "$MG_GH/x.tmp" "$MG_GH/gh-issue-comments-json"
   sm_slack_fixture "$MG_HOME" "$MG_GH"
   mg_tick
@@ -195,10 +202,12 @@ test_sm_orchestrator_user_flow_ready_row_skips_ui_designer() {
   sm_needs "USER FLOW READY row" "$c" "ui-ux-designer" "not dispatch" || return 1
 }
 test_sm_orchestrator_gate_row_supersede_by_skip_marker() {
-  # AC3 (:52/:53): a valid marker after MOCKUPS PENDING APPROVAL clears the gate, same as approval
-  local c; c=$(sm_clause "$ORCH_SM" '| `[ui-ux-designer] MOCKUPS PENDING APPROVAL` + JP approval comment')
+  # AC3 (:52/:53): a valid marker after MOCKUPS PENDING APPROVAL clears the gate, same as approval.
+  # #701 moved these two rows behind "a valid REVIEW MOCKUPS marker present" (the gate is skip-by-
+  # default now); anchor on that new row-prefix text instead of the pre-#701 exact row starts.
+  local c; c=$(sm_clause "$ORCH_SM" 'marker + JP approval comment')
   sm_needs "approval row" "$c" "JP said" "exact" || return 1
-  c=$(sm_clause "$ORCH_SM" '| `[ui-ux-designer] MOCKUPS PENDING APPROVAL` |')
+  c=$(sm_clause "$ORCH_SM" 'marker present (see **JP review-mockups marker**)')
   sm_needs "terminal gate row" "$c" "supersede" || return 1
 }
 test_sm_orchestrator_marker_is_a_noop_on_fast_lane_and_no_ui() {
@@ -247,7 +256,11 @@ sm_goal_class() {
   jq -c '.user = {login: "jpmoya"}' "$GS_ST/issues/$GS_A/7.json" > "$GS_ST/issues/$GS_A/7.json.tmp" \
     && mv "$GS_ST/issues/$GS_A/7.json.tmp" "$GS_ST/issues/$GS_A/7.json"
   f="$GS_ST/comments/$GS_A-7.json"
-  jq -nc --arg now "$GS_NOW" --arg p "$SM_PEND"$'\nmockups ready' '[{created_at:$now, user:{login:"jpmoya"}, body:$p}]' > "$f"
+  # #701: a REVIEW MOCKUPS marker right after the gate, same reason as sm_thread above — without it
+  # the gate is never active by default, and "stays waiting_jp" / "becomes active" would not test
+  # this file's SKIP MOCKUPS concern at all.
+  jq -nc --arg now "$GS_NOW" --arg p "$SM_PEND"$'\nmockups ready' --arg r "$SM_REVIEW" \
+    '[{created_at:$now, user:{login:"jpmoya"}, body:$p}, {created_at:$now, user:{login:"jpmoya"}, body:$r}]' > "$f"
   if [ -n "$body" ]; then
     jq -c --arg now "$GS_NOW" --arg b "$body" --arg a "$who" '. + [{created_at:$now, user:{login:$a}, body:$b}]' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
   fi

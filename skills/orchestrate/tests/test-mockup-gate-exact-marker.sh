@@ -334,21 +334,25 @@ mg_assert_not_gate() {
 }
 
 test_mg_ac5_prose_approval_after_mockups_stays_a_gate() {
-  mg_thread '**[ui-ux-designer] MOCKUPS PENDING APPROVAL**' "approved — MOCKUPS APPROVED on JP's behalf, see thread"
+  # #701: the gate is skip-by-default now, so these characterisation cases need JP's REVIEW MOCKUPS marker
+  # present to actually be a gate in the first place — the prose-approval invariant they pin is unchanged.
+  mg_thread '**[ui-ux-designer] MOCKUPS PENDING APPROVAL**' '**[jp] REVIEW MOCKUPS**' "approved — MOCKUPS APPROVED on JP's behalf, see thread"
   mg_tick
   mg_assert_gate "AC5: prose approval" || return 1
 }
 
 test_mg_ac5_skip_mockups_after_mockups_stays_a_gate() {
-  mg_thread '**[ui-ux-designer] MOCKUPS PENDING APPROVAL**' 'skip mockups'
+  mg_thread '**[ui-ux-designer] MOCKUPS PENDING APPROVAL**' '**[jp] REVIEW MOCKUPS**' 'skip mockups'
   mg_tick
   mg_assert_gate "AC5: skip mockups" || return 1
 }
 
 # characterisation: the exact-form marker already lifts the gate today (jp is already a marker_re
 # agent, MOCKUPS APPROVED already its vocabulary, AC7) — this is what makes the fix zero-mechanism.
+# #701: needs a REVIEW MOCKUPS marker first so there is a real gate to lift (otherwise this would
+# pass vacuously — the default is already "not a gate" with no approval at all).
 test_mg_ac1_exact_marker_after_mockups_lifts_the_gate() {
-  mg_thread '**[ui-ux-designer] MOCKUPS PENDING APPROVAL**' '**[jp] MOCKUPS APPROVED**'
+  mg_thread '**[ui-ux-designer] MOCKUPS PENDING APPROVAL**' '**[jp] REVIEW MOCKUPS**' '**[jp] MOCKUPS APPROVED**'
   mg_tick
   mg_assert_not_gate "AC1 (characterisation): exact jp marker lifts the gate" || return 1
 }
@@ -356,7 +360,8 @@ test_mg_ac1_exact_marker_after_mockups_lifts_the_gate() {
 # AC3: an ordinary agent NOTE comment after MOCKUPS PENDING APPROVAL must not be treated as JP
 # revision feedback — the run stays parked (gate stands), it is not re-dispatched for revision.
 test_mg_ac3_agent_note_after_mockups_stays_parked_not_a_revision() {
-  mg_thread '**[ui-ux-designer] MOCKUPS PENDING APPROVAL**' '**[product-manager] NOTE** relaying: JP is travelling, will review Friday.'
+  # #701: needs a REVIEW MOCKUPS marker to be a gate at all — see note on the AC5 cases above.
+  mg_thread '**[ui-ux-designer] MOCKUPS PENDING APPROVAL**' '**[jp] REVIEW MOCKUPS**' '**[product-manager] NOTE** relaying: JP is travelling, will review Friday.'
   mg_tick
   mg_assert_gate "AC3: agent NOTE comment" || return 1
 }
