@@ -748,8 +748,14 @@ _goal_ticket_eval() {
                      | select((.body | split("\n")[1] // "" | rtrimstr("\r")) | test("^Blocked on: needs_jp( |$)"))]
                | last | .created_at // empty')
     jp_answer_at=""
+    # #701: a **[jp] REVIEW MOCKUPS** comment is JP asking the gate to pause, not answering it — excluded here or
+    # it would read as "you answered" and flip a genuinely still-open mockup gate to active (and, per the comment
+    # below, trigger a relaunch that lands right back on the same gate; it must never count, same as it never
+    # counts as an approval or a go).
     [ -n "$author" ] && jp_answer_at=$(printf '%s' "$all_c" \
-      | jq -r --arg a "$author" '[.[] | select(.user.login == $a) | select(((.body | startswith("**[")) | not) or (.body | split("\n")[0] | rtrimstr("\r") | test("^\\*\\*\\[jp\\] ")))]
+      | jq -r --arg a "$author" --arg rv "$(review_mockups_re)" '[.[] | select(.user.login == $a)
+               | select((.body | split("\n")[0] | rtrimstr("\r") | test($rv)) | not)
+               | select(((.body | startswith("**[")) | not) or (.body | split("\n")[0] | rtrimstr("\r") | test("^\\*\\*\\[jp\\] ")))]
                | last | .created_at // empty')
     if [ -n "$lead_blocked_at" ] && { [ -z "$gate_at" ] || [[ "$lead_blocked_at" > "$gate_at" ]]; } \
        && { [ -z "$jp_answer_at" ] || [[ "$lead_blocked_at" > "$jp_answer_at" ]]; }; then
