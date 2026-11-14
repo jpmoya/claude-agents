@@ -433,6 +433,9 @@ render_base() { # render_base <outroot>: run the pre-#638 setup.sh into <outroot
   git -C "$REPO" show "$BASE_COMMIT:infra/ci-runners/setup.sh" > "$d/setup.sh" 2>/dev/null \
     || { echo "git object $BASE_COMMIT:infra/ci-runners/setup.sh missing"; return 1; }
   GHA_ROOT="$1" bash "$d/setup.sh" --slots 3 >/dev/null 2>&1 || { echo "base setup.sh failed"; return 1; }
+  # the one intended launcher change since the pin: a pre-set GHA_LABEL (slot drop-in) is honoured
+  sed -i.orig 's|^GHA_LABEL=benjis-ci$|GHA_LABEL=${GHA_LABEL:-benjis-ci}   # a slot drop-in (Environment=GHA_LABEL=...) may set its own label, e.g. benjis-ci-prod-deploy|' "$1/usr/local/sbin/gha-slot.sh"
+  rm -f "$1/usr/local/sbin/gha-slot.sh.orig"
 }
 test_reserve_zero_identical() {
   newenv; local base="$TMP/baseroot.$RANDOM$RANDOM"; mkdir -p "$base"
@@ -479,6 +482,18 @@ test_reserve_zero_labels() {
   done
 }
 t "--reserve-slots 0: every slot mints [self-hosted, benjis-ci] (as before #638)" test_reserve_zero_labels
+test_dropin_label() { # a slot whose drop-in sets GHA_LABEL keeps it, and never gets the bulk label
+  local res got
+  for res in 0 1; do
+    newenv; setup_mint; echo "GHA_RUNNER_SCOPE=orgs/benjis" >> "$R/etc/gha/mint.env"
+    bash "$SETUP" --slots 3 --reserve-slots "$res" >/dev/null 2>&1 || return 1
+    : > "$ST/curl.log"
+    GHA_LABEL=benjis-ci-prod-deploy bash "$R/usr/local/sbin/gha-slot.sh" 3 >/dev/null 2>&1 || return 1
+    got=$(grep -F generate-jitconfig "$ST/curl.log" | grep -oE '"labels":\[[^]]*\]' | head -1)
+    [ "$got" = '"labels":["self-hosted","benjis-ci-prod-deploy"]' ] || { echo "reserve $res: got '$got'"; return 1; }
+  done
+}
+t "slot drop-in GHA_LABEL is honoured and never gets benjis-ci-bulk (prod-deploy slot)" test_dropin_label
 test_reserve_rendered_lint() {
   newenv; bash "$SETUP" --slots 3 --reserve-slots 1 >/dev/null 2>&1 || return 1
   local f="$R/usr/local/sbin/gha-slot.sh"
