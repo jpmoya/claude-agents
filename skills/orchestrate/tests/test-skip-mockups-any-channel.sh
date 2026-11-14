@@ -27,18 +27,20 @@ test_sa_bare_marker_from_non_author_clears_gate() {
 }
 
 # (b) out-of-scope guard: the MOCKUPS APPROVED branch is untouched by #700 — a non-author `[jp] MOCKUPS APPROVED**`
-# still does NOT clear the gate (author check stays for the approval/go markers).
+# still does NOT clear the gate (author check stays for the approval/go markers). #701: REVIEW MOCKUPS opts into
+# the gate first — skip-by-default would otherwise already clear it regardless of the non-author approval.
 test_sa_mockups_approved_from_non_author_still_a_gate() {
   local out
-  out=$(sa_last '[{"author":{"login":"jpmoya"},"body":"**[ui-ux-designer] MOCKUPS PENDING APPROVAL**\nx"},{"author":{"login":"someone-else"},"body":"**[jp] MOCKUPS APPROVED**"}]')
+  out=$(sa_last '[{"author":{"login":"jpmoya"},"body":"**[jp] REVIEW MOCKUPS**"},{"author":{"login":"jpmoya"},"body":"**[ui-ux-designer] MOCKUPS PENDING APPROVAL**\nx"},{"author":{"login":"someone-else"},"body":"**[jp] MOCKUPS APPROVED**"}]')
   assert_eq "$out" "$SA_PEND" "AC/out-of-scope: non-author MOCKUPS APPROVED never clears the gate" || return 1
 }
 
 # (c) exact-first-line guard (kept, #700 does not relax this): the marker text on line 2 of a comment whose
 # first line is something else is never promoted — only an exact first line counts, from anyone, anywhere.
+# #701: REVIEW MOCKUPS opts into the gate first — see (b).
 test_sa_marker_on_second_line_is_not_promoted() {
   local out
-  out=$(sa_last '[{"author":{"login":"jpmoya"},"body":"**[ui-ux-designer] MOCKUPS PENDING APPROVAL**\nx"},{"author":{"login":"someone-else"},"body":"unrelated chatter\n**[jp] SKIP MOCKUPS**"}]')
+  out=$(sa_last '[{"author":{"login":"jpmoya"},"body":"**[jp] REVIEW MOCKUPS**"},{"author":{"login":"jpmoya"},"body":"**[ui-ux-designer] MOCKUPS PENDING APPROVAL**\nx"},{"author":{"login":"someone-else"},"body":"unrelated chatter\n**[jp] SKIP MOCKUPS**"}]')
   assert_eq "$out" "$SA_PEND" "exact-first-line requirement unchanged: line-2 marker is not promoted" || return 1
 }
 

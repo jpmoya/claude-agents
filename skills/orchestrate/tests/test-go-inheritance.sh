@@ -470,10 +470,11 @@ test_gi_ac4_orchestrator_jp_go_untouched() {
 }
 
 test_gi_ac4_orchestrator_mockups_approved_lines_untouched() {
-  # Re-pinned for #700 (skip-mockups marker broadened to any author/channel): only the "MOCKUPS PENDING APPROVAL +
-  # JP approval comment" row's **Skip marker:** clause changed (dropped the issue-author + `JP said:` requirement);
-  # the MOCKUPS APPROVED wording itself (the legacy-marker mention, jp_go, the approval-word set) is untouched.
-  assert_eq "$(grep -F 'MOCKUPS APPROVED' "$ORCH_GI" | gi_sha)" "4ceabd3fd72f56ff3c3e4790ed76554988fe7c17f0eff93de6faf8d028a0ac95" "AC4: MOCKUPS APPROVED lines"
+  # Re-pinned for #701 (mockup gate flipped to skip-by-default): only the "MOCKUPS PENDING APPROVAL + JP approval
+  # comment" row gained a leading sentence noting it is only reached when `**[jp] REVIEW MOCKUPS**` made the row
+  # above terminal; the MOCKUPS APPROVED wording itself (the legacy-marker mention, jp_go, the approval-word set,
+  # the gate-section outcome text) is untouched.
+  assert_eq "$(grep -F 'MOCKUPS APPROVED' "$ORCH_GI" | gi_sha)" "7b29f540297bbbfb66d9635765fe76eca027aa794b6c19b989f6d25c8b32a934" "AC4: MOCKUPS APPROVED lines"
 }
 
 test_gi_ac4_orchestrator_needs_jp_lines_untouched() {

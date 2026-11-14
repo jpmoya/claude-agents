@@ -116,9 +116,11 @@ test_n3_1a_two_pages_same_result_as_one_page() {
 }
 
 # the newest marker is on page 2 and is itself the gate: a read that stopped at page 1 would return the page-1 one.
+# #701: page 1's index 0 carries `**[jp] REVIEW MOCKUPS**` so the mockup gate on page 2 stays a real gate under
+# skip-by-default — this test is about pagination, not the mockup default.
 test_n3_1b_gate_on_second_page_wins() {
   n3_fn_env
-  n3_page "$N3_D" 1 '[range(0;100) | {body: (if . == 50 then "**[fullstack-developer] IMPLEMENTED**" else "x \(.)" end)}]'
+  n3_page "$N3_D" 1 '[range(0;100) | {body: (if . == 0 then "**[jp] REVIEW MOCKUPS**" elif . == 50 then "**[fullstack-developer] IMPLEMENTED**" else "x \(.)" end)}]'
   n3_page "$N3_D" 2 --arg g "$N3_GATE" '[{body: $g}]'
   n3_fn_run "$N3_D"; local out=$N3_OUT
   rm -rf "$N3_D"
@@ -154,8 +156,9 @@ test_n3_2a_failed_read_prints_question_mark_and_logs_one_line() {
 }
 
 test_n3_2b_good_read_logs_nothing() {
+  # #701: REVIEW MOCKUPS opts into the gate first — see test_n3_1b_gate_on_second_page_wins.
   n3_fn_env
-  n3_page "$N3_D" 1 --arg g "$N3_GATE" '[{body: $g}]'
+  n3_page "$N3_D" 1 --arg r '**[jp] REVIEW MOCKUPS**' --arg g "$N3_GATE" '[{body: $r}, {body: $g}]'
   n3_fn_run "$N3_D"; local out=$N3_OUT log=$N3_LOG
   rm -rf "$N3_D"
   assert_eq "$out" "$N3_GATE" "#387/2b: good read returns the marker" || return 1
@@ -249,7 +252,10 @@ test_n3_4b_good_read_equal_to_last_marker_counts_below_cap() {
 
 test_n3_6a_graphql_down_rest_gate_is_parked_not_restarted() {
   n3_env
-  n3_rest_marker "$N3_GATE"
+  # #701: a `**[jp] REVIEW MOCKUPS**` comment keeps this a real, held gate under skip-by-default — this test is
+  # about the GraphQL-down REST fallback parking a gate, not the mockup default.
+  n3_page "$SQ_GH" 1 --arg r '**[jp] REVIEW MOCKUPS**' --arg g "$N3_GATE" \
+    '[{body: $r, created_at:"2026-10-17T17:00:00Z"}, {body: $g, created_at:"2026-10-17T18:00:00Z"}]'
   sq_seed_restarts 0 0 "$SQ_READY"
   n3_exit_tick
   local held log queue calls

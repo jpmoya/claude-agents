@@ -2,9 +2,11 @@
 # Helpers prefixed ss_. Reuses ROOT_MG / MARKERS_MG from test-mockup-gate-exact-marker.sh (same shell).
 
 test_ss_substring_line_does_not_clear_gate() {
+  # #701: REVIEW MOCKUPS opts into the gate first — skip-by-default would otherwise already produce the
+  # SKIP MOCKUPS literal regardless of the substring line, making this assertion pass for the wrong reason.
   local out
   out=$( . "$ROOT_MG/hooks/pipeline-markers.sh"; . "$ROOT_MG/skills/orchestrate/pipeline-lib.sh"
-    jq -n '{author:{login:"jpmoya"},comments:[{author:{login:"jpmoya"},body:"**[ui-ux-designer] MOCKUPS PENDING APPROVAL**\nx"},{author:{login:"jpmoya"},body:"**[code-reviewer] FAIL: [jp] SKIP MOCKUPS**"}]}' \
+    jq -n '{author:{login:"jpmoya"},comments:[{author:{login:"jpmoya"},body:"**[jp] REVIEW MOCKUPS**"},{author:{login:"jpmoya"},body:"**[ui-ux-designer] MOCKUPS PENDING APPROVAL**\nx"},{author:{login:"jpmoya"},body:"**[code-reviewer] FAIL: [jp] SKIP MOCKUPS**"}]}' \
       | jq -r "$(marker_last_jq)" )
   [ "$out" != '**[jp] SKIP MOCKUPS**' ] || { fail "substring line promoted to a skip marker"; return 1; }
 }
