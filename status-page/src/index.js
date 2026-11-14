@@ -1,9 +1,9 @@
 // src/index.js — router, bearer auth, Google sign-in, rate limiting, response headers.
 //
-// Routes: POST /beat, GET /status.json, GET /, GET /pipelines, GET /ci, POST /backlog-priority,
-// POST /learnings/push, GET /learnings, POST /learnings/edit, POST /learnings/delete,
-// GET /robots.txt, GET /login, GET /auth/callback, else 404. X-Robots-Tag: noindex is applied in
-// one place to every response.
+// Routes: POST /beat, GET /status.json, GET /, GET /pipelines, GET /ci, GET /sales-agents,
+// POST /backlog-priority, POST /learnings/push, GET /learnings, POST /learnings/edit,
+// POST /learnings/delete, GET /robots.txt, GET /login, GET /auth/callback, else 404.
+// X-Robots-Tag: noindex is applied in one place to every response.
 //
 // POST /beat auth is unchanged: a pure-JS constant-time compare (XOR-accumulate, no early
 // return — crypto.subtle.timingSafeEqual doesn't exist in the Node test runtime) against both
@@ -29,6 +29,7 @@ import {
   renderPipelines,
   renderCiPage,
   renderLearnings,
+  renderSalesAgents,
 } from "./render.js";
 import { captureError } from "./capture.js";
 import { KEEPALIVE_SECS, computeThresholds } from "./vocab.js";
@@ -234,6 +235,32 @@ async function handlePipelines(env) {
       release: env.RELEASE,
       environment: env.ENVIRONMENT,
       route: "/pipelines",
+    };
+    await captureError(err, tags, env);
+    return noindexResponse("Internal error", {
+      status: 500,
+      headers: { "Content-Type": "text/plain" },
+    });
+  }
+}
+
+/** GET /sales-agents — static, server-rendered documentation of Benji's outbound-sales agent
+ * pipeline (a separate repo, a separate system from the engineering pipeline on /pipelines). */
+async function handleSalesAgents(env) {
+  try {
+    const html = renderSalesAgents();
+    return noindexResponse(html, {
+      status: 200,
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "max-age=15",
+      },
+    });
+  } catch (err) {
+    const tags = {
+      release: env.RELEASE,
+      environment: env.ENVIRONMENT,
+      route: "/sales-agents",
     };
     await captureError(err, tags, env);
     return noindexResponse("Internal error", {
@@ -619,6 +646,13 @@ export default {
         return noindexResponse(null, { status: 405 });
       if (!(await requireSession(request, env))) return redirectTo("/login");
       return handleCi(env);
+    }
+
+    if (url.pathname === "/sales-agents") {
+      if (request.method !== "GET")
+        return noindexResponse(null, { status: 405 });
+      if (!(await requireSession(request, env))) return redirectTo("/login");
+      return handleSalesAgents(env);
     }
 
     if (url.pathname === "/backlog-priority") {
