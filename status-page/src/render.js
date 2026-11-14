@@ -662,9 +662,18 @@ function renderCiOfflineNote(ciQueue) {
   return ` <span class="ci-tile-note">(${esc(offline)} offline)</span>`;
 }
 
+/** "N" normally, "&ge;N" (rendered as the literal "≥N") when `truncated` is true (issue #663
+ * AC2): the collector's own per-repo run-lookup cap dropped at least one repo's runs this cycle,
+ * so `queued_total` is a known undercount, not a confident exact figure — never silently shown
+ * as if it were exact. */
+function renderCiQueuedTotal(ciQueue) {
+  const prefix = ciQueue.truncated === true ? "≥" : "";
+  return `${prefix}${esc(ciQueue.queued_total)}`;
+}
+
 function renderCiQueueTiles(ciQueue, nowEpochSecs) {
   return `<div class="ci-tiles">
-    <div class="ci-tile"><div class="ci-tile-value">${esc(ciQueue.queued_total)}</div><div class="ci-tile-label">Jobs queued now</div></div>
+    <div class="ci-tile"><div class="ci-tile-value">${renderCiQueuedTotal(ciQueue)}</div><div class="ci-tile-label">Jobs queued now</div></div>
     <div class="ci-tile"><div class="ci-tile-value">${esc(ciQueue.runners_busy)}/${esc(ciQueue.runners_total)}${renderCiOfflineNote(ciQueue)}</div><div class="ci-tile-label">Runner slots busy</div></div>
     ${renderCiQueueWaitingTile(ciQueue.oldest, nowEpochSecs)}
   </div>`;
@@ -688,21 +697,36 @@ function pickFreshestCiQueue(hosts) {
   return best ? { ciQueue: best, asOfMs: bestMs } : null;
 }
 
+/** The header badge for the CI-queue panel: a third state past `thresholds.offlineSecs` on top
+ * of the existing "stale" badge (issue #663 AC1c) — "collector stopped since <ts>" instead of
+ * "stale", reusing the existing `.badge offline` CSS (same red as a dead host, no new color).
+ * Offline wins over stale (mutually exclusive, offline checked first) exactly like
+ * `computeBadge`'s host badge above. "" (no badge) when the data is still live. */
+function renderCiQueueBadge(ciQueue, ageSecs, thresholds) {
+  if (ageSecs >= thresholds.offlineSecs) {
+    return ` <span class="badge offline">collector stopped since ${esc(formatCet(ciQueue.as_of))}</span>`;
+  }
+  if (ageSecs >= thresholds.staleSecs) {
+    return ` <span class="badge stale">stale</span>`;
+  }
+  return "";
+}
+
 /**
  * CI queue panel (issue #644): stat tiles + bar chart over #643's `ci_queue` beat field. Omitted
  * entirely when no host has ever sent `ci_queue` (AC1) — never a render error. Stale-marked
  * (AC6) using the same `thresholds.staleSecs` the host live/stale/offline badges already use
- * (reused rather than a new constant, per the ticket).
+ * (reused rather than a new constant, per the ticket). Issue #663 AC1c adds the offline
+ * ("collector stopped") state above that — see `renderCiQueueBadge`.
  */
 export function renderCiQueuePanel(hosts, thresholds, nowEpochSecs) {
   const picked = pickFreshestCiQueue(hosts);
   if (!picked) return "";
   const { ciQueue, asOfMs } = picked;
   const ageSecs = nowEpochSecs - Math.floor(asOfMs / 1000);
-  const stale = ageSecs >= thresholds.staleSecs;
   const chart = renderCiQueueChart(ciQueue.categories);
   return `<section class="group ci-queue">
-    <h2>CI queue${stale ? ` <span class="badge stale">stale</span>` : ""}</h2>
+    <h2>CI queue${renderCiQueueBadge(ciQueue, ageSecs, thresholds)}</h2>
     ${renderCiQueueTiles(ciQueue, nowEpochSecs)}
     ${chart}
   </section>`;
@@ -783,9 +807,24 @@ function renderCurrentJobLink(r) {
  * Issue #655 adds two more things to each row: a "(building — Nh collected)" caveat next to a
  * util percentage still below its trustworthy sample-history floor (AC A), and a link next to a
  * busy runner's status to the PR/run it's currently executing (AC B).
+ *
+ * Issue #663 AC5 fixes two more disagreements: the pool-summary line below the table now counts
+ * ONLINE runners only (matching the main "Runner slots busy" tile's own online-only denominator,
+ * #648) — an offline runner still gets its own table row, it just no longer pads either pool's
+ * count. Presence of the summary line itself still goes by the UNFILTERED list (any prod_deploy
+ * runner at all, online or offline) so the summary never vanishes just because the one
+ * prod_deploy runner happens to be offline right now. `runnersTotalSampled` (optional — older
+ * collectors never send it) drives a "showing 30 of N" note next to the heading whenever
+ * `runners[]` was actually capped (its length === MAX_CI_QUEUE_RUNNERS) and the pre-cap count is
+ * known and bigger than what's shown (this is equivalent to "runners[] was actually capped",
+ * since an uncapped `runners[]` always has runnersTotalSampled === runners.length).
  */
-function renderCiRunnersSection(runners) {
+function renderCiRunnersSection(runners, runnersTotalSampled) {
   if (!Array.isArray(runners) || runners.length === 0) return "";
+  const sampledNote =
+    typeof runnersTotalSampled === "number" && runnersTotalSampled > runners.length
+      ? ` <span class="ci-tile-note">showing ${esc(runners.length)} of ${esc(runnersTotalSampled)}</span>`
+      : "";
   const rows = runners
     .map((r) => {
       const status = runnerStatus(r);
@@ -799,15 +838,20 @@ function renderCiRunnersSection(runners) {
       return `<tr${isProd ? ' class="ci-runner-prod"' : ""}><td data-label="Runner">${esc(r.name)}${prodBadge}</td><td data-label="Status"><span class="badge ${esc(RUNNER_STATUS_BADGE_CLASS[status])}">${esc(status)}</span>${jobLink}</td><td data-label="24h util">${renderUtilPct(r.util_24h_pct)}${util24Note}</td><td data-label="72h util">${renderUtilPct(r.util_72h_pct)}${util72Note}</td></tr>`;
     })
     .join("");
-  const prod = runners.filter((r) => r.role === "prod_deploy");
-  const general = runners.filter((r) => r.role !== "prod_deploy");
+  // #663 AC5: the pool-split counts are online-only (matching the main tile's own denominator);
+  // whether the summary line shows AT ALL still goes by the unfiltered list, so a prod_deploy
+  // runner that's currently offline doesn't make the summary disappear entirely.
+  const prodAny = runners.some((r) => r.role === "prod_deploy");
+  const onlineRunners = runners.filter((r) => r.online === true);
+  const prod = onlineRunners.filter((r) => r.role === "prod_deploy");
+  const general = onlineRunners.filter((r) => r.role !== "prod_deploy");
   const poolLine = (label, list) =>
     `${esc(label)}: ${esc(list.filter((r) => r.busy).length)}/${esc(list.length)} busy`;
-  const summary = prod.length
+  const summary = prodAny
     ? `<p class="ci-pool-summary">${poolLine("General pool", general)} &middot; ${poolLine("Prod deploy", prod)}</p>`
     : "";
   return `<section class="group ci-runners">
-    <h2>Runners</h2>
+    <h2>Runners${sampledNote}</h2>
     <div class="table-scroll"><table>
       <tr class="cols"><th>Runner</th><th>Status</th><th>24h util</th><th>72h util</th></tr>
       <tbody>${rows}</tbody>
@@ -999,6 +1043,13 @@ ${CI_RUNNERS_CSS}
  * CI tab (issue #649): the CI-queue panel (#644, moved off `/` — see renderPage above) plus the
  * per-runner table (#648's render consumer). Degrades gracefully: a neutral "no CI queue data
  * yet" line (nav still renders) when no host has ever sent `ci_queue` — never a render error.
+ *
+ * Issue #663 AC1: since `index.js`'s `handleBeat` now carries a host's last-known `ci_queue`
+ * forward across beats that omit it, `pickFreshestCiQueue` effectively never returns null again
+ * once ANY host has ever sent `ci_queue` — this "no CI queue data yet" branch now means exactly
+ * that (truly never sent, not "the collector died"). A collector that stopped reporting is
+ * instead surfaced by `renderCiQueuePanel`'s own offline-badge state (see
+ * `renderCiQueueBadge`), reached through the non-null branch below.
  * @param {{ mac: object|null, vm: object|null }} hosts
  * @param {{ staleSecs: number, offlineSecs: number }} thresholds
  * @param {number} nowEpochSecs
@@ -1008,7 +1059,7 @@ export function renderCiPage(hosts, thresholds, nowEpochSecs) {
   const picked = pickFreshestCiQueue(hosts);
   const body = !picked
     ? '<p class="empty">no CI queue data yet</p>'
-    : `${renderCiQueuePanel(hosts, thresholds, nowEpochSecs)}${renderCiRunnersSection(picked.ciQueue.runners)}`;
+    : `${renderCiQueuePanel(hosts, thresholds, nowEpochSecs)}${renderCiRunnersSection(picked.ciQueue.runners, picked.ciQueue.runners_total_sampled)}`;
 
   return `<!doctype html>
 <html lang="en">

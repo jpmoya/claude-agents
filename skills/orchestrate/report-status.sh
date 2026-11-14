@@ -99,7 +99,17 @@ _rs_build_backlog_json() {  # the payload's backlog array (backlog reorder view)
 # its own throttled cadence; this just reads that local file, local-only, same as goals/backlog.
 # Absent, unreadable, not a JSON object, or older than STATUS_CI_STALE_SECS -> "" (key omitted
 # entirely from the payload — never sent as null/empty, per AC7).
-STATUS_CI_STALE_SECS=${STATUS_CI_STALE_SECS:-1200}   # 20 min default
+#
+# Issue #663 AC1a: this used to default to 1200s (20 min) — well UNDER vocab.js's own
+# offlineSecs (3 * staleSecs, staleSecs = round(2.5 * KEEPALIVE_SECS/60)*60 = 1500s with
+# KEEPALIVE_SECS=600, so offlineSecs=4500s/75min). That meant this reporter dropped `ci_queue`
+# from the beat 55 minutes before the Worker/render layer's own as_of-based staleness logic
+# (render.js's renderCiQueuePanel) ever got a chance to classify it as stale/offline — the
+# collector-outage case this field exists to surface showed "no CI queue data yet" instead.
+# Raised to 7200s (2h), strictly greater than any reasonable offlineSecs so the render layer's
+# own classification always runs first. This is a backstop against reporting a multi-day-old
+# file forever, never the staleness decision itself — that still lives in render.js/vocab.js.
+STATUS_CI_STALE_SECS=${STATUS_CI_STALE_SECS:-7200}   # 2h default — backstop only, see above
 _rs_ci_queue_json() {
   local f="$PIPE/status-ci.json" mtime now
   [ -e "$f" ] || { printf ''; return; }

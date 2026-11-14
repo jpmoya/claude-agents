@@ -163,7 +163,21 @@ async function handleBeat(request, env) {
   const result = validateBeatPayload(parsed);
   if (!result.ok) return noindexResponse(null, { status: 400 });
 
-  const record = { ...result.value, received_at: new Date().toISOString() };
+  // Issue #663 AC1b: a beat that omits `ci_queue` (the reporter dropped it for being stale, or a
+  // host that never runs the collector) must not blank out the LAST known value — it should keep
+  // aging via its own `as_of`, not disappear. Carry the previous record's `ci_queue` forward
+  // unchanged (not re-stamped) when this beat doesn't carry one of its own. Only one extra KV
+  // get() per beat, and only on the branch that needs it (a beat that already carries ci_queue
+  // never touches this at all).
+  const value = { ...result.value };
+  if (!('ci_queue' in value)) {
+    const previous = parseHostRecord(await env.STATUS.get(`host:${host}`));
+    if (previous && typeof previous.ci_queue === 'object' && previous.ci_queue !== null && !Array.isArray(previous.ci_queue)) {
+      value.ci_queue = previous.ci_queue;
+    }
+  }
+
+  const record = { ...value, received_at: new Date().toISOString() };
   await env.STATUS.put(`host:${host}`, JSON.stringify(record));
   return noindexResponse(null, { status: 204 });
 }

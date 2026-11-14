@@ -338,12 +338,23 @@ describe("AC9 — graceful degradation, never a 500, never broken/empty table ma
 });
 
 describe("stale as_of still shows the badge on /ci (same ~15 min threshold as before)", () => {
-  it("a ci_queue with an as_of older than staleSecs shows the stale badge", async () => {
-    const old = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(); // 2h old, well past 1500s
+  // Issue #663 AC1c added a third state past offlineSecs (4500s/75min): "collector stopped
+  // since <ts>", not "stale". 33 min (1980s) stays inside the stale-only window (1500-4500s).
+  it("a ci_queue with an as_of older than staleSecs (but inside offlineSecs) shows the stale badge", async () => {
+    const old = new Date(Date.now() - 33 * 60 * 1000).toISOString(); // 33 min old, past 1500s, under 4500s
     const mac = hostRecord({ received_at: "2026-09-21T11:59:00Z", ci_queue: validCiQueue({ as_of: old }) });
     const env = makeEnv({ STATUS: createMockKV({ "host:mac": JSON.stringify(mac) }) });
     const { html } = await getCi(env);
     expect(html).toMatch(/badge stale/);
+  });
+
+  it("a ci_queue with an as_of past offlineSecs shows 'collector stopped', not 'stale' (issue #663 AC1c)", async () => {
+    const old = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(); // 2h old, past 4500s
+    const mac = hostRecord({ received_at: "2026-09-21T11:59:00Z", ci_queue: validCiQueue({ as_of: old }) });
+    const env = makeEnv({ STATUS: createMockKV({ "host:mac": JSON.stringify(mac) }) });
+    const { html } = await getCi(env);
+    expect(html).toContain("collector stopped since");
+    expect(html).not.toMatch(/badge stale/);
   });
 });
 

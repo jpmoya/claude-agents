@@ -13,9 +13,24 @@
 # parses but is missing its expected top-level key (malformed/unexpected shape) — the PREVIOUS
 # $PIPE/status-ci.json is left byte-for-byte untouched — this script never writes a
 # partial/zeroed snapshot. A single failure is reported to Sentry only; a Slack post (existing
-# webhook, no new one) fires once a failure streak reaches 3 consecutive cycles. A mkdir-based
-# lock (same stale-reclaim pattern as report-status.sh's own) keeps two near-simultaneous
-# invocations from both slipping past the throttle and doubling the real API calls.
+# webhook, no new one) fires once a failure streak reaches 2 consecutive cycles (#663 AC6 — was
+# 3; an intermittent pair of failures a day apart used to never page at all), carrying the
+# redacted tail of `gh api`'s own stderr for diagnosis. A mkdir-based lock (same stale-reclaim
+# pattern as report-status.sh's own) keeps two near-simultaneous invocations from both slipping
+# past the throttle and doubling the real API calls.
+#
+# #663 AC4: one configured repo failing (renamed/archived/access lost) no longer aborts the whole
+# cycle — every OTHER repo's data still gets collected and written; the failing repo's name is
+# surfaced in the new `unavailable_repos` field. Only "every configured repo failed" still aborts
+# the cycle (same previous-snapshot-kept contract as any other API failure — see
+# `collect_once`'s own comment for why a snapshot with zero repos' worth of real data would
+# violate this file's own "never a partial/zeroed write" invariant).
+#
+# #663 AC3: `_ciq_call`'s `gh api` invocation is now wrapped in a timeout (default 55s, safely
+# under the 60s stale-lock-reclaim window above) — a hung call used to never return at all, so it
+# never reached the existing failure-counting path. See `_ciq_gh_api`/`_ciq_timeout_bin` below for
+# why this isn't just `timeout "$secs" ...` (stock macOS, where this runs, ships neither `timeout`
+# nor `gtimeout` by default).
 #
 # API calls per cycle (bounded, #637): 2 runner-list calls (org + jpmoya/claude-agents repo-level)
 # + 2 run-list calls per repo (status=queued, status=in_progress) + up to
@@ -81,7 +96,8 @@
 #   CI_QUEUE_REPOS_FILE (default: scripts/ci-metrics.repos), CI_QUEUE_ORG (default: Benjis-Plants),
 #   CI_QUEUE_SELF_REPO (default: jpmoya/claude-agents — its runners are repo-level, not org-level),
 #   CI_QUEUE_INTERVAL_SECS (default 240 — "every ~3-5 min"), CI_QUEUE_PROD_DEPLOY_LABEL (default
-#   benjis-ci-prod-deploy — the GitHub runner label that sets `runners[].role` to "prod_deploy").
+#   benjis-ci-prod-deploy — the GitHub runner label that sets `runners[].role` to "prod_deploy"),
+#   CI_QUEUE_GH_TIMEOUT_SECS (#663 AC3, default 55 — per-call `gh api` timeout).
 # Env (tests): CI_QUEUE_FIXTURE_DIR (canned `gh api` JSON responses instead of a live call — see
 #   _ciq_call below; mirrors ci-report.sh's CI_REPORT_JOBS_FILE seam), CI_QUEUE_FIXTURE_FAIL=1
 #   (simulate every API call failing), CI_QUEUE_FORCE=1 (skip the throttle), CI_QUEUE_OUT /
@@ -106,6 +122,8 @@ PER_PAGE=${CI_QUEUE_PER_PAGE:-100}   # GitHub's max; free (same single call), sh
 MAX_RUN_LOOKUPS_PER_REPO=5
 RELEASE=${CI_QUEUE_RELEASE:-$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo unknown)}
 ENVIRONMENT=${CI_QUEUE_ENVIRONMENT:-$(hostname -s 2>/dev/null || echo unknown)}
+# #663 AC3: per-`gh api`-call timeout, safely under the 60s stale-lock-reclaim window in main().
+GH_TIMEOUT_SECS=${CI_QUEUE_GH_TIMEOUT_SECS:-55}
 
 # #648: per-runner utilization history.
 SAMPLES_FILE=${CI_QUEUE_SAMPLES_FILE:-$PIPE/ci-runner-samples.jsonl}
@@ -116,10 +134,65 @@ MAX_SAMPLE_RUNNERS=30   # mirrors status-page/src/validate.js's MAX_CI_QUEUE_RUN
 
 repos() { grep -E '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+[[:space:]]*$' "$REPOS_FILE"; }
 
+# _ciq_timeout_bin — #663 AC3: prints the name of a GNU-coreutils-style `timeout` binary on PATH,
+# or "" if neither exists. Stock macOS (where this script actually runs in production) ships
+# neither `timeout` nor `gtimeout` by default — verified live, not assumed — so `_ciq_gh_api`
+# below always has a fallback that needs no external binary at all.
+_ciq_timeout_bin() {
+  if command -v timeout >/dev/null 2>&1; then printf 'timeout'
+  elif command -v gtimeout >/dev/null 2>&1; then printf 'gtimeout'
+  else printf ''
+  fi
+}
+
+# _ciq_gh_api <secs> <api-path> -> `gh api`'s stdout; stderr is APPENDED (never overwritten — one
+# file for the whole cycle) to $WORK/gh-stderr.log, so a later failure's handler can report what
+# `gh` actually said (#663 AC6) without needing a variable to survive out of this function's own
+# `$(...)` subshell (it can't — see _ciq_call's own call-counting comment for the same problem).
+#
+# Prefers a real `timeout`/`gtimeout` binary — those actively TERM-then-KILL the child process
+# group on expiry, so they work regardless of whether the child itself does anything with a
+# signal. The no-binary fallback must do the same active kill, NOT rely on a signal the child
+# might ignore: `gh` is a Go binary, and the Go runtime installs its own SIGALRM handler that
+# does nothing unless the program explicitly calls `signal.Notify` for it — a bare `perl -e
+# 'alarm shift; exec @ARGV'` (a pending alarm surviving `exec`) only works if whatever `exec`
+# replaces itself with dies on SIGALRM, which `gh` does not. So the fallback instead forks,
+# `exec`s `gh` in the child, and the PARENT's alarm handler actively TERMs (then KILLs, after a
+# 2s grace period) the child by pid — this kills `gh` whether or not it ever looks at signals.
+# Exit code 124 on a timeout (matching GNU `timeout`'s own convention), and the "timed out"
+# message lands in $WORK/gh-stderr.log so AC6's alert names the actual cause, not just "failed".
+_ciq_gh_api() {
+  local secs=$1 path=$2 tb
+  tb=$(_ciq_timeout_bin)
+  if [ -n "$tb" ]; then
+    "$tb" "$secs" gh api "$path" 2>>"$WORK/gh-stderr.log"
+  else
+    perl -e '
+      my $secs = shift;
+      my $pid = fork();
+      if (!defined $pid) { exit 125; }
+      if ($pid == 0) { exec(@ARGV); exit 127; }
+      $SIG{ALRM} = sub {
+        print STDERR "gh api timed out after ${secs}s\n";
+        kill "TERM", $pid;
+        sleep 2;
+        kill "KILL", $pid;
+        waitpid($pid, 0);
+        exit 124;
+      };
+      alarm($secs);
+      waitpid($pid, 0);
+      my $rc = $?;
+      exit($rc & 127 ? 128 + ($rc & 127) : $rc >> 8);
+    ' "$secs" gh api "$path" 2>>"$WORK/gh-stderr.log"
+  fi
+}
+
 # _ciq_call <api-path> <fixture-basename> -> JSON on stdout; returns 1 on any failure (a real
-# `gh api` non-zero exit — including a 403/429 HTTP error — or a forced test failure). Never
-# raises an error to stdout: a failed call means the caller aborts the whole cycle so the
-# previous snapshot is kept untouched.
+# `gh api` non-zero exit — including a 403/429 HTTP error, a timeout (#663 AC3), or a forced test
+# failure). Never raises an error to stdout: a failed call means the caller aborts the whole cycle
+# (or, for a per-repo call, just that repo — see _ciq_collect_repo/#663 AC4) so the previous
+# snapshot is kept untouched.
 #
 # Call counting (AC6): almost every call site captures this function's stdout via `$(...)`,
 # which runs it in a subshell — a plain incremented shell variable would never survive back to
@@ -131,7 +204,7 @@ _ciq_call() {
     local f="$CI_QUEUE_FIXTURE_DIR/$2"
     [ -r "$f" ] && cat "$f" || return 1
   else
-    gh api "$1" 2>/dev/null || return 1
+    _ciq_gh_api "$GH_TIMEOUT_SECS" "$1" || return 1
   fi
 }
 
@@ -159,7 +232,12 @@ _ciq_categorize() {
 }
 
 # _ciq_collect_repo <repo> <online-busy-runner-count> — appends one {cat, queued_at} line per
-# queued job to $WORK/queued-jobs.jsonl. Returns 1 (aborting the whole cycle) on any API failure.
+# queued job to $WORK/$safe.queued-jobs.jsonl (PER-REPO, not the shared $WORK/queued-jobs.jsonl —
+# #663 AC4: the caller only merges these into the shared files once this function returns 0, so a
+# repo that fails PART WAY through this function's own run-lookup loop (queued jobs from its
+# earlier, successful lookups already written) never leaks a partial count for a repo the caller
+# is about to treat as entirely unavailable). Returns 1 on any API failure — aborting just THIS
+# repo at the call site (#663 AC4; it used to abort the whole cycle).
 #
 # #645 review finding 1 (backlog undercount): two independent bias sources, both fixed here:
 #   (a) GitHub's run-list endpoint always returns newest-first with no ascending-sort query param
@@ -188,8 +266,11 @@ _ciq_categorize() {
 # reached before the cap runs out can still be missed — unchanged from before, and orthogonal to
 # (a)/(b) above.
 _ciq_collect_repo() {
-  local repo=$1 busy=${2:-0} safe qjson pjson n=0 run id cat jobsjson qtotal page qlast=""
+  local repo=$1 busy=${2:-0} safe qjson pjson n=0 run id cat jobsjson qtotal page qlast="" distinct_count
   safe=${repo//\//__}
+  : > "$WORK/$safe.queued-jobs.jsonl"
+  : > "$WORK/$safe.running-jobs.jsonl"
+  echo 0 > "$WORK/$safe.truncated"
   qjson=$(_ciq_call_shaped "repos/$repo/actions/runs?status=queued&per_page=$PER_PAGE" "runs-${safe}-queued.json" workflow_runs) || return 1
   pjson=$(_ciq_call_shaped "repos/$repo/actions/runs?status=in_progress&per_page=$PER_PAGE" "runs-${safe}-in_progress.json" workflow_runs) || return 1
 
@@ -197,6 +278,24 @@ _ciq_collect_repo() {
   if [ -n "$qtotal" ] && [ "$qtotal" -gt "$PER_PAGE" ] 2>/dev/null; then
     page=$(( (qtotal + PER_PAGE - 1) / PER_PAGE ))
     qlast=$(_ciq_call_shaped "repos/$repo/actions/runs?status=queued&per_page=$PER_PAGE&page=$page" "runs-${safe}-queued-lastpage.json" workflow_runs) || return 1
+  fi
+
+  # #663 AC2: truncation detection, deliberately kept as its OWN small pass rather than folded
+  # into the selection pipeline below — the selection pipeline always slices down to exactly the
+  # cap (`[ "$n" -le "$MAX_RUN_LOOKUPS_PER_REPO" ] || break` below never actually fires), so
+  # truncation can only be inferred from the PRE-selection distinct run count, computed here from
+  # the same three raw sources (deduped by id, same as the selection pipeline does). `>`, not
+  # `>=`: a repo with EXACTLY `MAX_RUN_LOOKUPS_PER_REPO` runs got every one of them looked up, so
+  # it is not truncated.
+  distinct_count=$(
+    { printf '%s' "$qjson" | jq -c '.workflow_runs[]? | {id}' 2>/dev/null
+      [ -z "$qlast" ] || printf '%s' "$qlast" | jq -c '.workflow_runs[]? | {id}' 2>/dev/null
+      printf '%s' "$pjson" | jq -c '.workflow_runs[]? | {id}' 2>/dev/null
+    } | jq -s 'group_by(.id) | length' 2>/dev/null
+  )
+  case "$distinct_count" in ''|*[!0-9]*) distinct_count=0 ;; esac
+  if [ "$distinct_count" -gt "$MAX_RUN_LOOKUPS_PER_REPO" ]; then
+    echo 1 > "$WORK/$safe.truncated"
   fi
 
   { printf '%s' "$qjson" | jq -c '.workflow_runs[]? | . + {source:"queued"}' 2>/dev/null
@@ -229,7 +328,7 @@ _ciq_collect_repo() {
     printf '%s' "$jobsjson" | jq -c --arg cat "$cat" '
       .jobs[]? | select(.status=="queued")
       | {cat: $cat, queued_at: (.created_at | sub("\\.[0-9]+Z$"; "Z"))}
-    ' >> "$WORK/queued-jobs.jsonl" 2>/dev/null
+    ' >> "$WORK/$safe.queued-jobs.jsonl" 2>/dev/null
 
     # #655 AC B: zero new API calls — $jobsjson is the SAME per-run job listing already fetched
     # above for the queued-jobs/categories[] extraction; this only pulls an extra field
@@ -255,7 +354,7 @@ _ciq_collect_repo() {
       ($ctx[0]) as $ctx
       | .jobs[]? | select(.status=="in_progress" and ((.runner_name // "") != ""))
       | {runner_name: .runner_name, repo: $ctx.repo, run_id: $ctx.run_id, pr_url: $ctx.pr_url}
-    ' >> "$WORK/running-jobs.jsonl" 2>/dev/null
+    ' >> "$WORK/$safe.running-jobs.jsonl" 2>/dev/null
   done < "$WORK/$safe.runs.jsonl"
   return 0
 }
@@ -414,8 +513,15 @@ _ciq_runner_history() {
     | sort_by([(if ._live then 0 else 1 end), ._slot])
     | map(del(._live, ._slot))
     | map(if .current_job == null then del(.current_job) else . end)
-    | .[0:$max]
-  ' > "$WORK/runners-out.json" 2>/dev/null || return 1
+    | {runners: .[0:$max], total_sampled: ($slots | length)}
+  ' > "$WORK/runners-combined.json" 2>/dev/null || return 1
+
+  # #663 AC5: runners-out.json stays a plain array (not the {runners, total_sampled} wrapper
+  # above) — it's read elsewhere as a bare array (e.g. collect_once's `--slurpfile runners`
+  # below), so the cap + pre-cap-count split happens here, once, rather than making every
+  # consumer unwrap a wrapper object.
+  jq -c '.runners' "$WORK/runners-combined.json" > "$WORK/runners-out.json" 2>/dev/null || return 1
+  jq -r '.total_sampled' "$WORK/runners-combined.json" > "$WORK/runners-total-sampled.txt" 2>/dev/null || return 1
 
   combined="$WORK/samples-combined.jsonl"
   cat "$old_pruned" "$new_lines" > "$combined" 2>/dev/null || return 1
@@ -424,8 +530,16 @@ _ciq_runner_history() {
 
 # collect_once — one full collection pass: runner counts/history + every repo's queued jobs, then
 # the final ci_queue JSON written atomically to $OUT. Returns 1 (no write) on any failure.
+#
+# #663 AC4: a single configured repo's failure (renamed/archived/access lost) no longer aborts
+# this whole pass — it's recorded in `unavailable_repos` and skipped; every OTHER repo's data is
+# still collected and written. Only "every configured repo failed" still returns 1 here (same
+# previous-snapshot-kept contract as any other failure) — a snapshot built from zero repos' worth
+# of real data would itself violate the "never write a partial/zeroed snapshot" invariant this
+# function exists to uphold; see the file header.
 collect_once() {
-  local org_json repo_json busy total offline as_of final repo
+  local org_json repo_json busy total offline as_of final repo safe
+  local total_repos=0 failed_repos=0 any_truncated=0 truncated_bool unavailable_json total_sampled
   org_json=$(_ciq_call_shaped "orgs/$ORG/actions/runners?per_page=100" "runners-org.json" runners) || return 1
   repo_json=$(_ciq_call_shaped "repos/$SELF_REPO/actions/runners?per_page=100" "runners-repo.json" runners) || return 1
   _ciq_merge_runners "$org_json" "$repo_json" || return 1
@@ -435,11 +549,33 @@ collect_once() {
   offline=$(jq '[.[] | select(.status!="online")] | length' "$WORK/runners-merged.json") || return 1
 
   [ -r "$REPOS_FILE" ] || return 1
+  : > "$WORK/unavailable-repos.txt"
   while read -r repo; do
-    _ciq_collect_repo "$repo" "$busy" || return 1
+    total_repos=$((total_repos + 1))
+    safe=${repo//\//__}
+    if _ciq_collect_repo "$repo" "$busy"; then
+      cat "$WORK/$safe.queued-jobs.jsonl" >> "$WORK/queued-jobs.jsonl" 2>/dev/null
+      cat "$WORK/$safe.running-jobs.jsonl" >> "$WORK/running-jobs.jsonl" 2>/dev/null
+      [ "$(cat "$WORK/$safe.truncated" 2>/dev/null)" = "1" ] && any_truncated=1
+    else
+      failed_repos=$((failed_repos + 1))
+      printf '%s\n' "$repo" >> "$WORK/unavailable-repos.txt"
+      # Isolated/partial degradation, not a whole-cycle failure: reported to Sentry so it's
+      # visible, but never counted against the consecutive-failures streak (main()'s $STATE_FILE)
+      # — that streak means "the collector itself is failing", not "one repo is unreachable".
+      sentry_report "ci-queue-collect: repo $repo unavailable this cycle (skipped, others still collected)"
+    fi
   done < <(repos)
+  if [ "$total_repos" -gt 0 ] && [ "$failed_repos" -eq "$total_repos" ]; then
+    return 1
+  fi
+  unavailable_json=$(jq -R -s -c 'split("\n") | map(select(length > 0))' "$WORK/unavailable-repos.txt" 2>/dev/null)
+  [ -n "$unavailable_json" ] || unavailable_json='[]'
+  if [ "$any_truncated" = "1" ]; then truncated_bool=true; else truncated_bool=false; fi
 
   _ciq_runner_history "$WORK/runners-merged.json" "$WORK/running-jobs.jsonl" || return 1
+  total_sampled=$(cat "$WORK/runners-total-sampled.txt" 2>/dev/null)
+  case "$total_sampled" in ''|*[!0-9]*) total_sampled=0 ;; esac
 
   as_of=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   final=$(jq -n \
@@ -448,6 +584,9 @@ collect_once() {
     --argjson busy "$busy" \
     --argjson total "$total" \
     --argjson offline "$offline" \
+    --argjson truncated "$truncated_bool" \
+    --argjson unavailable_repos "$unavailable_json" \
+    --argjson runners_total_sampled "$total_sampled" \
     --arg as_of "$as_of" \
     '
     ($jobs) as $j
@@ -462,7 +601,10 @@ collect_once() {
        queued_total: ([($j | length), 999] | min),
        categories: $cats,
        oldest: (if $o == null then null else {key: $o.cat, queued_at: $o.queued_at} end),
-       runners: ($runners[0] // [])}
+       runners: ($runners[0] // []),
+       truncated: $truncated,
+       unavailable_repos: $unavailable_repos,
+       runners_total_sampled: $runners_total_sampled}
     ') || return 1
 
   _ciq_write_atomic "$final"
@@ -580,17 +722,25 @@ main() {
   : > "$WORK/queued-jobs.jsonl"
   : > "$WORK/running-jobs.jsonl"
   : > "$WORK/calls.count"
+  : > "$WORK/gh-stderr.log"   # #663 AC6: accumulates every _ciq_gh_api call's stderr this cycle
 
   if collect_once; then
     _ciq_write_fails 0
   else
-    local fails
+    local fails gh_err
     fails=$(( $(_ciq_read_fails) + 1 ))
     _ciq_write_fails "$fails"
-    sentry_report "ci-queue-collect: collection cycle failed (fails=$fails)"
-    # Only on a failure STREAK reaching 3 (not every failed tick, which would spam the channel
-    # every ~3-5 min): fire exactly once, on the transition into the streak.
-    [ "$fails" -eq 3 ] && slack_post "CI queue collector: $fails consecutive failures [env=$ENVIRONMENT release=$RELEASE]"
+    # #663 AC6: the last non-empty line of this cycle's `gh` stderr (redacted — see `redact`),
+    # appended to both the Sentry event and the Slack alert so a failure streak is diagnosable
+    # without needing to reproduce it. "" (omitted from the message) when gh was never actually
+    # invoked this cycle (e.g. a fixture-based test failure, or no network attempt was made).
+    gh_err=$(grep -v '^[[:space:]]*$' "$WORK/gh-stderr.log" 2>/dev/null | tail -n 1 | redact)
+    sentry_report "ci-queue-collect: collection cycle failed (fails=$fails)${gh_err:+: gh error: $gh_err}"
+    # #663 AC6: lowered from a 3-failure streak to 2 (an intermittent pair of failures a day apart
+    # used to never alert at all) — still fires exactly once per streak, on the transition into it.
+    if [ "$fails" -eq 2 ]; then
+      slack_post "CI queue collector: $fails consecutive failures [env=$ENVIRONMENT release=$RELEASE]${gh_err:+ gh error: $gh_err}"
+    fi
   fi
   [ -z "${CI_QUEUE_CALL_LOG:-}" ] || wc -c < "$WORK/calls.count" | tr -d ' ' > "$CI_QUEUE_CALL_LOG" 2>/dev/null
 

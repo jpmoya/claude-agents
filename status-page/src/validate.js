@@ -373,6 +373,26 @@ function sanitiseCiQueueRunner(raw) {
   return result;
 }
 
+// `ci_queue.unavailable_repos` (issue #663 AC4): the configured repos the collector could not
+// reach this cycle (renamed/archived/access lost — see ci-queue-collect.sh's per-repo skip).
+// Debug-only (no render.js consumer yet) — still validated to the same "owner/repo" shape as
+// every other repo string in this file, never free text, and bounded so a garbled/huge array
+// can't bloat storage.
+const MAX_UNAVAILABLE_REPOS = 50;
+
+/**
+ * Sanitises `ci_queue.unavailable_repos`. `undefined` signals "omit the key" — same additive
+ * reasoning as `runners_offline`/`runners[]` below: a collector that predates #663 never sends
+ * this at all. A non-"owner/repo"-shaped entry is dropped individually (never takes down the
+ * whole array), same pattern as `sanitiseCiQueueRunner`.
+ */
+function sanitiseUnavailableRepos(raw) {
+  if (!Array.isArray(raw)) return undefined;
+  return raw
+    .filter((r) => typeof r === 'string' && REPO_FULL.test(r))
+    .slice(0, MAX_UNAVAILABLE_REPOS);
+}
+
 /**
  * Sanitises the optional top-level `ci_queue` (issue #643): every field is an enum, a bounded
  * int (0-999), or an ISO-8601Z timestamp — no free text. Unlike every other optional field in
@@ -386,6 +406,12 @@ function sanitiseCiQueueRunner(raw) {
  * must keep showing the rest of the (still fully #643-shaped) panel, not disappear. So each is
  * independently optional: present-and-malformed (wrong type) just omits that one key, and a bad
  * `runners[]` entry (AC8(b)) drops only that entry, never the whole `ci_queue`.
+ *
+ * Issue #663 adds three more fields to that same "independently optional" set: `truncated`
+ * (AC2 — the collector's run-lookup cap dropped at least one repo's queued/in_progress runs this
+ * cycle, so `queued_total`/`categories[]` may be an undercount), `unavailable_repos` (AC4 — see
+ * `sanitiseUnavailableRepos` above), and `runners_total_sampled` (AC5 — the pre-truncation count
+ * behind `runners[]`'s `MAX_CI_QUEUE_RUNNERS` cap, so render.js can show "showing 30 of N").
  */
 function sanitiseCiQueue(raw) {
   if (!isPlainObject(raw)) return null;
@@ -419,6 +445,17 @@ function sanitiseCiQueue(raw) {
       .map(sanitiseCiQueueRunner)
       .filter((runner) => runner !== null)
       .slice(0, MAX_CI_QUEUE_RUNNERS);
+  }
+
+  if (typeof raw.truncated === 'boolean') {
+    result.truncated = raw.truncated;
+  }
+
+  const unavailableRepos = sanitiseUnavailableRepos(raw.unavailable_repos);
+  if (unavailableRepos !== undefined) result.unavailable_repos = unavailableRepos;
+
+  if (isIntInRange(raw.runners_total_sampled, 0, 999)) {
+    result.runners_total_sampled = raw.runners_total_sampled;
   }
 
   return result;
