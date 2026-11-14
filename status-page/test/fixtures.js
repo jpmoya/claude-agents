@@ -250,6 +250,31 @@ export function validCiQueueWithRunners(overrides = {}) {
   });
 }
 
+/** One valid `ci_queue.categories[].queued[]` entry (issue #657), per the Expected Behavior payload shape. */
+export function validCiQueueQueuedItem(overrides = {}) {
+  return {
+    repo: 'jpmoya/claude-agents',
+    run_id: 43050239599,
+    pr_url: 'https://github.com/jpmoya/claude-agents/pull/42',
+    title: 'Fix the flaky retry test',
+    queued_at: '2026-09-21T11:45:00Z',
+    ...overrides,
+  };
+}
+
+/** A valid `ci_queue` object that also carries #657's `categories[].queued[]` on one category. */
+export function validCiQueueWithQueuedItems(overrides = {}) {
+  return validCiQueue({
+    categories: [
+      { key: 'dependabot', count: 1 },
+      { key: 'prod_deploy', count: 1, queued: [validCiQueueQueuedItem()] },
+      { key: 'pr', count: 2 },
+      { key: 'other', count: 1 },
+    ],
+    ...overrides,
+  });
+}
+
 /** One valid backlog[] item (backlog reorder view): {repo, issue, title?, url?, rank?}. */
 export function validBacklogItem(overrides = {}) {
   return {

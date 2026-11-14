@@ -266,14 +266,65 @@ function sanitiseBacklog(raw) {
   return Array.isArray(raw) ? raw.map(sanitiseBacklogItem).filter((item) => item !== null).slice(0, MAX_BACKLOG) : [];
 }
 
-const MAX_CI_QUEUE_CATEGORIES = 4;
+// #657: tracks CI_QUEUE_CATEGORY_VOCAB's length (not hand-picked) so adding/removing a vocab
+// key never silently desyncs this cap.
+const MAX_CI_QUEUE_CATEGORIES = CI_QUEUE_CATEGORY_VOCAB.length;
 
-/** Sanitises one `ci_queue.categories[]` entry. Returns null on any violation. */
+/**
+ * Sanitises one `ci_queue.categories[]` entry. Returns null on any violation of the mandatory
+ * `key`/`count` fields (that still drops the WHOLE `ci_queue`, per sanitiseCiQueue's contract).
+ * `queued[]` (issue #657) is additive/optional WITHIN the entry, same reasoning as `runners[]`/
+ * `runners_offline` within `ci_queue` itself: absent (a pre-#657 collector) or the wrong type
+ * just omits the key; a malformed individual item is dropped on its own (see
+ * sanitiseCiQueueQueued) — neither ever drops the category or the whole `ci_queue`.
+ */
 function sanitiseCiQueueCategory(raw) {
   if (!isPlainObject(raw)) return null;
   if (!(typeof raw.key === 'string' && CI_QUEUE_CATEGORY_VOCAB.includes(raw.key))) return null;
   if (!isIntInRange(raw.count, 0, 999)) return null;
-  return { key: raw.key, count: raw.count };
+  const result = { key: raw.key, count: raw.count };
+  if (Array.isArray(raw.queued)) result.queued = sanitiseCiQueueQueued(raw.queued);
+  return result;
+}
+
+// `ci_queue.categories[].queued[]` (issue #657): a capped list, NESTED inside each category
+// entry, of the ACTUAL queued runs behind that category's count (not just the count) — repo,
+// run_id, pr_url (always present, nullable — unlike current_job, which omits the whole key),
+// title (optional free text, same exception as runs[].title), queued_at. No `key` field — it's
+// implied by the parent category entry. `MAX_CI_QUEUE_QUEUED_ITEMS` mirrors
+// `MAX_CI_QUEUE_RUNNERS`'s pattern, applied PER category entry (one noisy category must never
+// crowd out another's items).
+const MAX_CI_QUEUE_QUEUED_ITEMS = 10;
+
+/**
+ * Sanitises one `ci_queue.categories[].queued[]` entry. Returns null to DROP just this one entry
+ * (same per-entry-drop reasoning as sanitiseCiQueueRunner — a single malformed queued item must
+ * never blank the whole panel, let alone the category it lives in).
+ */
+function sanitiseCiQueueQueuedItem(raw) {
+  if (!isPlainObject(raw)) return null;
+  if (!(typeof raw.repo === 'string' && REPO_FULL.test(raw.repo))) return null;
+  if (!isIntInRange(raw.run_id, 1, MAX_RUN_ID)) return null;
+  if (!isIsoTimestamp(raw.queued_at)) return null;
+
+  const item = { repo: raw.repo, run_id: raw.run_id, queued_at: raw.queued_at };
+  // pr_url is always a present key (null when there's no attached PR) — the one deliberate
+  // difference from current_job's "omit the whole key" convention (AC: "no attached PR -> list
+  // item has pr_url: null, still included, not dropped").
+  item.pr_url = typeof raw.pr_url === 'string' && PR_URL.test(raw.pr_url) ? raw.pr_url : null;
+  const title = sanitiseTitle(raw.title);
+  if (title !== null) item.title = title;
+  return item;
+}
+
+/**
+ * Sanitises one category entry's `queued[]`: non-array (already guarded by the caller) never
+ * reaches here; each malformed entry is dropped individually (never fails the list, let alone
+ * the category); capped at MAX_CI_QUEUE_QUEUED_ITEMS, preserving the collector's own order
+ * (already oldest-queued_at-first) rather than re-sorting here.
+ */
+function sanitiseCiQueueQueued(raw) {
+  return raw.map(sanitiseCiQueueQueuedItem).filter((item) => item !== null).slice(0, MAX_CI_QUEUE_QUEUED_ITEMS);
 }
 
 /** Sanitises `ci_queue.oldest` (an object or exactly `null`). Returns {ok:false} on any violation. */
