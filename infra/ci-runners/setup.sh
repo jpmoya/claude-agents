@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Re-runnable setup of a self-hosted GitHub Actions runner VM (#288, plan in #205).
-# Usage: setup.sh [--slots N] [--slot-gb G] [--runner-version X.Y.Z] [--check] [--mint-from-stdin] [--probe]
+# Usage: setup.sh [--slots N] [--slot-gb G] [--reserve-slots N] [--runner-version X.Y.Z] [--check] [--mint-from-stdin] [--probe]
 # Test seams: GHA_ROOT prefixes every written path; GHA_DRY_STUBS is prepended to PATH.
 set -euo pipefail
 
@@ -12,13 +12,16 @@ ROOT=${GHA_ROOT:-}
 [ -z "${GHA_DRY_STUBS:-}" ] || PATH="$GHA_DRY_STUBS:$PATH"
 export PATH
 
-SLOT_GB=4 SLOTS=$DEFAULT_SLOTS VERSION=$DEFAULT_VERSION CHECK=0 FROM_STDIN=0 PROBE=0
+SLOT_GB=4 SLOTS=$DEFAULT_SLOTS RESERVE=0 VERSION=$DEFAULT_VERSION CHECK=0 FROM_STDIN=0 PROBE=0
+BULK_LABEL=benjis-ci-bulk
 
 usage() {
   cat >&2 <<EOF
-Usage: setup.sh [--slots N] [--slot-gb G] [--runner-version X.Y.Z] [--check] [--mint-from-stdin] [--probe]
+Usage: setup.sh [--slots N] [--slot-gb G] [--reserve-slots N] [--runner-version X.Y.Z] [--check] [--mint-from-stdin] [--probe]
   --slots N             runner slots, 1..$MAX_SLOTS (default $DEFAULT_SLOTS)
   --slot-gb G           memory cap per slot in GiB, 4..8 (default 4; 5 leaves room for a 4000m job container plus runner and Docker)
+  --reserve-slots N     slots 1..N register without $BULK_LABEL (kept for PR-blocking jobs), 0..SLOTS-1 (default 0);
+                        every re-run on this host must pass the same N
   --runner-version V    pinned actions/runner version, X.Y.Z (default $DEFAULT_VERSION)
   --check               change nothing; print WOULD CHANGE/OK per step; exit 3 if changes pending
   --mint-from-stdin     read the mint token from stdin and store it root-only in /etc/gha/mint.env
@@ -31,6 +34,7 @@ while [ $# -gt 0 ]; do
   case $1 in
     --slots) [ $# -ge 2 ] || usage_die "--slots needs a value"; SLOTS=$2; shift 2 ;;
     --slot-gb) [ $# -ge 2 ] || usage_die "--slot-gb needs a value"; SLOT_GB=$2; shift 2 ;;
+    --reserve-slots) [ $# -ge 2 ] || usage_die "--reserve-slots needs a value"; RESERVE=$2; shift 2 ;;
     --runner-version) [ $# -ge 2 ] || usage_die "--runner-version needs a value"; VERSION=$2; shift 2 ;;
     --check) CHECK=1; shift ;;
     --mint-from-stdin) FROM_STDIN=1; shift ;;
@@ -41,6 +45,9 @@ while [ $# -gt 0 ]; do
 done
 [[ $SLOTS =~ ^[1-9][0-9]?$ ]] && [ "$SLOTS" -le "$MAX_SLOTS" ] || usage_die "--slots must be an integer 1..$MAX_SLOTS"
 [[ $SLOT_GB =~ ^[4-8]$ ]] || usage_die "--slot-gb must be an integer 4..8"
+# at least one slot per host keeps the bulk label, or bulk jobs could queue forever (#638)
+[[ $RESERVE =~ ^(0|[1-9][0-9]?)$ ]] && [ "$RESERVE" -lt "$SLOTS" ] \
+  || usage_die "--reserve-slots must be an integer 0..$((SLOTS - 1)) (0..SLOTS-1: at least one $BULK_LABEL slot)"
 [[ $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || usage_die "--runner-version must look like 2.338.0"
 if [ "$PROBE" = 1 ]; then exec bash "$SCRIPT_DIR/probe.sh"; fi
 
@@ -104,6 +111,33 @@ EOF
 # shellcheck disable=SC1090
 . <(lib_text)
 
+# Labels: every slot registers self-hosted + benjis-ci; with --reserve-slots N>0, slots above N also register
+# benjis-ci-bulk (long non-blocking jobs ask for it, so they never take slots 1..N). N=0 renders the launcher unchanged.
+sub_once() { # replace $old with $new in the caller's $s; fail if the template line is gone (template drift)
+  [[ $s == *"$old"* ]] || { echo "setup.sh: launcher template has no '$old'" >&2; return 1; }
+  s=${s/"$old"/"$new"}
+}
+# shellcheck disable=SC2016  # the injected launcher lines are literal code, expanded when gha-slot.sh runs
+launcher_file() {
+  local s old new
+  s=$(launcher_text)
+  if [ "$RESERVE" -gt 0 ]; then
+    old='GHA_LABEL=benjis-ci'
+    new="$old
+GHA_BULK_LABEL=$BULK_LABEL
+GHA_RESERVE_SLOTS=$RESERVE   # slots <= this omit the bulk label: kept for PR-blocking jobs (#638)"
+    sub_once || return 1
+    old='body="{\"name\":'
+    new='labels="\"self-hosted\",\"$GHA_LABEL\""
+[ "$slot" -le "$GHA_RESERVE_SLOTS" ] || labels="$labels,\"$GHA_BULK_LABEL\""
+'"$old"
+    sub_once || return 1
+    old='\"labels\":[\"self-hosted\",\"$GHA_LABEL\"]'
+    new='\"labels\":[$labels]'
+    sub_once || return 1
+  fi
+  printf '%s\n' "$s"
+}
 launcher_text() { render <<'EOF'
 #!/usr/bin/env bash
 # gha-slot.sh <slot>: mint one single-use JIT runner config and run it in a throwaway container.
@@ -224,6 +258,15 @@ AccuracySec=10s
 [Install]
 WantedBy=timers.target
 EOF
+}
+slot_range() { if [ "$1" -eq "$2" ]; then echo "slot $1"; else echo "slots $1-$2"; fi; }
+slot_unit_file() { # slot_unit_text, plus the reserved slots in its Description when --reserve-slots > 0
+  local s; s=$(slot_unit_text)
+  if [ "$RESERVE" -gt 0 ]; then
+    local old='(label benjis-ci, ephemeral JIT)'
+    s=${s/"$old"/"(label benjis-ci, ephemeral JIT; $(slot_range 1 "$RESERVE") reserved, higher slots also $BULK_LABEL)"}
+  fi
+  printf '%s\n' "$s"
 }
 slot_unit_text() { render <<'EOF'
 [Unit]
@@ -399,10 +442,11 @@ step_image() {
 step_units() {
   STEP=units
   put "$ROOT/usr/local/lib/gha/common.sh" 644 "$(lib_text)"
-  put "$ROOT/usr/local/sbin/gha-slot.sh" 755 "$(launcher_text)"
+  local launcher; launcher=$(launcher_file) || gha_fail "setup/$STEP" "cannot render gha-slot.sh labels"
+  put "$ROOT/usr/local/sbin/gha-slot.sh" 755 "$launcher"
   put "$ROOT/usr/local/sbin/gha-hygiene.sh" 755 "$(hygiene_text)"
   put "$ROOT/usr/local/sbin/gha-metrics.sh" 755 "$(metrics_text)"
-  put_unit "$ROOT/etc/systemd/system/gha-slot@.service" 644 "$(slot_unit_text)"
+  put_unit "$ROOT/etc/systemd/system/gha-slot@.service" 644 "$(slot_unit_file)"
   put_unit "$ROOT/etc/systemd/system/gha-hygiene.service" 644 "$(hygiene_unit_text)"
   put_unit "$ROOT/etc/systemd/system/gha-hygiene.timer" 644 "$(timer_text)"
   put_unit "$ROOT/etc/systemd/system/gha-metrics.service" 644 "$(metrics_unit_text)"
@@ -475,6 +519,11 @@ step_mint() {
   fi
 }
 
+if [ "$RESERVE" -eq 0 ]; then
+  echo "reserve-slots: 0 (no reserved slot; every slot registers self-hosted, benjis-ci)"
+else
+  echo "reserve-slots: $RESERVE ($(slot_range 1 "$RESERVE") without $BULK_LABEL; $(slot_range $((RESERVE + 1)) "$SLOTS") also register it)"
+fi
 UID_GHA=$(id -u gha 2>/dev/null || echo UID)
 step_user
 UID_GHA=$(id -u gha 2>/dev/null || echo UID)

@@ -424,8 +424,112 @@ test_obs_nodsn() {
 }
 t "obs: no DSN file -> Sentry skipped silently, failure still non-zero" test_obs_nodsn
 
+# ---- --reserve-slots (#638) ------------------------------------------------------------------
+# AC1 baseline: the setup.sh of the commit before #638. Update this pin only when the launcher or slot unit is
+# changed on purpose (and then re-check that --reserve-slots 0 still renders exactly what that commit rendered).
+BASE_COMMIT=ec7f934
+render_base() { # render_base <outroot>: run the pre-#638 setup.sh into <outroot>
+  local d="$TMP/base.$RANDOM$RANDOM"; mkdir -p "$d"
+  git -C "$REPO" show "$BASE_COMMIT:infra/ci-runners/setup.sh" > "$d/setup.sh" 2>/dev/null \
+    || { echo "git object $BASE_COMMIT:infra/ci-runners/setup.sh missing"; return 1; }
+  GHA_ROOT="$1" bash "$d/setup.sh" --slots 3 >/dev/null 2>&1 || { echo "base setup.sh failed"; return 1; }
+}
+test_reserve_zero_identical() {
+  newenv; local base="$TMP/baseroot.$RANDOM$RANDOM"; mkdir -p "$base"
+  render_base "$base" || return 1
+  local f args
+  for args in "" "--reserve-slots 0"; do
+    newenv
+    # shellcheck disable=SC2086
+    bash "$SETUP" --slots 3 $args >/dev/null 2>&1 || { echo "setup '$args' failed"; return 1; }
+    for f in usr/local/sbin/gha-slot.sh etc/systemd/system/gha-slot@.service; do
+      [ -s "$base/$f" ] || { echo "base did not render $f"; return 1; }
+      cmp -s "$base/$f" "$R/$f" || { echo "'$args': $f differs from $BASE_COMMIT"; return 1; }
+    done
+  done
+}
+t "--reserve-slots 0 / no flag: gha-slot.sh and slot unit byte-identical to pre-#638" test_reserve_zero_identical
+
+mint_labels() { # mint_labels <slot>: run the rendered launcher, print the labels array it minted with
+  : > "$ST/curl.log"
+  bash "$R/usr/local/sbin/gha-slot.sh" "$1" >/dev/null 2>&1 || { echo "launcher slot $1 failed" >&2; return 1; }
+  grep -F generate-jitconfig "$ST/curl.log" | grep -oE '"labels":\[[^]]*\]' | head -1
+}
+L_RES='"labels":["self-hosted","benjis-ci"]'
+L_BULK='"labels":["self-hosted","benjis-ci","benjis-ci-bulk"]'
+test_reserve_labels() { # test_reserve_labels <slots> <reserve>
+  local slots=$1 res=$2 i got want
+  newenv; setup_mint; echo "GHA_RUNNER_SCOPE=orgs/benjis" >> "$R/etc/gha/mint.env"
+  bash "$SETUP" --slots "$slots" --reserve-slots "$res" >/dev/null 2>&1 || { echo "setup failed"; return 1; }
+  for ((i = 1; i <= slots; i++)); do
+    got=$(mint_labels "$i") || return 1
+    if [ "$i" -le "$res" ]; then want=$L_RES; else want=$L_BULK; fi
+    [ "$got" = "$want" ] || { echo "slot $i: got '$got', want '$want'"; return 1; }
+  done
+}
+t "--slots 3 --reserve-slots 1: slot 1 omits benjis-ci-bulk, slots 2-3 include it" test_reserve_labels 3 1
+t "--slots 3 --reserve-slots 2: slots 1-2 omit benjis-ci-bulk, slot 3 includes it" test_reserve_labels 3 2
+t "--slots 2 --reserve-slots 1: slot 1 omits benjis-ci-bulk, slot 2 includes it" test_reserve_labels 2 1
+test_reserve_zero_labels() {
+  newenv; setup_mint; echo "GHA_RUNNER_SCOPE=orgs/benjis" >> "$R/etc/gha/mint.env"
+  bash "$SETUP" --slots 2 --reserve-slots 0 >/dev/null 2>&1 || return 1
+  local i got; for i in 1 2; do
+    got=$(mint_labels "$i") || return 1
+    [ "$got" = "$L_RES" ] || { echo "slot $i: got '$got', want '$L_RES'"; return 1; }
+  done
+}
+t "--reserve-slots 0: every slot mints [self-hosted, benjis-ci] (as before #638)" test_reserve_zero_labels
+test_reserve_rendered_lint() {
+  newenv; bash "$SETUP" --slots 3 --reserve-slots 1 >/dev/null 2>&1 || return 1
+  local f="$R/usr/local/sbin/gha-slot.sh"
+  bash -n "$f" || { echo "rendered launcher fails bash -n"; return 1; }
+  if command -v shellcheck >/dev/null; then shellcheck -x -e SC1091 "$f" || return 1; fi
+}
+t "rendered launcher with --reserve-slots 1 passes bash -n (and shellcheck)" test_reserve_rendered_lint
+test_reserve_unit_text() {
+  newenv; bash "$SETUP" --slots 3 --reserve-slots 1 >/dev/null 2>&1 || return 1
+  local d; d=$(sed -n 's/^Description=//p' "$R/etc/systemd/system/gha-slot@.service")
+  grep -qF 'benjis-ci-bulk' <<<"$d" && grep -qE 'slots? 1' <<<"$d" || { echo "unit Description: $d"; return 1; }
+}
+t "--reserve-slots 1: slot unit Description names the reserved slots and benjis-ci-bulk" test_reserve_unit_text
+test_reserve_check_reports() {
+  local res
+  for res in 0 1; do
+    newenv; bash "$SETUP" --check --slots 3 --reserve-slots "$res" >"$TMP/rc.out" 2>&1; local rc=$?
+    [ $rc -eq 3 ] || { echo "--check exit $rc, want 3"; return 1; }
+    grep -E 'reserve-slots' "$TMP/rc.out" | grep -vE '^(WOULD CHANGE|CHANGED|OK):' | grep -qE "(^|[^0-9])$res([^0-9]|$)" \
+      || { echo "--check does not report reserve-slots $res"; return 1; }
+  done
+  newenv; bash "$SETUP" --slots 3 --reserve-slots 1 >/dev/null 2>&1 || return 1
+  bash "$SETUP" --check --slots 3 --reserve-slots 1 >"$TMP/rc2.out" 2>&1 || { echo "--check after apply exit $?"; return 1; }
+  ! grep -q 'WOULD CHANGE' "$TMP/rc2.out" || { echo "--check after apply reports changes"; return 1; }
+  bash "$SETUP" --check --slots 3 >"$TMP/rc3.out" 2>&1; [ $? -eq 3 ] || { echo "dropping the flag is not reported as a change"; return 1; }
+  grep -q '^WOULD CHANGE: .*gha-slot.sh$' "$TMP/rc3.out" || { echo "dropping the flag does not change gha-slot.sh"; return 1; }
+}
+t "--check reports the reserve-slots setting; re-run without the flag shows a launcher change" test_reserve_check_reports
+check_bad_reserve() { # check_bad_reserve <args...>: exit 2 + a --reserve-slots range message + usage, writes nothing
+  check_bad "$@" || return 1
+  grep -qE 'reserve-slots .*0\.\.' "$TMP/b.out" || { echo "'$*' no --reserve-slots range message"; return 1; }
+}
+for args in "--slots 1 --reserve-slots 1" "--slots 3 --reserve-slots 3" "--slots 2 --reserve-slots 5" \
+            "--reserve-slots -1" "--reserve-slots abc" "--reserve-slots 01" "--reserve-slots 1x"; do
+  t "invalid '$args' -> exit 2 + range usage" check_bad_reserve $args
+done
+test_reserve_missing_value() {
+  newenv; bash "$SETUP" --reserve-slots >"$TMP/b.out" 2>&1; local rc=$?
+  [ $rc -eq 2 ] && grep -qF -- '--reserve-slots needs a value' "$TMP/b.out" && [ -z "$(find "$R" -mindepth 1)" ]
+}
+t "invalid '--reserve-slots' (no value) -> exit 2 + usage" test_reserve_missing_value
+test_reserve_ok() { newenv; bash "$SETUP" "$@" >/dev/null 2>&1 || { echo "'$*' exit $?"; return 1; }; }
+for args in "--slots 3 --reserve-slots 0" "--slots 3 --reserve-slots 2" "--slots 1 --reserve-slots 0" \
+            "--reserve-slots 1 --slots 3"; do
+  t "valid '$args' -> exit 0" test_reserve_ok $args
+done
+t "usage lists --reserve-slots" bash -c "bash '$SETUP' --help 2>&1 | grep -qF -- '--reserve-slots'"
+
 # ---- README ----------------------------------------------------------------------------------
-for kw in 'mint.env' 'alert.env' '--probe' 'benjis-ci' 'CI_RUNNER_JSON' 'rollback' '--check' '--slots'; do
+for kw in 'mint.env' 'alert.env' '--probe' 'benjis-ci' 'CI_RUNNER_JSON' 'rollback' '--check' '--slots' \
+          '--reserve-slots' 'benjis-ci-bulk'; do
   t "README mentions $kw" grep -qiF -- "$kw" "$README"
 done
 
