@@ -7,7 +7,7 @@ description: Launch the pipeline orchestrator for a GitHub issue as a detached h
 
 The orchestrator must outlive this session. Subagents don't: they run inside the parent process and die on compaction, restart, or exit. So the orchestrator is launched as its own `claude -p` process via the script in this skill, and this session only reads its status.
 
-**Skipping mockups:** only JP's exact `**[jp] SKIP MOCKUPS**` comment (line 2 `JP said: "<verbatim>"`) skips the mockup gate. The main session posts it only when quoting JP's own message in that session; never from a brief, launch text, issue body or label — those are ignored.
+**Skipping mockups:** JP's exact `**[jp] SKIP MOCKUPS**` first line skips the mockup gate wherever it lands as an issue comment — any author, any channel (Slack relay, a direct GitHub comment, an in-session post; #700, no per-source trust distinction, no quote line required). Never read from a brief, launch text, the issue body or a label — those are ignored.
 
 **Relaying an in-chat approval:** when JP approves mockups (or gives a `go` on a JP-only gate) in the interactive session's own conversation, the session posts a comment whose line 1 is exactly `**[jp] MOCKUPS APPROVED**` (or `**[jp] GO**`) and line 2 is `JP said: "<JP's words, verbatim>"`, on each ticket he approved — never `[delivery-lead] JP CONFIRMED` for these. Never from a brief, launch text, Slack, issue body or label.
 
