@@ -6,11 +6,18 @@
 import { describe, it, expect } from 'vitest';
 import { validateBeatPayload } from '../src/validate.js';
 import { CI_QUEUE_CATEGORY_VOCAB } from '../src/vocab.js';
-import { validPayload, validCiQueue } from './fixtures.js';
+import { validPayload, validCiQueue, validCiQueueWithQueuedItems, validCiQueueQueuedItem } from './fixtures.js';
 
 describe('AC10 — CI_QUEUE_CATEGORY_VOCAB', () => {
-  it('is exactly [dependabot, deploy_release, pr, other]', () => {
-    expect(CI_QUEUE_CATEGORY_VOCAB).toEqual(['dependabot', 'deploy_release', 'pr', 'other']);
+  it('is exactly [dependabot, prod_deploy, staging_deploy, deploy_release, pr, other] (issue #657 split)', () => {
+    expect(CI_QUEUE_CATEGORY_VOCAB).toEqual([
+      'dependabot',
+      'prod_deploy',
+      'staging_deploy',
+      'deploy_release',
+      'pr',
+      'other',
+    ]);
   });
 });
 
@@ -28,11 +35,102 @@ describe('AC8(a) — a valid ci_queue passes through unchanged', () => {
     expect(r.value.ci_queue).toEqual(ciQueue);
   });
 
-  it('accepts exactly 4 category entries (one per vocab key)', () => {
+  it('accepts a 4-entry categories[] (fewer than the now-6-key vocab — not every key need be present)', () => {
     const ciQueue = validCiQueue();
     const r = validateBeatPayload(validPayload({ ci_queue: ciQueue }));
     expect(r.ok).toBe(true);
     expect(r.value.ci_queue.categories).toHaveLength(4);
+  });
+
+  it('accepts all 6 vocab keys at once (issue #657: prod_deploy/staging_deploy split)', () => {
+    const ciQueue = validCiQueue({
+      categories: CI_QUEUE_CATEGORY_VOCAB.map((key) => ({ key, count: 1 })),
+    });
+    const r = validateBeatPayload(validPayload({ ci_queue: ciQueue }));
+    expect(r.ok).toBe(true);
+    expect(r.value.ci_queue.categories).toHaveLength(6);
+  });
+});
+
+describe('issue #657 — categories[].queued[]', () => {
+  it('keeps a valid queued[] entry nested in its category, byte-for-byte', () => {
+    const ciQueue = validCiQueueWithQueuedItems();
+    const r = validateBeatPayload(validPayload({ ci_queue: ciQueue }));
+    expect(r.ok).toBe(true);
+    expect(r.value.ci_queue).toEqual(ciQueue);
+  });
+
+  it('a category with no queued key at all (pre-#657 collector) validates fine, no queued key added', () => {
+    const ciQueue = validCiQueue();
+    const r = validateBeatPayload(validPayload({ ci_queue: ciQueue }));
+    expect(r.ok).toBe(true);
+    for (const cat of r.value.ci_queue.categories) {
+      expect(cat).not.toHaveProperty('queued');
+    }
+  });
+
+  it('a non-array queued (wrong type) just omits the key — never drops the category or ci_queue', () => {
+    const ciQueue = validCiQueueWithQueuedItems();
+    ciQueue.categories[1].queued = 'nope';
+    const r = validateBeatPayload(validPayload({ ci_queue: ciQueue }));
+    expect(r.ok).toBe(true);
+    expect(r.value.ci_queue.categories[1]).not.toHaveProperty('queued');
+    expect(r.value.ci_queue.categories[1].key).toBe('prod_deploy');
+  });
+
+  it('a malformed individual queued[] item is dropped — the category and its other items survive', () => {
+    const ciQueue = validCiQueueWithQueuedItems();
+    ciQueue.categories[1].queued = [
+      validCiQueueQueuedItem(),
+      { repo: 'not a repo shape', run_id: 1, queued_at: '2026-09-21T11:45:00Z' },
+      validCiQueueQueuedItem({ run_id: 99 }),
+    ];
+    const r = validateBeatPayload(validPayload({ ci_queue: ciQueue }));
+    expect(r.ok).toBe(true);
+    const queued = r.value.ci_queue.categories[1].queued;
+    expect(queued).toHaveLength(2);
+    expect(queued.map((q) => q.run_id)).toEqual([43050239599, 99]);
+  });
+
+  it('pr_url is always present (null when there is no attached PR) — the item is kept, not dropped', () => {
+    const ciQueue = validCiQueueWithQueuedItems();
+    ciQueue.categories[1].queued = [validCiQueueQueuedItem({ pr_url: undefined })];
+    delete ciQueue.categories[1].queued[0].pr_url;
+    const r = validateBeatPayload(validPayload({ ci_queue: ciQueue }));
+    expect(r.ok).toBe(true);
+    expect(r.value.ci_queue.categories[1].queued[0]).toMatchObject({ pr_url: null });
+  });
+
+  it('title is optional free text, omitted when absent', () => {
+    const ciQueue = validCiQueueWithQueuedItems();
+    delete ciQueue.categories[1].queued[0].title;
+    const r = validateBeatPayload(validPayload({ ci_queue: ciQueue }));
+    expect(r.ok).toBe(true);
+    expect(r.value.ci_queue.categories[1].queued[0]).not.toHaveProperty('title');
+  });
+
+  it('more items than MAX_CI_QUEUE_QUEUED_ITEMS (10) are truncated, never an error', () => {
+    const ciQueue = validCiQueueWithQueuedItems();
+    ciQueue.categories[1].queued = Array.from({ length: 15 }, (_, i) => validCiQueueQueuedItem({ run_id: 1000 + i }));
+    const r = validateBeatPayload(validPayload({ ci_queue: ciQueue }));
+    expect(r.ok).toBe(true);
+    expect(r.value.ci_queue.categories[1].queued).toHaveLength(10);
+  });
+
+  it('a missing/invalid run_id drops just that queued item', () => {
+    const ciQueue = validCiQueueWithQueuedItems();
+    ciQueue.categories[1].queued = [validCiQueueQueuedItem(), validCiQueueQueuedItem({ run_id: 'nope' })];
+    const r = validateBeatPayload(validPayload({ ci_queue: ciQueue }));
+    expect(r.ok).toBe(true);
+    expect(r.value.ci_queue.categories[1].queued).toHaveLength(1);
+  });
+
+  it('a non-ISO queued_at drops just that queued item', () => {
+    const ciQueue = validCiQueueWithQueuedItems();
+    ciQueue.categories[1].queued = [validCiQueueQueuedItem(), validCiQueueQueuedItem({ queued_at: 'soon' })];
+    const r = validateBeatPayload(validPayload({ ci_queue: ciQueue }));
+    expect(r.ok).toBe(true);
+    expect(r.value.ci_queue.categories[1].queued).toHaveLength(1);
   });
 });
 
@@ -111,8 +209,16 @@ describe('AC8(c) — one malformed ci_queue sub-field drops the whole object, si
     siblingsSurvive(validateBeatPayload(payload));
   });
 
-  it('more than 4 category entries drops ci_queue', () => {
+  it('more than 6 category entries (the now-6-key vocab length) drops ci_queue', () => {
     const payload = basePayload();
+    // basePayload already has 4 (dependabot/deploy_release/pr/other); add the 2 remaining vocab
+    // keys (still unique — must NOT exceed the cap yet) then a 7th that can only be a duplicate
+    // (the vocab has exactly 6 keys) — the length check fires before the duplicate-key check, so
+    // this is still testing MAX_CI_QUEUE_CATEGORIES overflow, not just the duplicate-key path.
+    payload.ci_queue.categories.push({ key: 'prod_deploy', count: 1 });
+    payload.ci_queue.categories.push({ key: 'staging_deploy', count: 1 });
+    expect(payload.ci_queue.categories).toHaveLength(6); // sanity: still within the cap
+    expect(validateBeatPayload(payload).ok).toBe(true);
     payload.ci_queue.categories.push({ key: 'other', count: 1 });
     siblingsSurvive(validateBeatPayload(payload));
   });
