@@ -14,7 +14,7 @@ built by `step_image`/`dockerfile_text`) includes the `gh` CLI.
 - Today the variable is scoped to the scheduler repo only; the quoting tool stays on GitHub-hosted until its container-mode
   workflow is on its `main` branch (#205).
 - `setup.sh` is installed from one pinned commit into `/opt/gha-ci` (SHA in `/opt/gha-ci/SHA`); update by re-extracting
-  `infra/ci-runners` from the new commit and re-running `setup.sh --slots N`.
+  `infra/ci-runners` from the new commit and re-running `setup.sh --slots N` with the host's same `--reserve-slots` (see Usage).
 
 ## Metrics (where are the bottlenecks?)
 Every host logs under `/var/log/gha/` (capped: 14 days of samples, last 5000 runner lives; trimmed by the hourly hygiene run):
@@ -30,10 +30,23 @@ Docker (with `dockerd-rootless-setuptool.sh`), `uidmap`, `curl`, `jq`, systemd. 
 
 ## Usage
 ```
-sudo infra/ci-runners/setup.sh [--slots N] [--runner-version X.Y.Z] [--check] [--mint-from-stdin] [--probe]
+sudo infra/ci-runners/setup.sh [--slots N] [--slot-gb G] [--reserve-slots N] [--runner-version X.Y.Z] [--check] [--mint-from-stdin] [--probe]
 ```
 - `--slots N` (1..16, default 2; 3 only after a measured gate). Shrinking disables and stops the higher slots.
   Per-user `MemoryMax` is 4G x slots (CI job containers are capped at 4G). It is a hard limit with no soft `MemoryHigh` throttle: an over-limit job is killed (rc 137) instead of freezing the slot (#615).
+- `--reserve-slots N` (0..SLOTS-1, default 0; #638) keeps slots 1..N for PR-blocking jobs. Every slot registers
+  `self-hosted, benjis-ci` (so ci-runner-health still counts all of them); slots above N also register `benjis-ci-bulk`.
+  Long non-blocking jobs (e2e full/nightly) ask for `benjis-ci-bulk`, so they can never take slots 1..N; jobs asking only
+  for `benjis-ci` still run on any slot. At least one slot per host keeps the bulk label, so N must be below `--slots`.
+  With 0 (the default) the launcher is exactly as before and **no** slot carries `benjis-ci-bulk`. `--check` and every run
+  print the setting as a `reserve-slots:` line; the slot unit Description names the reserved slots.
+  - **Rule: every re-run of `setup.sh` on a host, and every rebuild or move of a host, must pass the same `--reserve-slots`
+    as before.** Labels are fixed when each JIT runner is minted, so a re-run without the flag silently drops
+    `benjis-ci-bulk` from every slot of that host at the next job, and bulk jobs then queue forever.
+  - Rolling back to 0: first revert the workflows that ask for `benjis-ci-bulk` (or point them back at `benjis-ci`), then
+    re-run with `--reserve-slots 0`; in the other order those jobs strand in the queue.
+  - Applying it does not interrupt running jobs: the launcher is replaced atomically and slots are not restarted, so the
+    new labels apply from each slot's next runner.
 - `--runner-version` pins actions/runner (default 2.338.0); image is built locally as `gha-runner:<version>`.
 - `--check` changes nothing, prints `WOULD CHANGE:` / `OK:` per step, exits 0 (nothing to do) or 3 (changes pending). No root needed.
 - `--mint-from-stdin` stores the registration token root-only in `/etc/gha/mint.env` (0600); never echoed or put in argv.
@@ -50,7 +63,7 @@ sudo infra/ci-runners/setup.sh [--slots N] [--runner-version X.Y.Z] [--check] [-
   `release` (deployed commit SHA), `environment=ci-runner`, `route`. Without it Sentry is skipped silently.
 
 ## Move to another VM
-1. Run `sudo infra/ci-runners/setup.sh --slots 2` on the new VM.
+1. Run `sudo infra/ci-runners/setup.sh --slots 2` on the new VM, with the old host's same `--reserve-slots` if it had one.
 2. Supply `mint.env` (and `alert.env`, `sentry.env`) as above, then start the slots: re-run `setup.sh --mint-from-stdin`
    or `systemctl start gha-slot@1 gha-slot@2`.
 3. Run `infra/ci-runners/setup.sh --probe`; every line must be PASS.
