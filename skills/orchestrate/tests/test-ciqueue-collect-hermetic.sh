@@ -75,6 +75,31 @@ EOF
   assert_eq "$out" "1" "without CI_QUEUE_COLLECT_TEST_DISABLE, config.local.sh's CI_QUEUE_COLLECT_ENABLED=1 is honoured (output: $out)" || return 1
 }
 
+# Issue #660: CI_QUEUE_METRICS_ENABLED is opt-OUT, not opt-in — config.sh defaults it to 1 so the
+# live duration/health pull turns on automatically wherever CI_QUEUE_COLLECT_ENABLED is already 1.
+# A plain default-only typo (e.g. `:-0` instead of `:-1`) would ship the feature permanently dark
+# with no other test here going red for it.
+test_cqh_metrics_enabled_defaults_to_1_via_config_sh() {
+  local home out
+  home=$(new_home)
+  out=$(HOME="$home" bash -c 'unset CI_QUEUE_METRICS_ENABLED; set -u; . "$1/config.sh"; echo "$CI_QUEUE_METRICS_ENABLED"' _ "$RS_CQH" 2>&1)
+  rm -rf "$home"
+
+  assert_eq "$out" "1" "CI_QUEUE_METRICS_ENABLED, left completely unset, defaults to 1 via config.sh (output: $out)" || return 1
+}
+
+test_cqh_metrics_enabled_host_opt_out_via_config_local_sh() {
+  local home out
+  home=$(new_home)
+  cat > "$home/.claude/pipeline/config.local.sh" <<'EOF'
+CI_QUEUE_METRICS_ENABLED=0
+EOF
+  out=$(HOME="$home" bash -c 'unset CI_QUEUE_METRICS_ENABLED; set -u; . "$1/config.sh"; echo "$CI_QUEUE_METRICS_ENABLED"' _ "$RS_CQH" 2>&1)
+  rm -rf "$home"
+
+  assert_eq "$out" "0" "a host's own config.local.sh setting CI_QUEUE_METRICS_ENABLED=0 opts out, overriding config.sh's default (output: $out)" || return 1
+}
+
 test_cqh_report_status_never_shells_to_gh_end_to_end() {
   local pipe home bindir marker rc gh_ran
   pipe=$(new_pipe); home=$(new_home)
@@ -106,4 +131,6 @@ EOF
 
 run_test test_cqh_config_local_cannot_re_enable_the_collector_under_test_disable
 run_test test_cqh_config_local_still_wins_without_test_disable
+run_test test_cqh_metrics_enabled_defaults_to_1_via_config_sh
+run_test test_cqh_metrics_enabled_host_opt_out_via_config_local_sh
 run_test test_cqh_report_status_never_shells_to_gh_end_to_end

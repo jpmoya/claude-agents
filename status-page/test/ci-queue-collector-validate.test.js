@@ -255,3 +255,94 @@ describe('validate.js against the real collector output (issue #648)', () => {
     expect(result.value.ci_queue).toEqual(raw);
   });
 });
+
+// Issue #660 — same schema-drift guard as #648/#655 above, this time for ci_metrics/ci_health:
+// runs the REAL collector with CI_QUEUE_METRICS_ENABLED=1 (own temp root/fixtures, separate from
+// every block above so their zero-metrics baselines stay untouched) and feeds its real stdout
+// into validateBeatPayload.
+describe('#660 — ci_metrics + ci_health against the real collector', () => {
+  let root3, fixdir3, pipe3, reposFile3, raw3;
+
+  beforeAll(() => {
+    root3 = mkdtempSync(join(tmpdir(), 'ciq-collector-660-'));
+    fixdir3 = join(root3, 'fixtures');
+    pipe3 = join(root3, 'pipe');
+    mkdirSync(fixdir3, { recursive: true });
+    mkdirSync(pipe3, { recursive: true });
+
+    reposFile3 = join(root3, 'repos.txt');
+    writeFileSync(reposFile3, 'Benjis-Plants/benjis-sales-tool\n');
+
+    writeFileSync(
+      join(fixdir3, 'runners-org.json'),
+      JSON.stringify({ total_count: 1, runners: [{ id: 1, name: 'r1', status: 'online', busy: true }] }),
+    );
+    writeFileSync(join(fixdir3, 'runners-repo.json'), JSON.stringify({ total_count: 0, runners: [] }));
+    writeFileSync(join(fixdir3, 'runs-Benjis-Plants__benjis-sales-tool-queued.json'), JSON.stringify({ workflow_runs: [] }));
+    writeFileSync(join(fixdir3, 'runs-Benjis-Plants__benjis-sales-tool-in_progress.json'), JSON.stringify({ workflow_runs: [] }));
+    writeFileSync(
+      join(fixdir3, 'runs-Benjis-Plants__benjis-sales-tool-completed.json'),
+      JSON.stringify({
+        workflow_runs: [
+          {
+            id: 5001,
+            repository: { full_name: 'Benjis-Plants/benjis-sales-tool' },
+            name: 'Secret scan',
+            event: 'pull_request',
+            head_branch: 'feature-a',
+            conclusion: 'success',
+            run_started_at: '2026-11-10T09:00:00Z',
+            updated_at: '2026-11-10T09:01:40Z',
+          },
+        ],
+      }),
+    );
+
+    const now3 = Math.floor(new Date('2026-11-10T09:05:00Z').getTime() / 1000);
+    const env3 = {
+      PATH: process.env.PATH,
+      HOME: process.env.HOME,
+      PIPE: pipe3,
+      CI_QUEUE_FORCE: '1',
+      CI_QUEUE_METRICS_ENABLED: '1',
+      CI_QUEUE_METRICS_FORCE: '1',
+      CI_QUEUE_NOW: String(now3),
+      CI_QUEUE_OUT: join(pipe3, 'status-ci.json'),
+      CI_QUEUE_ATTEMPT_FILE: join(pipe3, 'attempt'),
+      CI_QUEUE_STATE_FILE: join(pipe3, 'state.json'),
+      CI_QUEUE_LOCKDIR: join(pipe3, 'lockdir'),
+      CI_QUEUE_SAMPLES_FILE: join(pipe3, 'ci-runner-samples.jsonl'),
+      CI_QUEUE_CALL_LOG: join(pipe3, 'calls.log'),
+      CI_QUEUE_METRICS_OUT: join(pipe3, 'ci-metrics.json'),
+      CI_QUEUE_METRICS_ATTEMPT_FILE: join(pipe3, 'metrics-attempt'),
+      CI_QUEUE_METRICS_STATE_FILE: join(pipe3, 'metrics-state.json'),
+      CI_QUEUE_REPOS_FILE: reposFile3,
+      CI_QUEUE_FIXTURE_DIR: fixdir3,
+    };
+
+    const result3 = spawnSync('bash', [COLLECTOR], { env: env3, encoding: 'utf8' });
+    if (result3.status !== 0) {
+      throw new Error(`collector exited ${result3.status}: stdout=${result3.stdout} stderr=${result3.stderr}`);
+    }
+    raw3 = JSON.parse(readFileSync(join(pipe3, 'status-ci.json'), 'utf8'));
+  });
+
+  afterAll(() => {
+    rmSync(root3, { recursive: true, force: true });
+  });
+
+  it('the collector produced ci_metrics/ci_health with the expected live-computed shape', () => {
+    expect(raw3.ci_health).toBe('ok');
+    expect(raw3.ci_metrics.categories).toEqual([
+      { key: 'sales_tool_pr', n: 1, avg_secs: 100, p50_secs: 100, p90_secs: 100, pass_rate_pct: 100 },
+    ]);
+    expect(raw3.ci_metrics.pass_rate_pct).toBe(100);
+    expect(raw3.ci_metrics.pass_rate_n).toBe(1);
+  });
+
+  it('validateBeatPayload passes the real ci_queue object (ci_metrics + ci_health included) through unchanged', () => {
+    const result = validateBeatPayload(validPayload({ ci_queue: raw3 }));
+    expect(result.ok).toBe(true);
+    expect(result.value.ci_queue).toEqual(raw3);
+  });
+});
