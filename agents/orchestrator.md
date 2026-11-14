@@ -169,9 +169,10 @@ Both are **excluded from the pipeline by default**. They run only when explicitl
 ```bash
 . ~/.claude/hooks/pipeline-markers.sh   # review_mockups_requested, alongside marker_re/jp_go above
 review_requested() {  # review_requested <N> → exit 0: a valid **[jp] REVIEW MOCKUPS** marker is present. exit 1: read
-  # succeeded, no such marker. exit 2: the read itself failed — a failed lookup, same rule as jp_go: report it as a
-  # failed lookup and retry once, never treat it as "not requested" (a false "not requested" would silently skip a
-  # pause JP asked for; that is worse than a stale read, unlike most of this table's "ignore on failure" defaults).
+  # succeeded, no such marker. Any other non-zero exit (gh, or review_mockups_requested's own jq) is a failed
+  # lookup, same rule as jp_go: report it as a failed lookup and retry once, never treat it as "not requested" (a
+  # false "not requested" would silently skip a pause JP asked for; worse than a stale read, unlike most of this
+  # table's "ignore on failure" defaults).
   local c
   c=$(gh api "repos/{owner}/{repo}/issues/$1/comments?per_page=100" --paginate 2>/dev/null) || return 2
   review_mockups_requested "$(printf '%s' "$c" | jq -s '[.[] | if type == "array" then .[] else . end]')"

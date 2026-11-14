@@ -67,6 +67,17 @@ test_nj_a_project_manager_decision_after_gate_is_answered() {
   assert_eq "$r" "answered" "rule 2: a **[project-manager] reply after the gate -> answered" || return 1
 }
 
+# #701: a **[jp] REVIEW MOCKUPS** comment after the gate is JP asking the gate to pause, not
+# answering it — must never flip the ticket out of Needs JP the moment he puts it under real review.
+test_nj_a_jp_review_mockups_after_gate_is_not_answered() {
+  nj_env; nj_held 303
+  nj_comments 303 "[$(nj_c $'**[ui-ux-designer] MOCKUPS PENDING APPROVAL**\nmockups ready' "$GATE_T"),$(nj_c '**[jp] REVIEW MOCKUPS**' "$LATER_T")]"
+  nj_reconcile
+  local r; r=$(nj_file "$(rkp "$NJ_PIPE/orch-303.parked_reason")")
+  nj_cleanup
+  assert_eq "$r" "ABSENT" "a REVIEW MOCKUPS reply after the gate is never 'answered'" || return 1
+}
+
 # (b) [project-manager] NOTE is not an answer
 test_nj_b_project_manager_note_is_not_an_answer() {
   nj_env; nj_held 303
@@ -251,6 +262,7 @@ test_nj_payload_has_no_free_text_from_comments() {
 
 run_test test_nj_a_free_text_jp_reply_after_gate_is_answered
 run_test test_nj_a_project_manager_decision_after_gate_is_answered
+run_test test_nj_a_jp_review_mockups_after_gate_is_not_answered
 run_test test_nj_b_project_manager_note_is_not_an_answer
 run_test test_nj_c_other_role_comment_is_not_an_answer
 run_test test_nj_c_unprefixed_comment_is_not_an_answer

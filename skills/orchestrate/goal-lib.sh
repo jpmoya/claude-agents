@@ -754,7 +754,7 @@ _goal_ticket_eval() {
     # counts as an approval or a go).
     [ -n "$author" ] && jp_answer_at=$(printf '%s' "$all_c" \
       | jq -r --arg a "$author" --arg rv "$(review_mockups_re)" '[.[] | select(.user.login == $a)
-               | select((.body | split("\n")[0] | rtrimstr("\r") | test($rv)) | not)
+               | select(($rv != "" and (.body | split("\n")[0] | rtrimstr("\r") | test($rv))) | not)
                | select(((.body | startswith("**[")) | not) or (.body | split("\n")[0] | rtrimstr("\r") | test("^\\*\\*\\[jp\\] ")))]
                | last | .created_at // empty')
     if [ -n "$lead_blocked_at" ] && { [ -z "$gate_at" ] || [[ "$lead_blocked_at" > "$gate_at" ]]; } \

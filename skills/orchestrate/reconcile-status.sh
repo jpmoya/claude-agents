@@ -181,7 +181,7 @@ rc_gate_facts() {
     | if $g == null then empty else
         [ ($g.value.createdAt // ""),
           (if ([$c[($g.key + 1):][] | .body | split("\n")[0]
-                | select(test("^\\*\\*\\[(jp|delivery-lead|project-manager)\\]") and (test("^\\*\\*\\[(delivery-lead|project-manager)\\] NOTE") | not) and (test($rv) | not))] | length) > 0 then "1" else "0" end),   # legacy project-manager accepted
+                | select(test("^\\*\\*\\[(jp|delivery-lead|project-manager)\\]") and (test("^\\*\\*\\[(delivery-lead|project-manager)\\] NOTE") | not) and (($rv != "" and test($rv)) | not))] | length) > 0 then "1" else "0" end),   # legacy project-manager accepted
           (($g.value.body | split("\n")[1]) // "" | gsub("[\t\r]"; " ")) ] | @tsv
       end' 2>/dev/null
 }
