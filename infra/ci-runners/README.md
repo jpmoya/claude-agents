@@ -14,7 +14,7 @@ built by `step_image`/`dockerfile_text`) includes the `gh` CLI.
 - Today the variable is scoped to the scheduler repo only; the quoting tool stays on GitHub-hosted until its container-mode
   workflow is on its `main` branch (#205).
 - `setup.sh` is installed from one pinned commit into `/opt/gha-ci` (SHA in `/opt/gha-ci/SHA`); update by re-extracting
-  `infra/ci-runners` from the new commit and re-running `setup.sh --slots N`.
+  `infra/ci-runners` from the new commit and re-running `setup.sh --slots N` with the host's same `--reserve-slots` (see Usage).
 
 ## Metrics (where are the bottlenecks?)
 Every host logs under `/var/log/gha/` (capped: 14 days of samples, last 5000 runner lives; trimmed by the hourly hygiene run):
@@ -63,7 +63,7 @@ sudo infra/ci-runners/setup.sh [--slots N] [--slot-gb G] [--reserve-slots N] [--
   `release` (deployed commit SHA), `environment=ci-runner`, `route`. Without it Sentry is skipped silently.
 
 ## Move to another VM
-1. Run `sudo infra/ci-runners/setup.sh --slots 2` on the new VM.
+1. Run `sudo infra/ci-runners/setup.sh --slots 2` on the new VM, with the old host's same `--reserve-slots` if it had one.
 2. Supply `mint.env` (and `alert.env`, `sentry.env`) as above, then start the slots: re-run `setup.sh --mint-from-stdin`
    or `systemctl start gha-slot@1 gha-slot@2`.
 3. Run `infra/ci-runners/setup.sh --probe`; every line must be PASS.
