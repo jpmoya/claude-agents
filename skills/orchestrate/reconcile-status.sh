@@ -172,13 +172,16 @@ RCSCOPE
 # Gate = the newest routing-marker comment; answered = a later comment whose first line starts
 # **[jp], **[delivery-lead] or legacy **[project-manager] (not their NOTE**).
 rc_gate_facts() {
-  printf '%s' "$1" | jq -r --arg re "$(marker_re | jq -Rs . | jq -r .)" '
+  # #701: a **[jp] REVIEW MOCKUPS** comment is JP asking the gate to pause, not answering it — excluded from
+  # "answered" (same reasoning, and the same exclusion, as goal-lib.sh's jp_answer_at) or a ticket JP just put
+  # under real review would immediately read as already-addressed and drop out of the status page's Needs JP list.
+  printf '%s' "$1" | jq -r --arg re "$(marker_re | jq -Rs . | jq -r .)" --arg rv "$(review_mockups_re)" '
     (.comments // []) as $c
     | ([$c | to_entries[] | select(.value.body | split("\n")[0] | test($re))] | last) as $g
     | if $g == null then empty else
         [ ($g.value.createdAt // ""),
           (if ([$c[($g.key + 1):][] | .body | split("\n")[0]
-                | select(test("^\\*\\*\\[(jp|delivery-lead|project-manager)\\]") and (test("^\\*\\*\\[(delivery-lead|project-manager)\\] NOTE") | not))] | length) > 0 then "1" else "0" end),   # legacy project-manager accepted
+                | select(test("^\\*\\*\\[(jp|delivery-lead|project-manager)\\]") and (test("^\\*\\*\\[(delivery-lead|project-manager)\\] NOTE") | not) and (test($rv) | not))] | length) > 0 then "1" else "0" end),   # legacy project-manager accepted
           (($g.value.body | split("\n")[1]) // "" | gsub("[\t\r]"; " ")) ] | @tsv
       end' 2>/dev/null
 }

@@ -108,7 +108,10 @@ test_ufd_iv_feedback_never_started() {
 
 test_ufd_v_vi_vii_gate_marker_decides() {
   ufd_env
-  ufd_ticket feedback 13 "$H5" user-feedback; ufd_marker 13 '**[ui-ux-designer] MOCKUPS PENDING APPROVAL**'   # (v) a gate: JP owns it
+  ufd_ticket feedback 13 "$H5" user-feedback
+  # #701: the mockup gate is skip-by-default now — needs JP's REVIEW MOCKUPS marker for (v) to actually be a gate.
+  printf '[{"body":"**[ui-ux-designer] MOCKUPS PENDING APPROVAL**","createdAt":"%s"},{"body":"**[jp] REVIEW MOCKUPS**","createdAt":"%s"}]' \
+    "$(sq_iso_ago $((6 * 3600)))" "$(sq_iso_ago $((6 * 3600 - 60)))" > "$SQ_GH/gh-issue-comments-json-13"   # (v) a gate: JP owns it
   ufd_ticket feedback 14 "$H5" user-feedback; ufd_marker 14 '**[deployer] DEPLOYED TO STAGING**'              # (vi) done
   ufd_ticket feedback 15 "$H5" user-feedback; ufd_marker 15 '**[fullstack-developer] IMPLEMENTED**'           # (vii) mid-pipeline, no run state
   ufd_ticket feedback 16 "$H5" user-feedback; ufd_marker 16 '**[fullstack-developer] BLOCKED**'               # a BLOCKED is a gate too
