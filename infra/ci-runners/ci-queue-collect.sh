@@ -880,6 +880,17 @@ _ciq_runner_history() {
 # cursor per repo comes from $WORK/ip-cursor-<safe>.json, written by _ciq_collect_repo for every
 # repo it processed (including a same-as-before fallback for a repo with nothing to select this
 # cycle, so a repo's rotation progress is never silently reset to 0).
+#
+# #663 AC4 interaction: a repo listed in $WORK/unavailable-repos.txt contributed NO running-jobs
+# data this cycle (it was skipped, not collected), so $sticky_map has no real signal for it at
+# all — writing {sticky: [], cursor: ...} here anyway would silently wipe an already-resolved
+# busy-runner link (and reset its rotation cursor) purely because of a transient per-repo failure
+# (e.g. an AC3 `gh api` timeout), defeating #658's whole anti-flicker guarantee for a failure mode
+# that never existed before #663 (a single repo failing used to abort the entire cycle, leaving
+# $IP_STATE_FILE untouched instead). An unavailable repo's entry is instead carried forward
+# byte-for-byte from $WORK/ip-state-in.json (this cycle's OWN input, read once in main()) — same
+# "untouched on failure" contract as the rest of this file, just scoped to one repo instead of the
+# whole state file.
 _ciq_update_ip_state() {
   local sticky_map repo safe cursor entries tmp
   sticky_map=$(jq -c '
@@ -893,6 +904,14 @@ _ciq_update_ip_state() {
   entries='{}'
   while read -r repo; do
     safe=${repo//\//__}
+    if grep -qxF "$repo" "$WORK/unavailable-repos.txt" 2>/dev/null; then
+      entries=$(jq -c --arg repo "$repo" --slurpfile prev "$WORK/ip-state-in.json" '
+        (($prev[0] // {})[$repo]) as $p
+        | .[$repo] = (if ($p | type) == "object" then $p else {sticky: [], cursor: 0} end)
+      ' <<< "$entries" 2>/dev/null)
+      [ -n "$entries" ] || entries='{}'
+      continue
+    fi
     cursor=$(jq -r '.cursor // 0' "$WORK/ip-cursor-$safe.json" 2>/dev/null)
     case "$cursor" in (''|*[!0-9]*) cursor=0 ;; esac
     entries=$(jq -c --arg repo "$repo" --argjson cursor "$cursor" --argjson smap "$sticky_map" '

@@ -204,8 +204,54 @@ test_ciqr_ac6_lowered_threshold_fires_at_two_with_redacted_stderr() {
   esac
 }
 
+# ---- AC4 x #658 interaction: a repo skipped this cycle must not lose its sticky busy-runner link
+
+# A repo that fails this cycle (#663 AC4: skipped, not a whole-cycle abort) contributes no
+# running-jobs data at all, so _ciq_update_ip_state's freshly-computed sticky map has nothing for
+# it — writing that "nothing" back as {sticky: [], cursor: ...} would silently evict an
+# already-resolved busy-runner link (#658) purely because of a transient failure. This cycle-1-
+# then-cycle-2 test proves the skipped repo's entry survives untouched instead.
+test_ciqr_ac4ip_unavailable_repo_keeps_its_sticky_state() {
+  local pipe fixdir1 fixdir2 reposfile out sticky1 sticky2
+  pipe=$(mktemp -d); fixdir1=$(mktemp -d); fixdir2=$(mktemp -d); reposfile=$(mktemp)
+  printf 'owner/good\nowner/flaky\n' > "$reposfile"
+
+  # Cycle 1: one online+busy runner resolves into owner/flaky's in_progress run 100.
+  echo '{"total_count":1,"runners":[{"id":1,"name":"runner-1","status":"online","busy":true,"labels":[]}]}' > "$fixdir1/runners-org.json"
+  echo '{"total_count":0,"runners":[]}' > "$fixdir1/runners-repo.json"
+  echo '{"workflow_runs":[]}' > "$fixdir1/runs-owner__good-queued.json"
+  echo '{"workflow_runs":[]}' > "$fixdir1/runs-owner__good-in_progress.json"
+  echo '{"workflow_runs":[]}' > "$fixdir1/runs-owner__flaky-queued.json"
+  echo '{"workflow_runs":[{"id":100,"name":"CI","event":"schedule","actor":{"login":"someone"}}]}' > "$fixdir1/runs-owner__flaky-in_progress.json"
+  echo '{"jobs":[{"status":"in_progress","runner_name":"runner-1"}]}' > "$fixdir1/jobs-100.json"
+
+  _ciqr_run "$pipe" "$fixdir1" "$reposfile"
+  sticky1=$(jq -c '."owner/flaky".sticky' "$pipe/ci-queue-collect.ip-state.json" 2>/dev/null)
+  rm -rf "$fixdir1"
+  if [ "$sticky1" != "[100]" ]; then
+    rm -rf "$pipe" "$fixdir2" "$reposfile"
+    fail "setup: cycle 1 should resolve run 100 as owner/flaky's sticky link (got sticky=$sticky1)" || return 1
+  fi
+
+  # Cycle 2: owner/flaky's run-list fixtures are deliberately MISSING — _ciq_call fails for it,
+  # _ciq_collect_repo returns 1, and collect_once skips it (AC4) without aborting the cycle.
+  echo '{"total_count":1,"runners":[{"id":1,"name":"runner-1","status":"online","busy":true,"labels":[]}]}' > "$fixdir2/runners-org.json"
+  echo '{"total_count":0,"runners":[]}' > "$fixdir2/runners-repo.json"
+  echo '{"workflow_runs":[]}' > "$fixdir2/runs-owner__good-queued.json"
+  echo '{"workflow_runs":[]}' > "$fixdir2/runs-owner__good-in_progress.json"
+
+  _ciqr_run "$pipe" "$fixdir2" "$reposfile"
+  out=$(cat "$pipe/status-ci.json" 2>/dev/null)
+  sticky2=$(jq -c '."owner/flaky".sticky' "$pipe/ci-queue-collect.ip-state.json" 2>/dev/null)
+  rm -rf "$pipe" "$fixdir2" "$reposfile"
+
+  assert_contains "$out" '"owner/flaky"' "AC4 x #658: owner/flaky is reported unavailable this cycle" || return 1
+  assert_eq "$sticky2" "[100]" "AC4 x #658: a repo skipped this cycle keeps its prior sticky state, not wiped to []" || return 1
+}
+
 run_test test_ciqr_ac2_single_repo_over_cap_sets_truncated_true
 run_test test_ciqr_ac2_exactly_at_cap_is_not_truncated
 run_test test_ciqr_ac2_one_of_several_repos_over_cap_still_sets_truncated_true
 run_test test_ciqr_ac3_hung_gh_call_times_out_and_counts_as_a_failure
 run_test test_ciqr_ac6_lowered_threshold_fires_at_two_with_redacted_stderr
+run_test test_ciqr_ac4ip_unavailable_repo_keeps_its_sticky_state
