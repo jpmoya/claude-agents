@@ -49,8 +49,9 @@ test_ciqueue_stale_file_omits_key_entirely() {
   local pipe home out has
   pipe=$(new_pipe); home=$(new_home)
   _ciqp_golden > "$pipe/status-ci.json"
-  # Backdate well past the 20-minute staleness cutoff (STATUS_CI_STALE_SECS default 1200s).
-  python3 -c "import os,sys; t=__import__('time').time()-1300; os.utime(sys.argv[1], (t, t))" "$pipe/status-ci.json"
+  # Backdate well past the 2h staleness cutoff (issue #663 AC1a raised STATUS_CI_STALE_SECS from
+  # 1200s/20min to 7200s/2h — see report-status.sh's own comment for why).
+  python3 -c "import os,sys; t=__import__('time').time()-7300; os.utime(sys.argv[1], (t, t))" "$pipe/status-ci.json"
 
   out=$(_ciqp_print "$pipe" "$home")
   has=$(printf '%s' "$out" | jq 'has("ci_queue")')
@@ -63,7 +64,7 @@ test_ciqueue_just_inside_staleness_cutoff_is_included() {
   local pipe home out has
   pipe=$(new_pipe); home=$(new_home)
   _ciqp_golden > "$pipe/status-ci.json"
-  python3 -c "import os,sys; t=__import__('time').time()-1100; os.utime(sys.argv[1], (t, t))" "$pipe/status-ci.json"
+  python3 -c "import os,sys; t=__import__('time').time()-7100; os.utime(sys.argv[1], (t, t))" "$pipe/status-ci.json"
 
   out=$(_ciqp_print "$pipe" "$home")
   has=$(printf '%s' "$out" | jq 'has("ci_queue")')

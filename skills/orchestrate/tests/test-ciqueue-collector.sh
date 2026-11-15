@@ -138,10 +138,39 @@ test_ciqc_ac2_backdated_snapshot_runs() {
   assert_ne "${calls:-0}" "0" "AC2: a snapshot older than CI_QUEUE_INTERVAL_SECS is no longer throttled" || return 1
 }
 
-test_ciqc_ac3_malformed_shaped_response_is_treated_as_a_failure() {
-  local pipe fixdir before after rc
+# Issue #663 AC4 (supersedes the old AC3 "whole cycle aborts" behavior — see the issue's own
+# "one bad repo blanks the whole cycle" finding): a malformed response for ONE repo now skips
+# just that repo; the cycle still succeeds and writes fresh data for every other repo, with the
+# failing repo's name surfaced in `unavailable_repos`.
+test_ciqc_ac4_one_malformed_repo_is_skipped_not_fatal() {
+  local pipe fixdir out rc unavail queued
   pipe=$(mktemp -d); fixdir=$(mktemp -d); _ciqc_build_fixtures "$fixdir"
   echo '{}' > "$fixdir/runs-Benjis-Plants__scheduler-queued.json"   # 200 OK but missing "workflow_runs"
+  echo '{"as_of":"2020-01-01T00:00:00Z","runners_busy":0,"runners_total":0,"queued_total":0,"categories":[],"oldest":null}' > "$pipe/status-ci.json"
+  _ciqc_run "$pipe" "$fixdir"
+  rc=$?
+  out=$(cat "$pipe/status-ci.json" 2>/dev/null)
+  unavail=$(printf '%s' "$out" | jq -c '.unavailable_repos')
+  queued=$(printf '%s' "$out" | jq '.queued_total')
+  rm -rf "$pipe" "$fixdir"
+
+  assert_exit0 "$rc" "AC4: a cycle with one malformed repo still exits 0" || return 1
+  assert_eq "$unavail" '["Benjis-Plants/scheduler"]' "AC4: the malformed repo is named in unavailable_repos" || return 1
+  # Full fixture totals 8 queued jobs (AC5's own test: dependabot 1 + deploy_release 1 + pr 1 +
+  # other 5). Dropping just the scheduler repo's 1 (dependabot) leaves 7 from the other 3 repos.
+  assert_eq "$queued" "7" "AC4: the OTHER repos' data is still collected and written (not a zeroed snapshot)" || return 1
+}
+
+test_ciqc_ac4_every_repo_failing_is_still_a_whole_cycle_failure() {
+  local pipe fixdir before after rc
+  pipe=$(mktemp -d); fixdir=$(mktemp -d); _ciqc_build_fixtures "$fixdir"
+  # Every configured repo's queued-run-list response is malformed — nothing left to build a real
+  # snapshot from. This must still behave like any other whole-cycle failure: previous snapshot
+  # kept byte-identical, not a zeroed/partial write.
+  echo '{}' > "$fixdir/runs-Benjis-Plants__scheduler-queued.json"
+  echo '{}' > "$fixdir/runs-Benjis-Plants__benjis-sales-tool-queued.json"
+  echo '{}' > "$fixdir/runs-jpmoya__claude-agents-queued.json"
+  echo '{}' > "$fixdir/runs-Benjis-Plants__benjis-ops-tool-queued.json"
   echo '{"as_of":"2020-01-01T00:00:00Z","runners_busy":0,"runners_total":0,"queued_total":0,"categories":[],"oldest":null}' > "$pipe/status-ci.json"
   before=$(cat "$pipe/status-ci.json")
   _ciqc_run "$pipe" "$fixdir"
@@ -149,8 +178,8 @@ test_ciqc_ac3_malformed_shaped_response_is_treated_as_a_failure() {
   after=$(cat "$pipe/status-ci.json")
   rm -rf "$pipe" "$fixdir"
 
-  assert_exit0 "$rc" "AC3: a malformed-shape response still exits 0" || return 1
-  assert_eq "$before" "$after" "AC3: a malformed (missing-key) 200 response never writes a zeroed snapshot" || return 1
+  assert_exit0 "$rc" "AC4: a whole-cycle failure still exits 0" || return 1
+  assert_eq "$before" "$after" "AC4: every repo failing is treated as a whole-cycle failure (previous snapshot kept)" || return 1
 }
 
 test_ciqc_ac3_failed_api_call_leaves_snapshot_byte_identical_and_no_temp_file() {
@@ -254,7 +283,10 @@ test_ciqc_obs_sentry_event_has_route_release_environment_no_token_leak() {
   esac
 }
 
-test_ciqc_obs_slack_only_on_third_consecutive_failure() {
+# Issue #663 AC6: the Slack-alert trigger is lowered from a 3-failure streak to 2 (fires once per
+# streak, same "once on the transition into the streak" semantics, just at a lower bar) — an
+# intermittent pair of failures a day apart used to never page at all.
+test_ciqc_obs_slack_only_on_second_consecutive_failure() {
   local pipe fixdir bindir slack_calls
   pipe=$(mktemp -d); fixdir=$(mktemp -d); bindir=$(mktemp -d)
   _ciqc_write_recording_curl "$bindir"
@@ -277,30 +309,31 @@ test_ciqc_obs_slack_only_on_third_consecutive_failure() {
       bash "$COLLECTOR_CIQC" )
   }
 
-  _ciqc_fail_run; _ciqc_fail_run   # 2 consecutive: no Slack yet
+  _ciqc_fail_run   # 1st consecutive failure: no Slack yet
   slack_calls=$(grep -c "hooks.slack.test" "$bindir/calls" 2>/dev/null)
-  assert_eq "${slack_calls:-0}" "0" "Observability: 2 consecutive failures post no Slack message" || { rm -rf "$pipe" "$fixdir" "$bindir"; return 1; }
+  assert_eq "${slack_calls:-0}" "0" "Observability: 1 failure posts no Slack message" || { rm -rf "$pipe" "$fixdir" "$bindir"; return 1; }
 
   _ciqc_ok_run   # streak reset
-  _ciqc_fail_run; _ciqc_fail_run   # 2 more consecutive (streak restarted): still no Slack
+  _ciqc_fail_run   # 1 more (streak restarted): still no Slack
   slack_calls=$(grep -c "hooks.slack.test" "$bindir/calls" 2>/dev/null)
-  assert_eq "${slack_calls:-0}" "0" "Observability: a reset streak's 2 failures still post no Slack message" || { rm -rf "$pipe" "$fixdir" "$bindir"; return 1; }
+  assert_eq "${slack_calls:-0}" "0" "Observability: a reset streak's 1st failure still posts no Slack message" || { rm -rf "$pipe" "$fixdir" "$bindir"; return 1; }
 
-  _ciqc_fail_run   # 3rd consecutive failure: exactly one Slack post
+  _ciqc_fail_run   # 2nd consecutive failure: exactly one Slack post
   slack_calls=$(grep -c "hooks.slack.test" "$bindir/calls" 2>/dev/null)
   rm -rf "$pipe" "$fixdir" "$bindir"
-  assert_eq "${slack_calls:-0}" "1" "Observability: the 3rd consecutive failure posts exactly one Slack message" || return 1
+  assert_eq "${slack_calls:-0}" "1" "Observability: the 2nd consecutive failure posts exactly one Slack message" || return 1
 }
 
 run_test test_ciqc_ac1_repos_file_lists_benjis_ops_tool
 run_test test_ciqc_ac2_atomic_write_pattern_in_source
 run_test test_ciqc_ac2_fresh_snapshot_is_throttled_no_calls_no_change
 run_test test_ciqc_ac2_backdated_snapshot_runs
-run_test test_ciqc_ac3_malformed_shaped_response_is_treated_as_a_failure
+run_test test_ciqc_ac4_one_malformed_repo_is_skipped_not_fatal
+run_test test_ciqc_ac4_every_repo_failing_is_still_a_whole_cycle_failure
 run_test test_ciqc_ac3_failed_api_call_leaves_snapshot_byte_identical_and_no_temp_file
 run_test test_ciqc_ac4_runner_counts_are_live_not_the_slots_constant
 run_test test_ciqc_ac5_categorization_precedence_and_exact_counts
 run_test test_ciqc_oldest_strips_fractional_seconds
 run_test test_ciqc_ac6_run_lookup_cap_bounds_total_calls
 run_test test_ciqc_obs_sentry_event_has_route_release_environment_no_token_leak
-run_test test_ciqc_obs_slack_only_on_third_consecutive_failure
+run_test test_ciqc_obs_slack_only_on_second_consecutive_failure
