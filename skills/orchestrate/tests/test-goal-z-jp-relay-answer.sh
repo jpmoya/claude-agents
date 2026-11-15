@@ -9,11 +9,16 @@ RL_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 
 # rl_class <gate comment body> <answer author> <answer body> [<delivery-lead blocked body inserted between gate and answer>]
 # -> classification of #2 (active|waiting_jp)
+# #701: a leading `**[jp] REVIEW MOCKUPS**` opts this ticket into the terminal gate when the gate is MOCKUPS
+# PENDING APPROVAL — skip-by-default would otherwise already classify every "does not count" fixture "active"
+# regardless of the answer. It is a no-op for the AWAITING GO fixtures (REVIEW MOCKUPS only matters for the
+# ui-ux-designer gate).
 rl_class() {
   local gate=$1 who=$2 ans=$3 lead=${4:-} out
   ro_setup
   jq -n --arg g "$gate" --arg w "$who" --arg a "$ans" --arg l "$lead" '
-    [{created_at:"2026-10-01T12:00:00Z",user:{login:"jpmoya"},body:$g}]
+    [{created_at:"2026-10-01T11:30:00Z",user:{login:"jpmoya"},body:"**[jp] REVIEW MOCKUPS**"},
+     {created_at:"2026-10-01T12:00:00Z",user:{login:"jpmoya"},body:$g}]
     + (if $l == "" then [] else [{created_at:"2026-10-01T12:30:00Z",user:{login:"jpmoya"},body:$l}] end)
     + [{created_at:"2026-10-01T13:00:00Z",user:{login:$w},body:$a}]' > "$RO_DIR/comments-proj_repo-a-2.json"
   ro_run "goal_eval $RO_MS_ID $RO_MS_SPEC; printf '%s' \"\$GE_REFS\" | grep -F 'proj/repo-a#2'"
@@ -52,10 +57,12 @@ test_rl_jp_marker_from_non_author_does_not_count() {
 }
 
 test_rl_jp_marker_before_the_gate_does_not_count() {
+  # #701: REVIEW MOCKUPS opts in — see rl_class.
   local out
   ro_setup
   jq -n --arg a "$RL_APPROVE" --arg g "$RL_MOCK" '
-    [{created_at:"2026-10-01T11:00:00Z",user:{login:"jpmoya"},body:$a},
+    [{created_at:"2026-10-01T10:30:00Z",user:{login:"jpmoya"},body:"**[jp] REVIEW MOCKUPS**"},
+     {created_at:"2026-10-01T11:00:00Z",user:{login:"jpmoya"},body:$a},
      {created_at:"2026-10-01T12:00:00Z",user:{login:"jpmoya"},body:$g}]' > "$RO_DIR/comments-proj_repo-a-2.json"
   ro_run "goal_eval $RO_MS_ID $RO_MS_SPEC; printf '%s' \"\$GE_REFS\" | grep -F 'proj/repo-a#2'"
   out=$(printf '%s' "$RO_OUT" | awk -F'\t' '{print $2}')
@@ -85,10 +92,12 @@ test_rl_jp_lookalike_agent_tag_does_not_count() {  # `**[jp-bot]` is not `**[jp]
 }
 
 test_rl_jp_answer_at_same_second_as_gate_does_not_count() {  # strict > : answer stamped equal to the gate answers nothing
+  # #701: REVIEW MOCKUPS opts in — see rl_class.
   local out
   ro_setup
   jq -n --arg g "$RL_MOCK" --arg a "$RL_JP_FREE" '
-    [{created_at:"2026-10-01T12:00:00Z",user:{login:"jpmoya"},body:$g},
+    [{created_at:"2026-10-01T11:30:00Z",user:{login:"jpmoya"},body:"**[jp] REVIEW MOCKUPS**"},
+     {created_at:"2026-10-01T12:00:00Z",user:{login:"jpmoya"},body:$g},
      {created_at:"2026-10-01T12:00:00Z",user:{login:"jpmoya"},body:$a}]' > "$RO_DIR/comments-proj_repo-a-2.json"
   ro_run "goal_eval $RO_MS_ID $RO_MS_SPEC; printf '%s' \"\$GE_REFS\" | grep -F 'proj/repo-a#2'"
   out=$(printf '%s' "$RO_OUT" | awk -F'\t' '{print $2}')

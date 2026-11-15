@@ -213,23 +213,6 @@ latest_marker() {  # the GATE marker: newest real routing marker whose agent is 
   echo "?"
 }
 
-# #272: a comment whose first line is the exact skip marker but whose author/body cannot be read is ignored (the gate
-# stays) and logged once per tick. The `JP said:` quote is never logged.
-skip_marker_malformed_log() {
-  local repo=$1 issue=$2 n
-  n=$(issue_info_rest "$repo" "$issue" | jq -r '[.comments[] | select((.body | type) == "string" and (.body | split("\n")[0] | rtrimstr("\r") | test("^\\*\\*\\[jp\\] SKIP MOCKUPS\\*\\*[[:space:]]*$")))
-      | select(((.author | type) != "object") or ((.author.login | type) != "string"))] | length' 2>/dev/null) || n=""
-  case "$n" in ''|0|*[!0-9]*) return 0 ;; esac
-  slog "[skip-mockups] #$issue — malformed SKIP MOCKUPS comment ignored ($n), gate stays"
-  if [ -n "${SLACK_WEBHOOK_URL:-}" ]; then   # tags only (release = commit SHA); never the comment text or the JP quote
-    local rel msg
-    rel=$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --short HEAD 2>/dev/null || echo unknown)
-    msg="skip-mockups marker malformed for #$issue: release=$rel environment=$(hostname -s 2>/dev/null || echo unknown) route=supervisor/skip-mockups"
-    curl -s --max-time 10 -X POST -H 'Content-type: application/json' \
-      --data "$(jq -nc --arg t "$msg" '{text:$t}')" "$SLACK_WEBHOOK_URL" >/dev/null 2>&1 || true
-  fi
-}
-
 # blocked_class_of <issue json with .comments> → the `Blocked on: <class>` word of the latest routing marker when it is a
 # BLOCKED, else empty. One rule for the step-1 gate alert wording (#271) and the auto-retry scan (#250).
 blocked_class_of() {
@@ -1096,7 +1079,6 @@ for f in "$PIPE"/orch-*.pid; do
       # agent-go) after acting. $marker is the gate marker, never a [delivery-lead] (or legacy [project-manager]) one. A run that is already .held is
       # skipped above and stays held — held runs are not polled; the delivery lead relaunches with orchestrate.sh,
       # which clears .held (claude-agents#59).
-      skip_marker_malformed_log "$repo" "$issue"   # #272: at every gate park (not only MOCKUPS PENDING); an extra per-tick fetch would break the one-comments-call-per-tick pin
       # #306: a run auto-retry (step 1b) re-queued keeps its queue entry for the drain; re-holding it here would swallow the retry.
       if [ -f "$QUEUE/orch-$rk.json" ]; then
         slog "[queue-wait] #$issue — gate marker but already queued for relaunch, leaving the queue entry"
@@ -1407,14 +1389,17 @@ autoretry_cleared() {
 #   infrastructure: container start failure at "Initialize containers", exit 137 / OOM / Killed,
 #                   ENOSPC ("No space left on device"), runner lost, and the PR-description "User-facing change" format check
 #   real:           assertion errors, tsc errors, lint errors, unit-test failures, and any log it cannot read (never tolerated)
-# On a ci_red or ci_pending (#484) BLOCKED with a failing PR check: first time per PR head, re-run the failed jobs
-# once (gh run rerun --failed) and record the head in $PIPE/orch-<rk>.ci-rerun; later ticks classify each
-# still-failing check from its log. Only if
-# EVERY failing check is infrastructure-class does it return 0 (relaunch) with AR_NOTE naming the tolerated checks, so
+# On a ci_red or ci_pending (#484) BLOCKED with a failing PR check: EVERY failing check is classified from its log
+# FIRST (#708 — classify before any re-run, so a deterministic real failure never gets blindly re-run and read as
+# "pending"). Only when every failing check classifies infrastructure does it re-run the failed jobs once per PR
+# head (gh run rerun --failed), recording the head in $PIPE/orch-<rk>.ci-rerun; a later tick with the same head and
+# still only infrastructure-class failures returns 0 (relaunch) with AR_NOTE naming the tolerated checks, so
 # agents/deployer.md may merge to STAGING only. Any real failure, pending check or read error returns 1 (stay held).
-# #484: on a real (non-infra) classified failure — the only "stay held" outcome that will never clear on its own,
-# as opposed to still-pending checks, a just-issued re-run, or a read error — also sets AR_FINAL=1 so the caller
-# (autoretry_cleared) can tell the two apart and hand the hold off to "waiting on JP" instead of parking it forever.
+# #484/#708: on a real (non-infra) classified failure — the only "stay held" outcome that will never clear on its
+# own, as opposed to still-pending checks, a just-issued re-run, or a read error — also sets AR_FINAL=1 so the
+# caller (autoretry_cleared) can tell the two apart and hand the hold off to "waiting on JP" instead of parking it
+# forever. A real failure is never re-run: no `gh run rerun`, no `[ci-rerun]` log line, no $PIPE/orch-<rk>.ci-rerun
+# write, even on the very first tick for that head.
 ci_infra_gate() {
   local repo=$1 issue=$2 pr=$3 rk stf head checks rows name link run job runs log cls ccrc tol=""
   AR_NOTE=""; AR_FINAL=""
@@ -1426,6 +1411,18 @@ ci_infra_gate() {
   printf '%s' "$checks" | jq -e 'any(.[]; .bucket == "pending")' >/dev/null 2>&1 && return 1   # still running: wait
   rows=$(printf '%s' "$checks" | jq -r '.[] | select(.bucket == "fail") | [.name, (.link // "")] | @tsv' 2>/dev/null)
   [ -n "$rows" ] || return 1
+  while IFS=$'\t' read -r name link; do
+    run=$(printf '%s' "$link" | sed -nE 's#.*/actions/runs/([0-9]+).*#\1#p')
+    job=$(printf '%s' "$link" | sed -nE 's#.*/job/([0-9]+).*#\1#p')
+    [ -n "$run" ] || return 1
+    log=$(cd "$repo" && { if [ -n "$job" ]; then gh run view "$run" --job "$job" --log-failed; else gh run view "$run" --log-failed; fi; } 2>/dev/null </dev/null) || return 1
+    # #484: an empty log is a read error (truncated/slow write), not a classified failure — ci-classify.sh would
+    # call it "real" too, but that is not final: stay held and let a later tick read the log once it is there.
+    [ -n "$(printf '%s' "$log" | tr -d '[:space:]')" ] || return 1
+    cls=$(printf '%s\n' "$log" | "$HERE/ci-classify.sh" "$name"); ccrc=$?
+    if [ "$ccrc" -ne 0 ]; then AR_FINAL=1; return 1; fi   # #484/#708: a real failure — final, never re-run
+    tol="${tol:+$tol; }$name (${cls#infra:})"
+  done <<< "$rows"
   if [ "$(cat "$stf" 2>/dev/null)" != "$head" ]; then
     runs=$(printf '%s\n' "$rows" | sed -nE 's#.*/actions/runs/([0-9]+).*#\1#p' | sort -u)
     [ -n "$runs" ] || return 1
@@ -1437,18 +1434,6 @@ ci_infra_gate() {
     slog "[ci-rerun] #$issue — re-ran failed jobs once on ${head:0:12} (run(s): $(echo $runs))"
     return 1
   fi
-  while IFS=$'\t' read -r name link; do
-    run=$(printf '%s' "$link" | sed -nE 's#.*/actions/runs/([0-9]+).*#\1#p')
-    job=$(printf '%s' "$link" | sed -nE 's#.*/job/([0-9]+).*#\1#p')
-    [ -n "$run" ] || return 1
-    log=$(cd "$repo" && { if [ -n "$job" ]; then gh run view "$run" --job "$job" --log-failed; else gh run view "$run" --log-failed; fi; } 2>/dev/null </dev/null) || return 1
-    # #484: an empty log is a read error (truncated/slow write), not a classified failure — ci-classify.sh would
-    # call it "real" too, but that is not final: stay held and let a later tick read the log once it is there.
-    [ -n "$(printf '%s' "$log" | tr -d '[:space:]')" ] || return 1
-    cls=$(printf '%s\n' "$log" | "$HERE/ci-classify.sh" "$name"); ccrc=$?
-    if [ "$ccrc" -ne 0 ]; then AR_FINAL=1; return 1; fi   # #484: a real failure was actually classified from a readable log — final
-    tol="${tol:+$tol; }$name (${cls#infra:})"
-  done <<< "$rows"
   AR_NOTE="only infrastructure-class checks fail after one re-run of ${head:0:12}: $tol"
   return 0
 }

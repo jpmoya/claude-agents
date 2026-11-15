@@ -193,7 +193,9 @@ test_dd_ac4_awaiting_go_then_decision_stays_a_gate() {
 }
 
 test_dd_ac4_mockups_pending_then_jp_confirmed_stays_a_gate() {
-  dd_thread '**[ui-ux-designer] MOCKUPS PENDING APPROVAL**' $'**[project-manager] JP CONFIRMED**\nResolves: https://example.test/c/1'
+  # #701: REVIEW MOCKUPS opts into the gate first — skip-by-default would otherwise already clear it
+  # regardless of the JP CONFIRMED comment.
+  dd_thread '**[jp] REVIEW MOCKUPS**' '**[ui-ux-designer] MOCKUPS PENDING APPROVAL**' $'**[project-manager] JP CONFIRMED**\nResolves: https://example.test/c/1'
   dd_tick
   dd_assert_gate "AC4 MOCKUPS" "MOCKUPS PENDING APPROVAL" "JP CONFIRMED" || return 1
 }
@@ -489,10 +491,15 @@ test_dd_i76_ac3_gate_rows_byte_identical_and_carve_out_keeps_exclusions() {   # 
   old=$(cd "$ROOT_DD" && git show "$base:agents/orchestrator.md" | grep -F '| `[infra-operator] AWAITING GO` + JP go comment')
   assert_ne "$cur" "" "i76 AC3: AWAITING GO + go row present" || return 1
   assert_eq "$cur" "$old" "i76 AC3: AWAITING GO + go row byte-identical" || return 1
-  cur=$(grep '^| `\[ui-ux-designer\] MOCKUPS PENDING APPROVAL`' "$ORCH_DD" | grep -v 'JP approval comment' | sed 's/ \*\*Skip marker:\*\*.* |$/ |/')   # #311: the approval row now resolves via jp_go
-  old=$(cd "$ROOT_DD" && git show "$base:agents/orchestrator.md" | grep '^| `\[ui-ux-designer\] MOCKUPS PENDING APPROVAL`' | grep -v 'JP approval comment' | sed 's/ \*\*Skip marker:\*\*.* |$/ |/')   # #434: base now carries the skip-marker sentence too
-  assert_ne "$cur" "" "i76 AC3: MOCKUPS PENDING APPROVAL rows present" || return 1
-  assert_eq "$cur" "$old" "i76 AC3: MOCKUPS PENDING APPROVAL rows byte-identical" || return 1
+  # #701: row 69 (MOCKUPS PENDING APPROVAL alone) is deliberately rewritten — the gate flips to
+  # skip-by-default and gains a `**[jp] REVIEW MOCKUPS**` opt-in branch (the old "Terminal — human
+  # gate" wording is no longer the default). The byte-identical pin no longer fits; keep asserting
+  # the carve-out/skip-marker language that must still survive the rewrite.
+  cur=$(grep '^| `\[ui-ux-designer\] MOCKUPS PENDING APPROVAL`' "$ORCH_DD" | grep -v 'JP approval comment')
+  assert_ne "$cur" "" "i76 AC3: MOCKUPS PENDING APPROVAL row present" || return 1
+  for s in 'SKIP MOCKUPS' 'supersede' 'exact first line, any author, any channel' 'REVIEW MOCKUPS'; do
+    dd_text_has "i76 AC3 (#701 re-pin): row 69 keeps the skip-marker carve-out language" "$cur" "$s" || return 1
+  done
   # issue #144: the row's head now also mentions claude-agents; pin only the unsupported-project sentence (row tail).
   cur=$(grep -F "the project isn't in its supported list" "$ORCH_DD" | sed 's/^.*\(If the deployer posts `BLOCKED` because the project isn.t in its supported list\)/\1/')
   old=$(cd "$ROOT_DD" && git show "$base:agents/orchestrator.md" | grep -F "the project isn't in its supported list" | sed 's/^.*\(If the deployer posts `BLOCKED` because the project isn.t in its supported list\)/\1/')
@@ -680,7 +687,8 @@ test_dd_i192_awaiting_go_then_delivery_lead_decision_stays_a_gate() {
 }
 
 test_dd_i192_mockups_pending_then_delivery_lead_jp_confirmed_stays_a_gate() {
-  dd_thread '**[ui-ux-designer] MOCKUPS PENDING APPROVAL**' $'**[delivery-lead] JP CONFIRMED**\nResolves: https://example.test/c/1'
+  # #701: REVIEW MOCKUPS opts into the gate first — see test_dd_ac4_mockups_pending_then_jp_confirmed_stays_a_gate.
+  dd_thread '**[jp] REVIEW MOCKUPS**' '**[ui-ux-designer] MOCKUPS PENDING APPROVAL**' $'**[delivery-lead] JP CONFIRMED**\nResolves: https://example.test/c/1'
   dd_tick
   dd_assert_gate "i192 MOCKUPS" "MOCKUPS PENDING APPROVAL" "JP CONFIRMED" || return 1
 }

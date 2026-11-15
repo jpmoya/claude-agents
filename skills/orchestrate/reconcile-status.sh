@@ -264,7 +264,7 @@ RCFACTS
       esac
       case "$marker" in
         "MOCKUPS PENDING APPROVAL") needs="Approve mockups" ;;
-        "SKIP MOCKUPS") needs="mockups skipped by JP" ;;   # #272: not a gate, never "Approve mockups"
+        "SKIP MOCKUPS") needs="mockups skipped (default or JP)" ;;   # #272: not a gate, never "Approve mockups"
         "AWAITING GO") needs="Say go" ;;
         "EFFORT APPROVAL NEEDED") needs="Approve effort" ;;
         "BLOCKED")

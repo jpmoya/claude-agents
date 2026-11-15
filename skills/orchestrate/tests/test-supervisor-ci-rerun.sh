@@ -1,6 +1,7 @@
-# #473: on a ci_red or ci_pending (#484) BLOCKED the supervisor re-runs the failed jobs once per PR head (gh run
-# rerun --failed), then relaunches only when every still-failing check is infrastructure-class (ci-classify.sh);
-# a real failure stays held — and once classified, hands off to "waiting on JP" instead of parking forever (#484).
+# #473: on a ci_red or ci_pending (#484) BLOCKED the supervisor classifies every failing check first
+# (ci-classify.sh) and re-runs the failed jobs once per PR head (gh run rerun --failed) only when every one of
+# them classifies infrastructure; a real failure is never re-run (#708) — it stays held and, once classified,
+# hands off to "waiting on JP" instead of parking forever (#484).
 # Builds on the ar2_* fixtures of test-supervisor-auto-retry.sh (sourced earlier in the same run).
 
 HERE_CR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -53,13 +54,15 @@ cr_settle() { local i; for i in $(seq 1 10); do [ -s "$SQ_PIPE/claude.calls" ] &
 test_cr_first_tick_reruns_failed_once_and_stays_held() {
   cr_fixture $'##[group]Initialize containers\n##[error]Error response from daemon'
   ar2_tick; cr_settle
-  local calls n h st; calls=$(gh_calls "$SQ_GH"); n=$(wc -l < "$SQ_PIPE/claude.calls" | tr -d ' '); h=$(ar2_held)
-  st=$(cat "$(rkp "$SQ_PIPE/orch-42.ci-rerun")" 2>/dev/null)
+  local calls n h st log; calls=$(gh_calls "$SQ_GH"); n=$(wc -l < "$SQ_PIPE/claude.calls" | tr -d ' '); h=$(ar2_held)
+  st=$(cat "$(rkp "$SQ_PIPE/orch-42.ci-rerun")" 2>/dev/null); log=$(sq_log)
   sq_cleanup
   assert_contains "$calls" "run rerun 500 --failed" "failed jobs re-run" || return 1
   assert_eq "$n" "0" "no relaunch on the re-run tick" || return 1
   assert_eq "$h" "present" "still held" || return 1
   assert_eq "$st" "abcdef0123456789" "re-run recorded against the head" || return 1
+  assert_contains "$log" "[ci-rerun] #42 — re-ran failed jobs once on abcdef012345" \
+    "an all-infra check is classified first, then re-run (#708)" || return 1
 }
 
 test_cr_second_tick_infra_only_relaunches_with_tolerated_checks() {
@@ -73,18 +76,64 @@ test_cr_second_tick_infra_only_relaunches_with_tolerated_checks() {
   assert_contains "$calls" "only infrastructure-class checks fail after one re-run of abcdef012345: unit-tests (container_start); Quality (oom)" "NOTE names the tolerated checks" || return 1
 }
 
-test_cr_second_tick_real_failure_stays_held() {
+# #708: mixed failures (one infra, one real) on the very FIRST tick for this head — classify-before-rerun means
+# the real check is caught before any `gh run rerun` is ever issued, not just on a later tick.
+test_cr_mixed_real_and_infra_first_tick_no_rerun() {
   cr_fixture $'##[group]Initialize containers\n##[error]Error response from daemon' $'AssertionError: expected 1 to equal 2'
-  ar2_tick; cr_force_next_check; ar2_tick; cr_settle
-  local n h c; n=$(wc -l < "$SQ_PIPE/claude.calls" | tr -d ' '); h=$(ar2_held); c=$(ar2_counter)
+  ar2_tick; cr_settle
+  local calls reruns n h c st log alert
+  calls=$(gh_calls "$SQ_GH"); reruns=$(printf '%s\n' "$calls" | grep -c '^run rerun' || true)
+  n=$(wc -l < "$SQ_PIPE/claude.calls" | tr -d ' '); h=$(ar2_held); c=$(ar2_counter)
+  st=$(cat "$(rkp "$SQ_PIPE/orch-42.ci-rerun")" 2>/dev/null); log=$(sq_log)
+  alert=$(cat "$(rkp "$SQ_PIPE/orch-42.alert")" 2>/dev/null)
   sq_cleanup
+  assert_eq "$reruns" "0" "mixed real+infra: no re-run at all, on the very first tick" || return 1
+  assert_eq "$st" "" "mixed real+infra: .ci-rerun never written" || return 1
+  assert_not_contains "$log" "[ci-rerun]" "mixed real+infra: no [ci-rerun] log line" || return 1
+  assert_contains "$alert" "finished red (real failure)" "mixed real+infra: AR_FINAL hands off to waiting on JP" || return 1
   assert_eq "$n" "0" "a real failure is never tolerated" || return 1
   assert_eq "$h" "present" "still held" || return 1
   assert_eq "$c" "ABSENT" "no retry consumed" || return 1
 }
 
+# #708: a single, purely-real failure on the first tick for this head — same no-rerun rule even with only one
+# failing check (no infra check to mix it with).
+test_cr_real_failure_first_tick_no_rerun() {
+  cr_fixture $'AssertionError: expected 1 to equal 2'
+  ar2_tick; cr_settle
+  local calls reruns st log alert
+  calls=$(gh_calls "$SQ_GH"); reruns=$(printf '%s\n' "$calls" | grep -c '^run rerun' || true)
+  st=$(cat "$(rkp "$SQ_PIPE/orch-42.ci-rerun")" 2>/dev/null); log=$(sq_log)
+  alert=$(cat "$(rkp "$SQ_PIPE/orch-42.alert")" 2>/dev/null)
+  sq_cleanup
+  assert_eq "$reruns" "0" "real failure: no re-run, even on the first tick" || return 1
+  assert_eq "$st" "" "real failure: .ci-rerun never written" || return 1
+  assert_not_contains "$log" "[ci-rerun]" "real failure: no [ci-rerun] log line" || return 1
+  assert_contains "$alert" "finished red (real failure)" "real failure: hands off to waiting on JP immediately" || return 1
+}
+
+# #708: an empty/unreadable failed log still falls back to "wait" (#484 behaviour), never a re-run, even though
+# classify now runs before the re-run decision.
+test_cr_empty_log_first_tick_waits_no_rerun() {
+  cr_fixture ''
+  ar2_tick; cr_settle
+  local reruns st n h c alert log
+  reruns=$(gh_calls "$SQ_GH" | grep -c '^run rerun' || true)
+  st=$(cat "$(rkp "$SQ_PIPE/orch-42.ci-rerun")" 2>/dev/null)
+  n=$(wc -l < "$SQ_PIPE/claude.calls" | tr -d ' '); h=$(ar2_held); c=$(ar2_counter)
+  alert=$(cat "$(rkp "$SQ_PIPE/orch-42.alert")" 2>/dev/null); log=$(sq_log)
+  sq_cleanup
+  assert_eq "$reruns" "0" "an empty/unreadable log is never re-run" || return 1
+  assert_eq "$st" "" ".ci-rerun not written for an empty log" || return 1
+  assert_not_contains "$log" "[ci-rerun]" "no [ci-rerun] log line for an empty log" || return 1
+  assert_not_contains "$alert" "finished red" "no AR_FINAL hand-off for an empty log (#484 unchanged)" || return 1
+  assert_eq "$n" "0" "not relaunched" || return 1
+  assert_eq "$h" "present" "stays held" || return 1
+  assert_eq "$c" "ABSENT" "no retry consumed" || return 1
+}
+
 test_cr_no_second_rerun_for_same_head() {
-  cr_fixture $'AssertionError: nope'
+  cr_fixture $'> next build\nProcess completed with exit code 137.'
   ar2_tick; cr_force_next_check; ar2_tick; cr_force_next_check; ar2_tick; cr_settle
   local reruns; reruns=$(gh_calls "$SQ_GH" | grep -c '^run rerun' || true)
   sq_cleanup
@@ -92,7 +141,7 @@ test_cr_no_second_rerun_for_same_head() {
 }
 
 test_cr_new_head_gets_one_more_rerun() {
-  cr_fixture $'AssertionError: nope'
+  cr_fixture $'> next build\nProcess completed with exit code 137.'
   ar2_tick; printf 'fedcba9876543210\n' > "$SQ_GH/cr-head"; cr_force_next_check; ar2_tick; cr_settle
   local reruns; reruns=$(gh_calls "$SQ_GH" | grep -c '^run rerun' || true)
   sq_cleanup
@@ -107,6 +156,9 @@ test_cr_ci_pending_also_reruns_once() {
   echo fail > "$SQ_GH/gh-pr-checks"
   printf 'abcdef0123456789\n' > "$SQ_GH/cr-head"
   printf '[{"name":"unit-tests","bucket":"fail","link":"https://github.com/o/r/actions/runs/500/job/901"}]\n' > "$SQ_GH/cr-checks.json"
+  # #708: classify now runs before the re-run decision even on the first tick, so the failing check's log must be
+  # readable (and infra) here, or the gate would correctly wait (empty log) instead of re-running.
+  printf '##[group]Initialize containers\n##[error]Error response from daemon\n' > "$SQ_GH/cr-log-901"
   ar2_tick; cr_settle
   local reruns h; reruns=$(gh_calls "$SQ_GH" | grep -c '^run rerun' || true); h=$(ar2_held)
   sq_cleanup
@@ -120,13 +172,17 @@ test_cr_ci_pending_also_reruns_once() {
 test_cr_484_ci_pending_real_failure_hands_off_to_waiting_on_jp() {
   cr_fixture_cls 'Blocked on: ci_pending — waiting for checks' $'AssertionError: expected 1 to equal 2'
   ar2_tick; cr_force_next_check; ar2_tick; cr_settle
-  local alert log n h c st calls_after_2
+  local alert log n h c st reruns calls_after_2
   alert=$(cat "$(rkp "$SQ_PIPE/orch-42.alert")" 2>/dev/null)
   log=$(sq_log)
   st=$(cat "$(rkp "$SQ_PIPE/orch-42.ci-rerun")" 2>/dev/null)
+  reruns=$(gh_calls "$SQ_GH" | grep -c '^run rerun' || true)
   n=$(wc -l < "$SQ_PIPE/claude.calls" | tr -d ' '); h=$(ar2_held); c=$(ar2_counter)
   calls_after_2=$(wc -l < "$SQ_GH/gh-calls.log" | tr -d ' ')
-  assert_eq "$st" "abcdef0123456789" "484: one re-run recorded against the head (reused .ci-rerun)" || { sq_cleanup; return 1; }
+  # #708: a real failure is classified before any re-run decision, so it is caught on the very first tick here
+  # too — no `gh run rerun` ever issued and .ci-rerun is never written for this head.
+  assert_eq "$reruns" "0" "484/#708: a real failure is never re-run" || { sq_cleanup; return 1; }
+  assert_eq "$st" "" "484/#708: .ci-rerun never written for a real failure" || { sq_cleanup; return 1; }
   assert_contains "$alert" "waiting on JP" "484: .alert becomes the waiting-on-JP text" || { sq_cleanup; return 1; }
   assert_contains "$alert" "finished red (real failure)" "484: .alert names the real failure" || { sq_cleanup; return 1; }
   assert_eq "$(printf '%s\n' "$log" | grep -c '\[auto-retry\] #42 — ci_pending finished red (real failure), waiting on JP' || true)" "1" \
@@ -198,12 +254,16 @@ test_cr_docs_name_the_classes() {
   assert_contains "$dep" "ci-classify.sh" "deployer uses the classifier" || return 1
   assert_contains "$dep" "STAGING ONLY" "deployer tolerance is staging only" || return 1
   assert_contains "$dep" "User-facing change" "deployer documents the PR-format class" || return 1
+  assert_contains "$sup" "classif" "supervisor documents classify-before-rerun (#708)" || return 1
+  assert_contains "$sup" "never re-run" "supervisor documents that a real failure is never re-run (#708)" || return 1
 }
 
-echo "-- supervisor ci re-run (issue #473)"
+echo "-- supervisor ci re-run (issue #473, #708)"
 run_test test_cr_first_tick_reruns_failed_once_and_stays_held
 run_test test_cr_second_tick_infra_only_relaunches_with_tolerated_checks
-run_test test_cr_second_tick_real_failure_stays_held
+run_test test_cr_mixed_real_and_infra_first_tick_no_rerun
+run_test test_cr_real_failure_first_tick_no_rerun
+run_test test_cr_empty_log_first_tick_waits_no_rerun
 run_test test_cr_no_second_rerun_for_same_head
 run_test test_cr_new_head_gets_one_more_rerun
 run_test test_cr_ci_pending_also_reruns_once

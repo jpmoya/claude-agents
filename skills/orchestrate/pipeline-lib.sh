@@ -118,12 +118,20 @@ has_capacity() {  # [own run key]
 }
 
 marker_last_jq() {  # prints (no gh call) the jq expression yielding the newest real routing marker first line, or "none"; NOTEs and off-vocabulary lines are inert
-  # #272: a `**[jp] SKIP MOCKUPS**` comment counts only from the issue author (top-level .author.login, else the first comment's author — every gh issue view feeding this now fetches `author`;
-  # REST comments carry .user.login, gh CLI .author.login) AND with a second line `JP said: "<non-empty>"`; any other (incl. malformed author) is dropped. #620: a relayed `**[jp] MOCKUPS APPROVED**` / `**[jp] GO**` likewise counts only from the issue author when it is known (the orchestrator's jp_go re-checks it).
+  # #700: a `**[jp] SKIP MOCKUPS**` comment counts whenever its first line is exactly that string — any author, any
+  # channel (Slack relay, direct GitHub comment, in-session post), no `JP said:` quote required. No per-source trust
+  # distinction (dropped the #272 issue-author + quote check). #620: a relayed `**[jp] MOCKUPS APPROVED**` / `**[jp] GO**`
+  # is unchanged by #700 and still counts only from the issue author when known (the orchestrator's jp_go re-checks it).
+  # #701: the mockup gate is skip-by-default now. A `**[jp] REVIEW MOCKUPS**` comment (same any-author/any-channel
+  # validity test as SKIP MOCKUPS — it is a flag read from raw comments, never added to `markers_for jp`/`marker_re`,
+  # so it can never read as an approval or displace the gate as a routing marker itself) opts this ticket back into the
+  # old terminal gate. An explicit `**[jp] SKIP MOCKUPS**` still wins over a standing REVIEW MOCKUPS.
   local skip='def lg: ((.author | objects | .login) // (.user | objects | .login)); ((lg // (.comments[0] | lg)) // null) as $ia | '
-  skip="$skip"'[.comments[] | select((.body | type) == "string") | select((.body | split("\n")) as $l | if ($l[0] | rtrimstr("\r") | test("^\\*\\*\\[jp\\] SKIP MOCKUPS\\*\\*[[:space:]]*$")) then (($ia != null) and (lg == $ia) and (($l[1] // "" | rtrimstr("\r")) | test("^JP said: \".+\"$"))) elif ($l[0] | rtrimstr("\r") | test("^\\*\\*\\[jp\\] (MOCKUPS APPROVED|GO)\\*\\*[[:space:]]*$")) then (($ia == null) or (lg == $ia)) else true end)'
-  # a valid skip posted anywhere (even before the gate comment) supersedes a newest MOCKUPS PENDING APPROVAL
-  printf '%s | .body | split("\\n")[0] | select(test(%s))] | if ((last // "") | contains("] MOCKUPS PENDING APPROVAL")) and (map(select(rtrimstr("\\r") | test("^\\\\*\\\\*\\\\[jp\\\\] SKIP MOCKUPS\\\\*\\\\*[[:space:]]*$"))) | length > 0) then . + ["**[jp] SKIP MOCKUPS**"] else . end | last // "none"' "$skip" "$(marker_re | jq -Rs .)"
+  skip="$skip"'([.comments[] | select((.body | type) == "string") | (.body | split("\n")[0] | rtrimstr("\r"))] | any(test("^\\*\\*\\[jp\\] REVIEW MOCKUPS\\*\\*[[:space:]]*$"))) as $review | '
+  skip="$skip"'[.comments[] | select((.body | type) == "string") | select((.body | split("\n")) as $l | if ($l[0] | rtrimstr("\r") | test("^\\*\\*\\[jp\\] SKIP MOCKUPS\\*\\*[[:space:]]*$")) then true elif ($l[0] | rtrimstr("\r") | test("^\\*\\*\\[jp\\] (MOCKUPS APPROVED|GO)\\*\\*[[:space:]]*$")) then (($ia == null) or (lg == $ia)) else true end)'
+  # a valid skip posted anywhere (even before the gate comment) supersedes a newest MOCKUPS PENDING APPROVAL; so does
+  # the new default (#701) when no REVIEW MOCKUPS flag was raised
+  printf '%s | .body | split("\\n")[0] | select(test(%s))] | if ((last // "") | contains("] MOCKUPS PENDING APPROVAL")) and ((map(select(rtrimstr("\\r") | test("^\\\\*\\\\*\\\\[jp\\\\] SKIP MOCKUPS\\\\*\\\\*[[:space:]]*$"))) | length > 0) or ($review | not)) then . + ["**[jp] SKIP MOCKUPS**"] else . end | last // "none"' "$skip" "$(marker_re | jq -Rs .)"
 }
 
 marker_name_from_line() {  # <first line of a routing-marker comment | none> -> bare marker name ("TESTS APPROVED"), empty for none

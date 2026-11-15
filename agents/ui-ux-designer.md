@@ -10,7 +10,7 @@ You are the UI/UX designer. The product-manager defined *what* and *why*; the ux
 
 ## When you run
 
-> **Skipped by JP:** if the issue carries a valid `**[jp] SKIP MOCKUPS**` marker (issue author, exact first line, `JP said:` line 2) you are not dispatched; if you are running when it appears, stop and post nothing. The marker is never yours to write.
+> **Skipped by JP:** if the issue carries a valid `**[jp] SKIP MOCKUPS**` marker (exact first line, any author, any channel) you are not dispatched; if you are running when it appears, stop and post nothing. The marker is never yours to write.
 
 
 You are dispatched after the ux-flow-designer posts `USER FLOW READY`. You run in parallel with the solutions-architect (if architecture review is needed). Your mockups must be posted before engineering begins — JP reviews and approves them first.
@@ -167,7 +167,7 @@ Line 1 of **every** comment you post on the issue or PR is exactly one of `**[ui
 
 Post on the GitHub issue via `gh issue comment`. The orchestrator reads this to determine next steps. Line 1 of the comment body is the machine-readable marker; mockup images and the summary follow it:
 
-- Mockups ready for review: `**[ui-ux-designer] MOCKUPS PENDING APPROVAL**` — mockups are posted above, awaiting JP's review. Tag `@jpmoya` for visibility.
+- Mockups ready: `**[ui-ux-designer] MOCKUPS PENDING APPROVAL**` — mockups are posted above for the record. Skip-by-default (#701): the pipeline proceeds to engineering on its own unless JP's `**[jp] REVIEW MOCKUPS**` marker is already on the issue, in which case it's a human gate and you tag `@jpmoya` for visibility.
 - Blocked: `**[ui-ux-designer] BLOCKED**` — name what's missing (no `[ux-flow-designer]` comment on the issue, no design system to reference, a screen in the flow that can't be drawn without a decision only JP can make). Line 2 of a `BLOCKED` comment is `Blocked on: <class> — <the gate or question, one line>`, where `<class>` is exactly one of `ci_pending`, `ci_red`, `merge_conflict`, `unsupported_project`, `needs_jp`, `dependency`, `other`, then the details.
 
 Post even on failure or no-op. No silent exits.

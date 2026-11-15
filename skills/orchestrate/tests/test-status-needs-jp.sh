@@ -147,8 +147,10 @@ test_nj_d_credential_word_only_on_line_3_does_not_count() {
 }
 
 test_nj_d_fixed_labels_for_the_other_three_gates() {
+  # #701: 311's gate needs a `**[jp] REVIEW MOCKUPS**` marker before it, or skip-by-default already
+  # clears it (reconcile-status.sh would then show "mockups skipped (default or JP)", not "Approve mockups").
   nj_env; nj_held 311; nj_held 312; nj_held 313
-  nj_comments 311 "[$(nj_c $'**[ui-ux-designer] MOCKUPS PENDING APPROVAL**\nsecret sauce' "$GATE_T")]"
+  nj_comments 311 "[$(nj_c '**[jp] REVIEW MOCKUPS**' "2026-09-20T09:00:00Z"),$(nj_c $'**[ui-ux-designer] MOCKUPS PENDING APPROVAL**\nsecret sauce' "$GATE_T")]"
   nj_comments 312 "[$(nj_c $'**[infra-operator] AWAITING GO**' "$GATE_T")]"
   nj_comments 313 "[$(nj_c $'**[product-manager] EFFORT APPROVAL NEEDED**' "$GATE_T")]"
   nj_reconcile

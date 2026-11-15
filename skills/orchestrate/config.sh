@@ -97,6 +97,17 @@ STALE_WORK_HOURS=4
 
 [ -f "$HOME/.claude/pipeline/config.local.sh" ] && source "$HOME/.claude/pipeline/config.local.sh"
 
+# #660: this default itself is set unconditionally below (plain `:-`, after config.local.sh is
+# sourced: a host that already set it, either value, keeps that value; only an UNSET var gets
+# defaulted here) — but it only has any EFFECT once a host has also opted into the CI queue
+# collector itself (CI_QUEUE_COLLECT_ENABLED=1, set by that host's own config.local.sh above): the
+# live duration/health metrics pull is opt-OUT, not opt-in, of that already-enabled collector. A
+# host sets CI_QUEUE_METRICS_ENABLED=0 in its own config.local.sh to keep the collector's
+# queue-depth half without the metrics half. report-status.sh forwards whatever this resolves to
+# onto the collector's own launch line (same explicit-env pattern as its other vars) — see that
+# script's CI_QUEUE_COLLECT_ENABLED gate.
+CI_QUEUE_METRICS_ENABLED=${CI_QUEUE_METRICS_ENABLED:-1}
+
 # #645: the test harness's hard-disable of #643's CI queue collector must survive a real host
 # config.local.sh (sourced just above) turning it back on — run-tests.sh exports
 # CI_QUEUE_COLLECT_TEST_DISABLE=1 (a marker config.local.sh has no reason to ever set) and nothing

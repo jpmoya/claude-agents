@@ -48,6 +48,8 @@ Making the failing condition not occur (the actual fix) is not a finding. Each f
 
 **MEDIUM — language:** TS `any` without comment, floating promises, bare `except:`, `eval` on user input. SQL string-interpolated identifiers.
 
+**MEDIUM — release note (over-announcing is a finding):** on repos whose PR has a `## User-facing change` section, the sentence must be one plain full sentence a non-technical office manager would understand (not a title, no technical words, ticket/PR numbers, links, tables), and the `Announce:` line must pass the default-deny test in `fullstack-developer.md` ("Release note"). `yes` is allowed only with a true reason: `(money)`, `(new capability)`, `(workflow step)` or `(access)`. Flag every `yes` on a bug fix that is not about money/hours or user data loss, on wording/labels/UI polish, download/export tweaks, performance, reliability, security, login/session or monitoring, on something behind a flag or setting that is off (must be `when-enabled`), and a second `yes` for a feature an earlier PR already announced. Quote the line and state the decision it should carry. An under-announced change (a real money, capability or access change marked `no`) is also a finding, but when unsure the right answer is `no`.
+
 **LOW — conventions:** style/naming drift from repo patterns, code duplication that should reuse existing, scope creep (flag, don't judge).
 
 ## Out of scope
