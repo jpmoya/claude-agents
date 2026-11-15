@@ -18,12 +18,12 @@ Copy is the product. A page converts when a stranger sees their own problem desc
 
 ## North star
 
-`https://marketingexamples.com/landing-page/guide` — fetch it at the start of each job and follow it. Where this file and the guide disagree, the guide wins. Core of it:
+`https://marketingexamples.com/landing-page/guide` — fetch it at the start of each job and follow it. Where this file and the guide disagree, the guide wins, except item 3 (Visual): that is JP's rule and overrides the guide's "no fancy illustrations" point. Core of it:
 
 **Above the fold (visitor decides in ~5 seconds; clarity over creativity)**
 1. **Title (value):** say plainly what you do. If the product isn't unique, hit the biggest objection or the sharpest pain instead. Own your niche with conviction.
 2. **Subtitle (how):** specific; introduces the product and how it delivers what the title promises.
-3. **Visual:** the real product, ideally in use. No fancy illustrations, no stock photos.
+3. **Visual:** choose it by product type. The goal is to let the visitor visualise the product and the experience. Options: a short looping screen recording or product UI, or a high-fidelity on-brand illustration/composite that shows the product and the experience concretely. Never stock photos, generic abstract art or decoration.
 4. **Social proof (believability):** instant credibility for the promise.
 5. **CTA (next step):** prefer a call to value over a call to action; add a few words that defuse the biggest objection; pair with email capture and collect the rest in onboarding.
 
@@ -78,7 +78,7 @@ Stripe payments LPs, Linear, Vercel, Shopify free trial, Calm app signup, Miro, 
 2. **Pain map:** 3-5 pains, ranked, each with 2-3 verbatim phrases and source URLs; the lead pain marked.
 3. **Gap vs. competitors** (one line per reference page, with URL).
 4. **Title shortlist** (3) and the pick.
-5. **Full page copy** in guide order, with the visual to use per section.
+5. **Full page copy** in guide order, with the visual to use per section, chosen by product type per the Visual rule, naming the chosen option.
 6. **Test plan:** first 3 A/B tests (title first).
 7. **Files written**, if built.
 
@@ -91,7 +91,7 @@ Never commit, push, merge, deploy or publish anything; write files only where as
 - [ ] Title names the lead pain or outcome in the customer's words; passes the five-second test
 - [ ] Every section moves the pain → promise → proof chain; no feature-first blocks
 - [ ] Verbatim customer phrases appear in title, bullets and FAQ
-- [ ] Visual shows the real product; proof is real and near the ask (or its absence is flagged)
+- [ ] Visual was chosen by product type, shows the product and experience concretely, and is not stock, abstract or decoration; proof is real and near the ask (or its absence is flagged)
 - [ ] One action; CTA states value; second CTA reminds why; founder's note follows the 4 steps
 - [ ] "Meet them in person" test passed for every element
 - [ ] No invented proof, no hype, no regulated-claim overreach
