@@ -161,11 +161,16 @@ fi
 # start making live GitHub Actions API calls just by running the test suite. Opt in on exactly
 # one host (default: the Mac) via ~/.claude/pipeline/config.local.sh.
 if [ "${CI_QUEUE_COLLECT_ENABLED:-0}" = "1" ]; then
-  # Explicit env on the launch line: PIPE/SLACK_WEBHOOK_URL/SENTRY_DSN/GH_TOKEN come from
-  # config.local.sh as plain (non-exported) shell assignments, sourced into THIS shell by
-  # config.sh — they do not cross an exec() into the collector's own process unless passed here.
+  # Explicit env on the launch line: PIPE/SLACK_WEBHOOK_URL/SENTRY_DSN/GH_TOKEN/
+  # CI_QUEUE_METRICS_ENABLED come from config.sh/config.local.sh as plain (non-exported) shell
+  # assignments, sourced into THIS shell by config.sh — they do not cross an exec() into the
+  # collector's own process unless passed here. CI_QUEUE_METRICS_ENABLED (issue #660) is defaulted
+  # to 1 by config.sh itself once CI_QUEUE_COLLECT_ENABLED=1 is already set (see config.sh) — the
+  # live duration/health pull turns on automatically wherever the collector already runs; a host
+  # opts OUT by setting CI_QUEUE_METRICS_ENABLED=0 in its own config.local.sh.
   ( PIPE="$PIPE" SLACK_WEBHOOK_URL="${SLACK_WEBHOOK_URL:-}" SENTRY_DSN="${SENTRY_DSN:-}" \
-    GH_TOKEN="${GH_TOKEN:-}" "$RS_HERE/../../infra/ci-runners/ci-queue-collect.sh" >/dev/null 2>&1 & ) 9>&- || true
+    GH_TOKEN="${GH_TOKEN:-}" CI_QUEUE_METRICS_ENABLED="${CI_QUEUE_METRICS_ENABLED:-0}" \
+    "$RS_HERE/../../infra/ci-runners/ci-queue-collect.sh" >/dev/null 2>&1 & ) 9>&- || true
 fi
 
 rs_log() {  # rs_log <line...> — decision + HTTP status only, never the curl command or the token
