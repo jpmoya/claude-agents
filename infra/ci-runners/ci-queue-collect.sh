@@ -83,8 +83,15 @@
 # in_progress-side selection is now sticky-then-rotation (see that function's comment): a run
 # already known to be holding a busy runner's job is looked up again first (no flicker), and the
 # remaining budget rotates through the rest by a cursor that advances every cycle, so every
-# in_progress run is eventually looked up — bounding first resolution to at most
-# ceil(in_progress_count / r) cycles, never unbounded. This needs cross-cycle memory: a new state
+# in_progress run is eventually looked up.
+#
+# #658 (round 3 — PR #667 review finding): round 2's sticky set had no cap of its own, so once it
+# grew to fill the entire in_progress selection budget (every slot held by a run that keeps being
+# busy), the rotation side got ZERO slots and an unresolved run could stay unlinked for as long as
+# the sticky jobs kept running — unbounded, not the stated cycle bound. `_ciq_collect_repo` now
+# caps sticky at (budget - 1) whenever an unresolved rotation candidate exists, so rotation always
+# gets at least one slot per cycle — see that function's comment for the exact mechanism and the
+# resulting (rotation-only) bound. This needs cross-cycle memory: a new state
 # file, $CI_QUEUE_IP_STATE_FILE (separate from $STATE_FILE, which _ciq_write_fails fully overwrites
 # every cycle), keyed by repo: {"<repo>": {"sticky": [<run id>...], "cursor": <run id>}}. Written
 # atomically, same mktemp+mv pattern as $OUT, and ONLY once the whole cycle has already succeeded
@@ -224,8 +231,7 @@ _ciq_categorize() {
 #         2. Rotation: the remaining budget goes to in_progress runs NOT in the sticky set, in
 #            ascending-id order starting just after the persisted cursor and wrapping back to the
 #            smallest id after the largest — so across cycles, every in_progress run eventually
-#            gets looked up, bounding first resolution to at most ceil(in_progress_count / r)
-#            cycles (never unbounded).
+#            gets looked up.
 #       The new cursor = the last rotation-selected id this cycle (unchanged if nothing was
 #       selected from rotation, e.g. sticky alone filled the whole budget). The new sticky set is
 #       NOT "whatever got looked up" — it is computed AFTER _ciq_runner_history, from exactly the
@@ -234,13 +240,47 @@ _ciq_categorize() {
 #       live starvation trap: an in_progress run sitting on an IDLE runner would go sticky and
 #       permanently occupy the rotation budget, starving the one actually-busy run exactly like (c)
 #       describes — proven by this ticket's "more in_progress runs than any fixed reservation"
-#       test. GUARANTEE (state honestly, no stronger claim): resolves within at most
-#       ceil(in_progress_count / r) collection cycles, then stays resolved (sticky) for as long as
-#       that run keeps holding the busy runner's job — not necessarily within a single cycle when
-#       in_progress runs outnumber the reservation.
+#       test.
+#   (d) #658 round 3 (PR #667 review finding): (c)'s sticky set, as built, had NO cap of its own —
+#       `$pstickyall[0:$psel]` could take the ENTIRE selection budget whenever that many runs were
+#       sticky. Once the sticky set reached $psel (e.g. the repo has $psel genuinely-busy runners
+#       whose jobs keep running), $rembudget dropped to 0 and stayed there for as long as those
+#       jobs kept running — an unresolved rotation candidate (a newer busy runner never yet
+#       matched) could then be starved INDEFINITELY, not just for one cycle, breaking (c)'s stated
+#       bound entirely (reproduced: 5 sticky runs filling a budget of 4 holds a 5th busy runner's
+#       run unlinked across 8+ cycles). Round-3's first fix capped sticky to `$psel - 1` whenever
+#       ANY rotation candidate existed, at all — but most rotation candidates are in_progress runs
+#       that will never resolve to a busy link at all (held by runners that are, and stay, idle).
+#       Evicting a resolved sticky link to make room for probing those is pure anti-flicker
+#       regression with nothing to show for it (PR #667 review finding 2).
+#   (e) #658 round 4 (this fix): sticky is now capped ONLY when there is a REAL competing busy
+#       runner to make room for — i.e. when `$busy` (this cycle's online+busy runner count) is
+#       more than the sticky set already accounts for (`$pstickyall | length`, the sticky ids still
+#       present among this cycle's in_progress runs). `$busy` is a global count (same value passed
+#       to every repo this cycle — see collect_once), not scoped per repo, and sticky holds run
+#       ids, not runners, so this is a heuristic, not an exact per-repo "busy runners vs. resolved
+#       links" count. It only ever over-caps (bumping a sticky run when, cross-repo, nothing in
+#       THIS repo actually needed the room) or, if a sticky run's own busy runner reassigns to a
+#       different job while this run stays in_progress, under-counts `$pstickyall` for one cycle
+#       (self-corrects next cycle, since sticky is rebuilt from actual resolved links each time,
+#       never from stale state). Neither direction reintroduces starvation: it can only ever give
+#       rotation a slot it technically didn't strictly need, never withhold one it does.
+#         | (if ($rotcandidates|length) > 0 and ($pstickyall|length) < $busy
+#            then $psel - 1 else $psel end) as $stickycap
+#       GUARANTEE (state honestly, no stronger claim): in the steady state where every currently
+#       busy runner in this cycle already has a resolved sticky link (`$pstickyall >= $busy`),
+#       sticky is NEVER capped — already-resolved busy-runner links hold indefinitely, no flicker,
+#       and rotation may get 0 slots for as long as that holds (round-3's "rotation >= 1 slot every
+#       cycle" claim no longer holds in this state — that was the over-cap bug (d) above). Whenever
+#       a busy runner's link is NOT yet resolved (`$pstickyall < $busy`), rotation is guaranteed
+#       >= 1 slot this cycle, so every specific in_progress run gets a lookup attempt at least once
+#       every `in_progress_count` cycles in the worst case (round-robin via the cursor), matching
+#       (c)'s original ceil(in_progress_count / r) bound whenever rotation's slot count exceeds 1.
+#       Once a run resolves it stays sticky (no flicker) unless bumped to make room for a genuinely
+#       competing, not-yet-resolved busy runner — never permanently starved either way.
 # Residual risk (documented, not fixed): a queued job inside an old in_progress run that isn't
 # reached before the cap runs out can still be missed — unchanged from before, and orthogonal to
-# (a)/(b)/(c) above.
+# (a)/(b)/(c)/(d) above.
 _ciq_collect_repo() {
   local repo=$1 busy=${2:-0} safe qjson pjson n=0 run id cat jobsjson qtotal page qlast="" sticky_in cursor_in
   safe=${repo//\//__}
@@ -289,7 +329,16 @@ _ciq_collect_repo() {
       | ($p | map(select(.id as $i | $sticky | index($i) != null))) as $pstickyall
       | (($pids | map(select(. > $cursor)) | sort) + ($pids | map(select(. <= $cursor)) | sort)) as $rotorder
       | ($rotorder | map(select((. as $i | $sticky | index($i)) == null))) as $rotcandidates
-      | ($pstickyall[0:$psel]) as $pstickysel
+      # #658 round 4 (PR #667 review finding 2 — see the comment block above _ciq_collect_repo,
+      # item (e)): sticky is capped to $psel - 1 ONLY when there is a real competing busy runner
+      # to make room for, i.e. this cycle busy-runner count ($busy) exceeds what sticky already
+      # accounts for ($pstickyall, the sticky ids still among this cycle in_progress runs). A
+      # rotation candidate existing is NOT by itself a reason to cap — most rotation candidates
+      # sit on runners that are, and stay, idle, and evicting a resolved sticky link to probe
+      # those is pure anti-flicker regression with nothing to show for it.
+      | (if ($rotcandidates | length) > 0 and ($pstickyall | length) < $busy
+         then (($psel - 1) as $x | if $x < 0 then 0 else $x end) else $psel end) as $stickycap
+      | ($pstickyall[0:$stickycap]) as $pstickysel
       | (($psel - ($pstickysel | length)) as $x | if $x < 0 then 0 else $x end) as $rembudget
       | ($rotcandidates[0:$rembudget]) as $introtids
       | ($p | map(select(.id as $i | $introtids | index($i) != null))) as $introtsel
