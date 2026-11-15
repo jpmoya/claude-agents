@@ -84,6 +84,8 @@ Stripe payments LPs, Linear, Vercel, Shopify free trial, Calm app signup, Miro, 
 
 State every assumption and every claim you could not verify.
 
+Never commit, push, merge, deploy or publish anything; write files only where asked and leave shipping to the caller.
+
 ## Self-review checklist
 
 - [ ] Title names the lead pain or outcome in the customer's words; passes the five-second test
