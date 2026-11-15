@@ -1,8 +1,9 @@
 # Issue #658 round 4 (PR #667 review finding 2) — infra/ci-runners/ci-queue-collect.sh's sticky
 # cap must evict an already-resolved busy-runner link ONLY when a real competing busy runner
 # needs the room, never just because an idle-runner rotation candidate exists. Companion to
-# test-ciqueue-busy-link-backlog.sh's round-1/round-2/round-3 cases; this file adds the two
-# round-4 boundary cases:
+# test-ciqueue-busy-link-backlog.sh's round-1/round-2 cases (that file has no round-3-specific
+# case of its own — round 3 only ever showed up in the collector's comment block, never in a
+# test); this file adds the two round-4 boundary cases:
 #   - a genuinely-competing multi-busy-runner backlog that still resolves (round-3's own fix,
 #     unchanged by round 4 — proves round 4 didn't reintroduce the round-3 starvation bug)
 #   - several busy runners plus a never-busy rotation candidate, where the links must hold
@@ -174,5 +175,43 @@ test_ciqblsc_four_busy_runners_plus_never_busy_candidate_hold_stably() {
   rm -rf "$pipe" "$fixdir"
 }
 
+# test_ciqblsc_single_busy_runner_many_never_busy_candidates_hold_5_cycles — the exact case named
+# in the ticket: ONE busy runner (resolves cycle 1 — cap=5, 7 queued -> qreserve=1, pcount=5,
+# busy=1 -> r=min(5,1,4)=1, psel=1, so the single slot goes straight to the busy run since it is
+# the lowest id and cursor starts at 0) plus 4 OTHER in_progress runs that sit on a genuinely idle
+# runner and so can never go sticky themselves. Asserts the link holds for 5 consecutive cycles
+# after resolving, not just the "one further cycle" the round-2 test above checks.
+test_ciqblsc_single_busy_runner_many_never_busy_candidates_hold_5_cycles() {
+  local pipe fixdir reposfile rc r601 r602 r603 r604 r605 i cj calls
+  pipe=$(mktemp -d); fixdir=$(mktemp -d); reposfile=$(_ciqblsc_repos_file "$fixdir")
+  _ciqblsc_runners_fixtures "$fixdir" "gha-aa-1-101" "gha-zz-1-199"
+  r601=$(_ciqblsc_inprogress_run "$fixdir" 601 1 "gha-aa-1-101")
+  r602=$(_ciqblsc_inprogress_run_idle "$fixdir" 602 "gha-zz-1-199")
+  r603=$(_ciqblsc_inprogress_run_idle "$fixdir" 603 "gha-zz-1-199")
+  r604=$(_ciqblsc_inprogress_run_idle "$fixdir" 604 "gha-zz-1-199")
+  r605=$(_ciqblsc_inprogress_run_idle "$fixdir" 605 "gha-zz-1-199")
+  echo "{\"workflow_runs\":[$r601,$r602,$r603,$r604,$r605]}" > "$fixdir/runs-${CIQBLSC_SAFE}-in_progress.json"
+  _ciqblsc_queued_runs "$fixdir" 501 502 503 504 505 506 507
+
+  _ciqblsc_run "$pipe" "$fixdir" "$reposfile"; rc=$?
+  cj=$(printf '%s' "$CIQBLSC_OUT" | jq -c '.runners[] | select(.name=="gha-aa-1-101") | .current_job')
+  assert_exit0 "$rc" "cycle1 still exits 0" || { rm -rf "$pipe" "$fixdir"; return 1; }
+  assert_eq "$CIQBLSC_CALLS" "9" "cycle1: calls stay at 2+2+5=9" || { rm -rf "$pipe" "$fixdir"; return 1; }
+  assert_eq "$cj" '{"repo":"example-owner/busy-link-backlog","run_id":601,"pr_url":"https://github.com/example-owner/busy-link-backlog/pull/1"}' \
+    "AC: the single busy runner resolves on cycle 1 (lowest id, cursor starts at 0)" || { rm -rf "$pipe" "$fixdir"; return 1; }
+
+  for i in 2 3 4 5 6; do
+    _ciqblsc_run "$pipe" "$fixdir" "$reposfile"; rc=$?
+    cj=$(printf '%s' "$CIQBLSC_OUT" | jq -c '.runners[] | select(.name=="gha-aa-1-101") | .current_job')
+    calls=$CIQBLSC_CALLS
+    assert_exit0 "$rc" "cycle $i still exits 0" || { rm -rf "$pipe" "$fixdir"; return 1; }
+    assert_eq "$calls" "9" "cycle $i: calls stay at 2+2+5=9" || { rm -rf "$pipe" "$fixdir"; return 1; }
+    assert_eq "$cj" '{"repo":"example-owner/busy-link-backlog","run_id":601,"pr_url":"https://github.com/example-owner/busy-link-backlog/pull/1"}' \
+      "AC (anti-flicker): still resolved on cycle $i, 4 never-busy candidates never evict it" || { rm -rf "$pipe" "$fixdir"; return 1; }
+  done
+  rm -rf "$pipe" "$fixdir"
+}
+
 run_test test_ciqblsc_five_busy_runners_exceed_budget_still_resolves_by_cycle2
 run_test test_ciqblsc_four_busy_runners_plus_never_busy_candidate_hold_stably
+run_test test_ciqblsc_single_busy_runner_many_never_busy_candidates_hold_5_cycles

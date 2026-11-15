@@ -88,10 +88,13 @@
 # #658 (round 3 — PR #667 review finding): round 2's sticky set had no cap of its own, so once it
 # grew to fill the entire in_progress selection budget (every slot held by a run that keeps being
 # busy), the rotation side got ZERO slots and an unresolved run could stay unlinked for as long as
-# the sticky jobs kept running — unbounded, not the stated cycle bound. `_ciq_collect_repo` now
-# caps sticky at (budget - 1) whenever an unresolved rotation candidate exists, so rotation always
-# gets at least one slot per cycle — see that function's comment for the exact mechanism and the
-# resulting (rotation-only) bound. This needs cross-cycle memory: a new state
+# the sticky jobs kept running — unbounded, not the stated cycle bound. Round 3's own fix capped
+# sticky at (budget - 1) whenever ANY unresolved rotation candidate existed, at all — too blunt
+# (round 4 below fixed it): most rotation candidates sit on runners that are, and stay, idle, so
+# that cap evicted an already-resolved busy-runner link every cycle with nothing to show for it.
+# `_ciq_collect_repo` now caps sticky at (budget - 1) only when there is a real competing busy
+# runner left unresolved — see that function's comment (items (d)/(e)) for the exact mechanism
+# and the resulting bound. This needs cross-cycle memory: a new state
 # file, $CI_QUEUE_IP_STATE_FILE (separate from $STATE_FILE, which _ciq_write_fails fully overwrites
 # every cycle), keyed by repo: {"<repo>": {"sticky": [<run id>...], "cursor": <run id>}}. Written
 # atomically, same mktemp+mv pattern as $OUT, and ONLY once the whole cycle has already succeeded
@@ -259,12 +262,20 @@ _ciq_categorize() {
 #       present among this cycle's in_progress runs). `$busy` is a global count (same value passed
 #       to every repo this cycle — see collect_once), not scoped per repo, and sticky holds run
 #       ids, not runners, so this is a heuristic, not an exact per-repo "busy runners vs. resolved
-#       links" count. It only ever over-caps (bumping a sticky run when, cross-repo, nothing in
-#       THIS repo actually needed the room) or, if a sticky run's own busy runner reassigns to a
-#       different job while this run stays in_progress, under-counts `$pstickyall` for one cycle
-#       (self-corrects next cycle, since sticky is rebuilt from actual resolved links each time,
-#       never from stale state). Neither direction reintroduces starvation: it can only ever give
-#       rotation a slot it technically didn't strictly need, never withhold one it does.
+#       links" count — but the cap condition being true forces `$pstickyall < $pcount` (there is a
+#       rotation candidate) AND `$pstickyall < $busy`, so `$psel >= min($pstickyall + 1, cap -
+#       $qreserve)`: an already-resolved link can only be evicted once THIS repo alone already
+#       holds at least `cap - $qreserve` (4, by default) sticky links — the exact round-3
+#       multi-busy-runner scenario this fix must not regress. A repo with few busy runners never
+#       reaches that floor, so the global `$busy` mismatch can't bring back flicker in ordinary
+#       (single- or low-busy-runner) production use. If a sticky run's own busy runner reassigns to
+#       a different job while this run stays in_progress (stale sticky), `$pstickyall` is
+#       momentarily INFLATED (the stale id still counts), which can withhold a rotation slot for
+#       one cycle that a genuinely new busy runner could have used — it self-corrects the very next
+#       cycle, since the stale run gets relooked up (it is still in `$pstickysel`), resolves to
+#       "not busy" and drops out of next cycle's sticky set on its own (sticky is rebuilt from
+#       actual resolved links each cycle, never from stale state). One cycle of delay in a rare
+#       edge case, never permanent starvation.
 #         | (if ($rotcandidates|length) > 0 and ($pstickyall|length) < $busy
 #            then $psel - 1 else $psel end) as $stickycap
 #       GUARANTEE (state honestly, no stronger claim): in the steady state where every currently
@@ -280,6 +291,11 @@ _ciq_categorize() {
 #       competing, not-yet-resolved busy runner — never permanently starved either way.
 # Residual risk (documented, not fixed): a queued job inside an old in_progress run that isn't
 # reached before the cap runs out can still be missed — unchanged from before, and orthogonal to
+# (a)/(b)/(c)/(d)/(e) above. Additionally (round 4): in the steady state where sticky already
+# covers every currently busy runner, rotation can get ZERO slots indefinitely (see the GUARANTEE
+# above) — a queued job inside a non-sticky in_progress run (one that was never, or is not yet,
+# busy-linked) is then never reached for as long as that steady state holds, same as round-2's
+# behavior before round 3 existed.
 # (a)/(b)/(c)/(d) above.
 _ciq_collect_repo() {
   local repo=$1 busy=${2:-0} safe qjson pjson n=0 run id cat jobsjson qtotal page qlast="" sticky_in cursor_in
