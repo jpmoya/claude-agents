@@ -296,12 +296,16 @@ _ciq_categorize() {
   jq -r "$_CIQ_CATEGORIZE_JQ"'ciq_categorize'
 }
 
-# _ciq_collect_repo <repo> <online-busy-runner-count> — appends one {cat, queued_at} line per
-# queued job to $WORK/queued-jobs.jsonl, one {runner_name, repo, run_id, pr_url} line per
-# in_progress job with an assigned runner to $WORK/running-jobs.jsonl, and (#657) one
-# {key, repo, run_id, pr_url, queued_at, title?} line per run in the FULL queued-run list (every
-# `status=queued` run, not just the job-lookup-capped subset) to $WORK/queued-items.jsonl.
-# Returns 1 (aborting the whole cycle) on any API failure.
+# _ciq_collect_repo <repo> <online-busy-runner-count> <repo-scoped-busy-runner-count> — appends
+# one {cat, queued_at} line per queued job to $WORK/queued-jobs.jsonl, one
+# {runner_name, repo, run_id, pr_url} line per in_progress job with an assigned runner to
+# $WORK/running-jobs.jsonl, and (#657) one {key, repo, run_id, pr_url, queued_at, title?} line per
+# run in the FULL queued-run list (every `status=queued` run, not just the job-lookup-capped
+# subset) to $WORK/queued-items.jsonl. The 3rd arg (#658 round 4 — see item (e) below and
+# collect_once) estimates how many of the 2nd arg's GLOBAL busy-runner count are plausibly in
+# THIS repo (defaults to the 2nd arg itself when omitted); it drives ONLY the sticky cap, never
+# `$r`'s reservation, which stays intentionally global. Returns 1 (aborting the whole cycle) on
+# any API failure.
 #
 # #645 review finding 1 (backlog undercount): two independent bias sources, both fixed here:
 #   (a) GitHub's run-list endpoint always returns newest-first with no ascending-sort query param
@@ -363,50 +367,65 @@ _ciq_categorize() {
 #       that will never resolve to a busy link at all (held by runners that are, and stay, idle).
 #       Evicting a resolved sticky link to make room for probing those is pure anti-flicker
 #       regression with nothing to show for it (PR #667 review finding 2).
-#   (e) #658 round 4 (this fix): sticky is now capped ONLY when there is a REAL competing busy
-#       runner to make room for — i.e. when `$busy` (this cycle's online+busy runner count) is
-#       more than the sticky set already accounts for (`$pstickyall | length`, the sticky ids still
-#       present among this cycle's in_progress runs). `$busy` is a global count (same value passed
-#       to every repo this cycle — see collect_once), not scoped per repo, and sticky holds run
-#       ids, not runners, so this is a heuristic, not an exact per-repo "busy runners vs. resolved
-#       links" count — but the cap condition being true forces `$pstickyall < $pcount` (there is a
-#       rotation candidate) AND `$pstickyall < $busy`, so `$psel >= min($pstickyall + 1, cap -
-#       $qreserve)`: an already-resolved link can only be evicted once THIS repo alone already
-#       holds at least `cap - $qreserve` (4, by default) sticky links — the exact round-3
-#       multi-busy-runner scenario this fix must not regress. A repo with few busy runners never
-#       reaches that floor, so the global `$busy` mismatch can't bring back flicker in ordinary
-#       (single- or low-busy-runner) production use. If a sticky run's own busy runner reassigns to
-#       a different job while this run stays in_progress (stale sticky), `$pstickyall` is
-#       momentarily INFLATED (the stale id still counts), which can withhold a rotation slot for
-#       one cycle that a genuinely new busy runner could have used — it self-corrects the very next
-#       cycle, since the stale run gets relooked up (it is still in `$pstickysel`), resolves to
-#       "not busy" and drops out of next cycle's sticky set on its own (sticky is rebuilt from
-#       actual resolved links each cycle, never from stale state). One cycle of delay in a rare
-#       edge case, never permanent starvation.
-#         | (if ($rotcandidates|length) > 0 and ($pstickyall|length) < $busy
+#   (e) #658 round 4 (PR #667 review finding 2): sticky is now capped ONLY when there is a REAL
+#       competing busy runner to make room for — i.e. when this repo's own busy-runner count
+#       (`$repo_busy`, see below) is more than the sticky set already accounts for
+#       (`$pstickyall | length`, the sticky ids still present among this cycle's in_progress
+#       runs). First shipped using the GLOBAL `$busy` (this cycle's online+busy runner count
+#       across every repo) in place of `$repo_busy` — a code-review finding on this same PR (the
+#       actual PR, not a round number) caught that a busy runner in a DIFFERENT repo then kept
+#       this repo's cap permanently active (global count staying above this repo's own resolved-
+#       link count forever, since that other repo's runner structurally can never appear in this
+#       repo's own `$p`), flickering an already-resolved link that had no real competition at
+#       all. `$repo_busy` (collect_once, passed as `_ciq_collect_repo`'s 3rd arg) fixes this: it
+#       estimates, from the PREVIOUS cycle's own output, how many of this cycle's busy runners
+#       are plausibly in THIS repo (resolved to this repo last cycle, OR not resolved to any
+#       repo last cycle at all — conservatively counted toward every repo so a brand-new busy
+#       runner can never be under-counted, only over-counted for the one cycle before it
+#       resolves). `$busy` itself stays global and is used ONLY for `$r`'s reservation above,
+#       unchanged from round 1. With `$repo_busy`, the cap condition being true forces
+#       `$pstickyall < $pcount` (there is a rotation candidate) AND `$pstickyall < $repo_busy`,
+#       so an already-resolved link can only be evicted once this repo's OWN resolved-link count
+#       has genuinely fallen behind this repo's OWN estimated busy-runner count — the exact
+#       round-3 multi-busy-runner-in-one-repo scenario this fix must not regress, and nothing
+#       else. If a sticky run's own busy runner reassigns to a different job while this run stays
+#       in_progress (stale sticky), `$pstickyall` is momentarily INFLATED (the stale id still
+#       counts), which can withhold a rotation slot for one cycle that a genuinely new busy
+#       runner could have used — it self-corrects the very next cycle, since the stale run gets
+#       relooked up (it is still in `$pstickysel`), resolves to "not busy" and drops out of next
+#       cycle's sticky set on its own (sticky is rebuilt from actual resolved links each cycle,
+#       never from stale state). One cycle of delay in a rare edge case, never permanent
+#       starvation — the same one-cycle-lag shape as `$repo_busy`'s own "not yet resolved
+#       anywhere" conservative counting above.
+#         | (if ($rotcandidates|length) > 0 and ($pstickyall|length) < $repo_busy
 #            then $psel - 1 else $psel end) as $stickycap
 #       GUARANTEE (state honestly, no stronger claim): in the steady state where every currently
-#       busy runner in this cycle already has a resolved sticky link (`$pstickyall >= $busy`),
+#       busy runner in THIS repo already has a resolved sticky link (`$pstickyall >= $repo_busy`),
 #       sticky is NEVER capped — already-resolved busy-runner links hold indefinitely, no flicker,
-#       and rotation may get 0 slots for as long as that holds (round-3's "rotation >= 1 slot every
-#       cycle" claim no longer holds in this state — that was the over-cap bug (d) above). Whenever
-#       a busy runner's link is NOT yet resolved (`$pstickyall < $busy`), rotation is guaranteed
-#       >= 1 slot this cycle, so every specific in_progress run gets a lookup attempt at least once
-#       every `in_progress_count` cycles in the worst case (round-robin via the cursor), matching
-#       (c)'s original ceil(in_progress_count / r) bound whenever rotation's slot count exceeds 1.
-#       Once a run resolves it stays sticky (no flicker) unless bumped to make room for a genuinely
-#       competing, not-yet-resolved busy runner — never permanently starved either way.
+#       regardless of how busy any OTHER repo's runners are, and rotation may get 0 slots for as
+#       long as that holds (round-3's "rotation >= 1 slot every cycle" claim no longer holds in
+#       this state — that was the over-cap bug (d) above). Whenever a busy runner's link in THIS
+#       repo is NOT yet resolved (`$pstickyall < $repo_busy`), rotation is guaranteed >= 1 slot
+#       this cycle, so every specific in_progress run gets a lookup attempt at least once every
+#       `in_progress_count` cycles in the worst case (round-robin via the cursor), matching (c)'s
+#       original ceil(in_progress_count / r) bound whenever rotation's slot count exceeds 1. Once
+#       a run resolves it stays sticky (no flicker) unless bumped to make room for a genuinely
+#       competing, not-yet-resolved busy runner IN THIS REPO — never permanently starved either
+#       way, and never flickered by a busy runner elsewhere.
 # Residual risk (documented, not fixed): a queued job inside an old in_progress run that isn't
 # reached before the cap runs out can still be missed — unchanged from before, and orthogonal to
 # (a)/(b)/(c)/(d)/(e) above. Additionally (round 4): in the steady state where sticky already
-# covers every currently busy runner, rotation can get ZERO slots indefinitely (see the GUARANTEE
-# above) — a queued job inside a non-sticky in_progress run (one that was never, or is not yet,
-# busy-linked) is then never reached for as long as that steady state holds, same as round-2's
-# behavior before round 3 existed.
-# (a)/(b)/(c)/(d) above.
+# covers every currently busy runner in a repo, rotation can get ZERO slots in that repo
+# indefinitely (see the GUARANTEE above) — a queued job inside a non-sticky in_progress run (one
+# that was never, or is not yet, busy-linked) is then never reached for as long as that steady
+# state holds, same as round-2's behavior before round 3 existed.
 _ciq_collect_repo() {
-  local repo=$1 busy=${2:-0} safe qjson pjson n=0 run id cat jobsjson qtotal page qlast="" sticky_in cursor_in
+  local repo=$1 busy=${2:-0} repo_busy=${3:-} safe qjson pjson n=0 run id cat jobsjson qtotal page qlast="" sticky_in cursor_in
   safe=${repo//\//__}
+  # 3rd arg defaults to $busy (not hardcoded 0) — a direct call with only 2 args (e.g. a stray
+  # existing test/caller) falls back to the pre-round-4 global-busy behavior, never to 0 (0 would
+  # wrongly force the cap permanently on for any repo with sticky entries at all).
+  [ -n "$repo_busy" ] || repo_busy=$busy
 
   # #658 round 2: read this repo's previous-cycle sticky/cursor state (defensively — a missing or
   # malformed entry/file degrades to "no sticky set, cursor 0", never aborts the cycle). A fallback
@@ -491,7 +510,7 @@ _ciq_collect_repo() {
   { printf '%s' "$qjson" | jq -c '.workflow_runs[]? | . + {source:"queued"}' 2>/dev/null
     [ -z "$qlast" ] || printf '%s' "$qlast" | jq -c '.workflow_runs[]? | . + {source:"queued"}' 2>/dev/null
     printf '%s' "$pjson" | jq -c '.workflow_runs[]? | . + {source:"in_progress"}' 2>/dev/null
-  } | jq -s -c --argjson cap "$MAX_RUN_LOOKUPS_PER_REPO" --argjson busy "$busy" \
+  } | jq -s -c --argjson cap "$MAX_RUN_LOOKUPS_PER_REPO" --argjson busy "$busy" --argjson repo_busy "$repo_busy" \
         --argjson sticky "$sticky_in" --argjson cursor "$cursor_in" '
       group_by(.id)
       | map(if any(.[]; .source == "queued") then (map(select(.source == "queued")) | .[0]) else .[0] end)
@@ -509,14 +528,15 @@ _ciq_collect_repo() {
       | ($p | map(select(.id as $i | $sticky | index($i) != null))) as $pstickyall
       | (($pids | map(select(. > $cursor)) | sort) + ($pids | map(select(. <= $cursor)) | sort)) as $rotorder
       | ($rotorder | map(select((. as $i | $sticky | index($i)) == null))) as $rotcandidates
-      # #658 round 4 (PR #667 review finding 2 — see the comment block above _ciq_collect_repo,
-      # item (e)): sticky is capped to $psel - 1 ONLY when there is a real competing busy runner
-      # to make room for, i.e. this cycle busy-runner count ($busy) exceeds what sticky already
-      # accounts for ($pstickyall, the sticky ids still among this cycle in_progress runs). A
-      # rotation candidate existing is NOT by itself a reason to cap — most rotation candidates
-      # sit on runners that are, and stay, idle, and evicting a resolved sticky link to probe
-      # those is pure anti-flicker regression with nothing to show for it.
-      | (if ($rotcandidates | length) > 0 and ($pstickyall | length) < $busy
+      # #658 round 4 (PR #667 review finding 2 and PR #667 code-review MEDIUM — see the comment
+      # block above _ciq_collect_repo, item (e)): sticky is capped to $psel - 1 ONLY when there
+      # is a real competing busy runner IN THIS REPO to make room for, i.e. this repo own busy-
+      # runner count ($repo_busy, NOT the global $busy used for $r above) exceeds what sticky
+      # already accounts for ($pstickyall, the sticky ids still among this cycle in_progress
+      # runs). A rotation candidate existing is NOT by itself a reason to cap — most rotation
+      # candidates sit on runners that are, and stay, idle, and evicting a resolved sticky link
+      # to probe those is pure anti-flicker regression with nothing to show for it.
+      | (if ($rotcandidates | length) > 0 and ($pstickyall | length) < $repo_busy
          then (($psel - 1) as $x | if $x < 0 then 0 else $x end) else $psel end) as $stickycap
       | ($pstickyall[0:$stickycap]) as $pstickysel
       | (($psel - ($pstickysel | length)) as $x | if $x < 0 then 0 else $x end) as $rembudget
@@ -792,9 +812,40 @@ collect_once() {
   total=$(jq '[.[] | select(.status=="online")] | length' "$WORK/runners-merged.json") || return 1
   offline=$(jq '[.[] | select(.status!="online")] | length' "$WORK/runners-merged.json") || return 1
 
+  # #658 round 4 (PR #667 review finding — see _ciq_collect_repo's comment item (e)): `$busy`
+  # above is a GLOBAL online+busy-runner count, shared by every repo, but the sticky cap needs a
+  # PER-REPO figure — using the global count let a busy runner in repo B keep forcing repo A to
+  # evict an already-resolved link forever, since A's own resolved-link count could never catch
+  # up to a global count permanently inflated by a runner that will never appear in A's own
+  # in_progress list. This cycle's runners-merged.json doesn't yet know which repo a busy
+  # runner's job belongs to (that's only learned by the per-repo job lookups the loop below
+  # makes), so this reads the PREVIOUS cycle's own output ($OUT — read here, before anything this
+  # cycle overwrites it) for the last known repo of each currently-busy runner slot (matched by
+  # name): a busy runner already resolved to repo R last cycle counts toward R's budget; a busy
+  # runner NOT resolved to any repo last cycle (brand new, or still unresolved) is conservatively
+  # counted toward EVERY repo's budget — it might turn out to belong to any of them, so this can
+  # only ever over-count for one cycle per such runner (self-corrects once it resolves), never
+  # under-count, so round 3's anti-starvation guarantee is unaffected. Zero new `gh api` calls:
+  # $OUT is a local file this script already writes every cycle.
+  local prev_runners_json busy_by_repo_json
+  prev_runners_json=$( [ -r "$OUT" ] && jq -c '(.runners // []) | map(select(type=="object"))' "$OUT" 2>/dev/null )
+  [ -n "$prev_runners_json" ] || prev_runners_json='[]'
+  busy_by_repo_json=$(jq -c -n --slurpfile cur "$WORK/runners-merged.json" --argjson prev "$prev_runners_json" '
+    (($cur[0] // []) | map(select(.status=="online" and .busy==true)) | map(.name)) as $busy_names
+    | ($prev | map(select((.name // "") as $n | $busy_names | index($n) != null))
+             | map(select((.current_job // null) != null))) as $resolved
+    | ($resolved | group_by(.current_job.repo) | map({key: .[0].current_job.repo, value: length}) | from_entries) as $byrepo
+    | (($byrepo | [.[]] | add) // 0) as $resolved_count
+    | { byrepo: $byrepo, unresolved: (($busy_names | length) - $resolved_count) }
+  ' 2>/dev/null)
+  [ -n "$busy_by_repo_json" ] || busy_by_repo_json='{"byrepo":{},"unresolved":0}'
+
   [ -r "$REPOS_FILE" ] || return 1
   while read -r repo; do
-    _ciq_collect_repo "$repo" "$busy" || return 1
+    local repo_busy
+    repo_busy=$(jq -r --arg repo "$repo" '((.byrepo[$repo] // 0) + .unresolved)' <<< "$busy_by_repo_json" 2>/dev/null)
+    case "$repo_busy" in (''|*[!0-9]*) repo_busy=0 ;; esac
+    _ciq_collect_repo "$repo" "$busy" "$repo_busy" || return 1
   done < <(repos)
 
   _ciq_runner_history "$WORK/runners-merged.json" "$WORK/running-jobs.jsonl" || return 1
