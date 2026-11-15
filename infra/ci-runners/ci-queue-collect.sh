@@ -78,6 +78,33 @@
 # `gh api` calls: the total number of job lookups per repo stays min(run count, cap), only which
 # runs get them changes.
 #
+# #658 (round 2 — PR #664 review finding): the round-1 reservation above picks the OLDEST `r`
+# in_progress runs every cycle. When a repo has MORE in_progress runs than `r`, a NEWER in_progress
+# run holding the busy runner's job can simply never be among the oldest `r`, so `current_job`
+# stays null forever for that runner — not intermittently, 100% of the time. `_ciq_collect_repo`'s
+# in_progress-side selection is now sticky-then-rotation (see that function's comment): a run
+# already known to be holding a busy runner's job is looked up again first (no flicker), and the
+# remaining budget rotates through the rest by a cursor that advances every cycle, so every
+# in_progress run is eventually looked up.
+#
+# #658 (round 3 — PR #667 review finding): round 2's sticky set had no cap of its own, so once it
+# grew to fill the entire in_progress selection budget (every slot held by a run that keeps being
+# busy), the rotation side got ZERO slots and an unresolved run could stay unlinked for as long as
+# the sticky jobs kept running — unbounded, not the stated cycle bound. Round 3's own fix capped
+# sticky at (budget - 1) whenever ANY unresolved rotation candidate existed, at all — too blunt
+# (round 4 below fixed it): most rotation candidates sit on runners that are, and stay, idle, so
+# that cap evicted an already-resolved busy-runner link every cycle with nothing to show for it.
+# `_ciq_collect_repo` now caps sticky at (budget - 1) only when there is a real competing busy
+# runner left unresolved — see that function's comment (items (d)/(e)) for the exact mechanism
+# and the resulting bound. This needs cross-cycle memory: a new state
+# file, $CI_QUEUE_IP_STATE_FILE (separate from $STATE_FILE, which _ciq_write_fails fully overwrites
+# every cycle), keyed by repo: {"<repo>": {"sticky": [<run id>...], "cursor": <run id>}}. Written
+# atomically, same mktemp+mv pattern as $OUT, and ONLY once the whole cycle has already succeeded
+# (see _ciq_update_ip_state) — a failed cycle leaves it byte-for-byte untouched, same contract as
+# $OUT/$STATE_FILE. A missing or corrupt/unparseable file is treated as "no sticky set, cursor 0"
+# for every repo — it never aborts the cycle. Still zero new `gh api` calls: this only changes
+# which in_progress run IDs fill the existing r/qsel/pextra slots.
+#
 # #657: the old single `deploy_release` category bucket conflated a prod merge/deploy with a
 # staging deploy with release housekeeping. `_ciq_categorize` now applies a 5-rule cascade
 # (JP-ruled, see the issue's delivery-lead JP CONFIRMED comment) ONLY once a run's name has
@@ -123,7 +150,11 @@
 #   CI_QUEUE_ATTEMPT_FILE / CI_QUEUE_STATE_FILE / CI_QUEUE_LOCKDIR (relocate the written files),
 #   CI_QUEUE_CALL_LOG (dump the total API call count to this path, for the AC6 bound test),
 #   CI_QUEUE_SAMPLES_FILE (relocate the per-runner sample stream), CI_QUEUE_NOW (epoch seconds —
-#   freezes "now" for the sample/prune/rollup window math so tests are deterministic).
+#   freezes "now" for the sample/prune/rollup window math so tests are deterministic),
+#   CI_QUEUE_IP_STATE_FILE (relocate the #658 round-2 sticky/cursor state file — default
+#   $(dirname "$STATE_FILE")/ci-queue-collect.ip-state.json, deliberately derived from $STATE_FILE
+#   rather than $PIPE directly, since existing tests override CI_QUEUE_STATE_FILE to a per-test tmp
+#   dir without ever setting PIPE).
 #   #660: CI_QUEUE_METRICS_FORCE=1 (skip ONLY the metrics cycle's own throttle, independent of
 #   CI_QUEUE_FORCE), CI_QUEUE_METRICS_OUT / CI_QUEUE_METRICS_ATTEMPT_FILE /
 #   CI_QUEUE_METRICS_STATE_FILE (relocate the metrics-only written files), CI_QUEUE_METRICS_PER_PAGE.
@@ -134,6 +165,10 @@ PIPE=${PIPE:-$HOME/.claude/pipeline/state}
 OUT=${CI_QUEUE_OUT:-$PIPE/status-ci.json}
 ATTEMPT_FILE=${CI_QUEUE_ATTEMPT_FILE:-$PIPE/ci-queue-collect.attempt}
 STATE_FILE=${CI_QUEUE_STATE_FILE:-$PIPE/ci-queue-collect.state}
+# #658 round 2: separate from $STATE_FILE (which _ciq_write_fails fully overwrites every cycle).
+# Derived from $STATE_FILE's own dirname, not $PIPE directly, so tests that override
+# CI_QUEUE_STATE_FILE alone (without ever setting PIPE) stay hermetic.
+IP_STATE_FILE=${CI_QUEUE_IP_STATE_FILE:-"$(dirname "$STATE_FILE")/ci-queue-collect.ip-state.json"}
 # Shared with the daily ci-metrics.sh->Slack pipeline's own repo list (read-only here, never
 # written) — #660's live metrics fetch (_ciq_collect_metrics_once) reuses this same `repos()` loop,
 # so editing this file for the Slack pipeline also changes which repos the live metrics cover. No
@@ -261,12 +296,16 @@ _ciq_categorize() {
   jq -r "$_CIQ_CATEGORIZE_JQ"'ciq_categorize'
 }
 
-# _ciq_collect_repo <repo> <online-busy-runner-count> — appends one {cat, queued_at} line per
-# queued job to $WORK/queued-jobs.jsonl, one {runner_name, repo, run_id, pr_url} line per
-# in_progress job with an assigned runner to $WORK/running-jobs.jsonl, and (#657) one
-# {key, repo, run_id, pr_url, queued_at, title?} line per run in the FULL queued-run list (every
-# `status=queued` run, not just the job-lookup-capped subset) to $WORK/queued-items.jsonl.
-# Returns 1 (aborting the whole cycle) on any API failure.
+# _ciq_collect_repo <repo> <online-busy-runner-count> <repo-scoped-busy-runner-count> — appends
+# one {cat, queued_at} line per queued job to $WORK/queued-jobs.jsonl, one
+# {runner_name, repo, run_id, pr_url} line per in_progress job with an assigned runner to
+# $WORK/running-jobs.jsonl, and (#657) one {key, repo, run_id, pr_url, queued_at, title?} line per
+# run in the FULL queued-run list (every `status=queued` run, not just the job-lookup-capped
+# subset) to $WORK/queued-items.jsonl. The 3rd arg (#658 round 4 — see item (e) below and
+# collect_once) estimates how many of the 2nd arg's GLOBAL busy-runner count are plausibly in
+# THIS repo (defaults to the 2nd arg itself when omitted); it drives ONLY the sticky cap, never
+# `$r`'s reservation, which stays intentionally global. Returns 1 (aborting the whole cycle) on
+# any API failure.
 #
 # #645 review finding 1 (backlog undercount): two independent bias sources, both fixed here:
 #   (a) GitHub's run-list endpoint always returns newest-first with no ascending-sort query param
@@ -291,12 +330,117 @@ _ciq_categorize() {
 #       from before (#658 AC2: no new `gh api` calls — this reallocates lookups, it never adds any).
 #       `r` is capped by the actual busy-runner count (not just "is there an in_progress run") so a
 #       repo with many in_progress runs but nobody currently busy doesn't needlessly starve `oldest`.
+#   (c) #658 round 2 (PR #664 review finding): picking the OLDEST `r` in_progress runs every cycle
+#       is itself a starvation trap whenever a repo has MORE in_progress runs than `r` — a newer
+#       in_progress run holding a busy runner's job can simply never be among the oldest `r`, so
+#       `current_job` for that runner stays null 100% of the time, not intermittently. There is no
+#       zero-extra-call way to always resolve within a single cycle when in_progress runs outnumber
+#       the reservation — that is a genuine hard bound. Instead, WHICH in_progress runs fill the
+#       r/qsel/pextra slots (the total selected stays exactly as computed above — only the members
+#       change) is now sticky-then-rotation, using $CI_QUEUE_IP_STATE_FILE's per-repo
+#       {sticky: [run id...], cursor: run id} (read once per cycle, see main()):
+#         1. Sticky: any run id in the PREVIOUS cycle's sticky set gets looked up again first, in
+#            ascending-id order — so a run already known to be holding a busy runner's job never
+#            gets rotated away and loses its link next cycle (no flicker).
+#         2. Rotation: the remaining budget goes to in_progress runs NOT in the sticky set, in
+#            ascending-id order starting just after the persisted cursor and wrapping back to the
+#            smallest id after the largest — so across cycles, every in_progress run eventually
+#            gets looked up.
+#       The new cursor = the last rotation-selected id this cycle (unchanged if nothing was
+#       selected from rotation, e.g. sticky alone filled the whole budget). The new sticky set is
+#       NOT "whatever got looked up" — it is computed AFTER _ciq_runner_history, from exactly the
+#       run ids that resolved into a BUSY runner's `current_job` this cycle (see
+#       _ciq_update_ip_state). Using "any job with a runner_name" instead (the looser reading) is a
+#       live starvation trap: an in_progress run sitting on an IDLE runner would go sticky and
+#       permanently occupy the rotation budget, starving the one actually-busy run exactly like (c)
+#       describes — proven by this ticket's "more in_progress runs than any fixed reservation"
+#       test.
+#   (d) #658 round 3 (PR #667 review finding): (c)'s sticky set, as built, had NO cap of its own —
+#       `$pstickyall[0:$psel]` could take the ENTIRE selection budget whenever that many runs were
+#       sticky. Once the sticky set reached $psel (e.g. the repo has $psel genuinely-busy runners
+#       whose jobs keep running), $rembudget dropped to 0 and stayed there for as long as those
+#       jobs kept running — an unresolved rotation candidate (a newer busy runner never yet
+#       matched) could then be starved INDEFINITELY, not just for one cycle, breaking (c)'s stated
+#       bound entirely (reproduced: 5 sticky runs filling a budget of 4 holds a 5th busy runner's
+#       run unlinked across 8+ cycles). Round-3's first fix capped sticky to `$psel - 1` whenever
+#       ANY rotation candidate existed, at all — but most rotation candidates are in_progress runs
+#       that will never resolve to a busy link at all (held by runners that are, and stay, idle).
+#       Evicting a resolved sticky link to make room for probing those is pure anti-flicker
+#       regression with nothing to show for it (PR #667 review finding 2).
+#   (e) #658 round 4 (PR #667 review finding 2): sticky is now capped ONLY when there is a REAL
+#       competing busy runner to make room for — i.e. when this repo's own busy-runner count
+#       (`$repo_busy`, see below) is more than the sticky set already accounts for
+#       (`$pstickyall | length`, the sticky ids still present among this cycle's in_progress
+#       runs). First shipped using the GLOBAL `$busy` (this cycle's online+busy runner count
+#       across every repo) in place of `$repo_busy` — a code-review finding on this same PR (the
+#       actual PR, not a round number) caught that a busy runner in a DIFFERENT repo then kept
+#       this repo's cap permanently active (global count staying above this repo's own resolved-
+#       link count forever, since that other repo's runner structurally can never appear in this
+#       repo's own `$p`), flickering an already-resolved link that had no real competition at
+#       all. `$repo_busy` (collect_once, passed as `_ciq_collect_repo`'s 3rd arg) fixes this: it
+#       estimates, from the PREVIOUS cycle's own output, how many of this cycle's busy runners
+#       are plausibly in THIS repo (resolved to this repo last cycle, OR not resolved to any
+#       repo last cycle at all — conservatively counted toward every repo so a brand-new busy
+#       runner can never be under-counted, only over-counted for the one cycle before it
+#       resolves). `$busy` itself stays global and is used ONLY for `$r`'s reservation above,
+#       unchanged from round 1. With `$repo_busy`, the cap condition being true forces
+#       `$pstickyall < $pcount` (there is a rotation candidate) AND `$pstickyall < $repo_busy`,
+#       so an already-resolved link can only be evicted once this repo's OWN resolved-link count
+#       has genuinely fallen behind this repo's OWN estimated busy-runner count — the exact
+#       round-3 multi-busy-runner-in-one-repo scenario this fix must not regress, and nothing
+#       else. If a sticky run's own busy runner reassigns to a different job while this run stays
+#       in_progress (stale sticky), `$pstickyall` is momentarily INFLATED (the stale id still
+#       counts), which can withhold a rotation slot for one cycle that a genuinely new busy
+#       runner could have used — it self-corrects the very next cycle, since the stale run gets
+#       relooked up (it is still in `$pstickysel`), resolves to "not busy" and drops out of next
+#       cycle's sticky set on its own (sticky is rebuilt from actual resolved links each cycle,
+#       never from stale state). One cycle of delay in a rare edge case, never permanent
+#       starvation — the same one-cycle-lag shape as `$repo_busy`'s own "not yet resolved
+#       anywhere" conservative counting above.
+#         | (if ($rotcandidates|length) > 0 and ($pstickyall|length) < $repo_busy
+#            then $psel - 1 else $psel end) as $stickycap
+#       GUARANTEE (state honestly, no stronger claim): in the steady state where every currently
+#       busy runner in THIS repo already has a resolved sticky link (`$pstickyall >= $repo_busy`),
+#       sticky is NEVER capped — already-resolved busy-runner links hold indefinitely, no flicker,
+#       regardless of how busy any OTHER repo's runners are, and rotation may get 0 slots for as
+#       long as that holds (round-3's "rotation >= 1 slot every cycle" claim no longer holds in
+#       this state — that was the over-cap bug (d) above). Whenever a busy runner's link in THIS
+#       repo is NOT yet resolved (`$pstickyall < $repo_busy`), rotation is guaranteed >= 1 slot
+#       this cycle, so every specific in_progress run gets a lookup attempt at least once every
+#       `in_progress_count` cycles in the worst case (round-robin via the cursor), matching (c)'s
+#       original ceil(in_progress_count / r) bound whenever rotation's slot count exceeds 1. Once
+#       a run resolves it stays sticky (no flicker) unless bumped to make room for a genuinely
+#       competing, not-yet-resolved busy runner IN THIS REPO — never permanently starved either
+#       way, and never flickered by a busy runner elsewhere.
 # Residual risk (documented, not fixed): a queued job inside an old in_progress run that isn't
 # reached before the cap runs out can still be missed — unchanged from before, and orthogonal to
-# (a)/(b) above.
+# (a)/(b)/(c)/(d)/(e) above. Additionally (round 4): in the steady state where sticky already
+# covers every currently busy runner in a repo, rotation can get ZERO slots in that repo
+# indefinitely (see the GUARANTEE above) — a queued job inside a non-sticky in_progress run (one
+# that was never, or is not yet, busy-linked) is then never reached for as long as that steady
+# state holds, same as round-2's behavior before round 3 existed.
 _ciq_collect_repo() {
-  local repo=$1 busy=${2:-0} safe qjson pjson n=0 run id cat jobsjson qtotal page qlast=""
+  local repo=$1 busy=${2:-0} repo_busy=${3:-} safe qjson pjson n=0 run id cat jobsjson qtotal page qlast="" sticky_in cursor_in
   safe=${repo//\//__}
+  # 3rd arg defaults to $busy (not hardcoded 0) — a direct call with only 2 args (e.g. a stray
+  # existing test/caller) falls back to the pre-round-4 global-busy behavior, never to 0 (0 would
+  # wrongly force the cap permanently on for any repo with sticky entries at all).
+  [ -n "$repo_busy" ] || repo_busy=$busy
+
+  # #658 round 2: read this repo's previous-cycle sticky/cursor state (defensively — a missing or
+  # malformed entry/file degrades to "no sticky set, cursor 0", never aborts the cycle). A fallback
+  # ip-cursor file is written NOW (before any early return below) so _ciq_update_ip_state always
+  # has a value to read even for a repo with nothing queued/in-progress this cycle — the old cursor
+  # carries forward unchanged rather than resetting to 0.
+  sticky_in=$(jq -c --arg repo "$repo" '
+    (.[$repo].sticky // []) as $s | if ($s | type) == "array" then [$s[] | select(type == "number")] else [] end
+  ' "$WORK/ip-state-in.json" 2>/dev/null)
+  [ -n "$sticky_in" ] || sticky_in='[]'
+  cursor_in=$(jq -r --arg repo "$repo" '
+    (.[$repo].cursor // 0) as $c | if ($c | type) == "number" then ($c | floor) else 0 end
+  ' "$WORK/ip-state-in.json" 2>/dev/null)
+  case "$cursor_in" in (''|*[!0-9]*) cursor_in=0 ;; esac
+  jq -n --argjson c "$cursor_in" '{cursor: $c}' > "$WORK/ip-cursor-$safe.json" 2>/dev/null
   qjson=$(_ciq_call_shaped "repos/$repo/actions/runs?status=queued&per_page=$PER_PAGE" "runs-${safe}-queued.json" workflow_runs) || return 1
   pjson=$(_ciq_call_shaped "repos/$repo/actions/runs?status=in_progress&per_page=$PER_PAGE" "runs-${safe}-in_progress.json" workflow_runs) || return 1
 
@@ -366,7 +510,8 @@ _ciq_collect_repo() {
   { printf '%s' "$qjson" | jq -c '.workflow_runs[]? | . + {source:"queued"}' 2>/dev/null
     [ -z "$qlast" ] || printf '%s' "$qlast" | jq -c '.workflow_runs[]? | . + {source:"queued"}' 2>/dev/null
     printf '%s' "$pjson" | jq -c '.workflow_runs[]? | . + {source:"in_progress"}' 2>/dev/null
-  } | jq -s -c --argjson cap "$MAX_RUN_LOOKUPS_PER_REPO" --argjson busy "$busy" '
+  } | jq -s -c --argjson cap "$MAX_RUN_LOOKUPS_PER_REPO" --argjson busy "$busy" --argjson repo_busy "$repo_busy" \
+        --argjson sticky "$sticky_in" --argjson cursor "$cursor_in" '
       group_by(.id)
       | map(if any(.[]; .source == "queued") then (map(select(.source == "queued")) | .[0]) else .[0] end)
       | (map(select(.source == "queued")) | sort_by(.id)) as $q
@@ -378,10 +523,34 @@ _ciq_collect_repo() {
       | ([$qcount, ($cap - $r)] | min) as $qsel
       | ([($pcount - $r), ($cap - $r - $qsel)] | min) as $pextra
       | ($r + (if $pextra < 0 then 0 else $pextra end)) as $psel
-      | ($q[0:$qsel] + $p[0:$psel])
-      | sort_by([(if .source == "queued" then 0 else 1 end), .id])
-      | .[]
-    ' > "$WORK/$safe.runs.jsonl" 2>/dev/null
+      # #658 round 2: sticky-then-rotation selection among $p (total size stays $psel, unchanged).
+      | ($p | map(.id)) as $pids
+      | ($p | map(select(.id as $i | $sticky | index($i) != null))) as $pstickyall
+      | (($pids | map(select(. > $cursor)) | sort) + ($pids | map(select(. <= $cursor)) | sort)) as $rotorder
+      | ($rotorder | map(select((. as $i | $sticky | index($i)) == null))) as $rotcandidates
+      # #658 round 4 (PR #667 review finding 2 and PR #667 code-review MEDIUM — see the comment
+      # block above _ciq_collect_repo, item (e)): sticky is capped to $psel - 1 ONLY when there
+      # is a real competing busy runner IN THIS REPO to make room for, i.e. this repo own busy-
+      # runner count ($repo_busy, NOT the global $busy used for $r above) exceeds what sticky
+      # already accounts for ($pstickyall, the sticky ids still among this cycle in_progress
+      # runs). A rotation candidate existing is NOT by itself a reason to cap — most rotation
+      # candidates sit on runners that are, and stay, idle, and evicting a resolved sticky link
+      # to probe those is pure anti-flicker regression with nothing to show for it.
+      | (if ($rotcandidates | length) > 0 and ($pstickyall | length) < $repo_busy
+         then (($psel - 1) as $x | if $x < 0 then 0 else $x end) else $psel end) as $stickycap
+      | ($pstickyall[0:$stickycap]) as $pstickysel
+      | (($psel - ($pstickysel | length)) as $x | if $x < 0 then 0 else $x end) as $rembudget
+      | ($rotcandidates[0:$rembudget]) as $introtids
+      | ($p | map(select(.id as $i | $introtids | index($i) != null))) as $introtsel
+      | ($pstickysel + $introtsel) as $psellist
+      | (if ($introtids | length) > 0 then $introtids[-1] else $cursor end) as $newcursor
+      | { runs: ($q[0:$qsel] + $psellist | sort_by([(if .source == "queued" then 0 else 1 end), .id])),
+          cursor: $newcursor }
+    ' > "$WORK/$safe.sel.json" 2>/dev/null
+  if [ -s "$WORK/$safe.sel.json" ]; then
+    jq -c '.runs[]' "$WORK/$safe.sel.json" > "$WORK/$safe.runs.jsonl" 2>/dev/null
+    jq -c '{cursor: .cursor}' "$WORK/$safe.sel.json" > "$WORK/ip-cursor-$safe.json" 2>/dev/null
+  fi
   [ -s "$WORK/$safe.runs.jsonl" ] || return 0   # nothing queued/in-progress for this repo: not a failure
 
   while IFS= read -r run; do
@@ -591,6 +760,46 @@ _ciq_runner_history() {
   _ciq_write_samples_atomic "$(cat "$combined" 2>/dev/null)"
 }
 
+# _ciq_update_ip_state — #658 round 2: persists the sticky/cursor state consumed by
+# _ciq_collect_repo's selection (see that function's comment). Called ONLY from main(), ONLY after
+# collect_once has already returned success (i.e. $OUT has already been committed) — a failure in
+# here must never flip the cycle's success/fail state, so every step is best-effort and the
+# caller ignores this function's return value.
+#
+# The new sticky set is read from $WORK/runners-out.json (already written by _ciq_runner_history
+# by the time this runs): exactly the run ids that resolved into a BUSY runner's `current_job`
+# THIS cycle, grouped by repo — NOT "every run id that was looked up" and NOT "every run id with a
+# runner_name" (both of those are starvation traps, see the function comment above). The new
+# cursor per repo comes from $WORK/ip-cursor-<safe>.json, written by _ciq_collect_repo for every
+# repo it processed (including a same-as-before fallback for a repo with nothing to select this
+# cycle, so a repo's rotation progress is never silently reset to 0).
+_ciq_update_ip_state() {
+  local sticky_map repo safe cursor entries tmp
+  sticky_map=$(jq -c '
+    [ .[] | select(.busy == true and (.current_job // null) != null) | .current_job ]
+    | group_by(.repo)
+    | map({key: .[0].repo, value: (map(.run_id) | unique)})
+    | from_entries
+  ' "$WORK/runners-out.json" 2>/dev/null)
+  [ -n "$sticky_map" ] || sticky_map='{}'
+
+  entries='{}'
+  while read -r repo; do
+    safe=${repo//\//__}
+    cursor=$(jq -r '.cursor // 0' "$WORK/ip-cursor-$safe.json" 2>/dev/null)
+    case "$cursor" in (''|*[!0-9]*) cursor=0 ;; esac
+    entries=$(jq -c --arg repo "$repo" --argjson cursor "$cursor" --argjson smap "$sticky_map" '
+      .[$repo] = {sticky: ($smap[$repo] // []), cursor: $cursor}
+    ' <<< "$entries" 2>/dev/null)
+    [ -n "$entries" ] || entries='{}'
+  done < <(repos)
+
+  mkdir -p "$(dirname "$IP_STATE_FILE")" 2>/dev/null
+  tmp=$(mktemp "$IP_STATE_FILE.XXXXXX" 2>/dev/null) || return 1
+  printf '%s' "$entries" > "$tmp" || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$IP_STATE_FILE" || { rm -f "$tmp"; return 1; }
+}
+
 # collect_once — one full collection pass: runner counts/history + every repo's queued jobs, then
 # the final ci_queue JSON written atomically to $OUT. Returns 1 (no write) on any failure.
 collect_once() {
@@ -603,9 +812,40 @@ collect_once() {
   total=$(jq '[.[] | select(.status=="online")] | length' "$WORK/runners-merged.json") || return 1
   offline=$(jq '[.[] | select(.status!="online")] | length' "$WORK/runners-merged.json") || return 1
 
+  # #658 round 4 (PR #667 review finding — see _ciq_collect_repo's comment item (e)): `$busy`
+  # above is a GLOBAL online+busy-runner count, shared by every repo, but the sticky cap needs a
+  # PER-REPO figure — using the global count let a busy runner in repo B keep forcing repo A to
+  # evict an already-resolved link forever, since A's own resolved-link count could never catch
+  # up to a global count permanently inflated by a runner that will never appear in A's own
+  # in_progress list. This cycle's runners-merged.json doesn't yet know which repo a busy
+  # runner's job belongs to (that's only learned by the per-repo job lookups the loop below
+  # makes), so this reads the PREVIOUS cycle's own output ($OUT — read here, before anything this
+  # cycle overwrites it) for the last known repo of each currently-busy runner slot (matched by
+  # name): a busy runner already resolved to repo R last cycle counts toward R's budget; a busy
+  # runner NOT resolved to any repo last cycle (brand new, or still unresolved) is conservatively
+  # counted toward EVERY repo's budget — it might turn out to belong to any of them, so this can
+  # only ever over-count for one cycle per such runner (self-corrects once it resolves), never
+  # under-count, so round 3's anti-starvation guarantee is unaffected. Zero new `gh api` calls:
+  # $OUT is a local file this script already writes every cycle.
+  local prev_runners_json busy_by_repo_json
+  prev_runners_json=$( [ -r "$OUT" ] && jq -c '(.runners // []) | map(select(type=="object"))' "$OUT" 2>/dev/null )
+  [ -n "$prev_runners_json" ] || prev_runners_json='[]'
+  busy_by_repo_json=$(jq -c -n --slurpfile cur "$WORK/runners-merged.json" --argjson prev "$prev_runners_json" '
+    (($cur[0] // []) | map(select(.status=="online" and .busy==true)) | map(.name)) as $busy_names
+    | ($prev | map(select((.name // "") as $n | $busy_names | index($n) != null))
+             | map(select((.current_job // null) != null))) as $resolved
+    | ($resolved | group_by(.current_job.repo) | map({key: .[0].current_job.repo, value: length}) | from_entries) as $byrepo
+    | (($byrepo | [.[]] | add) // 0) as $resolved_count
+    | { byrepo: $byrepo, unresolved: (($busy_names | length) - $resolved_count) }
+  ' 2>/dev/null)
+  [ -n "$busy_by_repo_json" ] || busy_by_repo_json='{"byrepo":{},"unresolved":0}'
+
   [ -r "$REPOS_FILE" ] || return 1
   while read -r repo; do
-    _ciq_collect_repo "$repo" "$busy" || return 1
+    local repo_busy
+    repo_busy=$(jq -r --arg repo "$repo" '((.byrepo[$repo] // 0) + .unresolved)' <<< "$busy_by_repo_json" 2>/dev/null)
+    case "$repo_busy" in (''|*[!0-9]*) repo_busy=0 ;; esac
+    _ciq_collect_repo "$repo" "$busy" "$repo_busy" || return 1
   done < <(repos)
 
   _ciq_runner_history "$WORK/runners-merged.json" "$WORK/running-jobs.jsonl" || return 1
@@ -1120,8 +1360,17 @@ main() {
   : > "$WORK/queued-items.jsonl"
   : > "$WORK/calls.count"
 
+  # #658 round 2: read once per cycle, defensively — a missing/corrupt/non-object file degrades to
+  # "no sticky set, cursor 0" for every repo (never aborts the cycle).
+  if [ -e "$IP_STATE_FILE" ] && jq -e 'type == "object"' "$IP_STATE_FILE" >/dev/null 2>&1; then
+    cp "$IP_STATE_FILE" "$WORK/ip-state-in.json" 2>/dev/null || echo '{}' > "$WORK/ip-state-in.json"
+  else
+    echo '{}' > "$WORK/ip-state-in.json"
+  fi
+
   if collect_once; then
     _ciq_write_fails 0
+    _ciq_update_ip_state || true
   else
     local fails
     fails=$(( $(_ciq_read_fails) + 1 ))
