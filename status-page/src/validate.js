@@ -18,6 +18,8 @@ import {
   BLOCK_CLASS_VOCAB,
   CI_QUEUE_CATEGORY_VOCAB,
   CI_RUNNER_ROLE_VOCAB,
+  CI_METRICS_CATEGORY_VOCAB,
+  CI_HEALTH_VOCAB,
 } from './vocab.js';
 
 const ISO_8601_Z = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
@@ -424,6 +426,81 @@ function sanitiseCiQueueRunner(raw) {
   return result;
 }
 
+// `ci_queue.ci_metrics` (issue #660): a brand-new additive sibling of `runners[]`/
+// `runners_offline` below — a pre-#660 collector never sends it, so absent/malformed drops only
+// this key, never the whole `ci_queue` (same reasoning as those two).
+const MAX_CI_METRICS_CATEGORIES = 4;
+const MAX_METRICS_N = 999;
+// A single CI run realistically never exceeds a day; generous, not tight, same reasoning as
+// MAX_HISTORY_SECS above.
+const MAX_METRICS_DURATION_SECS = 86400;
+
+/** Sanitises one `ci_queue.ci_metrics.categories[].pass_rate_pct` (also reused for the top-level pass_rate_pct): null, or an int 0-100. `undefined` signals "invalid". */
+function sanitiseMetricsPassRate(value) {
+  if (value === null) return null;
+  if (isIntInRange(value, 0, 100)) return value;
+  return undefined;
+}
+
+/** Sanitises one `ci_queue.ci_metrics.categories[]` entry. Returns null on any violation. */
+function sanitiseCiMetricsCategory(raw) {
+  if (!isPlainObject(raw)) return null;
+  if (!(typeof raw.key === 'string' && CI_METRICS_CATEGORY_VOCAB.includes(raw.key))) return null;
+  if (!isIntInRange(raw.n, 1, MAX_METRICS_N)) return null;
+  if (!isIntInRange(raw.avg_secs, 0, MAX_METRICS_DURATION_SECS)) return null;
+  if (!isIntInRange(raw.p50_secs, 0, MAX_METRICS_DURATION_SECS)) return null;
+  if (!isIntInRange(raw.p90_secs, 0, MAX_METRICS_DURATION_SECS)) return null;
+  const passRate = sanitiseMetricsPassRate(raw.pass_rate_pct);
+  if (passRate === undefined) return null;
+  return {
+    key: raw.key,
+    n: raw.n,
+    avg_secs: raw.avg_secs,
+    p50_secs: raw.p50_secs,
+    p90_secs: raw.p90_secs,
+    pass_rate_pct: passRate,
+  };
+}
+
+/**
+ * Sanitises `ci_queue.ci_metrics` (issue #660). Unlike `ci_queue` itself, a malformed sub-field
+ * here only ever drops this ONE key (never `ci_queue` as a whole) — see the comment above.
+ * Returns null to omit the key.
+ *
+ * `categories[]` follows this file's "sanitise by reconstruction" convention (same as
+ * `ci_queue.runners[]` below): one malformed entry drops only THAT entry, never the whole
+ * `ci_metrics` object (fixed per PR #713 review — a single bad category, e.g. a negative
+ * `avg_secs`, must not blank every category and the overall pass rate). A duplicate category key
+ * is the same shape: the duplicate entry is dropped and the first occurrence of that key wins,
+ * rather than dropping everything. `as_of`/`pass_rate_pct`/`pass_rate_n` stay whole-drop — they
+ * are top-level fields of `ci_metrics` itself, not entries in a reconstructed list.
+ *
+ * `pass_rate_pct`/`pass_rate_n` are the issue's "today's OVERALL pass/fail rate" — computed by
+ * the collector from today's eligible runs across ALL 4 categories at once (never a weighted
+ * average re-derived from the per-category rates below, which would let a stale prior-day run
+ * sitting in the same fetched page outweigh a real same-day failure) — both required fields, not
+ * an additive exception like `runners[]`/`runners_offline` on `ci_queue`: every #660 collector
+ * always emits them.
+ */
+function sanitiseCiMetrics(raw) {
+  if (!isPlainObject(raw)) return null;
+  if (!isIsoTimestamp(raw.as_of)) return null;
+  if (!Array.isArray(raw.categories) || raw.categories.length > MAX_CI_METRICS_CATEGORIES) return null;
+  const seenKeys = new Set();
+  const categories = [];
+  for (const rawCategory of raw.categories) {
+    const category = sanitiseCiMetricsCategory(rawCategory);
+    if (category === null) continue; // drop only this bad entry
+    if (seenKeys.has(category.key)) continue; // duplicate key: keep the first occurrence only
+    seenKeys.add(category.key);
+    categories.push(category);
+  }
+  const passRate = sanitiseMetricsPassRate(raw.pass_rate_pct);
+  if (passRate === undefined) return null;
+  if (!isIntInRange(raw.pass_rate_n, 0, MAX_METRICS_N)) return null;
+  return { as_of: raw.as_of, categories, pass_rate_pct: passRate, pass_rate_n: raw.pass_rate_n };
+}
+
 /**
  * Sanitises the optional top-level `ci_queue` (issue #643): every field is an enum, a bounded
  * int (0-999), or an ISO-8601Z timestamp — no free text. Unlike every other optional field in
@@ -470,6 +547,15 @@ function sanitiseCiQueue(raw) {
       .map(sanitiseCiQueueRunner)
       .filter((runner) => runner !== null)
       .slice(0, MAX_CI_QUEUE_RUNNERS);
+  }
+
+  // Additive (issue #660), same "present-and-malformed just omits this one key" reasoning as
+  // runners[]/runners_offline above — a pre-#660 collector never sends either of these.
+  const ciMetrics = sanitiseCiMetrics(raw.ci_metrics);
+  if (ciMetrics !== null) result.ci_metrics = ciMetrics;
+
+  if (typeof raw.ci_health === 'string' && CI_HEALTH_VOCAB.includes(raw.ci_health)) {
+    result.ci_health = raw.ci_health;
   }
 
   return result;

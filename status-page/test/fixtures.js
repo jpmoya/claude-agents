@@ -217,6 +217,46 @@ export function validCiQueue(overrides = {}) {
   };
 }
 
+/** One valid `ci_queue.ci_metrics.categories[]` entry (issue #660). */
+export function validCiMetricsCategory(overrides = {}) {
+  return {
+    key: 'prod_deploy',
+    n: 12,
+    avg_secs: 480,
+    p50_secs: 420,
+    p90_secs: 900,
+    pass_rate_pct: 92,
+    ...overrides,
+  };
+}
+
+/** A valid `ci_queue.ci_metrics` object (issue #660), per the Expected Behavior payload shape. */
+export function validCiMetrics(overrides = {}) {
+  return {
+    as_of: '2026-09-21T12:00:00Z',
+    categories: [
+      validCiMetricsCategory({ key: 'prod_deploy' }),
+      validCiMetricsCategory({ key: 'staging_deploy', n: 8, avg_secs: 120, p50_secs: 110, p90_secs: 180, pass_rate_pct: 100 }),
+      validCiMetricsCategory({ key: 'sales_tool_pr', n: 40, avg_secs: 300, p50_secs: 280, p90_secs: 500, pass_rate_pct: 95 }),
+      validCiMetricsCategory({ key: 'ops_tool_pr', n: 55, avg_secs: 260, p50_secs: 240, p90_secs: 420, pass_rate_pct: 88 }),
+    ],
+    // Today's OVERALL pass/fail rate — computed by the collector across all 4 categories' today-
+    // eligible runs at once, independent of (never a weighted average of) the per-category rates above.
+    pass_rate_pct: 91,
+    pass_rate_n: 103,
+    ...overrides,
+  };
+}
+
+/** A valid `ci_queue` that also carries #660's `ci_metrics`/`ci_health` fields. */
+export function validCiQueueWithMetrics(overrides = {}) {
+  return validCiQueue({
+    ci_metrics: validCiMetrics(),
+    ci_health: 'ok',
+    ...overrides,
+  });
+}
+
 /** One valid `ci_queue.runners[]` entry (issue #648), per the Expected Behavior payload shape. */
 export function validCiQueueRunner(overrides = {}) {
   return {

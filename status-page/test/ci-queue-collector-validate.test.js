@@ -256,25 +256,117 @@ describe('validate.js against the real collector output (issue #648)', () => {
   });
 });
 
-// Issue #657 — drift guard for the NEW categories[].queued[] shape specifically: the two describe
-// blocks above never exercise a non-empty queued[] (the #648/#655 fixtures have no queued run at
-// all), so a collector/validate.js shape mismatch on this new field would slip past both of them.
-// Own temp root/fixtures, separate from the others above.
-describe('#657 — categories[].queued[] against the real collector', () => {
+
+// Issue #660 — same schema-drift guard as #648/#655 above, this time for ci_metrics/ci_health:
+// runs the REAL collector with CI_QUEUE_METRICS_ENABLED=1 (own temp root/fixtures, separate from
+// every block above so their zero-metrics baselines stay untouched) and feeds its real stdout
+// into validateBeatPayload.
+describe('#660 — ci_metrics + ci_health against the real collector', () => {
   let root3, fixdir3, pipe3, reposFile3, raw3;
 
   beforeAll(() => {
-    root3 = mkdtempSync(join(tmpdir(), 'ciq-collector-657-'));
+    root3 = mkdtempSync(join(tmpdir(), 'ciq-collector-660-'));
     fixdir3 = join(root3, 'fixtures');
     pipe3 = join(root3, 'pipe');
     mkdirSync(fixdir3, { recursive: true });
     mkdirSync(pipe3, { recursive: true });
 
     reposFile3 = join(root3, 'repos.txt');
-    writeFileSync(reposFile3, 'owner2/repo2\n');
+    writeFileSync(reposFile3, 'Benjis-Plants/benjis-sales-tool\n');
 
-    writeFileSync(join(fixdir3, 'runners-org.json'), JSON.stringify({ total_count: 0, runners: [] }));
+    writeFileSync(
+      join(fixdir3, 'runners-org.json'),
+      JSON.stringify({ total_count: 1, runners: [{ id: 1, name: 'r1', status: 'online', busy: true }] }),
+    );
     writeFileSync(join(fixdir3, 'runners-repo.json'), JSON.stringify({ total_count: 0, runners: [] }));
+    writeFileSync(join(fixdir3, 'runs-Benjis-Plants__benjis-sales-tool-queued.json'), JSON.stringify({ workflow_runs: [] }));
+    writeFileSync(join(fixdir3, 'runs-Benjis-Plants__benjis-sales-tool-in_progress.json'), JSON.stringify({ workflow_runs: [] }));
+    writeFileSync(
+      join(fixdir3, 'runs-Benjis-Plants__benjis-sales-tool-completed.json'),
+      JSON.stringify({
+        workflow_runs: [
+          {
+            id: 5001,
+            repository: { full_name: 'Benjis-Plants/benjis-sales-tool' },
+            name: 'Secret scan',
+            event: 'pull_request',
+            head_branch: 'feature-a',
+            conclusion: 'success',
+            run_started_at: '2026-11-10T09:00:00Z',
+            updated_at: '2026-11-10T09:01:40Z',
+          },
+        ],
+      }),
+    );
+
+    const now3 = Math.floor(new Date('2026-11-10T09:05:00Z').getTime() / 1000);
+    const env3 = {
+      PATH: process.env.PATH,
+      HOME: process.env.HOME,
+      PIPE: pipe3,
+      CI_QUEUE_FORCE: '1',
+      CI_QUEUE_METRICS_ENABLED: '1',
+      CI_QUEUE_METRICS_FORCE: '1',
+      CI_QUEUE_NOW: String(now3),
+      CI_QUEUE_OUT: join(pipe3, 'status-ci.json'),
+      CI_QUEUE_ATTEMPT_FILE: join(pipe3, 'attempt'),
+      CI_QUEUE_STATE_FILE: join(pipe3, 'state.json'),
+      CI_QUEUE_LOCKDIR: join(pipe3, 'lockdir'),
+      CI_QUEUE_SAMPLES_FILE: join(pipe3, 'ci-runner-samples.jsonl'),
+      CI_QUEUE_CALL_LOG: join(pipe3, 'calls.log'),
+      CI_QUEUE_METRICS_OUT: join(pipe3, 'ci-metrics.json'),
+      CI_QUEUE_METRICS_ATTEMPT_FILE: join(pipe3, 'metrics-attempt'),
+      CI_QUEUE_METRICS_STATE_FILE: join(pipe3, 'metrics-state.json'),
+      CI_QUEUE_REPOS_FILE: reposFile3,
+      CI_QUEUE_FIXTURE_DIR: fixdir3,
+    };
+
+    const result3 = spawnSync('bash', [COLLECTOR], { env: env3, encoding: 'utf8' });
+    if (result3.status !== 0) {
+      throw new Error(`collector exited ${result3.status}: stdout=${result3.stdout} stderr=${result3.stderr}`);
+    }
+    raw3 = JSON.parse(readFileSync(join(pipe3, 'status-ci.json'), 'utf8'));
+  });
+
+  afterAll(() => {
+    rmSync(root3, { recursive: true, force: true });
+  });
+
+  it('the collector produced ci_metrics/ci_health with the expected live-computed shape', () => {
+    expect(raw3.ci_health).toBe('ok');
+    expect(raw3.ci_metrics.categories).toEqual([
+      { key: 'sales_tool_pr', n: 1, avg_secs: 100, p50_secs: 100, p90_secs: 100, pass_rate_pct: 100 },
+    ]);
+    expect(raw3.ci_metrics.pass_rate_pct).toBe(100);
+    expect(raw3.ci_metrics.pass_rate_n).toBe(1);
+  });
+
+  it('validateBeatPayload passes the real ci_queue object (ci_metrics + ci_health included) through unchanged', () => {
+    const result = validateBeatPayload(validPayload({ ci_queue: raw3 }));
+    expect(result.ok).toBe(true);
+    expect(result.value.ci_queue).toEqual(raw3);
+  });
+});
+
+// Issue #657 — drift guard for the NEW categories[].queued[] shape specifically: the two describe
+// blocks above never exercise a non-empty queued[] (the #648/#655 fixtures have no queued run at
+// all), so a collector/validate.js shape mismatch on this new field would slip past both of them.
+// Own temp root/fixtures, separate from the others above.
+describe('#657 — categories[].queued[] against the real collector', () => {
+  let root4, fixdir4, pipe4, reposFile4, raw4;
+
+  beforeAll(() => {
+    root4 = mkdtempSync(join(tmpdir(), 'ciq-collector-657-'));
+    fixdir4 = join(root4, 'fixtures');
+    pipe4 = join(root4, 'pipe');
+    mkdirSync(fixdir4, { recursive: true });
+    mkdirSync(pipe4, { recursive: true });
+
+    reposFile4 = join(root4, 'repos.txt');
+    writeFileSync(reposFile4, 'owner2/repo2\n');
+
+    writeFileSync(join(fixdir4, 'runners-org.json'), JSON.stringify({ total_count: 0, runners: [] }));
+    writeFileSync(join(fixdir4, 'runners-repo.json'), JSON.stringify({ total_count: 0, runners: [] }));
 
     // Two queued runs:
     //  - 888001: head_branch main, a deploy|release-named workflow (-> prod_deploy, #657 rule
@@ -283,7 +375,7 @@ describe('#657 — categories[].queued[] against the real collector', () => {
     //    exercises the same fractional-seconds strip on that field instead).
     //  - 888002: no `display_title` at all (title omitted, not null — the exact mismatch this
     //    drift guard exists to catch; see validate.js's sanitiseCiQueueQueuedItem).
-    writeFileSync(join(fixdir3, 'runs-owner2__repo2-queued.json'), JSON.stringify({
+    writeFileSync(join(fixdir4, 'runs-owner2__repo2-queued.json'), JSON.stringify({
       total_count: 2,
       workflow_runs: [
         {
@@ -307,44 +399,44 @@ describe('#657 — categories[].queued[] against the real collector', () => {
         },
       ],
     }));
-    writeFileSync(join(fixdir3, 'runs-owner2__repo2-in_progress.json'), JSON.stringify({ total_count: 0, workflow_runs: [] }));
+    writeFileSync(join(fixdir4, 'runs-owner2__repo2-in_progress.json'), JSON.stringify({ total_count: 0, workflow_runs: [] }));
     writeFileSync(
-      join(fixdir3, 'jobs-888001.json'),
+      join(fixdir4, 'jobs-888001.json'),
       JSON.stringify({ total_count: 1, jobs: [{ id: 1, status: 'queued', created_at: '2026-11-10T10:00:00.500Z' }] }),
     );
     writeFileSync(
-      join(fixdir3, 'jobs-888002.json'),
+      join(fixdir4, 'jobs-888002.json'),
       JSON.stringify({ total_count: 1, jobs: [{ id: 2, status: 'queued', created_at: '2026-11-10T09:00:00Z' }] }),
     );
 
-    const env3 = {
+    const env4 = {
       PATH: process.env.PATH,
       HOME: process.env.HOME,
-      PIPE: pipe3,
+      PIPE: pipe4,
       CI_QUEUE_FORCE: '1',
-      CI_QUEUE_OUT: join(pipe3, 'status-ci.json'),
-      CI_QUEUE_ATTEMPT_FILE: join(pipe3, 'attempt'),
-      CI_QUEUE_STATE_FILE: join(pipe3, 'state.json'),
-      CI_QUEUE_LOCKDIR: join(pipe3, 'lockdir'),
-      CI_QUEUE_SAMPLES_FILE: join(pipe3, 'ci-runner-samples.jsonl'),
-      CI_QUEUE_CALL_LOG: join(pipe3, 'calls.log'),
-      CI_QUEUE_REPOS_FILE: reposFile3,
-      CI_QUEUE_FIXTURE_DIR: fixdir3,
+      CI_QUEUE_OUT: join(pipe4, 'status-ci.json'),
+      CI_QUEUE_ATTEMPT_FILE: join(pipe4, 'attempt'),
+      CI_QUEUE_STATE_FILE: join(pipe4, 'state.json'),
+      CI_QUEUE_LOCKDIR: join(pipe4, 'lockdir'),
+      CI_QUEUE_SAMPLES_FILE: join(pipe4, 'ci-runner-samples.jsonl'),
+      CI_QUEUE_CALL_LOG: join(pipe4, 'calls.log'),
+      CI_QUEUE_REPOS_FILE: reposFile4,
+      CI_QUEUE_FIXTURE_DIR: fixdir4,
     };
 
-    const result3 = spawnSync('bash', [COLLECTOR], { env: env3, encoding: 'utf8' });
-    if (result3.status !== 0) {
-      throw new Error(`collector exited ${result3.status}: stdout=${result3.stdout} stderr=${result3.stderr}`);
+    const result4 = spawnSync('bash', [COLLECTOR], { env: env4, encoding: 'utf8' });
+    if (result4.status !== 0) {
+      throw new Error(`collector exited ${result4.status}: stdout=${result4.stdout} stderr=${result4.stderr}`);
     }
-    raw3 = JSON.parse(readFileSync(join(pipe3, 'status-ci.json'), 'utf8'));
+    raw4 = JSON.parse(readFileSync(join(pipe4, 'status-ci.json'), 'utf8'));
   });
 
   afterAll(() => {
-    rmSync(root3, { recursive: true, force: true });
+    rmSync(root4, { recursive: true, force: true });
   });
 
   it('the run categorizes prod_deploy with a populated queued[] (repo, run_id, pr_url, title, queued_at)', () => {
-    const prodDeploy = raw3.categories.find((c) => c.key === 'prod_deploy');
+    const prodDeploy = raw4.categories.find((c) => c.key === 'prod_deploy');
     expect(prodDeploy).toBeDefined();
     expect(prodDeploy.count).toBe(1);
     expect(prodDeploy.queued).toEqual([
@@ -359,7 +451,7 @@ describe('#657 — categories[].queued[] against the real collector', () => {
   });
 
   it('a run with no display_title OMITS the title key entirely (never title: null)', () => {
-    const other = raw3.categories.find((c) => c.key === 'other');
+    const other = raw4.categories.find((c) => c.key === 'other');
     expect(other).toBeDefined();
     expect(other.queued).toEqual([
       {
@@ -373,8 +465,8 @@ describe('#657 — categories[].queued[] against the real collector', () => {
   });
 
   it('validateBeatPayload passes the real ci_queue object (with queued[]) through unchanged', () => {
-    const result = validateBeatPayload(validPayload({ ci_queue: raw3 }));
+    const result = validateBeatPayload(validPayload({ ci_queue: raw4 }));
     expect(result.ok).toBe(true);
-    expect(result.value.ci_queue).toEqual(raw3);
+    expect(result.value.ci_queue).toEqual(raw4);
   });
 });

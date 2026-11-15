@@ -76,6 +76,20 @@ export const BLOCK_CLASS_VOCAB = ['ci_pending', 'ci_red', 'merge_conflict', 'dep
 // collector's own `$vocab` array in `collect_once` exactly.
 export const CI_QUEUE_CATEGORY_VOCAB = ['dependabot', 'prod_deploy', 'staging_deploy', 'deploy_release', 'pr', 'other'];
 
+// `ci_queue.ci_metrics.categories[].key` (issue #660): a closed vocabulary for the 4 live
+// duration/health categories — a DIFFERENT, narrower split than CI_QUEUE_CATEGORY_VOCAB above
+// (that one buckets queue-depth entries; #643/#657 own it). `prod_deploy`/`staging_deploy` are
+// ops-tool/sales-tool deploy-or-release-named workflow runs split by head_branch; the PR-CI pair
+// is per-repo (scheduler is an alias of benjis-ops-tool, dedup'd by run id before categorizing —
+// see ci-queue-collect.sh's _ciq_collect_metrics_once). The render side (#661, dependent on this
+// ticket) maps each key to display text.
+export const CI_METRICS_CATEGORY_VOCAB = ['prod_deploy', 'staging_deploy', 'sales_tool_pr', 'ops_tool_pr'];
+
+// `ci_queue.ci_health` (issue #660): a derived heuristic from signals already collected live
+// (stale runner count, queue age, pass rate) — explicitly NOT comprehensive incident detection,
+// per the issue. A closed vocabulary, same reasoning as the others above.
+export const CI_HEALTH_VOCAB = ['ok', 'degraded', 'down'];
+
 // `ci_queue.runners[].role` (issue #648): distinguishes the production-deploy-labeled runner
 // (GitHub label `benjis-ci-prod-deploy`, #2440 in benjis-ops-tool) from the general `benjis-ci`
 // pool — #649 (render, dependent on this ticket) styles/groups them separately. A closed
