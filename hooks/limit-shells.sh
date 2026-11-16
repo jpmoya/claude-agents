@@ -8,14 +8,19 @@ MAX_PER_SESSION=5
 MAX_GLOBAL=20
 MAX_AGE_SECONDS=600
 
-# Kill stale shells (older than MAX_AGE_SECONDS)
+# Kill stale shells (older than MAX_AGE_SECONDS). Only real Claude Code tool shells are selected
+# (#720): argv is "<path>/<shell> -c source …/.claude/shell-snapshots/snapshot-…". Never a pipeline
+# stage (`claude --agent … -p "…bash…"`) or its stage-run.sh wrapper, whose command line merely
+# mentions claude and bash.
+TOOL_SHELL_AGE_RE='^([^ ]*/)?(zsh|bash|sh) -c ([-][a-zA-Z]+ )*source [^ ]*/[.]claude/shell-snapshots/snapshot-'
 while IFS= read -r line; do
   pid=$(echo "$line" | awk '{print $1}')
   elapsed=$(echo "$line" | awk '{print $2}')
   if [ "$elapsed" -gt "$MAX_AGE_SECONDS" ] 2>/dev/null; then
     kill "$pid" 2>/dev/null
   fi
-done < <(ps -eo pid,etimes,command 2>/dev/null | grep -E "claude.*bash|claude.*Bash" | grep -v grep | grep -v "limit-shells" | awk '{print $1, $2}')
+done < <(ps -eo pid,etimes,command 2>/dev/null | grep -v "limit-shells" | RE="$TOOL_SHELL_AGE_RE" awk '
+  { c = $0; sub(/^ *[0-9]+ +[0-9]+ +/, "", c); if (c ~ ENVIRON["RE"]) print $1, $2 }')
 
 # Global cap — all Claude sessions combined
 global_count=$(ps -eo pid,command 2>/dev/null | grep -E "[/]tmp/claude-" | grep -v grep | grep -v "limit-shells" | wc -l | tr -d ' ')

@@ -11,8 +11,8 @@
 #   1. Write/Edit whose file_path resolves to a locked path → block.
 #   2. Bash command that names a locked path together with a write-ish token
 #      (rm, mv, sed -i, >, >>, tee, truncate, git rm, git checkout --, cp/dd onto it) → block.
-#   3. `git commit` whose staged files include a locked path → block (backstop for any edit
-#      that slipped past 1 and 2).
+#   3. `git commit` while any locked path differs from HEAD (staged or unstaged) → block
+#      (backstop for any edit that slipped past 1 and 2).
 # New test files are allowed — the developer may ADD tests; the orchestrator lists them
 # for the narrow post-implementation review.
 
@@ -47,17 +47,13 @@ if [ "$TOOL" = "Bash" ]; then
   CMD=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('tool_input',{}).get('command',''))" 2>/dev/null)
   # 3. commit backstop
   if echo "$CMD" | grep -qE '\bgit\s+commit\b'; then
-    STAGED=$(git diff --cached --name-only 2>/dev/null)
+    # Staged AND unstaged changes vs HEAD: PreToolUse runs before this command's own `git add`
+    # (`git add -A e2e && git commit`), and `commit -a` stages everything modified, so one
+    # worktree-vs-HEAD check covers all of them (#463).
+    CHANGED=$(git diff HEAD --name-only 2>/dev/null)
     while IFS= read -r f; do
-      [ -n "$f" ] && echo "$STAGED" | grep -qxF "$f" && block "$f (staged)"
+      [ -n "$f" ] && echo "$CHANGED" | grep -qxF "$f" && block "$f (changed vs HEAD)"
     done <<< "$LOCKED"
-    # `git commit -a` / `-am` stage everything modified
-    if echo "$CMD" | grep -qE '\bgit\s+commit\s+(-[a-zA-Z]*a|--all)'; then
-      MOD=$(git diff --name-only 2>/dev/null)
-      while IFS= read -r f; do
-        [ -n "$f" ] && echo "$MOD" | grep -qxF "$f" && block "$f (modified, -a)"
-      done <<< "$LOCKED"
-    fi
   fi
   # 2. write-ish command naming a locked path
   if echo "$CMD" | grep -qE '(^|[;&|[:space:]])(rm|mv|cp|dd|tee|truncate|sed\s+(-[a-zA-Z]*i|--in-place)|perl\s+-[a-zA-Z]*i|git\s+rm|git\s+checkout\s+--|git\s+restore|>|>>)'; then
