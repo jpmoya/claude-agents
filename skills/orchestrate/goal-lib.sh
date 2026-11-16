@@ -34,19 +34,26 @@ _goal_is_bi() { case "$1" in */Business-Intelligence) return 0 ;; esac; return 1
 # direct_route_repo (#632) comes from config.sh, which every entry point sources first; a harness that sources this file alone gets the empty rule
 type direct_route_repo >/dev/null 2>&1 || direct_route_repo() { return 1; }
 
-# goal_parse <spec> -> "repo<TAB>kind<TAB>ref" (kind: ms | msall | t | fb | label); exit 1 when malformed.
+# goal_parse <spec> -> "repo<TAB>kind<TAB>ref" (kind: ms | msall | t | fb | label | proj); exit 1 when malformed.
 # owner/repo:feedback (kind fb) is the standing staff-feedback goal (#472): scope = the repo's user-feedback tickets that are
 # not in the scope of another live goal (#517: not "in no milestone" — the product-manager gives every ticket a milestone).
 # label:<exact label name> is the cross-repo form (#319): repo is "-" (the repos live in the registry v2 block).
+# project:<owner>/<number> (#736) is a GitHub Project whose issue items are the scope: repo "-", ref "<owner>/<number>".
+# owner/repo:project:<number> is an alias for the project <number> of the repo's owner; both print the canonical ref.
+_GOAL_FORMS="owner/repo:milestone:<n|title>, owner/repo:milestones:all, owner/repo:feedback, owner/repo#N, label:<name> or project:<owner>/<number>"
 goal_parse() {
-  local spec="${1:-}" re='^([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)(.*)$' repo rest ref
+  local spec="${1:-}" re='^([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)(.*)$' pre='^([A-Za-z0-9._-]+)/([0-9]+)$' repo rest ref
   case "$spec" in
     label:*)
       ref="${spec#label:}"
       [ -n "$ref" ] || { echo "malformed goal '$spec': empty label name" >&2; return 1; }
       printf -- '-\tlabel\t%s\n' "$ref"; return 0 ;;
+    project:*)
+      ref="${spec#project:}"
+      [[ "$ref" =~ $pre ]] || { echo "malformed goal '$spec': want project:<owner>/<number> (the number is digits)" >&2; return 1; }
+      printf -- '-\tproj\t%s\n' "$ref"; return 0 ;;
   esac
-  if ! [[ "$spec" =~ $re ]]; then echo "malformed goal '$spec' (want owner/repo:milestone:<n|title>, owner/repo:milestones:all, owner/repo:feedback or owner/repo#N)" >&2; return 1; fi
+  if ! [[ "$spec" =~ $re ]]; then echo "malformed goal '$spec' (want $_GOAL_FORMS)" >&2; return 1; fi
   repo="${BASH_REMATCH[1]}"; rest="${BASH_REMATCH[2]}"
   case "$rest" in
     '#'*)
@@ -55,11 +62,15 @@ goal_parse() {
       printf '%s\tt\t%s\n' "$repo" "$ref" ;;
     ':milestones:all') printf '%s\tmsall\tall\n' "$repo" ;;
     ':feedback') printf '%s\tfb\tfeedback\n' "$repo" ;;
+    ':project:'*)
+      ref="${rest#:project:}"
+      case "$ref" in ''|*[!0-9]*) echo "malformed goal '$spec': want project:<owner>/<number> (the number is digits)" >&2; return 1 ;; esac
+      printf -- '-\tproj\t%s/%s\n' "${repo%%/*}" "$ref" ;;
     ':milestone:'*)
       ref="${rest#:milestone:}"
       [ -n "$ref" ] || { echo "malformed goal '$spec': empty milestone" >&2; return 1; }
       printf '%s\tms\t%s\n' "$repo" "$ref" ;;
-    *) echo "malformed goal '$spec'" >&2; return 1 ;;
+    *) echo "malformed goal '$spec' (want $_GOAL_FORMS)" >&2; return 1 ;;
   esac
 }
 
@@ -79,6 +90,7 @@ goal_name_for() {
         [ -n "$t" ] || return 1; printf '%s: %s\n' "$short" "$t" ;;
     msall) printf '%s: all milestones\n' "$short" ;;
     fb) printf '%s: staff feedback\n' "$short" ;;
+    proj) t=$(_goal_proj_read "$ref" --meta 2>/dev/null | jq -r '.title // empty') || return 1; [ -n "$t" ] || return 1; printf '%s\n' "$t" ;;
     *) return 1 ;;
   esac
 }
@@ -133,6 +145,7 @@ goal_id() {
   IFS=$'\t' read -r repo kind ref <<< "$line"
   [ "$kind" = ms ] && { ref=$(_goal_ms_number "$repo" "$ref") || return 1; }
   if [ "$kind" = label ]; then printf 'label-%s\n' "$ref" | sed 's/[^A-Za-z0-9._-]/_/g'; return 0; fi
+  if [ "$kind" = proj ]; then printf 'proj-%s\n' "$ref" | sed 's/[^A-Za-z0-9._-]/_/g'; return 0; fi
   printf '%s-%s-%s\n' "$repo" "$kind" "$ref" | sed 's/[^A-Za-z0-9._-]/_/g'
 }
 
@@ -185,6 +198,26 @@ _goal_fb_err() {
   local m
   m="[goal] error: cannot read the feedback scope of $1: $2 (release=$(goal_release) host=${HOST:-$(pipeline_host 2>/dev/null)} route=goal-fb-scope)"
   if type slog >/dev/null 2>&1; then slog "$m"; else echo "$m" >&2; fi
+}
+
+# _goal_proj_err <owner/number> <why> — a failed project-scope read (#736), logged with release, environment and route, and recorded as an
+# error event (the same capture path as the other goal errors). The caller then fails closed. Owner, number and gh's redacted first line only.
+_goal_proj_err() {
+  local m rel env
+  rel=$(goal_release); env=${HOST:-$(pipeline_host 2>/dev/null)}
+  m="[goal] error: cannot read the project scope of $1: $2 (release=$rel environment=$env route=goal-project-scope)"
+  if type slog >/dev/null 2>&1; then slog "$m"; else echo "$m" >&2; fi
+  type pipeline_event >/dev/null 2>&1 && pipeline_event error --arg level error --arg route goal-project-scope --arg release "$rel" --arg environment "$env" \
+    --arg message "cannot read the project scope of $1" || true
+}
+
+# _goal_proj_read <owner/number> [--meta] -> goal_project_read's JSON (goal-project.sh); exit 1, logged, when it cannot be read
+_goal_proj_read() {
+  local out err
+  err=$(mktemp "${TMPDIR:-/tmp}/goal-proj-err.XXXXXX") || err=/dev/null
+  out=$(goal_project_read "${1%%/*}" "${1##*/}" "${2:-}" 2>"$err") || { _goal_proj_err "$1" "$(head -1 "$err" 2>/dev/null)"; rm -f "$err"; return 1; }
+  rm -f "$err"
+  printf '%s\n' "$out"
 }
 
 # _goal_same_repo <a> <b> -> exit 0 same repo, 1 different, 2 cannot tell. A goal registered before a GitHub rename still
@@ -298,7 +331,7 @@ _goal_scope_rows() {
   local line repo kind ref n ms one repos r js covered crepo cr
   line=$(goal_parse "$1") || return 1
   IFS=$'\t' read -r repo kind ref <<< "$line"
-  crepo=$(_goal_rest_slug "$repo")   # REST paths use the canonical slug; the rows keep the name the goal was registered with
+  [ "$kind" = proj ] || crepo=$(_goal_rest_slug "$repo")   # REST paths use the canonical slug; the rows keep the name the goal was registered with
   case "$kind" in
     label)
       repos=$(_goal_repos "${2:-}" "${3:-}") || { echo "cannot find the repos of label goal ${2:-$1}" >&2; return 1; }
@@ -323,6 +356,13 @@ _goal_scope_rows() {
       printf '%s' "$js" | jq -r --arg r "$repo" --argjson l "${GOAL_SCOPE_LABELS:-0}" --argjson full "${GOAL_SCOPE_FULL:-0}" \
         --argjson cov "$(printf '%s\n' "$covered" | jq -Rsc 'split("\n") | map(select(. != "") | tonumber)')" \
         "$_GOAL_ROW_JQ"'.[] | select(has("pull_request") | not) | select(.number as $n | any($cov[]; . == $n) | not) | row' ;;
+    proj)
+      # #736: the project's issue items across any repos; Business-Intelligence is never part of a goal. One jq run per repo ($r is an --arg).
+      js=$(_goal_proj_read "$ref") || return 1
+      for r in $(printf '%s' "$js" | jq -r '[.issues[].repo] | unique[]'); do
+        _goal_is_bi "$r" && continue
+        printf '%s' "$js" | jq -r --arg r "$r" --argjson l "${GOAL_SCOPE_LABELS:-0}" --argjson full "${GOAL_SCOPE_FULL:-0}" "$_GOAL_ROW_JQ"'.issues[] | select(.repo == $r) | row'
+      done ;;
     msall)
       ms=$(_goal_get_all "repos/$crepo/milestones?state=open&per_page=100") || return 1
       for n in $(printf '%s' "$ms" | jq -r '.[].number'); do _goal_ms_rows "$crepo" "$n" "$repo" || return 1; done ;;

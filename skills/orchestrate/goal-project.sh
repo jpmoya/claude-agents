@@ -97,6 +97,50 @@ _gp_items() {
     content: {repository: .content.repository.nameWithOwner, number: .content.number}}]}' <<< "$nodes"
 }
 
+# goal_project_read <owner> <number> [--meta] -> {"title","url","issues":[...]} (#736): the project that IS a goal's scope. The ONE reader of
+# a bound scope project; goal-lib.sh reaches it through _goal_proj_read. Paginated `gh api graphql` (cursor via pageInfo). Issues only: draft
+# and pull-request items are ignored; each issue comes back in the REST shape _GOAL_ROW_JQ reads (lower-case state and state_reason,
+# user.login, labels[].name, milestone {state,title}, body) plus `repo`. State is the issue's own, never the project Status field.
+# --meta reads the first item only (title and url). Exit 1, one reason line on stderr, on anything that makes the scope untrustworthy:
+# a failed page, a project that is missing, closed or unreadable, an item the token cannot read. Never a partial or empty scope.
+# Needs no `project`-scope pre-check and ignores GOAL_PROJECTS (that switch is the mirror's): gh itself refuses without the scope.
+_GP_SCOPE_Q='query($owner:String!,$number:Int!,$first:Int!,$cursor:String){repositoryOwner(login:$owner){... on ProjectV2Owner{projectV2(number:$number){title url closed items(first:$first,after:$cursor){pageInfo{hasNextPage endCursor} nodes{type content{... on Issue{number state stateReason body author{login} labels(first:100){nodes{name}} milestone{state title} repository{nameWithOwner}}}}}}}}}'
+goal_project_read() {
+  local o="$1" n="$2" first=100 cur="" page nodes="[]" meta="" more errf rc
+  [ "${3:-}" != --meta ] || first=1
+  errf=$(mktemp "${TMPDIR:-/tmp}/gp-read-err.XXXXXX") || errf=/dev/null
+  while :; do
+    if [ -n "$cur" ]; then
+      page=$(gh api graphql -f query="$_GP_SCOPE_Q" -f owner="$o" -F number="$n" -F first="$first" -f cursor="$cur" 2>"$errf"); rc=$?
+    else
+      page=$(gh api graphql -f query="$_GP_SCOPE_Q" -f owner="$o" -F number="$n" -F first="$first" 2>"$errf"); rc=$?
+    fi
+    if [ "$rc" -ne 0 ]; then
+      echo "gh exit $rc: $(head -1 "$errf" 2>/dev/null | sed -E -e 's/(gh[pousr]_|github_pat_)[A-Za-z0-9_]+/[redacted]/g' -e 's/([Bb]earer|[Tt]oken)[ =:]+[^ ]+/\1 [redacted]/g' | cut -c1-200)" >&2
+      rm -f "$errf"; return 1
+    fi
+    if [ -z "$meta" ]; then
+      meta=$(jq -c '.data.repositoryOwner.projectV2 | select(. != null) | {title, url, closed}' <<< "$page" 2>/dev/null)
+      [ -n "$meta" ] || { echo "the project does not exist or the token cannot read it" >&2; rm -f "$errf"; return 1; }
+      [ "$(jq -r '.closed' <<< "$meta")" != true ] || { echo "the project is closed" >&2; rm -f "$errf"; return 1; }
+    fi
+    nodes=$(jq -c --argjson acc "$nodes" '$acc + (.data.repositoryOwner.projectV2.items.nodes | if type == "array" then . else error("no nodes") end)' <<< "$page" 2>/dev/null) \
+      || { echo "an items page does not parse" >&2; rm -f "$errf"; return 1; }
+    more=$(jq -r '.data.repositoryOwner.projectV2.items.pageInfo | if .hasNextPage == true then (.endCursor // "") else "" end' <<< "$page" 2>/dev/null) \
+      || { echo "an items page has no page info" >&2; rm -f "$errf"; return 1; }
+    [ "$first" = 100 ] || break
+    [ -n "$more" ] || break
+    cur="$more"
+  done
+  rm -f "$errf"
+  jq -c --argjson m "$meta" '
+    if any(.[]; (.type == "ISSUE" and .content.number == null) or (.type != "ISSUE" and .type != "PULL_REQUEST" and .type != "DRAFT_ISSUE")) then error("unreadable item") else . end
+    | $m + {issues: [.[] | select(.type == "ISSUE") | .content | {repo: .repository.nameWithOwner, number, state: (.state | ascii_downcase),
+        state_reason: (.stateReason // null | if . == null then null else ascii_downcase end), user: {login: (.author.login // null)}, body: (.body // ""),
+        labels: [.labels.nodes[]? | {name}], milestone: (if .milestone == null then null else {state: (.milestone.state | ascii_downcase), title: .milestone.title} end)}]}' <<< "$nodes" 2>/dev/null \
+    || { echo "an item is unreadable (redacted or not an issue)" >&2; return 1; }
+}
+
 # _gp_canon — stdin: lines starting with owner/repo#N; prints them with each repo renamed to its current full name (the project items carry
 # the current name; the registry may still hold the old one after a rename). One REST call per distinct repo.
 _gp_canon() {
