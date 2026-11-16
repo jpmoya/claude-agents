@@ -633,11 +633,13 @@ pm_closing_reject() {
 # $PIPE/sentry-launches.log is append-only. A launch of a `sentry-auto-go` ticket is "<epoch> <owner/repo> <issue>"; a launch
 # counted when it was queued and then dropped before it started is cancelled by "<epoch> <owner/repo> <issue> released".
 # Local state only: the cap never costs a GitHub call. Used by orchestrate.sh (the refusal, the append) and by the
-# supervisor's step 5 (the pre-check that keeps a capped ticket from getting a claim comment). Automatic restarts and
-# queue drains of a ticket that already launched go through the supervisor's do_launch and are not counted again.
+# supervisor's step 5 (the pre-check that keeps a capped ticket from getting a claim comment). Any relaunch of a ticket
+# that already holds an unreleased launch line in the window (a supervisor restart or queue drain through do_launch, or a
+# hand / delivery-lead relaunch through orchestrate.sh after a hold) is not counted again and is never refused by the cap
+# (#688): sentry_cap_gate passes it and orchestrate.sh appends no second line.
 
-# sentry_launch_count <owner/repo> — prints how many launches of that repo lie inside the last 86400 s, each `released`
-# line cancelling the latest launch line of its ticket. A missing log is 0. Returns 1, printing nothing, when the log
+# sentry_launch_count <owner/repo> [<issue>] — prints how many launches of that repo (with <issue>: of that ticket only) lie
+# inside the last 86400 s, each `released` line cancelling the latest launch line of its ticket. A missing log is 0. Returns 1, printing nothing, when the log
 # exists but cannot be read (callers fail closed). Lines of any other shape are not counted; repo names compare
 # case-insensitively (GitHub's rule).
 sentry_launch_count() {
@@ -645,8 +647,8 @@ sentry_launch_count() {
   [ -e "$PIPE/sentry-launches.log" ] || { echo 0; return 0; }
   [ -f "$PIPE/sentry-launches.log" ] && [ -r "$PIPE/sentry-launches.log" ] || return 1
   r=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
-  n=$(awk -v r="$r" -v min="$(( $(date +%s) - 86400 ))" '
-    (NF == 3 || NF == 4) && $1 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ && tolower($2) == r {
+  n=$(awk -v r="$r" -v iss="${2:-}" -v min="$(( $(date +%s) - 86400 ))" '
+    (NF == 3 || NF == 4) && $1 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ && tolower($2) == r && (iss == "" || $3 == iss) {
       if (NF == 3) { n[$3]++; t[$3 "," n[$3]] = $1 }
       else if ($4 == "released" && n[$3] > 0) n[$3]--
     }
@@ -744,11 +746,16 @@ sentry_cap_fail() {
 
 # sentry_cap_gate <owner/repo> <issue> — 0: under SENTRY_AUTO_GO_DAILY_CAP, may launch. 3: at or above it (nothing is
 # logged here; the caller words its own refusal). 1: the launch log could not be read — already reported through
-# sentry_cap_fail, the caller must not launch. Sets SENTRY_CAP_N (launches counted) and SENTRY_CAP_MAX (the cap).
+# sentry_cap_fail, the caller must not launch. Sets SENTRY_CAP_N (launches counted), SENTRY_CAP_MAX (the cap) and
+# SENTRY_CAP_COUNTED (1 when <issue> already has an unreleased launch line in the window: such a relaunch passes with the
+# window full and the caller must not append a second line, #688).
 sentry_cap_gate() {
-  SENTRY_CAP_MAX=${SENTRY_AUTO_GO_DAILY_CAP:-3}; SENTRY_CAP_N=""
+  SENTRY_CAP_MAX=${SENTRY_AUTO_GO_DAILY_CAP:-3}; SENTRY_CAP_N=""; SENTRY_CAP_COUNTED=0
   case "$SENTRY_CAP_MAX" in ''|*[!0-9]*) SENTRY_CAP_MAX=3 ;; esac
   SENTRY_CAP_N=$(sentry_launch_count "$1") || { SENTRY_CAP_N=""; sentry_cap_fail "$1" "$2" "launch log read failed, not launched"; return 1; }
+  local mine
+  mine=$(sentry_launch_count "$1" "$2") || { SENTRY_CAP_N=""; sentry_cap_fail "$1" "$2" "launch log read failed, not launched"; return 1; }
+  if [ "$mine" -gt 0 ]; then SENTRY_CAP_COUNTED=1; return 0; fi
   [ "$SENTRY_CAP_N" -lt "$SENTRY_CAP_MAX" ] || return 3
   return 0
 }

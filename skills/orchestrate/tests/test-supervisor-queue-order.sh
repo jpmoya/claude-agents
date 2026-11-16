@@ -7,8 +7,10 @@
 #   AC2  identical queued_at                                 -> lowest issue number (numeric) launches
 #   AC3  missing / garbage queued_at                         -> ordered by file mtime, not promoted
 #   AC4  capacity evaluated once per tick                    -> has_capacity called exactly once;
-#                                                               drain denied => dispatch does not launch
-#   AC5  eligible queued entry + agent-go issue              -> only the queued entry launches (guard)
+#                                                               drain denied => dispatch does not launch (#714: it claims and
+#                                                               QUEUES the top candidate, at most one per tick)
+#   AC5  eligible queued entry + agent-go issue              -> the queued entry launches; (#714) the new issue is claimed
+#                                                               and queued behind it instead of waiting unclaimed
 #   AC6  empty queue + agent-go issue                        -> issue is dispatched (guard, unchanged)
 #   AC7  queue entry still in not_before backoff             -> does not block dispatch (guard)
 #
@@ -33,6 +35,10 @@ qo_env() {
 #!/bin/bash
 HERE=$(cd "$(dirname "$0")" && pwd)
 case "$*" in
+  "issue list"*"--label agent-go"*"--limit 500"*)   # the dispatch listing: its --jq already built {n,g,s,k} objects (backlog-sort.jq input)
+    printf '%s\n' "$*" >> "$HERE/gh-calls.log"
+    jq -Rsc '[split("\n")[] | select(length > 0) | tonumber | {n: ., g: false, s: false, k: [1, 0, 0, 0, .]}]' "$HERE/go-issues" 2>/dev/null
+    exit 0 ;;
   "issue list"*"--label agent-go"*)
     printf '%s\n' "$*" >> "$HERE/gh-calls.log"
     cat "$HERE/go-issues" 2>/dev/null
@@ -88,6 +94,9 @@ if mt != '':
 
 qo_launched() { qo_log | grep -F "[launch] #" | sed -n 's/.*\[launch\] #\([0-9]*\) .*/\1/p' | tr '\n' ' ' | sed 's/ $//'; }
 qo_queued()   { local f out=""; for f in "$QO_PIPE"/queue/orch-*.json; do [ -e "$f" ] && out="$out $(basename "$f" .json | sed 's/orch-//')"; done; echo $out | tr ' ' '\n' | sort -n | tr '\n' ' ' | sed 's/ $//'; }
+qo_queued_issues() { python3 -c "
+import json, glob, sys
+print(' '.join(sorted((str(json.load(open(f))['issue']) for f in glob.glob(sys.argv[1] + '/queue/orch-*.json')), key=int)))" "$QO_PIPE"; }
 
 # qo_claim_comments <issue> — gh-issue-comments-json-<issue> so this host wins the claim race
 qo_win_claim() {
@@ -195,32 +204,55 @@ test_qo_4a_capacity_evaluated_once_per_tick() {
   assert_eq "$n" "1" "#63/4a: exactly one has_capacity call per tick (drain + dispatch share it)" || return 1
 }
 
-test_qo_4b_drain_denied_means_dispatch_does_not_launch() {
+test_qo_4b_drain_denied_means_dispatch_queues_the_candidate() {
+  # #714 replaces #63's "no pick-up while the drain is denied": the claimed candidate is queued, never launched into a slot
   qo_env; qo_dispatch_on
   echo 500 > "$QO_GH/go-issues"; qo_win_claim 500
   qo_entry 9 9
-  qo_stub_capacity 1 0 0            # first (only legitimate) evaluation: no capacity; any re-check would say yes
+  qo_stub_capacity 1 0 0            # the tick's single decision: no capacity; any later check (a slot freed mid-tick) would say yes
   qo_tick "$QO_COPY/skills/orchestrate/supervisor.sh"
-  local calls launched queued; calls=$(gh_calls "$QO_GH"); launched=$(qo_launched); queued=$(qo_queued)
+  local calls launched queued log; calls=$(gh_calls "$QO_GH"); launched=$(qo_launched); queued=$(qo_queued_issues); log=$(qo_log)
   qo_cleanup
-  assert_not_contains "$calls" "issue comment 500" "#63/4b: no claim posted for the new agent-go issue" || return 1
-  assert_not_contains "$calls" "issue edit 500" "#63/4b: no label edit/claim for the new issue" || return 1
-  assert_eq "$launched" "" "#63/4b: nothing launched when the single capacity decision was 'no'" || return 1
-  assert_eq "$queued" "9" "#63/4b: queued #9 keeps waiting" || return 1
+  assert_contains "$calls" "issue comment 500" "#714/4b: the new agent-go issue is claimed" || return 1
+  assert_eq "$launched" "" "#714/4b: nothing launched while no slot is free" || return 1
+  assert_eq "$queued" "9 500" "#714/4b: #500 got a place in the queue behind #9" || return 1
+  assert_contains "$log" "[dispatch] project-a/repo-a#500 — claimed by" "#714/4b: dispatch logged" || return 1
 }
 
-# ---------- AC5-7 (behaviour that must not regress) ----------
-test_qo_5_eligible_queued_entry_launches_and_new_issue_is_not_claimed() {
+test_qo_4c_at_most_one_enqueue_per_tick() {
   qo_env; qo_dispatch_on
+  printf '500\n501\n' > "$QO_GH/go-issues"; qo_win_claim 500; qo_win_claim 501
+  qo_stub_capacity 1 0 0 0
+  qo_tick "$QO_COPY/skills/orchestrate/supervisor.sh"
+  local queued; queued=$(qo_queued_issues)
+  qo_cleanup
+  assert_eq "$queued" "500" "#714/4c: one top candidate is claimed and queued per tick" || return 1
+}
+
+# ---------- AC5-7 ----------
+test_qo_5_queue_drain_takes_the_slot_and_the_new_issue_is_still_queued() {
+  # #714 replaces #63/5: the drain launches the oldest entry, and the new agent-go issue is claimed and queued (queued_at = now),
+  # not left unclaimed behind a queue that relaunches keep full
+  qo_env; qo_dispatch_on
+  printf 'MAX_CONCURRENT=1\n' >> "$QO_HOME/.claude/pipeline/config.local.sh"
+  printf '#!/bin/bash\nexec /bin/sleep 20\n' > "$QO_GH/claude"
   echo 500 > "$QO_GH/go-issues"; qo_win_claim 500
   qo_entry 9 9
   qo_tick
-  local calls launched log; calls=$(gh_calls "$QO_GH"); launched=$(qo_launched); log=$(qo_log)
+  local calls launched queued qat; calls=$(gh_calls "$QO_GH"); launched=$(qo_launched); queued=$(qo_queued_issues)
+  qat=$(python3 -c "
+import json, glob, datetime, sys
+for f in glob.glob(sys.argv[1] + '/queue/orch-*.json'):
+    d = json.load(open(f))
+    if str(d['issue']) == '500':
+        t = datetime.datetime.strptime(d['queued_at'], '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=datetime.timezone.utc)
+        print(int(abs((datetime.datetime.now(datetime.timezone.utc) - t).total_seconds()) < 120))
+" "$QO_PIPE")
   qo_cleanup
-  assert_eq "$launched" "9" "#63/5: only the queued entry (#9) launches" || return 1
-  assert_not_contains "$calls" "issue comment 500" "#63/5: no claim comment on the new issue" || return 1
-  assert_not_contains "$calls" "issue edit 500" "#63/5: no gh issue edit for the new issue" || return 1
-  assert_not_contains "$log" "#500" "#63/5: supervisor never touched #500" || return 1
+  assert_eq "$launched" "9" "#714/5: the oldest queued entry (#9) takes the slot" || return 1
+  assert_contains "$calls" "issue comment 500" "#714/5: the new issue is claimed" || return 1
+  assert_eq "$queued" "500" "#714/5: #500 is queued (no free slot left), #9 consumed" || return 1
+  assert_eq "$qat" "1" "#714/5: queued_at of #500 is now" || return 1
 }
 
 test_qo_6_empty_queue_still_dispatches_new_issue() {
@@ -252,7 +284,42 @@ run_test test_qo_3b_garbage_queued_at_is_not_promoted_as_oldest
 run_test test_qo_3c_missing_queued_at_uses_mtime_when_that_is_oldest
 run_test test_qo_3d_garbage_queued_at_uses_mtime_when_that_is_oldest
 run_test test_qo_4a_capacity_evaluated_once_per_tick
-run_test test_qo_4b_drain_denied_means_dispatch_does_not_launch
-run_test test_qo_5_eligible_queued_entry_launches_and_new_issue_is_not_claimed
+test_qo_4d_a_free_slot_after_the_drain_does_not_let_the_new_issue_jump_the_line() {
+  # MAX_CONCURRENT=3, two older queued entries, one agent-go issue: the drain launches the oldest (#9), a slot is still free,
+  # yet #500 is queued behind #8 instead of launching ahead of it
+  qo_env; qo_dispatch_on
+  printf '#!/bin/bash\nexec /bin/sleep 20\n' > "$QO_GH/claude"
+  echo 500 > "$QO_GH/go-issues"; qo_win_claim 500
+  qo_entry 9 9; qo_entry 8 5
+  qo_tick
+  local launched queued; launched=$(qo_launched); queued=$(qo_queued_issues)
+  qo_cleanup
+  assert_eq "$launched" "9" "#714/4d: the oldest entry launches" || return 1
+  assert_eq "$queued" "8 500" "#714/4d: #8 keeps its place and #500 is queued, not launched" || return 1
+}
+
+test_qo_4e_the_queued_new_issue_launches_before_an_entry_queued_after_it() {
+  qo_env; qo_dispatch_on
+  echo 500 > "$QO_GH/go-issues"; qo_win_claim 500
+  qo_stub_capacity 1 0 0 0 0 0      # tick 1: no capacity, #500 is claimed and queued (queued_at = now)
+  qo_tick "$QO_COPY/skills/orchestrate/supervisor.sh"
+  : > "$QO_GH/go-issues"
+  python3 -c "
+import json, sys, datetime
+t = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=5)).strftime('%Y-%m-%dT%H:%M:%SZ')
+json.dump({'issue': '77', 'repo': sys.argv[1], 'extra': '', 'reason': 'queued', 'queued_at': t, 'not_before': 0}, open(sys.argv[2], 'w'))
+" "$QO_REPO" "$(rkp "$QO_PIPE/queue/orch-77.json")"   # queued after #500
+  qo_tick                           # tick 2: capacity again, the real has_capacity
+  local launched queued; launched=$(qo_launched); queued=$(qo_queued_issues)
+  qo_cleanup
+  assert_eq "$launched" "500" "#714/4e: the earlier-queued new issue launches first" || return 1
+  assert_eq "$queued" "77" "#714/4e: the entry queued after it waits" || return 1
+}
+
+run_test test_qo_4b_drain_denied_means_dispatch_queues_the_candidate
+run_test test_qo_4d_a_free_slot_after_the_drain_does_not_let_the_new_issue_jump_the_line
+run_test test_qo_4e_the_queued_new_issue_launches_before_an_entry_queued_after_it
+run_test test_qo_4c_at_most_one_enqueue_per_tick
+run_test test_qo_5_queue_drain_takes_the_slot_and_the_new_issue_is_still_queued
 run_test test_qo_6_empty_queue_still_dispatches_new_issue
 run_test test_qo_7_queue_entry_in_backoff_does_not_block_dispatch
