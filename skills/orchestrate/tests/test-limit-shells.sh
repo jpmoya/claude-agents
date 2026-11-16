@@ -1,7 +1,7 @@
 # #729: hooks/limit-shells.sh per-session cap counts only real tool shells ("<shell> -c source
 # …/.claude/shell-snapshots/snapshot-…") whose parent is this session's claude CLI — not every process
 # whose argv names the session id. Offline: a fake `ps` on PATH serves a fixture process table (and
-# prints nothing for the hook's other `ps` calls, so the age kill and global cap see an empty host).
+# feeds nothing to the age kill).
 
 HERE_LS=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 HOOK_LS="$(cd "$HERE_LS/../../.." && pwd)/hooks/limit-shells.sh"
@@ -15,9 +15,11 @@ ls_setup() {  # fresh fake ps + table; sets LS_DIR
   mkdir -p "$LS_DIR/bin"
   cat > "$LS_DIR/bin/ps" <<'PS'
 #!/bin/bash
-# Serve the fixture only for the hook's `ps -axo pid=,ppid=,command=`; empty for any other ps call.
+# Serve the fixture for `ps -axo pid=,ppid=,command=` (and `ps -eo pid,command` without ppid); empty otherwise.
 case "$*" in
+  *etimes*) ;;   # never feed the age kill: it would `kill` fixture pids that may be real host processes
   *ppid=*) sed "s/@HOOKPARENT@/$(cat "$LS_DIR/hookparent")/" "$LS_DIR/table" ;;
+  *pid,command*) sed "s/@HOOKPARENT@/$(cat "$LS_DIR/hookparent")/" "$LS_DIR/table" | awk '{ $2 = ""; print }' ;;   # old-style count, so the table also reaches the pre-#729 grep
 esac
 exit 0
 PS
@@ -99,11 +101,11 @@ test_limit_shells_other_session_shells_do_not_count() {
   assert_contains "$LS_ERR" "BLOCKED: 5 shells" "count is own shells only (not 8)"
 }
 
-test_limit_shells_claude_pid_env_used_when_present() {
-  ls_setup; ls_cli 9000 "$SID_LS"; ls_row @HOOKPARENT@ 1 "bash -c detached-launcher"   # chain walk would find nothing
+test_limit_shells_claude_pid_env_used_when_it_is_an_ancestor() {
+  ls_setup; ls_row 9000 1 "node /opt/cli/cli.js"; ls_row @HOOKPARENT@ 9000 "bash -c hook-launcher"   # CLI not recognisable by name
   ls_shells 5 9000 9300
   ls_run CLAUDE_PID=9000
-  assert_eq "$LS_RC" "2" "CLAUDE_PID names the CLI" || return 1
+  assert_eq "$LS_RC" "2" "CLAUDE_PID is an ancestor: used" || return 1
   ls_run CLAUDE_PID=
   assert_eq "$LS_RC" "0" "no CLAUDE_PID and no claude ancestor: fail open" || return 1
 }
@@ -114,10 +116,25 @@ test_limit_shells_stale_claude_pid_falls_back_to_chain() {
   assert_eq "$LS_RC" "2" "CLAUDE_PID not in the process table: parent chain used" || return 1
 }
 
+test_limit_shells_nested_cli_counts_its_own_shells_not_inherited_claude_pid() {
+  # A pipeline stage (`claude -p`, CLI 9700) launched from a tool shell (9301) of the orchestrator CLI 9000
+  # inherits CLAUDE_PID=9000 but must be capped on its own 5 shells, not on 9000's 2.
+  ls_setup; ls_cli 9000 "$OTHER_SID_LS"; ls_shells 2 9000 9300
+  ls_cli 9700 "$SID_LS"; ls_row @HOOKPARENT@ 9700 "bash -c hook-launcher"; ls_shells 5 9700 9800
+  ls_run CLAUDE_PID=9000
+  assert_eq "$LS_RC" "2" "blocks on the nested CLI's own 5" || return 1
+  assert_contains "$LS_ERR" "BLOCKED: 5 shells" "not the parent's count"
+  ls_setup; ls_cli 9000 "$OTHER_SID_LS"; ls_shells 5 9000 9300
+  ls_cli 9700 "$SID_LS"; ls_row @HOOKPARENT@ 9700 "bash -c hook-launcher"; ls_shells 2 9700 9800
+  ls_run CLAUDE_PID=9000
+  assert_eq "$LS_RC" "0" "parent's 5 shells do not block the nested CLI's 2" || return 1
+}
+
 run_test test_limit_shells_non_shell_session_processes_do_not_block
 run_test test_limit_shells_four_real_shells_plus_noise_allowed
 run_test test_limit_shells_five_real_shells_block
 run_test test_limit_shells_grep_command_shell_is_counted
 run_test test_limit_shells_other_session_shells_do_not_count
-run_test test_limit_shells_claude_pid_env_used_when_present
+run_test test_limit_shells_claude_pid_env_used_when_it_is_an_ancestor
 run_test test_limit_shells_stale_claude_pid_falls_back_to_chain
+run_test test_limit_shells_nested_cli_counts_its_own_shells_not_inherited_claude_pid
