@@ -2,6 +2,8 @@
 # Stop hook: a session may not end its turn while a ship goal is open and unverified (JP, 2026-11-16: "ship to prod" was
 # reported done from staging merges, nothing was on main). Goals live in ~/.claude/state/ship-goals/<name>.json, opened with
 # `skills/orchestrate/ship-goal.sh start`. Exit 2 + a short stderr reason makes the session continue.
+# Ownership: a goal is enforced only on the session that opened it (`session` in the ledger, from CLAUDE_CODE_SESSION_ID at `start`,
+# matched against the hook input's session_id); other interactive sessions, headless -p runs and delivery-lead runs are never held by it.
 # Allowed to stop when: the last assistant message says it is blocked on a JP-only item; every open goal verifies (verify-shipped.sh
 # exit 0, cached SGG_CACHE_SECS so a Stop does not hit the GitHub API every time); a goal is older than SGG_TTL_HOURS (stale,
 # another session's); the same goal already blocked SGG_MAX_BLOCKS times in SGG_WINDOW_SECS (never an endless loop).
@@ -20,12 +22,15 @@ mkdir -p "$(dirname "$LOG")" 2>/dev/null
 elog() { printf '%s %s\n' "$(TZ=Europe/Madrid date '+%Y-%m-%d %H:%M:%S %Z')" "$*" >> "$LOG" 2>/dev/null; }
 
 main() {
-  local IN T last f name started age lc rc ts summary recent msg="" blocked_names="" bin
+  local IN T sid owner last f name started age lc rc ts summary recent msg="" blocked_names="" bin
   [ -d "$DIR" ] || return 0
   ls "$DIR"/*.json >/dev/null 2>&1 || return 0
   command -v jq >/dev/null 2>&1 || { elog "fail-open: jq missing"; return 0; }
   IN=$(cat); T=$(printf '%s' "$IN" | jq -r '.transcript_path // empty' 2>/dev/null) || return 3
   if [ -n "$T" ] && [ -r "$T" ] && head -n 1 "$T" 2>/dev/null | jq -e '.agentSetting=="orchestrator"' >/dev/null 2>&1; then return 0; fi
+  sid=$(printf '%s' "$IN" | jq -r '.session_id // empty' 2>/dev/null)
+  [ -n "$sid" ] || return 0   # no session identity: cannot tell whose goal it is, so hold nobody
+  if [ -n "$T" ] && [ -r "$T" ] && head -n 1 "$T" 2>/dev/null | jq -e '.agentSetting == "delivery-lead" or .agentSetting == "project-manager"' >/dev/null 2>&1; then return 0; fi
   bin="${SGG_SHIP_GOAL:-$HOME/.claude/skills/orchestrate/ship-goal.sh}"
   [ -f "$bin" ] || { elog "fail-open: $bin missing"; return 0; }
 
@@ -41,6 +46,8 @@ main() {
   for f in "$DIR"/*.json; do
     [ -f "$f" ] || continue
     [ "$(jq -r '.status // empty' "$f" 2>/dev/null)" = open ] || continue
+    owner=$(jq -r '.session // empty' "$f" 2>/dev/null)
+    [ -n "$owner" ] && [ "$owner" = "$sid" ] || continue   # not this session's goal
     name=$(jq -r .name "$f"); started=$(jq -r '.started // empty' "$f")
     age=$(jq -rn --arg s "$started" --argjson now "$NOW" '($s | fromdateiso8601? // $now) | ($now - .)' 2>/dev/null); age=${age:-0}
     if [ "$age" -gt $((TTL_H * 3600)) ] 2>/dev/null; then elog "skip $name: older than ${TTL_H}h"; continue; fi

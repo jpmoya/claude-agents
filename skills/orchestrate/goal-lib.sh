@@ -1182,7 +1182,10 @@ goal_eval() {
 # off (GOAL_SHIP_GATE=0) or there is no PR to check; 1: not live (or cannot be verified: fail closed). Sets GE_NOTLIVE_WHY.
 # PRs are the merged PRs whose body closes a ticket (REST timeline: cross-referenced events), found once per ticket and kept in
 # $PIPE/goal-<id>.shipprs ("ref<TAB>pr" or "ref<TAB>-"). GOAL_SHIP_NODEPLOY_REPOS (space separated) lists repos without a prod deploy
-# workflow (verify-shipped.sh --no-deploy). GOAL_VERIFY_SHIPPED overrides the script (tests).
+# workflow (verify-shipped.sh --no-deploy; default jpmoya/claude-agents, and verify-shipped.sh also detects a repo with no deploy
+# workflow by itself). A failing verdict is reused for GOAL_SHIP_CACHE_SECS (default 300) while the PR set is unchanged: no GitHub
+# calls on every sync for a goal that is waiting for the release bot; a passing verdict is never cached (the goal closes at once).
+# GOAL_VERIFY_SHIPPED overrides the script (tests).
 _goal_ship_gate() {
   local id=$1 f="$PIPE/goal-$1.shipprs" vs="${GOAL_VERIFY_SHIPPED:-$_GOAL_LIB_DIR/verify-shipped.sh}" ref cls why repo n js prs p want="" pairs="" r nd out rc agg="" bad=0
   GE_NOTLIVE_WHY=""
@@ -1213,16 +1216,25 @@ _goal_ship_gate() {
     pairs="$pairs$(_goal_rest_slug "${ref%%#*}") $p"$'\n'
   done < "$f"
   [ -n "$pairs" ] || return 0   # no merged PR closes any delivered ticket (closed by hand, not planned): nothing to verify
+  local vc="$PIPE/goal-$id.shipverdict" key now cached_at cached_key
+  key=$(printf '%s' "$pairs" | cksum | cut -d' ' -f1); now=$(date +%s)
+  if [ -f "$vc" ]; then
+    read -r cached_at cached_key < "$vc" 2>/dev/null
+    if [ "$cached_key" = "$key" ] && [ -n "$cached_at" ] && [ $((now - cached_at)) -lt "${GOAL_SHIP_CACHE_SECS:-300}" ] 2>/dev/null; then
+      GE_NOTLIVE_WHY=$(tail -n +2 "$vc"); return 1
+    fi
+  fi
   for r in $(printf '%s' "$pairs" | awk '{print $1}' | sort -u); do
     prs=$(printf '%s' "$pairs" | awk -v r="$r" '$1 == r {print $2}' | sort -un | tr '\n' ' ')
-    nd=""; case " ${GOAL_SHIP_NODEPLOY_REPOS:-} " in *" $r "*) nd="--no-deploy" ;; esac
+    nd=""; case " ${GOAL_SHIP_NODEPLOY_REPOS:-jpmoya/claude-agents} " in *" $r "*) nd="--no-deploy" ;; esac
     # shellcheck disable=SC2086
     out=$(bash "$vs" "$r" $nd $prs 2>&1 </dev/null); rc=$?
     if [ "$rc" -ne 0 ]; then bad=1; agg="$agg$(printf '%s' "$out" | grep -v ': SHIPPED$' | head -n 4)"$'\n'; fi
   done
-  [ "$bad" -eq 0 ] && return 0
+  [ "$bad" -eq 0 ] && { rm -f "$vc"; return 0; }
   GE_NOTLIVE_WHY=$(printf '%s' "$agg" | sed '/^$/d' | head -n 6)
   [ -n "$GE_NOTLIVE_WHY" ] || GE_NOTLIVE_WHY="verify-shipped.sh failed"
+  { printf '%s %s\n' "$now" "$key"; printf '%s\n' "$GE_NOTLIVE_WHY"; } > "$vc" 2>/dev/null
   return 1
 }
 

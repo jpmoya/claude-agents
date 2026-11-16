@@ -3,8 +3,8 @@
 #
 # "Merged to staging" and "the release bot will handle it" are not done (JP, 2026-11-16). For each PR the changed files are read
 # from the GitHub PR (added/modified/removed/renamed); an added or modified file must exist on origin/main with the SAME blob
-# as at the PR's merge commit (or a blob that main's history for that path once held: a later PR may have changed the file
-# again), a removed file (or the old name of a rename) must be absent from main. Commit SHAs are never compared: a cherry-pick
+# as at the PR's merge commit (or, when a LATER change moved the file on, a blob its history held after this one; a revert back to
+# the earlier version is NOT shipped), a removed file (or the old name of a rename) must be absent from main. Commit SHAs are never compared: a cherry-pick
 # or a squash promotion gives the same content a new SHA. The latest prod deploy run on main (workflow file deploy.yml or named
 # "Deploy to Vercel") must be green AND be for a commit that already carries the PR's files.
 #
@@ -16,7 +16,7 @@
 # git on a cached bare clone.
 # Env (tests): VS_GH (gh binary), VS_REMOTE (git remote, default https://github.com/<repo>.git), VS_GIT_DIR (bare clone path),
 # VS_BASE (default main), VS_DEPLOY_RE (workflow path/name regex), VS_DEPLOY_FILE (default deploy.yml). --no-deploy (or VS_DEPLOY=0):
-# repo has no prod deploy workflow. bash 3.2 compatible.
+# repo has no prod deploy workflow (also detected automatically from .github/workflows on main). bash 3.2 compatible.
 set -u
 
 GH="${VS_GH:-gh}"
@@ -62,14 +62,19 @@ ensure() { have "$1" || git_fetch "$1"; have "$1"; }
 # blob_at <ref> <path> -> blob sha or empty
 blob_at() { git_ rev-parse -q --verify "$1:$2" 2>/dev/null; }
 
-# in_history <ref> <path> <blob> — did <path> ever hold <blob> in <ref>'s (last 200 path-touching) history? A later PR that changed
-# the same file again must not make an earlier PR look unshipped.
+# in_history <ref> <path> <want blob> <current blob> — may <path> legitimately differ from <want> on <ref>? Yes when a LATER change
+# moved it on (the want blob appeared in the path's history and the current blob is not one the file held BEFORE it first appeared).
+# A revert (current == an earlier version) is NOT shipped. Walks the last 200 path-touching commits, oldest first.
 in_history() {
-  local c
-  for c in $(git_ log --format=%H -n 200 "$1" -- "$2" 2>/dev/null); do
-    [ "$(blob_at "$c" "$2")" = "$3" ] && return 0
+  local c b seen=0 pre=""
+  for c in $(git_ log --reverse --format=%H -n 200 "$1" -- "$2" 2>/dev/null); do
+    b=$(blob_at "$c" "$2")
+    if [ "$b" = "$3" ]; then seen=1; break; fi
+    pre="$pre $b"
   done
-  return 1
+  [ "$seen" = 1 ] || return 1
+  case " $pre " in *" $4 "*) return 1 ;; esac
+  return 0
 }
 
 # check_at <ref> <changes file> -> prints the first offending file (and returns 1), or returns 0.
@@ -84,11 +89,24 @@ check_at() {
       *) want=$(blob_at "$mc" "$path")
          [ -n "$want" ] || { printf '%s (missing at merge commit)' "$path"; return 1; }
          [ -n "$got" ] || { printf '%s (absent on %s)' "$path" "$BASE"; return 1; }
-         [ "$got" = "$want" ] || in_history "$ref" "$path" "$want" || { printf '%s (differs on %s)' "$path" "$BASE"; return 1; } ;;
+         [ "$got" = "$want" ] || in_history "$ref" "$path" "$want" "$got" || { printf '%s (differs on %s)' "$path" "$BASE"; return 1; } ;;
     esac
   done < "$f"
   return 0
 }
+
+# has_deploy_workflow: is there a prod deploy workflow on main at all? (deploy.yml, or any workflow named "Deploy to Vercel").
+# A repo without one (jpmoya/claude-agents) has no deploy to wait for: the deploy check is skipped, not "pending forever".
+has_deploy_workflow() {
+  local f
+  for f in $(git_ ls-tree -r --name-only "$MAIN" .github/workflows/ 2>/dev/null); do
+    case "$f" in */"$DEPLOY_FILE") return 0 ;; esac
+    git_ show "$MAIN:$f" 2>/dev/null | grep -Eq '^name:[[:space:]]*"?Deploy to Vercel' && return 0
+  done
+  return 1
+}
+NODEPLOY_WHY="not checked (--no-deploy)"
+if [ "$CHECK_DEPLOY" = 1 ] && ! has_deploy_workflow; then CHECK_DEPLOY=0; NODEPLOY_WHY="no prod deploy workflow on $BASE (not checked)"; fi
 
 # ---- latest prod deploy run on main (one API call, a second only when the workflow file is not found) ----
 DEP_ID=""; DEP_SHA=""; DEP_STATE="none"   # none | success | running | failed
@@ -144,7 +162,7 @@ for n in $PRS; do
   esac
 done
 
-if [ "$CHECK_DEPLOY" = 0 ]; then echo "deploy: not checked (--no-deploy)"
+if [ "$CHECK_DEPLOY" = 0 ]; then echo "deploy: $NODEPLOY_WHY"
 elif [ "$DEP_STATE" = none ]; then echo "deploy: no prod deploy run found on $BASE"
 else echo "deploy: run $DEP_ID on ${DEP_SHA:0:7} is $DEP_STATE"; fi
 [ "$NS" = 0 ] || exit 1

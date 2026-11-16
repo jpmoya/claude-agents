@@ -23,12 +23,13 @@ EOF
 sg_verify() { printf '%s\n' "$1" > "$SG_D/verify-rc"; printf '%s\n' "$2" > "$SG_D/verify-out"; }
 sg_cleanup() { rm -rf "$SG_D"; }
 
-sg_goal() { env SG_DIR="$SG_D" SHIP_GOALS_DIR="$SG_D/ledger" SHIP_VERIFY="$SG_D/verify" bash "$GOAL_SG" "$@"; }
+sg_goal() { env CLAUDE_CODE_SESSION_ID=sess-A SG_DIR="$SG_D" SHIP_GOALS_DIR="$SG_D/ledger" SHIP_VERIFY="$SG_D/verify" bash "$GOAL_SG" "$@"; }
 
 # sg_hook [stdin json] [extra env…] -> stderr in SG_OUT, returns the hook's exit code
 sg_hook() {
   local in=${1:-'{}'}
   shift
+  in=$(printf '%s' "$in" | jq -c --arg s "${SG_SESSION:-sess-A}" '. + {session_id: $s}')
   SG_OUT=$(printf '%s' "$in" | env -u PIPELINE_AGENT HOME="$SG_D/home" SG_DIR="$SG_D" SHIP_GOALS_DIR="$SG_D/ledger" \
     SHIP_VERIFY="$SG_D/verify" SGG_SHIP_GOAL="$GOAL_SG" SGG_CACHE_SECS=0 "$@" bash "$HOOK_SG" 2>&1)
   return $?
@@ -131,6 +132,27 @@ test_sg_hook_reuses_a_fresh_result_instead_of_calling_github() {
   sg_cleanup
 }
 
+test_sg_only_the_owning_session_is_held() {
+  sg_setup
+  sg_goal start g1 example-owner/project-a 7 >/dev/null
+  assert_eq "$(jq -r .session "$SG_D/ledger/g1.json")" "sess-A" "owner recorded at start" || { sg_cleanup; return 1; }
+  SG_SESSION=sess-B sg_hook; local rc=$?
+  assert_eq "$rc" "0" "another interactive session or a headless run is never held by it" || { sg_cleanup; return 1; }
+  sg_hook; rc=$?
+  assert_eq "$rc" "2" "the owning session is" || { sg_cleanup; return 1; }
+  # delivery-lead transcript of the owning session id: skipped
+  printf '{"agentSetting":"delivery-lead"}\n' > "$SG_D/t.jsonl"
+  sg_hook "{\"transcript_path\":\"$SG_D/t.jsonl\"}"; rc=$?
+  assert_eq "$rc" "0" "a delivery-lead run is never held" || { sg_cleanup; return 1; }
+  # no owner (started outside a session): enforced on nobody, and start says so
+  env -u CLAUDE_CODE_SESSION_ID SG_DIR="$SG_D" SHIP_GOALS_DIR="$SG_D/ledger" SHIP_VERIFY="$SG_D/verify" bash "$GOAL_SG" start g2 example-owner/project-a 9 >/dev/null 2>"$SG_D/err"
+  assert_contains "$(cat "$SG_D/err")" "will not enforce" "start warns when it cannot record an owner" || { sg_cleanup; return 1; }
+  sg_goal cancel g1 >/dev/null
+  sg_hook; rc=$?
+  assert_eq "$rc" "0" "an unowned goal holds nobody" || { sg_cleanup; return 1; }
+  sg_cleanup
+}
+
 test_sg_cancel_releases_the_hook() {
   sg_setup
   sg_goal start g1 example-owner/project-a 7 >/dev/null
@@ -148,4 +170,5 @@ run_test test_sg_hook_jp_only_block_in_last_message_exits_0
 run_test test_sg_hook_never_loops_forever
 run_test test_sg_hook_ignores_stale_goals
 run_test test_sg_hook_reuses_a_fresh_result_instead_of_calling_github
+run_test test_sg_only_the_owning_session_is_held
 run_test test_sg_cancel_releases_the_hook

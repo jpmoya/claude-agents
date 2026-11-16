@@ -36,6 +36,7 @@ EOF
   chmod +x "$GS_HOME/verify"
   gsg_verify "$2"
   { echo "GOAL_SHIP_GATE=$1"; echo "GOAL_VERIFY_SHIPPED=\"$GS_HOME/verify\""; } >> "$GS_HOME/.claude/pipeline/config.local.sh"
+  [ -z "${GSG_EXTRA:-}" ] || printf '%s\n' "$GSG_EXTRA" >> "$GS_HOME/.claude/pipeline/config.local.sh"
 }
 
 gsg_verify() {  # <rc>
@@ -81,7 +82,25 @@ test_gsg_ticket_without_a_merged_pr_is_not_gated() {
   gs_cleanup
 }
 
+test_gsg_repo_without_a_prod_deploy_is_verified_with_no_deploy() {
+  GSG_EXTRA='GOAL_SHIP_NODEPLOY_REPOS="example-owner/project-a"' gsg_env 1 0
+  gs_tick
+  assert_contains "$(cat "$GS_HOME/verify-calls.log")" "--no-deploy" "a repo listed in GOAL_SHIP_NODEPLOY_REPOS is checked without the deploy run" || { gs_cleanup; return 1; }
+  gs_cleanup
+}
+
+test_gsg_failing_verdict_is_reused_instead_of_calling_github_every_sync() {
+  gsg_env 1 1
+  gs_tick; gs_wait_claude 1
+  gs_tick; gs_settle
+  assert_eq "$(wc -l < "$GS_HOME/verify-calls.log" | tr -d ' ')" "1" "two syncs inside the cache window verify once" || { gs_cleanup; return 1; }
+  assert_eq "$(gs_reg_state 50)" "open" "still not live" || { gs_cleanup; return 1; }
+  gs_cleanup
+}
+
 run_test test_gsg_staging_only_goal_stays_open_not_live_on_prod
 run_test test_gsg_all_prs_shipped_goal_completes
 run_test test_gsg_gate_off_keeps_the_old_behaviour
 run_test test_gsg_ticket_without_a_merged_pr_is_not_gated
+run_test test_gsg_repo_without_a_prod_deploy_is_verified_with_no_deploy
+run_test test_gsg_failing_verdict_is_reused_instead_of_calling_github_every_sync

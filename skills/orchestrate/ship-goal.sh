@@ -2,7 +2,7 @@
 # ship-goal.sh — the ledger of "ship to prod" requests (JP, 2026-11-16). A ship goal is open until verify-shipped.sh says every
 # PR is on origin/main and the prod deploy is green; hooks/ship-goal-guard.sh refuses to end a turn while one is open.
 #
-#   ship-goal.sh start <name> <owner/repo> [--no-deploy] <PR#...>   open a goal
+#   ship-goal.sh start <name> <owner/repo> [--no-deploy] [--session <id>] <PR#...>   open a goal owned by this session
 #   ship-goal.sh check [<name>]                                     verify one (or every open) goal, print the result
 #   ship-goal.sh done <name>                                        close it; succeeds only when verify-shipped exits 0
 #   ship-goal.sh cancel <name> [reason]                             close without verifying (JP dropped it)
@@ -43,19 +43,22 @@ case "$cmd" in
     shift 2
     valid_name "$name" || die "bad goal name '$name' (letters, digits, . _ -)"
     case "$repo" in */*) ;; *) die "bad repo '$repo'" ;; esac
-    nodeploy=false; prs=""
+    nodeploy=false; prs=""; owner="${CLAUDE_CODE_SESSION_ID:-}"; skip=0
     for a in "$@"; do
+      if [ "$skip" = 1 ]; then owner=$a; skip=0; continue; fi
       case "$a" in
         --no-deploy) nodeploy=true ;;
+        --session) skip=1 ;;
         *) n=${a#\#}; case "$n" in ''|*[!0-9]*) die "bad PR number '$a'" ;; esac; prs="$prs $n" ;;
       esac
     done
     [ -n "$prs" ] || die "no PR numbers given"
+    [ -n "$owner" ] || echo "ship-goal: warning: no session id (CLAUDE_CODE_SESSION_ID unset, no --session): the Stop hook will not enforce this goal" >&2
     mkdir -p "$DIR" || die "cannot create $DIR"
     f=$(file_of "$name")
     if [ -f "$f" ] && [ "$(jq -r .status "$f" 2>/dev/null)" = open ]; then die "ship goal '$name' is already open (cancel it first)"; fi
-    jq -nc --arg name "$name" --arg repo "$repo" --arg ts "$(now_iso)" --argjson nd "$nodeploy" --arg prs "$prs" \
-      '{name:$name, repo:$repo, prs:($prs | split(" ") | map(select(. != "") | tonumber)), no_deploy:$nd, status:"open", started:$ts, blocks:[]}' > "$f.tmp" \
+    jq -nc --arg name "$name" --arg repo "$repo" --arg ts "$(now_iso)" --argjson nd "$nodeploy" --arg prs "$prs" --arg sess "$owner" \
+      '{name:$name, repo:$repo, session:$sess, prs:($prs | split(" ") | map(select(. != "") | tonumber)), no_deploy:$nd, status:"open", started:$ts, blocks:[]}' > "$f.tmp" \
       && mv "$f.tmp" "$f" || die "cannot write $f"
     echo "ship goal '$name' open: $repo PRs$prs (a turn cannot end until: ship-goal.sh done $name)" ;;
   check)

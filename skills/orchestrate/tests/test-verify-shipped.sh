@@ -14,6 +14,9 @@ vs_setup() {  # a remote with main (a.txt, old.txt) and staging (one extra commi
   git init -q "$VS_D/remote" && vs_git checkout -q -b main
   vs_git config uploadpack.allowAnySHA1InWant true
   printf 'a\n' > "$VS_D/remote/a.txt"; printf 'old\n' > "$VS_D/remote/old.txt"
+  if [ "${VS_NO_WORKFLOW:-0}" != 1 ]; then   # a repo with a prod deploy workflow, as the app repos have
+    mkdir -p "$VS_D/remote/.github/workflows"; printf 'name: Deploy to Vercel\non: push\n' > "$VS_D/remote/.github/workflows/deploy.yml"
+  fi
   vs_git add -A && vs_git commit -q -m base
   VS_BASE_SHA=$(vs_git rev-parse HEAD)
   vs_git checkout -q -b staging
@@ -140,6 +143,33 @@ test_vs_not_on_main_beats_deploy_pending_in_the_exit_code() {
   vs_cleanup
 }
 
+test_vs_reverted_pr_is_not_shipped() {
+  vs_setup
+  printf 'v1\n' > "$VS_D/remote/a.txt"; vs_git commit -q -am "a v1 on staging"
+  local s; s=$(vs_git rev-parse HEAD)
+  vs_git checkout -q main && vs_git cherry-pick "$s" >/dev/null 2>&1
+  vs_pr 6 true "$s" modified:a.txt
+  vs_run --no-deploy 6; local rc=$?
+  assert_eq "$rc" "0" "before the revert it is shipped" || { vs_cleanup; return 1; }
+  vs_git revert --no-edit HEAD >/dev/null 2>&1
+  vs_run --no-deploy 6; rc=$?
+  assert_eq "$rc" "1" "main went back to the earlier version: not shipped" || { vs_cleanup; return 1; }
+  assert_contains "$VS_OUT" "NOT SHIPPED (a.txt (differs on main))" "names the reverted file" || { vs_cleanup; return 1; }
+  vs_cleanup
+}
+
+test_vs_repo_without_a_deploy_workflow_needs_no_deploy_run() {
+  VS_NO_WORKFLOW=1 vs_setup
+  local s; s=$(vs_staging_feature)
+  vs_git checkout -q main && vs_git cherry-pick "$s" >/dev/null 2>&1
+  vs_pr 1 true "$s" added:feature.txt
+  vs_run 1; local rc=$?
+  assert_eq "$rc" "0" "no deploy workflow: on main is enough (jpmoya/claude-agents)" || { vs_cleanup; return 1; }
+  assert_contains "$VS_OUT" "#1: SHIPPED" "shipped" || { vs_cleanup; return 1; }
+  assert_contains "$VS_OUT" "no prod deploy workflow" "says why the deploy was not checked" || { vs_cleanup; return 1; }
+  vs_cleanup
+}
+
 test_vs_unmerged_pr_is_not_shipped() {
   vs_setup
   vs_pr 4 false "" added:feature.txt
@@ -223,6 +253,8 @@ run_test test_vs_deleted_file_still_on_main_is_not_shipped
 run_test test_vs_modified_file_with_different_content_on_main_is_not_shipped
 run_test test_vs_file_changed_again_by_a_later_pr_is_still_shipped
 run_test test_vs_not_on_main_beats_deploy_pending_in_the_exit_code
+run_test test_vs_reverted_pr_is_not_shipped
+run_test test_vs_repo_without_a_deploy_workflow_needs_no_deploy_run
 run_test test_vs_unmerged_pr_is_not_shipped
 run_test test_vs_deploy_states
 run_test test_vs_not_on_main_beats_a_green_deploy
