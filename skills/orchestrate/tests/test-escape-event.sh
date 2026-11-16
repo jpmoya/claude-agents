@@ -35,7 +35,7 @@ ee_run() {
   local agent=${1:-product-manager}
   ( cd "$EE_HOME" && env PIPE="$EE_PIPE" LOGDIR="$EE_LOG" HOME="$EE_HOME" CLAUDE_PROJECTS_DIR="$EE_HOME/.claude/projects" \
       PATH="$EE_BIN:$PATH" PIPELINE_ISSUE=42 PIPELINE_AGENT="$agent" PIPELINE_REPO=project-a/app \
-      "$WRAP_EE" -- claude --dangerously-skip-permissions --agent "$agent" -p "Refine. Repo: project-a/app. Issue: #42." >/dev/null 2>&1 )
+      "$WRAP_EE" -- claude --dangerously-skip-permissions --agent "$agent" -p "Refine. Repo: project-a/app. Issue: #42. Goal: project-a_app-fb-feedback" >/dev/null 2>&1 )
   EE_RC=$?
 }
 ee_count() { jq -c "select(.event==\"$1\")" "$EE_LOG/events.jsonl" 2>/dev/null | wc -l | tr -d ' '; }

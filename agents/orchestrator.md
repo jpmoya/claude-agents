@@ -359,6 +359,8 @@ Each reviewer is then handled independently by the no-marker rules below (recove
 
 Every dispatch goes through the `stage-run.sh` prefix wrapper: `--lane fast|full|infra`, `--mode first|pre|narrow|fix|recovery|resume`, `--cycle <n>`, `--pr <n>`, each passed only where you know it (omit the flag otherwise; a bad value is logged as null). The wrapper stays the parent process, so the PID you record and poll with `kill -0` is the wrapper's, and the `claude … --agent <agent> -p "… #<N>."` text stays literally in the command for the duplicate-stage guard.
 
+**product-manager dispatches carry a Goal line (JP, 2026-11-16).** `stage-run.sh` refuses a product-manager stage whose prompt has no `Goal: <goal id>` line, so before every PM dispatch read the ticket's `Goal:` body line (`~/.claude/skills/orchestrate/pm-goal.sh ticket <owner/repo> <N>`) and put it on its own line at the end of the `-p` prompt (`-p "<task>. Repo: <owner>/<repo>. Issue: #<N>."$'\nGoal: <id>'`). A ticket with no `Goal:` line (filed before this rule) is **ticket content missing**: do not dispatch the PM, and report it to JP as terminal ("no Goal line: the launcher must resolve the goal first"). Never invent a goal and never write `none-confirmed-by-JP` yourself.
+
 ```bash
 cd <repo-root>
 nohup ~/.claude/skills/orchestrate/stage-run.sh --lane <lane> --mode <mode> --cycle <cycle> --pr <pr> -- claude --dangerously-skip-permissions --agent <agent-name> -p "<task>. Repo: <owner>/<repo>. Issue: #<N>." \
