@@ -270,7 +270,10 @@ except Exception: print('?')
     # too; the status reporter only ever reads the file. A failed or empty fetch leaves no title file and never blocks
     # the launch.
     write_title_marker "$REPO" "$ISSUE" 1 "$RK"
-    if ! has_capacity "$RK"; then
+    # #714: LAUNCH_REASON=agent-go-queue is the supervisor's step 5 on a tick whose slot the queue drain took (or none was
+    # free at tick start): the claimed ticket takes its place in the oldest-first queue even if a slot has freed since, so it
+    # never launches ahead of older queued entries.
+    if [ "${LAUNCH_REASON:-}" = agent-go-queue ] || ! has_capacity "$RK"; then
       python3 -c "
 import json, datetime, time
 with open('$QUEUE/orch-$RK.json', 'w') as f:

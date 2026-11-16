@@ -1566,9 +1566,11 @@ PY
 done
 
 # 2. Drain queue (one item per tick, oldest queued_at first)
-# Capacity is decided once per tick; the drain and the dispatch step (5) share the result, so a slot freed
-# mid-tick never goes to a new agent-go issue while a queued ticket waits.
-HAS_CAP=0
+# Capacity is decided once per tick; the drain and the dispatch step (5) share the result. A slot freed mid-tick is
+# never launched into by step 5 on this decision; when the drain took the slot or none is free, step 5 still claims its
+# top candidate and orchestrate.sh queues it (#714), so new agent-go tickets get a place in the oldest-first line even
+# while relaunches keep the queue busy.
+HAS_CAP=0; drain_launched=0; dispatch_hold=0
 has_capacity && HAS_CAP=1
 if [ "$launched" -eq 0 ] && [ "$HAS_CAP" -eq 1 ]; then
   now_epoch=$(date +%s)
@@ -1647,7 +1649,7 @@ except Exception:
     [ "$q_reason" = "auto-restart" ] && [ "$restart_n" -eq 0 ] && [ -f "$PIPE/orch-$best_rk.cap-exit" ] && restart_n=1
     do_launch "$q_repo" "$best_issue" "$q_extra" "$restart_n" "$q_reason" "$q_wait" "$best_rk"
     case $? in
-      0) rm -f "$best_qf"; launched=1 ;;
+      0) rm -f "$best_qf"; launched=1; drain_launched=1 ;;
       1) sentry_slot_release "$best_qf"; rm -f "$best_qf" ;;   # #438: the other host holds the claim; drop our queue entry (#182: and its counted place)
       *) : ;;                  # #438: claim unreadable; keep the entry for the next tick
     esac
@@ -2038,7 +2040,7 @@ for idf in "$PIPE"/intake-*.id; do   # runs that have exited: healthy -> clear s
   [ -e "$idf" ] || break
   k=$(basename "$idf" .id); read -r i_repo i_num < "$idf"; i_path=$(cat "$PIPE/$k.path")
   if kill -0 "$(cat "$PIPE/$k.pid" 2>/dev/null)" 2>/dev/null; then
-    sentry_label_gate "$i_repo" "$i_num" live || launched=1   # live run: an agent-go the supervisor did not write goes before step 5 can dispatch it (also a hand-added one until intake finishes); a failed gate holds dispatch this tick
+    sentry_label_gate "$i_repo" "$i_num" live || { launched=1; dispatch_hold=1; }   # live run: an agent-go the supervisor did not write goes before step 5 can dispatch it (also a hand-added one until intake finishes); a failed gate holds dispatch this tick
     continue
   fi
   # #186: an exited source:sentry run wrote nothing to GitHub: apply the decision file it left (validated, this issue only) before
@@ -2275,11 +2277,12 @@ fi
 # JP (2026-10-18): only the goal-based pipeline launches work; SHARED_DISPATCH_ENABLED=0 turns this whole step off for
 # ordinary agent-go tickets. Exception (JP 2026-10-19): a ticket labeled user-feedback (staff-reported bug/idea) still
 # dispatches even then — feedback bugs must keep auto-fixing regardless of goal-gating.
-if [ "$launched" -eq 0 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
+# #714: also runs when the drain took this tick's slot or no slot is free (only a failed sentry gate, or a launch by an
+# earlier step, still holds it); orchestrate.sh queues the claimed ticket when it finds no capacity, stamping queued_at.
+dispatched=0
+if { [ "$launched" -eq 0 ] || { [ "$drain_launched" -eq 1 ] && [ "$dispatch_hold" -eq 0 ]; }; } && [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
   if ! power_ok; then
     slog "[dispatch] skipped — on battery power"
-  elif [ "$HAS_CAP" -ne 1 ]; then
-    :  # nothing to log every 2 min; status shows the running set
   else
     if [ "${SHARED_DISPATCH_ENABLED:-1}" = 1 ]; then
       dispatch_feedback_only=0
@@ -2296,7 +2299,7 @@ if [ "$launched" -eq 0 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
     fi
     [ -n "$goal_skip_json" ] || goal_skip_json='[]'
     for entry in "${DISPATCH_REPOS[@]}"; do
-      [ "$launched" -ge 1 ] && break
+      [ "$dispatched" -ge 1 ] && break
       owner_repo="${entry%%:*}"; local_path="${entry#*:}"; local_path="${local_path/#\~/$HOME}"
       if [ ! -d "$local_path/.git" ]; then slog "[dispatch] $owner_repo — no local checkout at $local_path, skipping"; continue; fi
       # #320: a ticket carrying the label of a goal whose lead is live on THIS host is the lead's to dispatch; tickets in no goal,
@@ -2374,8 +2377,11 @@ if [ "$launched" -eq 0 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
           if [ -z "$sentry_gate" ]; then
             sentry_gate=0; sentry_cap_gate "$owner_repo" "$num" || sentry_gate=$?
             [ "$sentry_gate" != 3 ] || slog "[dispatch] $owner_repo#$num — sentry launch cap reached ($SENTRY_CAP_N/$SENTRY_CAP_MAX in 24h), sentry-auto-go tickets of this repo wait (labels untouched)"
+            # #688: a pass only because this ticket is already counted says nothing about the repo's window: not cached for the next candidate
+            if [ "${SENTRY_CAP_COUNTED:-0}" = 1 ]; then sentry_gate=""; sentry_pass=1; fi
           fi
-          [ "$sentry_gate" = 0 ] || continue ;;
+          [ "$sentry_gate" = 0 ] || [ "${sentry_pass:-0}" = 1 ] || continue
+          sentry_pass=0 ;;
         esac
         # #182 end
         ts=$(date -u +%FT%TZ)
@@ -2388,9 +2394,11 @@ if [ "$launched" -eq 0 ] && [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
         fi
         # Won: a re-dispatch is JP's explicit "go again", so clear local tombstones like a manual launch does.
         rm -f "$PIPE/orch-$rk".{stopped,held,done,closed,marker,milestone,alert,label-cleared,startgate,jp-reminded} "$PIPE/orch-$rk.restarts"
-        out=$(LAUNCH_REASON=agent-go "$(dirname "${BASH_SOURCE[0]}")/orchestrate.sh" --force "$local_path" "$num" 2>&1 | tail -1)
+        dispatch_reason=agent-go
+        { [ "$HAS_CAP" -ne 1 ] || [ "$drain_launched" -eq 1 ]; } && dispatch_reason=agent-go-queue   # #714: queue it, never launch ahead of the line
+        out=$(LAUNCH_REASON=$dispatch_reason "$(dirname "${BASH_SOURCE[0]}")/orchestrate.sh" --force "$local_path" "$num" 2>&1 | tail -1)
         slog "[dispatch] $owner_repo#$num — claimed by $HOST, candidates=$cand_n, $out"
-        launched=1
+        launched=1; dispatched=1
         break
       done
       # #182 begin
