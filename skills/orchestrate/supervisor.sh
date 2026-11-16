@@ -1944,6 +1944,8 @@ intake_apply_decision() {  # <owner/repo> <issue>
         "$LABEL_GO"|"$LABEL_SENTRY_GO") [ "${SENTRY_AUTO_GO:-0}" = 1 ] && adds="$adds${adds:+,}$cur" ;;
       esac
     done <<< "$("$HERE/intake-labels.sh" "$v" sentry 2>/dev/null)"
+    # a triaged Sentry bug joins its repo's Sentry goal (config.sh sentry_goal_label); only bugs, never noise
+    if [ "$v" = bug ]; then sg=$(sentry_goal_label "$repo"); [ -n "$sg" ] && adds="$adds${adds:+,}$sg"; fi
     [ -n "$adds" ] || return 2
     # #182: one write for the whole set, so agent-go never lands without sentry-auto-go (a label missing in the repo fails
     # the write: nothing is added, the tick retries, and the line below says why)
