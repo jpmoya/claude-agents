@@ -182,6 +182,11 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/blocked-chain-stop.sh"
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/ship-goal-guard.sh",
+            "timeout": 120
           }
         ]
       }
