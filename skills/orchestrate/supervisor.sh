@@ -1401,7 +1401,7 @@ autoretry_cleared() {
 # forever. A real failure is never re-run: no `gh run rerun`, no `[ci-rerun]` log line, no $PIPE/orch-<rk>.ci-rerun
 # write, even on the very first tick for that head.
 ci_infra_gate() {
-  local repo=$1 issue=$2 pr=$3 rk stf head checks rows name link run job runs log cls ccrc tol=""
+  local repo=$1 issue=$2 pr=$3 rk stf head checks rows name link run job runs log cls ccrc tol="" exrows=""
   AR_NOTE=""; AR_FINAL=""
   rk=$(rk_of "$repo" "$issue"); stf="$PIPE/orch-$rk.ci-rerun"
   head=$(cd "$repo" && gh pr view "$pr" --json headRefOid --jq .headRefOid 2>/dev/null </dev/null) || return 1
@@ -1411,6 +1411,19 @@ ci_infra_gate() {
   printf '%s' "$checks" | jq -e 'any(.[]; .bucket == "pending")' >/dev/null 2>&1 && return 1   # still running: wait
   rows=$(printf '%s' "$checks" | jq -r '.[] | select(.bucket == "fail") | [.name, (.link // "")] | @tsv' 2>/dev/null)
   [ -n "$rows" ] || return 1
+  # #725: agents/deployer.md (JP 2026-09-22) keeps the `Playwright E2E` job out of the merge gate on STAGING, so it is
+  # neither re-run nor classified here (only drops it from the failing set; the deployer re-applies its own job-key rule
+  # before merging). Staging base only: a main/release PR and jpmoya/claude-agents keep it as a gate. With nothing
+  # gating left the hold clears (relaunch the deployer) instead of the silent return 1 below.
+  if [ "$(cd "$repo" && gh pr view "$pr" --json baseRefName --jq .baseRefName 2>/dev/null </dev/null)" = staging ] \
+     && [ "$(repo_slug "$repo")" != "jpmoya/claude-agents" ]; then
+    exrows=$(printf '%s\n' "$rows" | awk -F'\t' '$1 == "Playwright E2E"')
+    rows=$(printf '%s\n' "$rows" | awk -F'\t' '$1 != "Playwright E2E"')
+    if [ -z "$rows" ]; then
+      AR_NOTE="only the deployer-exempt Playwright E2E fails on staging (not a merge gate, JP 2026-09-22)"
+      return 0
+    fi
+  fi
   while IFS=$'\t' read -r name link; do
     run=$(printf '%s' "$link" | sed -nE 's#.*/actions/runs/([0-9]+).*#\1#p')
     job=$(printf '%s' "$link" | sed -nE 's#.*/job/([0-9]+).*#\1#p')
@@ -1426,7 +1439,21 @@ ci_infra_gate() {
   if [ "$(cat "$stf" 2>/dev/null)" != "$head" ]; then
     runs=$(printf '%s\n' "$rows" | sed -nE 's#.*/actions/runs/([0-9]+).*#\1#p' | sort -u)
     [ -n "$runs" ] || return 1
+    local jok=0
     for run in $runs; do
+      # #725: an exempt job dropped above that shares this run (E2E Tests holds Vitest/Quality too) must not be
+      # re-run with it: re-run the gating jobs one by one instead of `--failed`.
+      if [ -n "$exrows" ] && printf '%s\n' "$exrows" | grep -q "/actions/runs/$run/"; then
+        for job in $(printf '%s\n' "$rows" | grep "/actions/runs/$run/" | sed -nE 's#.*/job/([0-9]+).*#\1#p'); do
+          if (cd "$repo" && gh run rerun "$run" --job "$job" >/dev/null 2>&1 </dev/null); then jok=1
+          else
+            # GitHub refuses a job re-run on a run already re-running: once one job of this run went through, the
+            # later refusals are expected and must not skip recording the head (one re-run per head).
+            slog "[ci-rerun] #$issue — rerun of run $run job $job failed"; [ "$jok" = 1 ] || return 1
+          fi
+        done
+        continue
+      fi
       (cd "$repo" && gh run rerun "$run" --failed >/dev/null 2>&1 </dev/null) \
         || { slog "[ci-rerun] #$issue — rerun of run $run failed"; return 1; }
     done
