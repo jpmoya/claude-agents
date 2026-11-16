@@ -468,6 +468,63 @@ test_sc_orch_relaunch_of_a_queued_launch_counts_once() {
   assert_eq "$c" "1" "one ticket, one place" || return 1
 }
 
+# ------------------------------------------------------------------------------------------ #688: relaunch of a counted ticket
+
+test_sc_gate_passes_a_ticket_already_counted_in_the_window() {
+  sc_env; local mine other released old now
+  now=$(date +%s)
+  { printf '%s %s 900\n' "$((now - 600))" "$SC_A"; printf '%s %s 7\n' "$((now - 1800))" "$SC_A"; printf '%s %s 901\n' "$((now - 3000))" "$SC_A"; } > "$SC_LOG"
+  mine=$(sc_lib "sentry_cap_gate $SC_A 7; echo \"rc=\$? n=\$SENTRY_CAP_N counted=\$SENTRY_CAP_COUNTED\"")
+  other=$(sc_lib "sentry_cap_gate $SC_A 8; echo \"rc=\$? n=\$SENTRY_CAP_N counted=\$SENTRY_CAP_COUNTED\"")
+  printf '%s %s 7 released\n%s %s 902\n' "$((now - 100))" "$SC_A" "$((now - 90))" "$SC_A" >> "$SC_LOG"   # 7 cancelled, 902 refills the window
+  released=$(sc_lib "sentry_cap_gate $SC_A 7; echo \"rc=\$? counted=\$SENTRY_CAP_COUNTED\"")
+  : > "$SC_LOG"; printf '%s %s 7\n' "$((now - 90000))" "$SC_A" >> "$SC_LOG"; sc_seed "$SC_A" 60 120 180
+  old=$(sc_lib "sentry_cap_gate $SC_A 7; echo \"rc=\$? counted=\$SENTRY_CAP_COUNTED\"")
+  sc_cleanup
+  assert_eq "$mine" "rc=0 n=3 counted=1" "full window, issue already counted: passes" || return 1
+  assert_eq "$other" "rc=3 n=3 counted=0" "full window, a new issue: still refused" || return 1
+  assert_eq "$released" "rc=3 counted=0" "its only line was released: a new ticket again, refused at the cap" || return 1
+  assert_eq "$old" "rc=3 counted=0" "its line is outside the 86400 s window: refused at the cap" || return 1
+}
+
+test_sc_orch_hand_relaunch_of_a_counted_ticket_with_a_full_window_appends_nothing() {
+  sc_env; local now; now=$(date +%s)
+  { printf '%s %s 900\n' "$((now - 600))" "$SC_A"; printf '%s %s 7\n' "$((now - 1800))" "$SC_A"; printf '%s %s 901\n' "$((now - 3000))" "$SC_A"; } > "$SC_LOG"
+  sc_issue 7 "$SC_A" agent-go sentry-auto-go; sc_issue 8 "$SC_A" agent-go sentry-auto-go
+  local out rc; out=$(sc_launch "$SC_RA" 7); rc=$?
+  local lines n; lines=$(sc_log_lines); n=$(sc_orch_launches)
+  local out2 rc2; out2=$(sc_launch "$SC_RA" 8); rc2=$?
+  sc_cleanup
+  assert_eq "$rc" "0" "the relaunch of the counted ticket goes through" || return 1
+  assert_contains "$out" "launched orchestrator for $SC_A#7" "it launched" || return 1
+  assert_eq "$n" "1" "one orchestrator process" || return 1
+  assert_eq "$lines" "3" "no second line for the same ticket" || return 1
+  assert_eq "$rc2" "3" "control: a new ticket is still refused at the cap" || return 1
+  assert_contains "$out2" "sentry launch cap reached for $SC_A (3/3 in 24h)" "with the same message" || return 1
+}
+
+test_sc_orch_queued_relaunch_of_a_counted_ticket_appends_nothing_and_has_no_slot() {
+  sc_env 'MAX_CONCURRENT=0'; local now; now=$(date +%s)
+  { printf '%s %s 900\n' "$((now - 600))" "$SC_A"; printf '%s %s 7\n' "$((now - 1800))" "$SC_A"; printf '%s %s 901\n' "$((now - 3000))" "$SC_A"; } > "$SC_LOG"
+  sc_issue 7 "$SC_A" agent-go sentry-auto-go
+  local out rc; out=$(sc_launch "$SC_RA" 7); rc=$?
+  local lines slot; lines=$(sc_log_lines); slot=$(jq -r '.sentry_slot // "none"' "$SC_PIPE"/queue/*.json 2>/dev/null)
+  sc_cleanup
+  assert_eq "$rc" "0" "queued: exit 0" || return 1
+  assert_contains "$out" "queued #7" "control: the relaunch was queued" || return 1
+  assert_eq "$lines" "3" "queued relaunch of a counted ticket appends no line" || return 1
+  assert_eq "$slot" "none" "the queue entry has no sentry_slot, so a drop cannot cancel the original launch" || return 1
+}
+
+test_sc_orch_hand_relaunch_of_a_launched_ticket_with_free_window_appends_nothing() {
+  sc_env; sc_seed "$SC_A" 600; local now; now=$(date +%s)
+  sc_issue 900 "$SC_A" agent-go sentry-auto-go
+  sc_launch "$SC_RA" 900 >/dev/null
+  local lines; lines=$(sc_log_lines)
+  sc_cleanup
+  assert_eq "$lines" "1" "free window, already counted: still no second line" || return 1
+}
+
 # ------------------------------------------------------------------------------------------ review of PR #683: the lock
 
 test_sc_lock_is_exclusive_per_repo_and_released_by_its_holder_only() {
@@ -568,6 +625,10 @@ run_test test_sc_count_released_line_cancels_the_latest_launch_of_its_ticket
 run_test test_sc_slot_release_appends_only_for_a_counted_queue_entry
 run_test test_sc_orch_stop_of_a_queued_launch_releases_its_place
 run_test test_sc_orch_relaunch_of_a_queued_launch_counts_once
+run_test test_sc_gate_passes_a_ticket_already_counted_in_the_window
+run_test test_sc_orch_hand_relaunch_of_a_counted_ticket_with_a_full_window_appends_nothing
+run_test test_sc_orch_queued_relaunch_of_a_counted_ticket_appends_nothing_and_has_no_slot
+run_test test_sc_orch_hand_relaunch_of_a_launched_ticket_with_free_window_appends_nothing
 run_test test_sc_lock_is_exclusive_per_repo_and_released_by_its_holder_only
 run_test test_sc_lock_of_a_dead_or_stale_holder_is_taken_over
 run_test test_sc_orch_two_launchers_cannot_both_take_the_last_place

@@ -49,8 +49,9 @@ SENTRY_AUTO_GO=1
 # COST_CEILING_USD per app per day: 3 x $40 = $120. The count is this host's own $PIPE/sentry-launches.log (no GitHub
 # call), so two dispatching hosts each allow the cap. 0 = no automatic Sentry launch. A ticket JP releases by hand (after
 # intake is done) never carries the label and is never throttled; SENTRY_CAP_BYPASS=1 in the environment lets one hand
-# launch through. The cap bounds new tickets: an automatic restart or queue drain of a ticket that already launched is not
-# counted again (COST_CEILING_USD bounds what one ticket can spend across its restarts).
+# launch through. The cap bounds new tickets: any relaunch of a ticket that already launched in the window (an
+# automatic restart, a queue drain, or a hand / delivery-lead relaunch through orchestrate.sh) is neither refused nor counted
+# again (COST_CEILING_USD bounds what one ticket can spend across its restarts).
 SENTRY_AUTO_GO_DAILY_CAP=3
 
 # Shared dispatch: "owner/repo:/local/checkout" entries. Empty = this machine never dispatches from labels.
