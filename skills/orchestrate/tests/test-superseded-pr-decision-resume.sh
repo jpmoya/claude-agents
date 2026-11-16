@@ -90,12 +90,34 @@ test_sp_validation_table_has_the_resume_check() {
   assert_contains "$row" "compared as numbers" "#726: orders by comment id" || return 1
 }
 
-# The decision's Resolves: line must point at the IMPLEMENTED comment, and the shared helper must read it (real code).
+# The lane IMPLEMENTED rows must not claim a closed-unmerged gate (they sit above the superseded-PR row).
+test_sp_lane_rows_exclude_closed_unmerged_pr() {
+  local fast full
+  fast=$(grep -F '| `[fullstack-developer] IMPLEMENTED` (fast lane) |' "$ORCH_SP" | head -1)
+  full=$(grep -F '| `[fullstack-developer] IMPLEMENTED` (full lane) |' "$ORCH_SP" | head -1)
+  assert_contains "$fast" "Not for a closed-unmerged PR" "#726: fast-lane row excludes closed-unmerged PR" || return 1
+  assert_contains "$full" "Not for a closed-unmerged PR" "#726: full-lane row excludes closed-unmerged PR" || return 1
+  assert_contains "$full" "no reviewer is dispatched on a closed PR" "#726: no reviewer on a closed PR" || return 1
+}
+
+test_sp_row_states_trust_model_and_blast_radius() {
+  local row; row=$(sp_row)
+  assert_contains "$row" "No authorship or account check" "#726: no account check added" || return 1
+  assert_contains "$row" "delivery-lead trust model" "#726: follows the delivery-lead trust model" || return 1
+  assert_contains "$row" "never a merge" "#726: blast radius is a post-merge check, not a merge" || return 1
+  assert_contains "$row" "carry the superseded change" "#726: #M must carry the superseded change" || return 1
+}
+
+# The decision's Resolves: line must point at the IMPLEMENTED comment: run the real helper on a body shaped like the
+# delivery lead's, and require that the orchestrator's row names that same helper as the judge (fails on main: no row).
 test_sp_decision_resolves_the_implemented_comment() {
-  local url="https://github.com/owner/project-a/issues/2419#issuecomment-6895000001" body out
+  local url="https://github.com/owner/project-a/issues/2419#issuecomment-6895000001" body out row
   body=$'**[delivery-lead] DECISION**\n\nPR #2420 was closed as superseded; its change shipped in merged PR #2607 (staging). Run the deployer post-merge on #2607.\n\nResolves: '"$url"
   out=$(decision_resolves_id "$body" 2>/dev/null) || { fail "#726: helper rejected a well-formed decision"; return 1; }
   assert_eq "$out" "6895000001" "#726: helper reads the IMPLEMENTED comment id" || return 1
+  row=$(sp_row)
+  assert_ne "$row" "" "#726: the orchestrator has a row that accepts this decision" || return 1
+  assert_contains "$row" "decision_resolves_id" "#726: row judges Resolves: with the helper used here" || return 1
 }
 
 run_test test_sp_row_routes_decision_to_deployer_post_merge
@@ -106,4 +128,6 @@ run_test test_sp_merged_pr_row_points_to_the_case_and_keeps_structural_default
 run_test test_sp_look_through_rule_resumes_four_stops
 run_test test_sp_structural_stop_names_only_an_accepted_path
 run_test test_sp_validation_table_has_the_resume_check
+run_test test_sp_lane_rows_exclude_closed_unmerged_pr
+run_test test_sp_row_states_trust_model_and_blast_radius
 run_test test_sp_decision_resolves_the_implemented_comment
