@@ -1,5 +1,5 @@
-# #463: hooks/protect-locked-tests.sh blocks `git commit` whenever a locked test file differs from HEAD,
-# staged or not (PreToolUse runs before the same command's `git add`), and agents/orchestrator.md scopes the
+# #463: hooks/protect-locked-tests.sh blocks `git commit` when a locked test file is staged, or changed and about to be
+# staged/committed by the same command (PreToolUse runs before that command's own `git add`), and agents/orchestrator.md scopes the
 # "Delegated decision … terminal" rule to the three stops a [delivery-lead] marker can resume.
 
 HERE_463=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -56,6 +56,31 @@ test_lock_commit_allows_unchanged_locked_files_and_new_tests() {
   assert_eq "$L463_RC" "0" "locked files unchanged from HEAD, new unlocked test file" || return 1
 }
 
+test_lock_commit_blocks_add_dot_and_named_path_and_commit_path() {
+  l463_setup
+  echo two > "$L463_DIR/e2e/a.spec.ts"
+  l463_run 'git add -A && git commit -qm x'
+  assert_eq "$L463_RC" "2" "git add -A (no pathspec) picks up the dirty locked file" || return 1
+  l463_run 'git add . && git commit -qm x'
+  assert_eq "$L463_RC" "2" "git add . picks it up" || return 1
+  l463_run 'git add e2e/a.spec.ts && git commit -qm x'
+  assert_eq "$L463_RC" "2" "git add <locked path>" || return 1
+  l463_run 'git commit -qm x e2e/a.spec.ts'
+  assert_eq "$L463_RC" "2" "git commit <locked path>" || return 1
+}
+
+test_lock_commit_allows_unrelated_commit_while_locked_file_is_dirty() {
+  l463_setup
+  echo two > "$L463_DIR/e2e/a.spec.ts"   # dirty locked file, never staged by these commands
+  echo two > "$L463_DIR/src/b.ts"
+  l463_run 'git add src/b.ts && git commit -qm x'
+  assert_eq "$L463_RC" "0" "add <unrelated path> && commit" || return 1
+  l463_run 'git add -A src && git commit -qm "touch e2e docs"'
+  assert_eq "$L463_RC" "0" "add -A <unrelated dir> && commit" || return 1
+  l463_run 'git commit -qm x src/b.ts'
+  assert_eq "$L463_RC" "0" "commit <unrelated path>" || return 1
+}
+
 test_orchestrator_delegated_decision_terminal_rule_is_scoped() {
   local line
   line=$(grep -F -- '- **Delegated decision** (any check in that row fails)' "$ROOT_463/agents/orchestrator.md")
@@ -69,4 +94,6 @@ run_test test_lock_commit_blocks_unstaged_locked_change_with_add_and_commit
 run_test test_lock_commit_blocks_staged_locked_change
 run_test test_lock_commit_blocks_commit_am
 run_test test_lock_commit_allows_unchanged_locked_files_and_new_tests
+run_test test_lock_commit_blocks_add_dot_and_named_path_and_commit_path
+run_test test_lock_commit_allows_unrelated_commit_while_locked_file_is_dirty
 run_test test_orchestrator_delegated_decision_terminal_rule_is_scoped

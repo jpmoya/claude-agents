@@ -1,7 +1,8 @@
 # #720: hooks/limit-shells.sh's age kill selects only real Claude Code tool shells
 # ("<path>/<shell> -c source …/.claude/shell-snapshots/snapshot-…") older than 600s — not any process
 # whose command line merely mentions claude and bash (pipeline stages whose prompt says "bash").
-# Offline: a fake `ps` serves a fixture `ps -eo pid,etimes,command` table whose pids are harmless
+# Offline: a fake `ps` mimics macOS (no `etimes` keyword; `etime` as [[dd-]hh:]mm:ss) and serves a fixture
+# `ps -axo pid=,etime=,command=` table whose pids are harmless
 # `sleep` processes the test spawns itself; a pid that is no longer alive afterwards was selected.
 
 HERE_720=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -16,14 +17,15 @@ l720_setup() {  # sets L720_DIR; empties the pid list
   cat > "$L720_DIR/bin/ps" <<'PS'
 #!/bin/bash
 case "$*" in
-  *etimes*) cat "$L720_DIR/table" ;;
+  *etimes*) echo "ps: etimes: keyword not found" >&2; exit 1 ;;
+  *etime=*) cat "$L720_DIR/table" ;;
 esac
 exit 0
 PS
   chmod +x "$L720_DIR/bin/ps"
 }
 
-l720_proc() {  # l720_proc <name> <etimes> <command> — spawns a sleeper and lists it in the fixture table
+l720_proc() {  # l720_proc <name> <etime> <command> — spawns a sleeper and lists it in the fixture table
   sleep 60 </dev/null >/dev/null 2>&1 &
   local pid=$!
   eval "L720_PID_$1=$pid"
@@ -53,12 +55,12 @@ l720_expect() {  # l720_expect <name> alive|dead <message>
 
 test_limit_shells_age_kill_selects_only_old_snapshot_tool_shells() {
   l720_setup
-  l720_proc stage 700 'claude --agent fullstack-developer -p Fix it. run bash .github/scripts/x.test.sh then push'
-  l720_proc wrapper 700 'bash /Users/x/.claude/skills/orchestrate/stage-run.sh a b -- claude --agent fullstack-developer -p run bash x.sh'
-  l720_proc oldbash 700 "/bin/bash $SNAP_720'sleep 1'"
-  l720_proc oldzsh 700 "/bin/zsh $SNAP_720'sleep 1'"
-  l720_proc oldgrep 7000 "/bin/bash $SNAP_720'until grep -q done f; do sleep 5; done'"
-  l720_proc young 100 "/bin/bash $SNAP_720'sleep 1'"
+  l720_proc stage 11:40 'claude --agent fullstack-developer -p Fix it. run bash .github/scripts/x.test.sh then push'
+  l720_proc wrapper 11:40 'bash /Users/x/.claude/skills/orchestrate/stage-run.sh a b -- claude --agent fullstack-developer -p run bash x.sh'
+  l720_proc oldbash 10:01 "/bin/bash $SNAP_720'sleep 1'"
+  l720_proc oldzsh 01:11:40 "/bin/zsh $SNAP_720'sleep 1'"
+  l720_proc oldgrep 1-02:03:04 "/bin/bash $SNAP_720'until grep -q done f; do sleep 5; done'"
+  l720_proc young 09:59 "/bin/bash $SNAP_720'sleep 1'"
   l720_run
   l720_expect stage alive "a claude stage whose prompt says bash must not be selected" || return 1
   l720_expect wrapper alive "the stage-run.sh wrapper must not be selected" || return 1
