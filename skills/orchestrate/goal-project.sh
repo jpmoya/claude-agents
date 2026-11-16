@@ -19,8 +19,14 @@ _gp_log() { slog "[goal] project: $*"; }
 
 # goal_project_enabled — GOAL_PROJECTS is not 0 and this host's gh token has the `project` scope (checked once per process).
 goal_project_enabled() {
-  local h s
   [ "${GOAL_PROJECTS:-1}" != 0 ] || return 1
+  goal_project_token_ok
+}
+
+# goal_project_token_ok — this host's gh token has the `project` scope (checked once per process). Not tied to GOAL_PROJECTS: that switch is the
+# mirror's; deliver.sh asks this before it registers a goal whose scope IS a project (#736).
+goal_project_token_ok() {
+  local h s
   if [ -z "${_GP_SCOPE:-}" ]; then
     local raw rc
     raw=$(gh api -i user 2>/dev/null); rc=$?
@@ -222,10 +228,13 @@ goal_project_ensure() {
 # goal_project_sweep_done — close every open "Goal: " project whose tickets are all closed (at least one ticket), whatever goal it is
 # bound to or none: a finished goal's project closes by itself and moves to "recently closed" on the status page.
 goal_project_sweep_done() {
-  local o n items
+  local o n items scoped
   goal_project_enabled || return 0
   o=$(_gp_owner)
+  # #736: a project that is some goal's scope is its owner's, never swept closed (a closed scope project reads as unreadable)
+  scoped=" $(printf '%s' "${_GP_REG:-[]}" | jq -r --arg o "$o" '[.[]? | .block.scope_project? | select(type == "object" and .owner == $o) | .number | tostring] | join(" ")' 2>/dev/null) "
   for n in $(gh project list --owner "$o" --format json -L 200 2>/dev/null | jq -r '.projects[]? | select(.title | startswith("Goal: ")) | .number'); do
+    case "$scoped" in *" $n "*) continue ;; esac
     items=$(_gp_items "$o" "$n" 2>/dev/null) || continue
     [ "$(printf '%s' "$items" | jq -r '(.items | length) > 0 and (all(.items[]; .closed == true))')" = true ] || continue
     gh project close "$n" --owner "$o" >/dev/null 2>&1 && _gp_log "project $n: every ticket is closed, closed the project" || _gp_log "cannot close project $n"
@@ -257,6 +266,9 @@ goal_project_sync_one() {
   goal_project_enabled || return 1
   st=$(printf '%s' "$g" | jq -r '.st'); id=$(printf '%s' "$g" | jq -r '.id'); spec=$(printf '%s' "$g" | jq -r '.spec')
   case "$st" in unreadable) return 0 ;; stopped|delivered) live=0 ;; esac
+  # #736: a goal whose scope IS a project (project:<owner>/<n>) has nothing to mirror: the project is the user's own, so the sync never
+  # creates a second one, renames, closes or deletes it, and never adds or removes its items. Its Status field is left to its owner.
+  [ "$(goal_parse "$spec" 2>/dev/null | cut -f2)" != proj ] || return 0
   p=$(printf '%s' "$g" | _gp_bound)
   if [ -z "$p" ]; then
     [ "$live" = 1 ] || return 0

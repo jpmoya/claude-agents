@@ -45,6 +45,11 @@ if [ "$1" = api ] && [ "$2" = graphql ]; then
             elif .type == "REDACTED" then null else {} end)}))}}}}}' "$P/$num.json"
   exit 0
 fi
+if [ "$1" = project ]; then   # the mirror's calls: logged, answered, never needed by a project goal
+  echo "$*" >> "$P/project-calls.log"
+  case "$2" in list) echo '{"projects":[{"number":12,"title":"Goal: Q4 Delivery","closed":false}]}' ;; *) echo '{}' ;; esac
+  exit 0
+fi
 exec "$HERE/gh.base" "$@"
 GPS_GH_EOF
   chmod +x "$DG_BIN/gh"
@@ -300,7 +305,248 @@ test_gps_an_unreadable_project_is_captured_with_release_environment_and_route_an
   dg_teardown; return $rc
 }
 
+
+# ---------------------------------------------------------------- part (b): register, overlap, feedback, stop/release, grant, brief ---
+
+gps_reg_file() { dg_reg_file_for "$GPS_ID"; }
+gps_block() { dg_block "$(gps_reg_file)"; }
+gps_agent_go() {  # <owner_repo_key> <n> -> yes|no
+  if dg_has_label "$DG_ST/issues/$1/$2.json" agent-go; then echo yes; else echo no; fi
+}
+gps_calls() { cat "$DG_BIN/psc/project-calls.log" 2>/dev/null; }
+
+test_gps_register_writes_a_v2_block_with_derived_repos_and_the_go() {
+  gps_setup
+  local rc=0 blk
+  dg_run "$GPS_SPEC"
+  assert_eq "$DG_RC" "0" "register exits 0 (stderr: $DG_ERR)" || rc=1
+  assert_eq "$(dg_reg_count)" "1" "one registry issue" || rc=1
+  blk=$(gps_block)
+  assert_eq "$(printf '%s' "$blk" | jq -c '[.v, .id, .spec, .title, .go, .repos]')" \
+    '[2,"proj-example-owner_12","project:example-owner/12","Q4 Delivery",true,["example-owner/project-a","example-owner/project-b"]]' "block: v2, id, canonical spec, title, go, derived repos" || rc=1
+  assert_eq "$(printf '%s' "$blk" | jq -r '.project // "none"')" "none" "no mirror project binding of its own" || rc=1
+  assert_eq "$(printf '%s' "$blk" | jq -c '.scope_project')" '{"owner":"example-owner","number":12,"url":"https://github.com/orgs/example-owner/projects/12"}' "the scope project is recorded apart" || rc=1
+  assert_eq "$(printf '%s' "$blk" | jq -c '.granted | sort')" '["example-owner/project-a#101","example-owner/project-b#1"]' "agent-go granted to the open items (closed 102 not)" || rc=1
+  assert_eq "$(gps_agent_go example-owner_project-a 101)$(gps_agent_go example-owner_project-b 1)$(gps_agent_go example-owner_project-a 102)" "yesyesno" "labels written" || rc=1
+  assert_eq "$(gps_calls)" "" "no second project: not one gh project call" || rc=1
+  dg_run "$GPS_ALIAS"
+  assert_eq "$DG_RC" "1" "the alias is the same goal" || rc=1
+  assert_contains "$DG_ERR" "same goal" "registered twice: refused as the same goal" || rc=1
+  dg_teardown; return $rc
+}
+
+test_gps_register_refuses_without_the_project_scope_but_other_goals_still_register() {
+  gps_setup
+  local rc=0
+  rm -f "$DG_BIN/scope"
+  dg_run "$GPS_SPEC"
+  assert_eq "$DG_RC" "1" "no project scope: refused" || rc=1
+  assert_contains "$DG_ERR" 'needs the gh `project` scope' "says what is missing" || rc=1
+  assert_eq "$(dg_reg_count)" "0" "no registry issue" || rc=1
+  dg_run "$DG_SPEC_MS"
+  assert_eq "$DG_RC" "0" "a milestone goal still registers on that host (stderr: $DG_ERR)" || rc=1
+  dg_teardown; return $rc
+}
+
+test_gps_register_refuses_unreadable_empty_and_undispatched_projects() {
+  gps_setup
+  local rc=0
+  touch "$DG_BIN/psc/fail-12"
+  dg_run "$GPS_SPEC"; assert_eq "$DG_RC" "1" "unreadable: refused" || rc=1
+  assert_contains "$DG_ERR" "refusing to go on blind" "unreadable: fail closed" || rc=1
+  rm -f "$DG_BIN/psc/fail-12"
+  gps_project 12 "Q4 Delivery" false "" '[]'
+  dg_run "$GPS_SPEC"; assert_eq "$DG_RC" "1" "empty project: refused" || rc=1
+  assert_contains "$DG_ERR" "empty scope" "empty: says so" || rc=1
+  gps_project 12 "Q4 Delivery" false "" "$(printf '%s\n' "$(gps_issue_item example-owner/elsewhere 3 OPEN)" | jq -sc .)"
+  dg_run "$GPS_SPEC"; assert_eq "$DG_RC" "1" "an item in a repo that is not dispatched: refused" || rc=1
+  assert_contains "$DG_ERR" "not in DISPATCH_REPOS" "says why" || rc=1
+  assert_eq "$(dg_reg_count)" "0" "nothing registered" || rc=1
+  dg_teardown; return $rc
+}
+
+test_gps_overlap_both_ways_with_every_kind_of_goal() {
+  gps_setup
+  local rc=0
+  dg_run "$DG_SPEC_MS"; assert_eq "$DG_RC" "0" "milestone goal registers (stderr: $DG_ERR)" || rc=1
+  dg_run "$GPS_SPEC"
+  assert_eq "$DG_RC" "1" "project over a live milestone goal's tickets: refused" || rc=1
+  assert_contains "$DG_ERR" "overlaps live goal $DG_ID_MS" "names the live goal" || rc=1
+  assert_contains "$DG_ERR" "route=goal-project-scope" "the refusal is captured with its route tag" || rc=1
+  dg_teardown
+  gps_setup
+  dg_run "$GPS_SPEC"; assert_eq "$DG_RC" "0" "project goal registers (stderr: $DG_ERR)" || rc=1
+  dg_run "$DG_SPEC_MS"
+  assert_eq "$DG_RC" "1" "reverse: a milestone goal over the project goal's tickets: refused" || rc=1
+  assert_contains "$DG_ERR" "overlaps live goal $GPS_ID" "names the project goal" || rc=1
+  dg_run "$DG_SPEC_T7"; assert_eq "$DG_RC" "0" "a ticket outside the project (#7) is fine (stderr: $DG_ERR)" || rc=1
+  dg_run example-owner/project-a#101
+  assert_eq "$DG_RC" "1" "a ticket goal over an item: refused" || rc=1
+  dg_run "$DG_SPEC_ALL" --approve-all
+  assert_eq "$DG_RC" "1" "milestones:all sharing an item: refused" || rc=1
+  dg_teardown; return $rc
+}
+
+test_gps_overlap_refuses_blind_when_the_live_project_goals_scope_is_unreadable() {
+  gps_setup
+  local rc=0
+  dg_run "$GPS_SPEC"; assert_eq "$DG_RC" "0" "registers (stderr: $DG_ERR)" || rc=1
+  touch "$DG_BIN/psc/fail-12"
+  dg_run "$DG_SPEC_T7"
+  assert_eq "$DG_RC" "1" "a new goal while a live project goal cannot be read: refused" || rc=1
+  assert_contains "$DG_ERR" "refusing to go on blind" "fail closed" || rc=1
+  dg_teardown; return $rc
+}
+
+test_gps_feedback_goal_yields_the_tickets_of_a_live_project_goal() {
+  gps_setup
+  local rc=0
+  dg_run "$GPS_SPEC"
+  gps_lib "_goal_fb_covered example-owner/project-a | sort | tr '\n' ' '"
+  assert_eq "$DG_OUT" "101 102 " "project-a items are covered" || rc=1
+  gps_lib "_goal_fb_covered example-owner/project-b"
+  assert_eq "$DG_OUT" "1" "project-b item is covered" || rc=1
+  touch "$DG_BIN/psc/fail-12"
+  gps_lib "_goal_fb_covered example-owner/project-a"
+  assert_eq "$DG_RC" "1" "an unreadable live project goal: the feedback scope fails closed" || rc=1
+  dg_teardown; return $rc
+}
+
+test_gps_stop_records_the_open_items_and_release_frees_them() {
+  gps_setup
+  local rc=0
+  export GOAL_STOP_HOLD_RETRY_SECS=0
+  dg_run "$GPS_SPEC"
+  dg_run stop "$GPS_ID"; assert_eq "$DG_RC" "0" "stop exits 0 (stderr: $DG_ERR)" || rc=1
+  assert_eq "$(gps_block | jq -c '.stopped_open | sort')" '["example-owner/project-a#101","example-owner/project-b#1"]' "the open items are held" || rc=1
+  gps_lib "_goal_fb_covered example-owner/project-a"
+  assert_eq "$DG_OUT" "101" "a stopped goal still holds its open ticket out of the feedback goal" || rc=1
+  dg_run release "$GPS_ID"; assert_eq "$DG_RC" "0" "release exits 0 (stderr: $DG_ERR)" || rc=1
+  assert_eq "$(gps_block | jq -r '.stopped_open // "gone"')" "gone" "hold removed" || rc=1
+  gps_lib "_goal_fb_covered example-owner/project-a"
+  assert_eq "$DG_OUT" "" "released: covered by nothing" || rc=1
+  dg_run resume "$GPS_ID"; assert_eq "$DG_RC" "0" "resume works (stderr: $DG_ERR)" || rc=1
+  # unreadable at stop: the goal's derived repos are held
+  dg_run stop "$GPS_ID"; dg_run release "$GPS_ID"; dg_run resume "$GPS_ID"
+  touch "$DG_BIN/psc/fail-12"
+  dg_run stop "$GPS_ID"
+  assert_eq "$(gps_block | jq -r '.stopped_open')" "unreadable" "unreadable scope at stop: recorded as unreadable" || rc=1
+  gps_lib "_goal_fb_covered example-owner/project-a"
+  assert_eq "$DG_RC" "1" "the feedback goal on a derived repo fails closed until release" || rc=1
+  printf '%s' example-owner/elsewhere > "$DG_PIPE/repo-canon/example-owner__elsewhere"
+  gps_lib "_goal_fb_covered example-owner/elsewhere"
+  assert_eq "$DG_RC" "0" "a repo the goal never had is not held" || rc=1
+  unset GOAL_STOP_HOLD_RETRY_SECS
+  dg_teardown; return $rc
+}
+
+test_gps_sync_grants_go_to_new_items_with_the_usual_exclusions() {
+  gps_setup
+  local rc=0 items g
+  dg_run "$GPS_SPEC"
+  dg_issue example-owner_project-b 2 open; dg_issue example-owner_project-b 3 open; dg_issue example-owner_project-b 4 open
+  items=$(printf '%s\n' "$(gps_world_items | jq -c '.[]')" \
+    "$(gps_issue_item example-owner/project-b 2 OPEN)" \
+    "$(gps_issue_item example-owner/project-b 3 OPEN | jq -c '. + {labels:["source:sentry"]}')" \
+    "$(gps_issue_item example-owner/Business-Intelligence 9 OPEN)" | jq -sc .)
+  gps_project 12 "Q4 Delivery" false "" "$items"
+  gps_lib "g=\$(_goal_find $GPS_ID); _goal_sync_grant \"\$g\""
+  assert_eq "$DG_RC" "0" "sync exits 0 (stderr: $DG_ERR)" || rc=1
+  assert_eq "$(gps_agent_go example-owner_project-b 2)" "yes" "a later item gets agent-go" || rc=1
+  assert_eq "$(gps_agent_go example-owner_project-b 3)" "no" "source:sentry is skipped without --include-sentry" || rc=1
+  assert_eq "$(gps_block | jq -c '.granted | index("example-owner/project-b#2") != null')" "true" "recorded in the block (loop guard)" || rc=1
+  jq -c '.labels = []' "$DG_ST/issues/example-owner_project-b/2.json" > "$DG_ST/x" && mv "$DG_ST/x" "$DG_ST/issues/example-owner_project-b/2.json"
+  gps_lib "g=\$(_goal_find $GPS_ID); _goal_sync_grant \"\$g\""
+  assert_eq "$(gps_agent_go example-owner_project-b 2)" "no" "an agent-go removed later is never re-added" || rc=1
+  dg_teardown; return $rc
+}
+
+test_gps_milestone_approval_is_unchanged_by_a_project_goal() {
+  gps_setup
+  local rc=0
+  dg_run "$GPS_SPEC"
+  gps_lib "goal_milestone_approved example-owner/project-a 12"
+  assert_eq "$DG_RC" "1" "a project goal does not approve a milestone" || rc=1
+  dg_teardown
+  gps_setup
+  dg_run "$DG_SPEC_MS"
+  gps_lib "goal_milestone_approved example-owner/project-a 12"
+  assert_eq "$DG_RC" "0" "a milestone goal still does" || rc=1
+  dg_teardown; return $rc
+}
+
+test_gps_brief_names_the_project_and_never_milestones_or_labels() {
+  gps_setup
+  local rc=0 brief
+  dg_run "$GPS_SPEC"
+  gps_lib "goal_brief $GPS_ID"
+  brief=$DG_OUT
+  assert_eq "$DG_RC" "0" "brief builds (stderr: $DG_ERR)" || rc=1
+  assert_contains "$brief" "https://github.com/orgs/example-owner/projects/12" "the project URL" || rc=1
+  assert_contains "$brief" "issue items" "scope is the issue items" || rc=1
+  assert_eq "$(printf '%s' "$brief" | grep -ciE 'milestone|label' || true)" "0" "no mention of milestones or labels" || rc=1
+  dg_teardown; return $rc
+}
+
+test_gps_mirror_never_touches_a_scope_project() {
+  gps_setup
+  local rc=0 g reg
+  dg_run "$GPS_SPEC"
+  g=$(cd "$DG_CWD" && env HOME="$DG_HOME" PIPE="$DG_PIPE" PATH="$DG_BIN:$PATH" bash -c '. "$1/config.sh"; . "$1/pipeline-lib.sh"; . "$1/../../hooks/pipeline-markers.sh"; . "$1/goal-lib.sh"; _goal_find "$2"' _ "$DG_SKILL" "$GPS_ID")
+  gps_lib "slog() { :; }; goal_project_sync_one '$g' create; echo rc=\$?; deliver_project=1"
+  assert_eq "$DG_OUT" "rc=0" "the mirror sync is a no-op for a project goal" || rc=1
+  dg_run project "$GPS_ID"
+  assert_eq "$DG_RC" "0" "deliver.sh project exits 0 (stderr: $DG_ERR)" || rc=1
+  assert_contains "$DG_OUT" "https://github.com/orgs/example-owner/projects/12" "and shows the scope project" || rc=1
+  assert_eq "$(gps_calls)" "" "no create, copy, edit, item-add or close" || rc=1
+  # the sweep: an all-closed "Goal: " project that is a scope project is not closed; an unrelated one is
+  gps_project 12 "Goal: Q4 Delivery" false "" "$(printf '%s\n' "$(gps_issue_item example-owner/project-a 102 CLOSED COMPLETED)" | jq -sc .)"
+  reg=$(printf '%s' "[$g]")
+  gps_lib "slog() { :; }; GOAL_PROJECT_OWNER=example-owner; _GP_REG='$reg'; goal_project_sweep_done"
+  assert_not_contains "$(gps_calls)" "project close" "a scope project is never swept closed" || rc=1
+  gps_lib "slog() { :; }; GOAL_PROJECT_OWNER=example-owner; _GP_REG='[]'; goal_project_sweep_done"
+  assert_contains "$(gps_calls)" "close 12" "control: an unbound all-closed Goal: project is closed as before" || rc=1
+  dg_teardown; return $rc
+}
+
+test_gps_only_one_function_reads_the_project_and_it_lives_in_goal_project_sh() {
+  local rc=0 f n=0
+  for f in goal-lib.sh deliver.sh supervisor.sh; do
+    n=$((n + $(grep -vE '^[[:space:]]*#' "$DG_SKILL/$f" | grep -c 'goal_project_read')))
+  done
+  assert_eq "$n" "1" "exactly one call of the reader outside goal-project.sh (the _goal_proj_read wrapper)" || rc=1
+  assert_eq "$(grep -c '^goal_project_read()' "$DG_SKILL/goal-project.sh")" "1" "defined once, in goal-project.sh" || rc=1
+  return $rc
+}
+
+test_gps_product_manager_doc_ties_project_goals_to_the_project_not_the_milestone() {
+  local rc=0 pm="$DG_SKILL/../../agents/product-manager.md" sec
+  sec=$(awk '/^### Project-bound goals/{f=1;next} /^#{1,3} /{f=0} f' "$pm")
+  assert_contains "$sec" "added to the Project" "a ticket joins a project goal by being added to the Project" || rc=1
+  assert_contains "$sec" "gh project item-add" "the PM adds it when the brief names the project" || rc=1
+  assert_contains "$sec" "delivery lead adds it" "otherwise the delivery lead" || rc=1
+  assert_contains "$sec" "never needs one" "no milestone is a goal-scope requirement" || rc=1
+  # the goal-label and milestone-goal rules are untouched
+  assert_contains "$(cat "$pm")" 'is a *child of an approved goal*' "milestone-goal rule kept" || rc=1
+  assert_contains "$(cat "$pm")" 'A cross-repo goal is a GitHub label `goal: <short title>`' "goal-label rule kept" || rc=1
+  assert_contains "$(cat "$pm")" '`goal_milestone_approved <owner/repo> <milestone number>`' "milestone resolver kept" || rc=1
+  return $rc
+}
+
 for t in test_gps_parse_canonical_and_alias \
+         test_gps_register_writes_a_v2_block_with_derived_repos_and_the_go \
+         test_gps_register_refuses_without_the_project_scope_but_other_goals_still_register \
+         test_gps_register_refuses_unreadable_empty_and_undispatched_projects \
+         test_gps_overlap_both_ways_with_every_kind_of_goal \
+         test_gps_overlap_refuses_blind_when_the_live_project_goals_scope_is_unreadable \
+         test_gps_feedback_goal_yields_the_tickets_of_a_live_project_goal \
+         test_gps_stop_records_the_open_items_and_release_frees_them \
+         test_gps_sync_grants_go_to_new_items_with_the_usual_exclusions \
+         test_gps_milestone_approval_is_unchanged_by_a_project_goal \
+         test_gps_brief_names_the_project_and_never_milestones_or_labels \
+         test_gps_mirror_never_touches_a_scope_project \
+         test_gps_only_one_function_reads_the_project_and_it_lives_in_goal_project_sh \
+         test_gps_product_manager_doc_ties_project_goals_to_the_project_not_the_milestone \
          test_gps_parse_malformed_forms_are_refused_naming_the_accepted_forms \
          test_gps_goal_id_has_no_leading_dashes \
          test_gps_scope_rows_are_the_three_issue_items \
