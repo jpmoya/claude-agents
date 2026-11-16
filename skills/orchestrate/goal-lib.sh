@@ -863,7 +863,7 @@ goal_requirements_ok() {
 
 # _goal_grant_rows <include_sentry 0|1> <granted json array> — reads "owner/repo<TAB>n<TAB>state<TAB>labels-csv" lines on stdin
 # and prints the new granted array. Open tickets get agent-go (agent-proposed removed) unless Business-Intelligence, source:sentry
-# (without include_sentry) or already in the granted list: the grant is applied once per ticket, so an agent-go JP removed later
+# (without include_sentry), user-feedback (staff feedback keeps its own approval flow) or already in the granted list: the grant is applied once per ticket, so an agent-go JP removed later
 # is never re-added. Every refusal or failed write logs `repo=<owner/repo> issue=<n> reason=<text>` (no ticket text).
 # Exit 1 when a label write failed; that ticket is not recorded (retried next sync).
 _goal_grant_rows() {
@@ -875,6 +875,7 @@ _goal_grant_rows() {
     if printf '%s' "$granted" | jq -e --arg x "$ref" 'index($x) != null' >/dev/null; then continue; fi
     if _goal_is_bi "$r"; then slog "repo=$r issue=$n reason=Business-Intelligence is never part of a goal, no agent-go"; continue; fi
     if direct_route_repo "$r"; then slog "repo=$r issue=$n reason=direct-route repo, never agent-go (#632)"; continue; fi
+    case ",$labels," in *",${LABEL_FEEDBACK:-user-feedback},"*) slog "repo=$r issue=$n reason=${LABEL_FEEDBACK:-user-feedback} ticket skipped (staff feedback keeps its own approval flow, a goal never approves it)"; continue ;; esac
     case ",$labels," in *",source:sentry,"*) [ "$sentry" = 1 ] || { slog "repo=$r issue=$n reason=source:sentry ticket skipped (goal has no --include-sentry)"; continue; } ;; esac
     case ",$labels," in
       *",agent-go,"*) ;;

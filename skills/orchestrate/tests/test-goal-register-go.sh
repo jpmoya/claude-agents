@@ -1,7 +1,7 @@
 # Issue #410 — registering a milestone / #N goal is JP's go: the goal block records go:true + granted, agent-go is given to
 # the open in-scope tickets (shared _goal_grant_go path), goal_sync grants later arrivals, the body-line approval is gone.
 #   AC1 grg_reg_*       register writes go/granted/granted_at and labels (milestone and #N goals)
-#   AC2 grg_guard_*     BI, source:sentry, msall without --approve-all, closed, no duplicate edits, stripped agent-go
+#   AC2 grg_guard_*     BI, source:sentry, msall (auto go, --approve-all a no-op), closed, no duplicate edits, stripped agent-go
 #   AC3 grg_sync_*      goal_sync grants tickets added after registration (milestone and #N goals)
 #   AC4 grg_appr_*      goal_milestone_approved reads block.go; no "Approved-by" in skills/orchestrate/*.sh or agents/
 #   AC6 grg_waiting_*   characterisation: an agent-proposed ticket without agent-go still classes waiting_jp (green by design)
@@ -142,16 +142,14 @@ test_grg_guard_sentry_labelled_with_include_sentry() {
   glb_teardown; return $rc
 }
 
-test_grg_guard_msall_without_approve_all_labels_nothing_and_says_why() {
+test_grg_guard_msall_without_approve_all_is_an_automatic_go() {   # JP 2026-11-16: every registration is a go, --approve-all is a no-op
   grg_world; local rc=0
   grg_ticket $GRG_A 201 open "agent-proposed" 13
   dg_run "$DG_SPEC_ALL" --now
-  assert_eq "$DG_RC" "0" "msall register still succeeds (stderr: $DG_ERR)" || rc=1
-  assert_contains "$DG_OUT$DG_ERR" "--approve-all" "message explains --approve-all is needed" || rc=1
-  grg_has $GRG_A 101 agent-go && { fail "msall without --approve-all labelled a#101"; rc=1; }
-  grg_has $GRG_A 102 agent-go && { fail "msall without --approve-all labelled a#102"; rc=1; }
-  grg_has $GRG_A 201 agent-go && { fail "msall without --approve-all labelled a#201"; rc=1; }
-  assert_ne "$(grg_reg_block | jq -r .go)" "true" "msall without --approve-all: block.go is not true" || rc=1
+  assert_eq "$DG_RC" "0" "msall register succeeds (stderr: $DG_ERR)" || rc=1
+  assert_eq "$(grg_reg_block | jq -r .go)" "true" "msall without --approve-all: block.go is true" || rc=1
+  grg_has $GRG_A 101 agent-go || { fail "msall without --approve-all labelled a#101"; rc=1; }
+  grg_has $GRG_A 201 agent-go || { fail "msall without --approve-all labelled a#201"; rc=1; }
   glb_teardown; return $rc
 }
 
@@ -373,7 +371,7 @@ for t in test_grg_reg_milestone_goal_writes_go_granted_and_labels \
          test_grg_guard_business_intelligence_never_labelled \
          test_grg_guard_sentry_skipped_without_flag \
          test_grg_guard_sentry_labelled_with_include_sentry \
-         test_grg_guard_msall_without_approve_all_labels_nothing_and_says_why \
+         test_grg_guard_msall_without_approve_all_is_an_automatic_go \
          test_grg_guard_msall_with_approve_all_labels_every_open_milestone \
          test_grg_guard_closed_ticket_skipped \
          test_grg_guard_no_duplicate_label_edits \

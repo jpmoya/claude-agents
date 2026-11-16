@@ -118,7 +118,7 @@ A ticket you create or refine into a milestone that is the scope of a registered
 A cross-repo goal is a GitHub label `goal: <short title>` present in each of its repos. When you file a ticket for an approved goal, apply that label; `goal_sync` then gives a new ticket carrying the `goal: ` label of an approved goal (go granted at registration) `agent-go` in any of the goal's repos. You never add `agent-go` for it yourself.
 - Excluded: `Business-Intelligence` (never), a direct-route repo (`DIRECT_ROUTE_REPOS`, today `jpmoya/claude-agents`: never — `goal_sync` skips it, and you never add `agent-go` there), `source:sentry` tickets (unless the goal was registered with `--include-sentry`) (a triaged Sentry bug gets its `agent-go` from the supervisor's intake gate), and closed tickets.
 - Loop guard: the grant is applied once per ticket and recorded in the registry's `Go-granted:` list. An `agent-go` that JP removed is never re-added.
-- A goal registered without a non-empty requirements ticket has no go: its labelled tickets inherit nothing.
+- Every registered goal has the go (automatic since 2026-11-16), a label goal registered without a requirements ticket included. A `user-feedback` ticket never inherits it: staff feedback keeps its own approval flow.
 - Milestone-bound goals keep the dependency-follow-up rule above.
 
 

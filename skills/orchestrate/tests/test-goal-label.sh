@@ -538,15 +538,18 @@ test_glb_register_closed_requirements_ticket_counts() {
   glb_teardown; return $rc
 }
 
-# glb_nogo_check <label> <args…> — shared body: registered, zero agent-go anywhere, reason printed.
-glb_nogo_check() {
+# glb_autogo_check <label> — shared body: go is automatic (JP 2026-11-16), so a registration without a usable requirements
+# ticket still records go, labels the open tickets and only warns about the requirements ticket.
+glb_autogo_check() {
   local what=$1 rc=0 f
-  assert_eq "$DG_RC" "0" "$what: still registers (stderr: $DG_ERR)" || rc=1
+  assert_eq "$DG_RC" "0" "$what: registers (stderr: $DG_ERR)" || rc=1
   assert_eq "$(dg_reg_count)" "1" "$what: registry issue exists" || rc=1
-  assert_eq "$(glb_count_label agent-go)" "0" "$what: zero agent-go applied" || rc=1
-  assert_contains "$(printf '%s\n%s' "$DG_OUT" "$DG_ERR" | tr '[:upper:]' '[:lower:]')" "requirements" "$what: says why (requirements)" || rc=1
+  glb_has_go $GLB_A 8 || { fail "$what: a#8 gets agent-go"; rc=1; }
+  glb_has_go $GLB_B 1 || { fail "$what: b#1 gets agent-go"; rc=1; }
+  assert_contains "$(printf '%s\n%s' "$DG_OUT" "$DG_ERR" | tr '[:upper:]' '[:lower:]')" "requirements" "$what: warns about the requirements ticket" || rc=1
   f=$(dg_reg_files | head -1)
-  assert_not_contains "$(jq -r .body "$f")" "Go-granted:" "$what: no grant record" || rc=1
+  assert_contains "$(jq -r .body "$f")" "Go-granted:" "$what: grant recorded" || rc=1
+  assert_eq "$(dg_block "$f" | jq -r .go)" "true" "$what: block.go is true" || rc=1
   return $rc
 }
 glb_nogo_world() {
@@ -555,28 +558,28 @@ glb_nogo_world() {
   glb_ticket $GLB_A 8 open "$L"; glb_ticket $GLB_B 1 open "$L"
   glb_ticket $GLB_A 13 open "" ""     # exists but empty
 }
-test_glb_missing_requirements_registers_without_go() {
+test_glb_missing_requirements_registers_with_auto_go() {
   glb_setup
   local rc=0
   glb_nogo_world
   dg_run --repos "$GLB_REPOS" --title "Go test"
-  glb_nogo_check "no --requirements" || rc=1
+  glb_autogo_check "no --requirements" || rc=1
   glb_teardown; return $rc
 }
-test_glb_requirements_ticket_not_found_registers_without_go() {
+test_glb_requirements_ticket_not_found_registers_with_auto_go() {
   glb_setup
   local rc=0
   glb_nogo_world
   dg_run --repos "$GLB_REPOS" --title "Go test" --requirements "$GLB_RA#999"
-  glb_nogo_check "requirements ticket does not exist" || rc=1
+  glb_autogo_check "requirements ticket does not exist" || rc=1
   glb_teardown; return $rc
 }
-test_glb_requirements_ticket_empty_registers_without_go() {
+test_glb_requirements_ticket_empty_registers_with_auto_go() {
   glb_setup
   local rc=0
   glb_nogo_world
   dg_run --repos "$GLB_REPOS" --title "Go test" --requirements "$GLB_RA#13"
-  glb_nogo_check "requirements ticket is empty" || rc=1
+  glb_autogo_check "requirements ticket is empty" || rc=1
   glb_teardown; return $rc
 }
 
@@ -626,14 +629,16 @@ test_glb_sync_inheritance_skips_business_intelligence_repo() {
 
 test_glb_sync_unapproved_goal_inherits_nothing() {
   glb_setup
-  local rc=0
+  local rc=0 f
   glb_nogo_world
-  dg_run --repos "$GLB_REPOS" --title "Go test"       # no --requirements: registered, go not granted
+  dg_run --repos "$GLB_REPOS" --title "Go test"       # registered with the automatic go ...
   assert_eq "$DG_RC" "0" "register exits 0 (stderr: $DG_ERR)" || rc=1
+  f=$(dg_reg_files | head -1)                          # ... then a pre-auto-go goal is simulated: go back to false
+  jq '.body |= gsub("\"go\":true"; "\"go\":false")' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
   glb_ticket $GLB_A 20 open "goal: Go test"
   glb_cache_of_registered
   glb_sync
-  assert_eq "$(glb_count_label agent-go)" "0" "a goal that was never granted go gives no agent-go on sync" || rc=1
+  glb_has_go $GLB_A 20 && { fail "a goal whose block has go:false gives no agent-go on sync"; rc=1; }
   glb_teardown; return $rc
 }
 
@@ -850,8 +855,8 @@ for t in test_glb_label_rule_table test_glb_parse_label_spec_and_rejects_empty \
          test_glb_sync_unapproved_goal_inherits_nothing test_glb_sync_inheritance_is_idempotent \
          test_glb_register_include_sentry_labels_sentry_ticket \
          test_glb_register_closed_requirements_ticket_counts \
-         test_glb_missing_requirements_registers_without_go test_glb_requirements_ticket_not_found_registers_without_go \
-         test_glb_requirements_ticket_empty_registers_without_go test_glb_loop_guard_removed_go_not_readded \
+         test_glb_missing_requirements_registers_with_auto_go test_glb_requirements_ticket_not_found_registers_with_auto_go \
+         test_glb_requirements_ticket_empty_registers_with_auto_go test_glb_loop_guard_removed_go_not_readded \
          test_glb_close_strips_open_tickets_and_renames_label test_glb_delivered_goal_also_cleaned \
          test_glb_existing_done_label_means_delete_stripped_label test_glb_close_cleanup_is_idempotent \
          test_glb_active_goal_label_is_left_alone test_glb_same_title_after_close_gets_fresh_label_and_no_old_members \

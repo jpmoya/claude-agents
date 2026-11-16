@@ -20,6 +20,7 @@
 #                                         its open tickets stay out of the feedback goal until `release` (#527)
 #   deliver.sh release <goal|id>          hand a stopped goal's held tickets back to the feedback goal (#527)
 #   deliver.sh resume <goal|id> [--here]  reopen a stopped/held goal; --here re-pins it to this host
+#   deliver.sh approve <goal|id|all>      give an existing goal the automatic go (go:true, agent-go on its tickets except user-feedback ones); idempotent, for goals registered before auto-go
 #   deliver.sh priority <goal|id> <n> | --after <goal> | --before <goal>   move a goal in the start order
 set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -261,9 +262,7 @@ cmd_register() {
   # #410: registering the goal is JP's go. It is recorded in the block (go/granted/granted_at), which every body rewrite keeps.
   if [ "$kind" = fb ]; then
     echo "no go granted: $spec only clears technical blocks; feedback tickets keep their own intake/PM approval" >&2
-  elif [ "$kind" = msall ] && [ "$approve_all" != 1 ]; then
-    echo "no go granted: $spec covers every open milestone; re-register with --approve-all to give agent-go to all of them" >&2
-  else
+  else   # every goal registration is an automatic go (JP 2026-11-16); --approve-all stays accepted for old scripts and is a no-op
     go=true; granted_at=$(date -u +%F)
     block=$(printf '%s' "$block" | jq -c --argjson s "$([ "$sentry" = 1 ] && echo true || echo false)" '. + {include_sentry:$s}')
   fi
@@ -369,9 +368,9 @@ cmd_register_label() {
     seed_repo="${req%%#*}"; seed_n="${req##*#}"
     case ",$kept," in *",$seed_repo,"*) ;; *) die "--requirements ticket $req is not in one of the goal's repos" ;; esac
     if gh api "repos/$seed_repo/issues/$seed_n" >/dev/null 2>&1; then seed_ok=1; fi
-    if goal_requirements_ok "$req"; then req_ok=1; else echo "no go granted: requirements ticket $req is missing or empty" >&2; fi
+    if goal_requirements_ok "$req"; then req_ok=1; else echo "warning: requirements ticket $req is missing or empty (go is still granted)" >&2; fi
   else
-    echo "no go granted: no --requirements ticket given (go needs a non-empty requirements ticket)" >&2
+    echo "warning: no --requirements ticket given (go is still granted)" >&2
   fi
   check_overlap "$spec" "$id" "" "$kept" "$([ "$seed_ok" = 1 ] && printf '%s' "$req")"
   rows=$(_goal_scope_rows "$spec" "$id" "$kept") || die "cannot read the scope of $spec"
@@ -402,19 +401,18 @@ cmd_register_label() {
   if [ "$seed_ok" = 1 ]; then
     _goal_issue_label_add "$seed_repo" "$seed_n" "$label" || register_rollback "$n" "could not label the requirements ticket $req"
   fi
-  if [ "$req_ok" = 1 ]; then
-    go=true; granted_at=$(date -u +%F)
-    # shellcheck disable=SC2046
-    granted=$(_goal_grant_go "$label" "$sentry" '[]' $(printf '%s' "$kept" | tr ',' ' ')) \
-      || echo "some tickets could not be given agent-go; the next goal sync retries them" >&2
-  fi
+  # every goal registration is an automatic go (JP 2026-11-16); a missing requirements ticket is only a warning above
+  go=true; granted_at=$(date -u +%F)
+  # shellcheck disable=SC2046
+  granted=$(_goal_grant_go "$label" "$sentry" '[]' $(printf '%s' "$kept" | tr ',' ' ')) \
+    || echo "some tickets could not be given agent-go; the next goal sync retries them" >&2
   block=$(printf '%s' "$block" | jq -c --argjson n "$n" --argjson go "$go" --argjson g "${granted:-[]}" --arg d "$granted_at" \
     '. + {order:$n, go:$go, granted:$g} + (if $d != "" then {granted_at:$d} else {} end)')
   resp=$(api_json PATCH "repos/$GOAL_REGISTRY_REPO/issues/$n" \
     "$(jq -nc --arg b "$(goal_body_v2 "$block" "$granted_at")" '{body:$b}')") || register_rollback "$n" "could not write the registry block"
   fb_yield_here   # #527: the new goal is live: a feedback lead running here over its tickets ends now
   if [ "$go" = true ]; then
-    post_note "$n" "**[supervisor] NOTE** go granted: label \`$label\` on the requirements ticket, agent-go on $(printf '%s' "$granted" | jq 'length') open ticket(s) in $kept" || true
+    post_note "$n" "**[supervisor] NOTE** go granted automatically on registration: label \`$label\`, agent-go on $(printf '%s' "$granted" | jq 'length') open ticket(s) in $kept" || true
 
   fi
   if [ "$now" != 1 ]; then
@@ -433,6 +431,43 @@ cmd_register_label() {
   echo "registered $id (issue #$n)"
   echo "label=$label repos=$kept go=$go"
   echo "log=$PIPE/goal-$id.log"
+}
+
+# cmd_approve <goal|id|all> — backfill the automatic go (JP 2026-11-16) on goals registered without one: sets go:true in the registry
+# block (granted_at date, and the Go-granted body line of a v2 goal), then runs the normal grant sync so the in-scope tickets get
+# agent-go now (user-feedback, Business-Intelligence, direct-route and source:sentry tickets are refused as ever). Idempotent: an
+# already-approved goal is left alone. Standing feedback goals (owner/repo:feedback) are never approved.
+cmd_approve() {
+  local arg="${1:?goal, id or all required}" reg g id gid issue spec n=0 date
+  reg=$(_goal_registry_json) || die "cannot read the goal registry"
+  if [ "$arg" != all ]; then id=$(_goal_resolve "$arg") || die "goal not found: $arg"; fi
+  date=$(date -u +%F)
+  while IFS= read -r g; do
+    [ -n "$g" ] || continue
+    [ "$arg" = all ] || [ "$(printf '%s' "$g" | jq -r .id)" = "$id" ] || continue
+    gid=$(printf '%s' "$g" | jq -r .id); issue=$(printf '%s' "$g" | jq -r .issue); spec=$(printf '%s' "$g" | jq -r '.spec // ""')
+    if [ "$(printf '%s' "$g" | jq -r .state)" != open ]; then
+      [ "$arg" != all ] || continue
+      die "$gid is closed; register a new goal instead"
+    fi
+    if [ "$(printf '%s' "$g" | jq -r .st)" = unreadable ]; then
+      [ "$arg" != all ] || { echo "skipped $gid: cannot read its registry block" >&2; continue; }
+      die "cannot read the registry block of $gid"
+    fi
+    n=$((n + 1))
+    case "$spec" in *:feedback) echo "$gid skipped: standing feedback goals keep their own approval flow"; continue ;; esac
+    if [ "$(printf '%s' "$g" | jq -r '(.block.go // false) == true')" = true ]; then echo "$gid already approved"; continue; fi
+    g=$(printf '%s' "$g" | jq -c --arg d "$date" '.block |= (. + {go: true, granted: (.granted // []), granted_at: ((.granted_at // "") | if . == "" then $d else . end), include_sentry: (.include_sentry // false)})')
+    api_json PATCH "repos/$GOAL_REGISTRY_REPO/issues/$issue" \
+      "$(jq -nc --arg b "$(_goal_queue_body "$g")" '{body:$b}')" >/dev/null || die "could not write the registry block of $gid"
+    if [ -f "$PIPE/goal-$gid.json" ]; then
+      jq -c '. + {go: true}' "$PIPE/goal-$gid.json" > "$PIPE/goal-$gid.json.tmp" && mv "$PIPE/goal-$gid.json.tmp" "$PIPE/goal-$gid.json"
+    fi
+    post_note "$issue" "**[deliver] NOTE** go granted by approve (automatic go for every goal) by $THIS_HOST" || true
+    _goal_sync_grant "$g" || true   # best effort: the supervisor sync retries what could not be labelled now
+    echo "$gid approved"
+  done <<< "$(printf '%s' "$reg" | jq -c '.[]')"
+  [ "$n" -gt 0 ] || die "goal not found: $arg"
 }
 
 # cmd_project <goal|id|all> [--create] — bind and sync the goal's existing GitHub Project (goal-project.sh): a "Goal: ..." project that is
@@ -634,9 +669,10 @@ case "${1:-}" in
   status) shift; cmd_status "$@" ;;
   priority) shift; cmd_priority "$@" ;;
   project) shift; cmd_project "$@" ;;
+  approve) shift; cmd_approve "$@" ;;
   stop) shift; cmd_stop "$@" ;;
   release) shift; cmd_release "$@" ;;
   resume) shift; cmd_resume "$@" ;;
-  ''|-h|--help) sed -n '2,23p' "$0"; exit 2 ;;
+  ''|-h|--help) sed -n '2,24p' "$0"; exit 2 ;;
   *) cmd_register_args "$@" ;;
 esac
