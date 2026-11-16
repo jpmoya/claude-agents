@@ -188,29 +188,72 @@ test_gps_a_failed_page_fails_the_whole_read() {
   gps_setup
   local rc=0
   gps_project 12 "Q4 Delivery" false 2 "$(gps_world_items)"
+  # control: the same 3-page fixture reads completely when no page fails
+  gps_lib "_goal_scope_rows $GPS_SPEC $GPS_ID"
+  assert_eq "$(printf '%s\n' "$DG_OUT" | wc -l | tr -d ' ')" "3" "control: without a failing page all 3 issues come back" || rc=1
+  : > "$DG_BIN/psc/graphql.log"
   touch "$DG_BIN/psc/fail-page2"
   gps_lib "_goal_scope_rows $GPS_SPEC $GPS_ID"
   assert_ne "$DG_RC" "0" "a non-zero gh exit on page 2: the read fails" || rc=1
-  assert_eq "$DG_OUT" "" "no partial scope on stdout" || rc=1
+  assert_eq "$DG_OUT" "" "no partial scope on stdout (page 1 had rows)" || rc=1
+  assert_eq "$(grep -vc 'cursor=' "$DG_BIN/psc/graphql.log" | tr -d ' ')" "1" "page 1 was requested (and succeeded)" || rc=1
+  assert_eq "$(grep -c 'cursor=c1' "$DG_BIN/psc/graphql.log" | tr -d ' ')" "1" "page 2 was requested: the failure is mid-pagination" || rc=1
+  assert_contains "$(cat "$DG_HOME/slog.log")" "gh exit 1" "the failed page is logged" || rc=1
   dg_teardown; return $rc
 }
 
-test_gps_unreadable_closed_missing_and_redacted_projects_fail_closed() {
+# gps_fail_case <label> — each fail-closed condition in its own test; the healthy project is read first as a control
+gps_control_read() {
+  gps_lib "_goal_scope_rows $GPS_SPEC $GPS_ID"
+  assert_eq "$(printf '%s\n' "$DG_OUT" | wc -l | tr -d ' ')" "3" "control: the healthy project reads 3 issues" || return 1
+  : > "$DG_HOME/slog.log"
+}
+
+test_gps_a_project_gh_cannot_read_fails_closed() {
   gps_setup
   local rc=0
+  gps_control_read || rc=1
   touch "$DG_BIN/psc/fail-12"
   gps_lib "_goal_scope_rows $GPS_SPEC $GPS_ID"
   assert_ne "$DG_RC" "0" "gh exits 1: fail closed" || rc=1
   assert_eq "$DG_OUT" "" "no rows" || rc=1
-  rm -f "$DG_BIN/psc/fail-12"
-  gps_lib "_goal_scope_rows project:example-owner/99 x"
-  assert_ne "$DG_RC" "0" "a deleted / unknown project (null): fail closed" || rc=1
-  gps_project 12 "Q4 Delivery" true "" "$(gps_world_items)"
+  assert_contains "$(cat "$DG_HOME/slog.log")" "gh exit 1" "logged as a gh failure" || rc=1
+  dg_teardown; return $rc
+}
+
+test_gps_a_missing_project_fails_closed() {
+  gps_setup
+  local rc=0
+  gps_control_read || rc=1
+  rm -f "$DG_BIN/psc/12.json"   # the project is gone: GitHub answers projectV2 null
+  gps_lib "_goal_scope_rows $GPS_SPEC $GPS_ID"
+  assert_ne "$DG_RC" "0" "a deleted / unknown project: fail closed" || rc=1
+  assert_eq "$DG_OUT" "" "no rows" || rc=1
+  assert_contains "$(cat "$DG_HOME/slog.log")" "does not exist or the token cannot read it" "logged as a missing project" || rc=1
+  dg_teardown; return $rc
+}
+
+test_gps_a_closed_project_fails_closed() {
+  gps_setup
+  local rc=0
+  gps_control_read || rc=1
+  gps_project 12 "Q4 Delivery" true "" "$(gps_world_items)"   # same items, now closed
   gps_lib "_goal_scope_rows $GPS_SPEC $GPS_ID"
   assert_ne "$DG_RC" "0" "a closed project: fail closed, never an empty or stale scope" || rc=1
+  assert_eq "$DG_OUT" "" "no rows although the items are readable" || rc=1
+  assert_contains "$(cat "$DG_HOME/slog.log")" "the project is closed" "logged as a closed project" || rc=1
+  dg_teardown; return $rc
+}
+
+test_gps_a_redacted_item_fails_the_whole_read() {
+  gps_setup
+  local rc=0
+  gps_control_read || rc=1
   gps_project 12 "Q4 Delivery" false "" "$(printf '%s\n' "$(gps_issue_item example-owner/project-a 101 OPEN)" '{"type":"REDACTED"}' | jq -sc .)"
   gps_lib "_goal_scope_rows $GPS_SPEC $GPS_ID"
-  assert_ne "$DG_RC" "0" "an item the token cannot read (redacted): fail closed, never a partial scope" || rc=1
+  assert_ne "$DG_RC" "0" "an item the token cannot read: fail closed, never a partial scope" || rc=1
+  assert_eq "$DG_OUT" "" "the readable item 101 is not returned alone" || rc=1
+  assert_contains "$(cat "$DG_HOME/slog.log")" "an item is unreadable (redacted or not an issue)" "logged as an unreadable item" || rc=1
   dg_teardown; return $rc
 }
 
@@ -593,7 +636,10 @@ for t in test_gps_parse_canonical_and_alias \
          test_gps_business_intelligence_items_are_never_in_scope \
          test_gps_more_than_one_page_is_read_completely \
          test_gps_a_failed_page_fails_the_whole_read \
-         test_gps_unreadable_closed_missing_and_redacted_projects_fail_closed \
+         test_gps_a_project_gh_cannot_read_fails_closed \
+         test_gps_a_missing_project_fails_closed \
+         test_gps_a_closed_project_fails_closed \
+         test_gps_a_redacted_item_fails_the_whole_read \
          test_gps_the_read_does_not_depend_on_the_mirror_switch \
          test_gps_an_empty_project_reads_as_an_empty_scope_not_an_error \
          test_gps_goal_eval_open_while_any_item_is_open_and_delivered_when_all_closed \
