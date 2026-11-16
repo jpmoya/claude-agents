@@ -481,6 +481,9 @@ goal_brief() {
   if [ -n "$direct" ]; then
     printf '\nDirect route — needs the interactive session (not your work: never dispatch, label or relaunch these; list them under this heading in your report, ticket number + 3-5 word description each):\n%s' "$direct"
   fi
+  if [ -s "$PIPE/goal-$id.notlive" ]; then
+    printf '\nNOT LIVE ON PROD (all tickets are delivered but verify-shipped.sh fails; the goal cannot close until it exits 0 — merged to staging is not done): run skills/orchestrate/verify-shipped.sh <owner/repo> <PR#...> for the merged PRs of the tickets above; if the release bot has not shipped a change by its next cycle, build the promotion PR yourself and shepherd it to a green prod deploy. Last result:\n%s\n' "$(cat "$PIPE/goal-$id.notlive")"
+  fi
   cat <<RULES
 
 Rules:
@@ -1120,7 +1123,7 @@ _goal_granted_rows() {
 # goal_eval <id> <spec> — live scope + ticket classes into GE_* (current shell); exit 1 on any failed read
 goal_eval() {
   local rows ref st repo n r cls istate marker why lbl au gates sr ms
-  GE_TOTAL=0; GE_DELIVERED=0; GE_ACTIVE=0; GE_WAITING=0; GE_SNAP=""; GE_REFS=""; GE_DIRECT=""
+  GE_TOTAL=0; GE_DELIVERED=0; GE_ACTIVE=0; GE_WAITING=0; GE_SNAP=""; GE_REFS=""; GE_DIRECT=""; GE_NOTLIVE=0; GE_NOTLIVE_WHY=""
   # $3: explicit "ref<TAB>state" rows. Live rows carry labels, author, start-gate refs and state_reason too (#548/#557: no
   # per-ticket issue read).
   if [ -n "${3:-}" ]; then rows=$3; else
@@ -1158,7 +1161,81 @@ goal_eval() {
     GE_REFS="$GE_REFS$ref	$cls	$why
 "
   done <<< "$rows"
+  # Done means on prod (JP, 2026-11-16): a goal whose tickets are all delivered is complete only when verify-shipped.sh exits 0
+  # for every merged PR of those tickets. Until then it reads as active (never delivered), so the goal is not closed and
+  # the lead keeps getting relaunched; goal_park names the reason, and the snapshot carries the verdict so a PR landing counts as progress.
+  if [ "$GE_TOTAL" -gt 0 ] && [ "$GE_DELIVERED" -eq "$GE_TOTAL" ]; then
+    if _goal_ship_gate "$1"; then rm -f "$PIPE/goal-$1.notlive"
+    else
+      GE_NOTLIVE=1
+      mkdir -p "$PIPE" 2>/dev/null; printf '%s\n' "$GE_NOTLIVE_WHY" > "$PIPE/goal-$1.notlive" 2>/dev/null
+      GE_DELIVERED=$((GE_TOTAL - 1)); GE_ACTIVE=$((GE_ACTIVE + 1))
+      GE_SNAP="${GE_SNAP}ship-gate	NOT LIVE	$(printf '%s' "$GE_NOTLIVE_WHY" | tr '\n\t' '  ')	active
+"
+      ! type slog >/dev/null 2>&1 || slog "[goal] $1: all $GE_TOTAL ticket(s) delivered but not live on prod — $(printf '%s' "$GE_NOTLIVE_WHY" | head -n 1)"
+    fi
+  fi
   return 0
+}
+
+# _goal_ship_gate <id> — 0: every merged PR of the delivered tickets is live on prod (verify-shipped.sh exit 0), or the gate is
+# off (GOAL_SHIP_GATE=0) or there is no PR to check; 1: not live (or cannot be verified: fail closed). Sets GE_NOTLIVE_WHY.
+# PRs are the merged PRs whose body closes a ticket (REST timeline: cross-referenced events), found once per ticket and kept in
+# $PIPE/goal-<id>.shipprs ("ref<TAB>pr" or "ref<TAB>-"). GOAL_SHIP_NODEPLOY_REPOS (space separated) lists repos without a prod deploy
+# workflow (verify-shipped.sh --no-deploy; default jpmoya/claude-agents, and verify-shipped.sh also detects a repo with no deploy
+# workflow by itself). A failing verdict is reused for GOAL_SHIP_CACHE_SECS (default 300) while the PR set is unchanged: no GitHub
+# calls on every sync for a goal that is waiting for the release bot; a passing verdict is never cached (the goal closes at once).
+# GOAL_VERIFY_SHIPPED overrides the script (tests).
+_goal_ship_gate() {
+  local id=$1 f="$PIPE/goal-$1.shipprs" vs="${GOAL_VERIFY_SHIPPED:-$_GOAL_LIB_DIR/verify-shipped.sh}" ref cls why repo n js prs p want="" pairs="" r nd out rc agg="" bad=0
+  GE_NOTLIVE_WHY=""
+  [ "${GOAL_SHIP_GATE:-1}" != 0 ] || return 0
+  [ -f "$vs" ] || { GE_NOTLIVE_WHY="cannot verify: $vs is missing"; return 1; }
+  mkdir -p "$PIPE" 2>/dev/null; touch "$f" 2>/dev/null
+  while IFS=$'\t' read -r ref cls why; do
+    [ "$cls" = delivered ] || continue
+    _goal_is_bi "${ref%%#*}" && continue
+    want="$want$ref"$'\n'
+    grep -qF -- "$ref"$'\t' "$f" 2>/dev/null && continue
+    repo=${ref%%#*}; n=${ref##*#}
+    js=$(_goal_get_all "repos/$(_goal_rest_slug "$repo")/issues/$n/timeline?per_page=100" 2>/dev/null) \
+      || { GE_NOTLIVE_WHY="cannot verify: the timeline of $ref is unreadable"; return 1; }
+    prs=$(printf '%s' "$js" | jq -r --arg r "$(printf '%s' "$(_goal_rest_slug "$repo")" | tr '[:upper:]' '[:lower:]')" --arg n "$n" '
+      [.[] | select(.event == "cross-referenced") | .source.issue? | select(. != null)
+         | select(.pull_request.merged_at? != null)
+         | select(((.repository_url // "") | ascii_downcase | endswith("/repos/" + $r)))
+         | select((.body // "") | test("(close[sd]?|fix(e[sd]|es)?|resolve[sd]?)[: ]+([A-Za-z0-9._/-]*)#" + $n + "([^0-9]|$)"; "i"))
+         | .number] | unique | .[] | tostring' 2>/dev/null) \
+      || { GE_NOTLIVE_WHY="cannot verify: the timeline of $ref does not parse"; return 1; }
+    if [ -z "$prs" ]; then printf '%s\t-\n' "$ref" >> "$f"
+    else for p in $prs; do printf '%s\t%s\n' "$ref" "$p" >> "$f"; done; fi
+  done <<< "$GE_REFS"
+  while IFS=$'\t' read -r ref p; do
+    [ -n "$ref" ] && [ "$p" != "-" ] || continue
+    printf '%s' "$want" | grep -qxF -- "$ref" || continue
+    pairs="$pairs$(_goal_rest_slug "${ref%%#*}") $p"$'\n'
+  done < "$f"
+  [ -n "$pairs" ] || return 0   # no merged PR closes any delivered ticket (closed by hand, not planned): nothing to verify
+  local vc="$PIPE/goal-$id.shipverdict" key now cached_at cached_key
+  key=$(printf '%s' "$pairs" | cksum | cut -d' ' -f1); now=$(date +%s)
+  if [ -f "$vc" ]; then
+    read -r cached_at cached_key < "$vc" 2>/dev/null
+    if [ "$cached_key" = "$key" ] && [ -n "$cached_at" ] && [ $((now - cached_at)) -lt "${GOAL_SHIP_CACHE_SECS:-300}" ] 2>/dev/null; then
+      GE_NOTLIVE_WHY=$(tail -n +2 "$vc"); return 1
+    fi
+  fi
+  for r in $(printf '%s' "$pairs" | awk '{print $1}' | sort -u); do
+    prs=$(printf '%s' "$pairs" | awk -v r="$r" '$1 == r {print $2}' | sort -un | tr '\n' ' ')
+    nd=""; case " ${GOAL_SHIP_NODEPLOY_REPOS:-jpmoya/claude-agents} " in *" $r "*) nd="--no-deploy" ;; esac
+    # shellcheck disable=SC2086
+    out=$(bash "$vs" "$r" $nd $prs 2>&1 </dev/null); rc=$?
+    if [ "$rc" -ne 0 ]; then bad=1; agg="$agg$(printf '%s' "$out" | grep -v ': SHIPPED$' | head -n 4)"$'\n'; fi
+  done
+  [ "$bad" -eq 0 ] && { rm -f "$vc"; return 0; }
+  GE_NOTLIVE_WHY=$(printf '%s' "$agg" | sed '/^$/d' | head -n 6)
+  [ -n "$GE_NOTLIVE_WHY" ] || GE_NOTLIVE_WHY="verify-shipped.sh failed"
+  { printf '%s %s\n' "$now" "$key"; printf '%s\n' "$GE_NOTLIVE_WHY"; } > "$vc" 2>/dev/null
+  return 1
 }
 
 goal_card() {  # <title> <status> <what's up> <needed> — the standard status card (CLAUDE.md "Status answers"), composed here, never parsed
@@ -1241,6 +1318,8 @@ goal_park() {  # <id> <issue> [launch|idle] — `launch` (#514): parked by GOAL_
   local id=$1 issue=$2 why="no progress in $GOAL_MAX_NO_PROGRESS cycles"
   [ "${3:-}" = launch ] && why="could not launch in $GOAL_MAX_LAUNCH_FAILS consecutive attempts"
   [ "${3:-}" = idle ] && why="no dispatchable work in $GOAL_MAX_NO_PROGRESS consecutive cycles (idle hand-offs, scope unchanged)"
+  # a goal whose tickets are all delivered but not verified on main + green prod deploy says so (verify-shipped.sh gate in goal_eval)
+  if [ -s "$PIPE/goal-$id.notlive" ]; then why="not live on prod ($(head -n 1 "$PIPE/goal-$id.notlive" | cut -c1-200)); $why"; fi
   touch "$PIPE/goal-$id.held"
   if _goal_label_add "$issue" goal-held; then echo registry > "$PIPE/goal-$id.held"   # confirmed: goal_sync reads its lifting as a resume
   else goal_err "cannot label the registry issue of $id held"; fi

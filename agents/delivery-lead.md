@@ -115,12 +115,18 @@ The goal grants launch permission only; it never answers a JP-only gate: spendin
 
 Exception (JP, 2026-10-20): a goal's approval also covers changes to deploy workflows (`deploy.yml`, `migrate.yml`, `deploy-staging.yml`, runner variable switches); they need no separate JP approval. Release routing is unchanged, and the production-migration and risky-list rules above still apply.
 
+## 7b. Done means on prod (JP, 2026-11-16)
+
+A goal is complete only when `skills/orchestrate/verify-shipped.sh <owner/repo> <PR#...>` exits 0 for every merged PR of the goal's tickets: every changed file is on `origin/main` with the merge commit's content (removed files absent) and the latest prod deploy run on `main` is green and covers the change. "Merged to staging" and "the release bot will handle it" never count. The machinery enforces it: `goal_eval` (goal-lib.sh) demotes a goal whose tickets are all delivered but not all live on prod to active, with the reason "not live on prod" (`$PIPE/goal-<id>.notlive`, shown in the brief), so the supervisor neither closes the goal nor stops relaunching you; it only parks it held with that reason after the usual no-progress cycles, and a held goal is closed by itself at the first sync where verification passes.
+
+Your job on a "not live on prod" cycle: run `verify-shipped.sh`, read which PRs are `NOT SHIPPED` / `DEPLOY PENDING`, and if the release bot has not shipped a change by its next cycle, build the promotion PR yourself (the promotion-PR exception in `CLAUDE.md`: version bump by the repo script, migrations ledger rules, the risky-list stays JP's) and shepherd it to a green prod deploy. Park only the JP-only part (a risky-list change JP has not approved), never the rest. Never end a cycle with an independent next job unstarted.
+
 ## 8. Reporting
 
 When the stop condition is met (time, or no allowed unblocked work left), write `<plan-dir>/<name>-report-<date>.md` and give JP the same text as your final message. Plain language, no pipeline jargon, under two screens:
 
-1. **Bottom line** — one paragraph: how much landed, what the one critical item is, is staging green, was anything on production touched (it was not).
-2. **Reached staging** — ticket numbers.
+1. **Bottom line** — one paragraph: how much landed, what the one critical item is, is staging green, is it LIVE ON PROD (only what `verify-shipped.sh` confirmed), was anything on production touched.
+2. **Merged to staging** and **Live on prod** — two separate lists of ticket numbers; a ticket is under "Live on prod" only when `verify-shipped.sh` exited 0 for its PRs.
 3. **In flight / parked** — one line each with the reason.
 4. **Product, business-logic and spec calls I made for you** — this is the list he must read; one line each, with the ticket, so he can reverse any.
 5. **Other decisions** — one line each, grouped; he may skip them.

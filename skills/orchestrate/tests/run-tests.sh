@@ -39,6 +39,9 @@ export GH_BUDGET_ENABLED=0   # gh-budget.sh (call log, quota guard, read cache) 
 # against this plain export.
 export CI_QUEUE_COLLECT_ENABLED=0
 export CI_QUEUE_COLLECT_TEST_DISABLE=1
+# verify-shipped gate (goal_eval's "not live on prod" check, real timeline reads + git fetches): off for the suites that fake a GitHub
+# without those routes; test-goal-ship-gate.sh turns it on for itself via config.local.sh.
+export GOAL_SHIP_GATE=0
 
 . "$HERE/lib/assert.sh"
 . "$HERE/lib/fixture.sh"
