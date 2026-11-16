@@ -17,19 +17,21 @@ ex_fixture() {
   local base=$1 glog=${2:-}
   cr_fixture_cls 'Blocked on: ci_red — checks failing' "$glog"
   printf '%s\n' "$base" > "$SQ_GH/ex-base"
+  printf '.github/workflows/e2e-tests.yml\n' > "$SQ_GH/ex-path"
   printf 'Process completed with exit code 1.\nError: migration 068 is missing\n' > "$SQ_GH/cr-log-950"
   local j='{"name":"Playwright E2E","bucket":"fail","link":"'"$EX_E2E_LINK"'"}'
   if [ -n "$glog" ]; then
     j='{"name":"unit-tests","bucket":"fail","link":"https://github.com/o/r/actions/runs/500/job/901"},'"$j"
   fi
   printf '[%s]\n' "$j" > "$SQ_GH/cr-checks.json"
-  # answer the baseRefName read; everything else falls through to the cr_* wrapper
+  # answer the head+base read and the run's workflow-file read; everything else falls through to the cr_* wrapper
   cp "$SQ_GH/gh" "$SQ_GH/gh-cr"
   cat > "$SQ_GH/gh" <<'GH_EOF'
 #!/bin/bash
 HERE=$(cd "$(dirname "$0")" && pwd)
 case "$1 $2" in
-  "pr view") case "$*" in *baseRefName*) printf '%s\n' "$*" >> "$HERE/gh-calls.log"; cat "$HERE/ex-base"; exit 0 ;; esac ;;
+  "pr view") case "$*" in *headRefOid*) printf '%s\n' "$*" >> "$HERE/gh-calls.log"; printf '%s\n%s\n' "$(cat "$HERE/cr-head")" "$(cat "$HERE/ex-base")"; exit 0 ;; esac ;;
+  "api repos/"*) case "$*" in *actions/runs/*) printf '%s\n' "$*" >> "$HERE/gh-calls.log"; cat "$HERE/ex-path"; exit 0 ;; esac ;;
   "run rerun") if [ -f "$HERE/ex-refuse-second-job" ] && [ "$(grep -c '^run rerun' "$HERE/gh-calls.log" 2>/dev/null)" -ge 1 ]; then
       printf '%s\n' "$*" >> "$HERE/gh-calls.log"; echo "run is already running" >&2; exit 1; fi ;;
 esac
@@ -139,6 +141,18 @@ test_ex_shared_run_second_job_refused_still_records_head() {
   assert_eq "$EX_E2E_FETCH" "0" "exempt E2E never classified" || return 1
 }
 
+# Match is by workflow file, not display name: a same-named check whose run is not e2e-tests.yml stays a gate
+test_ex_same_name_other_workflow_file_not_dropped() {
+  ex_fixture staging ''
+  printf '.github/workflows/other.yml\n' > "$SQ_GH/ex-path"
+  ar2_tick; cr_settle; ex_counts
+  local alert; alert=$(cat "$(rkp "$SQ_PIPE/orch-42.alert")" 2>/dev/null)
+  sq_cleanup
+  assert_contains "$alert" "finished red (real failure)" "same-named check from another workflow file is handed to JP" || return 1
+  assert_eq "$EX_N" "0" "not relaunched" || return 1
+  assert_eq "$EX_E2E_FETCH" "1" "same-named check from another workflow file is classified" || return 1
+}
+
 echo "-- supervisor ci gate: deployer-exempt Playwright E2E (issue #725)"
 run_test test_ex_staging_exempt_only_clears_and_relaunches
 run_test test_ex_staging_real_gate_still_handed_off
@@ -147,3 +161,4 @@ run_test test_ex_claude_agents_keeps_e2e_as_gate
 run_test test_ex_staging_infra_gate_rerun_never_touches_exempt
 run_test test_ex_staging_infra_gate_shared_run_rerun_by_job
 run_test test_ex_shared_run_second_job_refused_still_records_head
+run_test test_ex_same_name_other_workflow_file_not_dropped

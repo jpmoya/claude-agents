@@ -1401,27 +1401,40 @@ autoretry_cleared() {
 # forever. A real failure is never re-run: no `gh run rerun`, no `[ci-rerun]` log line, no $PIPE/orch-<rk>.ci-rerun
 # write, even on the very first tick for that head.
 ci_infra_gate() {
-  local repo=$1 issue=$2 pr=$3 rk stf head checks rows name link run job runs log cls ccrc tol="" exrows=""
+  local repo=$1 issue=$2 pr=$3 rk stf head checks rows name link run job runs log cls ccrc tol="" exrows="" hv base exl xl xr xpath
   AR_NOTE=""; AR_FINAL=""
   rk=$(rk_of "$repo" "$issue"); stf="$PIPE/orch-$rk.ci-rerun"
-  head=$(cd "$repo" && gh pr view "$pr" --json headRefOid --jq .headRefOid 2>/dev/null </dev/null) || return 1
+  hv=$(cd "$repo" && gh pr view "$pr" --json headRefOid,baseRefName --jq '.headRefOid, .baseRefName' 2>/dev/null </dev/null) || return 1
+  head=$(printf '%s\n' "$hv" | sed -n 1p); base=$(printf '%s\n' "$hv" | sed -n 2p)   # #725: base rides on the head read
   [ -n "$head" ] || return 1
   checks=$(cd "$repo" && gh pr checks "$pr" --json name,bucket,link 2>/dev/null </dev/null)
   [ -n "$checks" ] || return 1
   printf '%s' "$checks" | jq -e 'any(.[]; .bucket == "pending")' >/dev/null 2>&1 && return 1   # still running: wait
   rows=$(printf '%s' "$checks" | jq -r '.[] | select(.bucket == "fail") | [.name, (.link // "")] | @tsv' 2>/dev/null)
   [ -n "$rows" ] || return 1
-  # #725: agents/deployer.md (JP 2026-09-22) keeps the `Playwright E2E` job out of the merge gate on STAGING, so it is
-  # neither re-run nor classified here (only drops it from the failing set; the deployer re-applies its own job-key rule
-  # before merging). Staging base only: a main/release PR and jpmoya/claude-agents keep it as a gate. With nothing
-  # gating left the hold clears (relaunch the deployer) instead of the silent return 1 below.
-  if [ "$(cd "$repo" && gh pr view "$pr" --json baseRefName --jq .baseRefName 2>/dev/null </dev/null)" = staging ] \
-     && [ "$(repo_slug "$repo")" != "jpmoya/claude-agents" ]; then
-    exrows=$(printf '%s\n' "$rows" | awk -F'\t' '$1 == "Playwright E2E"')
-    rows=$(printf '%s\n' "$rows" | awk -F'\t' '$1 != "Playwright E2E"')
-    if [ -z "$rows" ]; then
-      AR_NOTE="only the deployer-exempt Playwright E2E fails on staging (not a merge gate, JP 2026-09-22)"
-      return 0
+  # #725: agents/deployer.md (JP 2026-09-22) keeps the quoting tool's `Playwright E2E` job (job `e2e` of
+  # .github/workflows/e2e-tests.yml) out of the merge gate on STAGING, so it is neither re-run nor classified here (it is
+  # only dropped from the failing set; the deployer re-applies its own merge-base job-key rule before merging). Matched
+  # by workflow file, not display name alone: the check must be named `Playwright E2E` and its run must be the
+  # `e2e-tests.yml` file (read from the run; the job key itself is not on the checks API). Staging
+  # base only: a main/release PR and jpmoya/claude-agents keep it as a gate. With nothing gating left the hold clears
+  # (relaunch the deployer) instead of the silent return 1 below.
+  if [ "$base" = staging ] && [ "$(repo_slug "$repo")" != "jpmoya/claude-agents" ]; then
+    exl=$(printf '%s' "$checks" | jq -r '.[] | select(.bucket == "fail" and .name == "Playwright E2E") | (.link // "")' 2>/dev/null)
+    while IFS= read -r xl; do
+      [ -n "$xl" ] || continue
+      xr=$(printf '%s' "$xl" | sed -nE 's#.*/actions/runs/([0-9]+).*#\1#p'); [ -n "$xr" ] || continue
+      xpath=$(cd "$repo" && gh api "repos/$(repo_slug "$repo")/actions/runs/$xr" --jq .path 2>/dev/null </dev/null) || continue
+      [ "${xpath%%@*}" = ".github/workflows/e2e-tests.yml" ] || continue
+      exrows="${exrows:+$exrows
+}Playwright E2E	$xl"
+    done <<< "$exl"
+    if [ -n "$exrows" ]; then
+      rows=$(printf '%s\n' "$rows" | grep -vxFf <(printf '%s\n' "$exrows") || true)
+      if [ -z "$rows" ]; then
+        AR_NOTE="only the deployer-exempt Playwright E2E fails on staging (not a merge gate, JP 2026-09-22)"
+        return 0
+      fi
     fi
   fi
   while IFS=$'\t' read -r name link; do
