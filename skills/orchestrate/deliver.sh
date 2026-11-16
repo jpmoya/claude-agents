@@ -124,6 +124,28 @@ check_overlap() {
       [ "$hit" = 1 ] || continue
       if [ "$o_kind" = msall ]; then die "overlaps live goal $o_id (milestones:all on $o_repo)"; fi
     fi
+    # #736: the milestones:all rule holds for a project goal too: a repo it touches (its items' repos, recorded in the block) and a live
+    # milestones:all goal on that repo are refused, the same as a label goal and a milestones:all goal
+    if [ "$new_kind" = proj ] && [ "$o_kind" = msall ]; then
+      for nr in $(printf '%s\n' "$new_rows" | sed -E 's/#[0-9]+$//' | sort -u); do
+        rc=0; _goal_same_repo "$nr" "$o_repo" || rc=$?
+        case "$rc" in
+          0) die "overlaps live goal $o_id (milestones:all on $o_repo)" ;;
+          1) ;;
+          *) die "cannot tell whether live goal $o_id ($o_repo) is on $nr (repo name unresolvable); refusing to go on blind" ;;
+        esac
+      done
+    elif [ "$new_kind" = msall ] && [ "$o_kind" = proj ]; then
+      [ "$o_repos" != "-" ] || die "cannot tell which repos live goal $o_id covers; refusing to go on blind"
+      for r in $(printf '%s' "$o_repos" | tr ',' ' '); do
+        rc=0; _goal_same_repo "$r" "$new_repo" || rc=$?
+        case "$rc" in
+          0) die "overlaps live goal $o_id (milestones:all on $new_repo)" ;;
+          1) ;;
+          *) die "cannot tell whether live goal $o_id ($r) is on $new_repo (repo name unresolvable); refusing to go on blind" ;;
+        esac
+      done
+    fi
     if ! other=$(goal_scope "$o_spec" "$o_id" 2>/dev/null); then
       # #736: a project goal's scope needs a token with the project scope. On a host without it the goal can still be ruled out when none of
       # its recorded repos is a repo of the new goal; otherwise (or with no recorded repos) the guard stays closed.
@@ -348,6 +370,11 @@ cmd_register_proj() {
   if [ -z "$kept" ] && [ -n "$dropped" ]; then die "$dropped is a direct-route repo: its changes are made by the interactive session with subagents, never by a goal (see CLAUDE.md)"; fi
   [ -n "$kept" ] || die "empty scope: project $ref has no issue items; a goal must start with at least one"
   repos_json=$(printf '%s' "$kept" | jq -Rc 'split(",")')
+  # a live goal's own mirror project is not a scope: the mirror sync would edit, fill and close it (#736)
+  r=$(_goal_registry_json 2>/dev/null | jq -r --arg o "$owner" --argjson n "$num" '[.[]? | select(.st == "queued" or .st == "active" or .st == "held" or .st == "waiting_jp")
+      | select((.block.project? // {}) | type == "object" and ((.owner // "") | ascii_downcase) == ($o | ascii_downcase) and .number == $n) | .id] | first // empty') \
+    || die "cannot read the goal registry ($GOAL_REGISTRY_REPO); refusing to go on blind"
+  [ -z "$r" ] || { OV_PROJ=$spec; die "project $ref is the mirror project of live goal $r; a goal's scope must be a project of your own, not another goal's mirror"; }
   check_overlap "$spec" "$id"
   [ "$now" = 1 ] && host="$THIS_HOST"   # queued goals have no host until the supervisor starts them (#320)
   # this host's token has the project scope (checked above); another host may not, so the goal stays here unless --host says otherwise

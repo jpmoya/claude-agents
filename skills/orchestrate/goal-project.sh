@@ -132,8 +132,8 @@ goal_project_read() {
     fi
     nodes=$(jq -c --argjson acc "$nodes" '$acc + (.data.repositoryOwner.projectV2.items.nodes | if type == "array" then . else error("no nodes") end)' <<< "$page" 2>/dev/null) \
       || { echo "an items page does not parse" >&2; rm -f "$errf"; return 1; }
-    more=$(jq -r '.data.repositoryOwner.projectV2.items.pageInfo | if .hasNextPage == true then (.endCursor // "") else "" end' <<< "$page" 2>/dev/null) \
-      || { echo "an items page has no page info" >&2; rm -f "$errf"; return 1; }
+    more=$(jq -r '.data.repositoryOwner.projectV2.items.pageInfo | if .hasNextPage == true then (.endCursor // "" | if . == "" then error("no cursor") else . end) else "" end' <<< "$page" 2>/dev/null) \
+      || { echo "an items page has no page info, or says there are more items but gives no cursor" >&2; rm -f "$errf"; return 1; }
     [ "$first" = 100 ] || break
     [ -n "$more" ] || break
     cur="$more"
@@ -159,11 +159,21 @@ _gp_canon() {
   printf '%s\n' "$in"
 }
 
+# _gp_scope_nums -> the numbers (space separated) of the owner's projects that are some goal's SCOPE (#736, registry `scope_project`, any goal
+# state). Those are the user's own projects: never adopted, synced, renamed or closed as another goal's mirror. Exit 1 when the registry is unreadable.
+_gp_scope_nums() {
+  local reg="${_GP_REG:-}"
+  [ -n "$reg" ] || reg=$(_goal_registry_json all 2>/dev/null) || return 1
+  printf '%s' "$reg" | jq -r --arg o "$(_gp_owner)" '[.[]? | .block.scope_project? | select(type == "object" and ((.owner // "") | ascii_downcase) == ($o | ascii_downcase)) | .number | tostring] | join(" ")' 2>/dev/null
+}
+
 # _gp_find <title> <scope refs> <full 0|1> -> number of an existing project that is this goal's: the same title, or (full) the
 # "Goal: " project that holds at least half of the goal's tickets (several goals may share one project).
 _gp_find() {
-  local title="$1" refs="$2" full="$3" list n c items best="" bestc=0 bestcnt=0 cnt
+  local title="$1" refs="$2" full="$3" list n c items best="" bestc=0 bestcnt=0 cnt scoped
   list=$(_gp_list) || return 0
+  scoped=$(_gp_scope_nums) || return 0   # unreadable registry: bind nothing rather than adopt a scope project
+  list=$(printf '%s' "$list" | jq -c --arg s " $scoped " '[.[] | (" \(.number) ") as $k | select(($s | contains($k)) | not)]') || return 0
   n=$(printf '%s' "$list" | jq -r --arg t "$title" '[.[] | select((.title | ascii_downcase) == ($t | ascii_downcase)) | .number] | first // empty')
   if [ -n "$n" ]; then printf '%s\n' "$n"; return 0; fi
   [ "$full" = 1 ] && [ -n "$refs" ] || return 0
@@ -232,7 +242,7 @@ goal_project_sweep_done() {
   goal_project_enabled || return 0
   o=$(_gp_owner)
   # #736: a project that is some goal's scope is its owner's, never swept closed (a closed scope project reads as unreadable)
-  scoped=" $(printf '%s' "${_GP_REG:-[]}" | jq -r --arg o "$o" '[.[]? | .block.scope_project? | select(type == "object" and .owner == $o) | .number | tostring] | join(" ")' 2>/dev/null) "
+  scoped=" $(_gp_scope_nums) " || return 0   # unreadable registry: sweep nothing
   for n in $(gh project list --owner "$o" --format json -L 200 2>/dev/null | jq -r '.projects[]? | select(.title | startswith("Goal: ")) | .number'); do
     case "$scoped" in *" $n "*) continue ;; esac
     items=$(_gp_items "$o" "$n" 2>/dev/null) || continue

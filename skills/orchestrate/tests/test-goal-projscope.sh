@@ -34,12 +34,13 @@ if [ "$1" = api ] && [ "$2" = graphql ]; then
   [ -z "$cur" ] || [ ! -f "$P/fail-page2" ] || { echo "gh: HTTP 502" >&2; exit 1; }
   [ -f "$P/$num.json" ] || { echo '{"data":{"repositoryOwner":{"projectV2":null}}}'; exit 0; }
   pg=0; [ -z "$cur" ] || pg=${cur#c}
-  jq -c --argjson pg "$pg" --argjson first "${first:-100}" '
+  nc=false; [ ! -f "$P/no-cursor" ] || nc=true
+  jq -c --argjson pg "$pg" --argjson first "${first:-100}" --argjson nc "$nc" '
     (.pagesize // $first) as $ps
     | (.items | length) as $len
     | .items[($pg * $ps):(($pg + 1) * $ps)] as $slice
     | {data:{repositoryOwner:{projectV2:{title, url, closed,
-        items:{pageInfo:{hasNextPage: (($pg + 1) * $ps < $len), endCursor: "c\($pg + 1)"},
+        items:{pageInfo:{hasNextPage: (($pg + 1) * $ps < $len), endCursor: (if $nc then null else "c\($pg + 1)" end)},
           nodes: ($slice | map({type, content: (
             if .type == "ISSUE" then {number, state, stateReason: (.stateReason // null), body: (.body // ""), author: {login: (.author // "gps-author")},
               labels: {nodes: [(.labels // [])[] | {name: .}]}, milestone: (.milestone // null), repository: {nameWithOwner: .repo}}
@@ -48,7 +49,10 @@ if [ "$1" = api ] && [ "$2" = graphql ]; then
 fi
 if [ "$1" = project ]; then   # the mirror's calls: logged, answered, never needed by a project goal
   echo "$*" >> "$P/project-calls.log"
-  case "$2" in list) echo '{"projects":[{"number":12,"title":"Goal: Q4 Delivery","closed":false}]}' ;; *) echo '{}' ;; esac
+  case "$2" in
+    list) if [ -f "$P/list.json" ]; then jq -c '{projects: .}' "$P/list.json"; else echo '{"projects":[{"number":12,"title":"Goal: Q4 Delivery","closed":false}]}'; fi ;;
+    *) echo '{}' ;;
+  esac
   exit 0
 fi
 exec "$HERE/gh.base" "$@"
@@ -207,6 +211,21 @@ gps_control_read() {
   gps_lib "_goal_scope_rows $GPS_SPEC $GPS_ID"
   assert_eq "$(printf '%s\n' "$DG_OUT" | wc -l | tr -d ' ')" "3" "control: the healthy project reads 3 issues" || return 1
   : > "$DG_HOME/slog.log"
+}
+
+test_gps_a_page_that_has_more_but_no_cursor_fails_closed() {
+  gps_setup
+  local rc=0
+  gps_project 12 "Q4 Delivery" false 2 "$(gps_world_items)"
+  gps_control_read || rc=1
+  touch "$DG_BIN/psc/no-cursor"   # page 1 says hasNextPage true and gives no endCursor
+  : > "$DG_BIN/psc/graphql.log"
+  gps_lib "_goal_scope_rows $GPS_SPEC $GPS_ID"
+  assert_ne "$DG_RC" "0" "more items promised but no cursor: fail closed, not a silent end" || rc=1
+  assert_eq "$DG_OUT" "" "no partial scope" || rc=1
+  assert_eq "$(wc -l < "$DG_BIN/psc/graphql.log" | tr -d ' ')" "1" "only page 1 was requested" || rc=1
+  assert_contains "$(cat "$DG_HOME/slog.log")" "gives no cursor" "logged" || rc=1
+  dg_teardown; return $rc
 }
 
 test_gps_a_project_gh_cannot_read_fails_closed() {
@@ -412,6 +431,7 @@ test_gps_register_refuses_unreadable_empty_and_undispatched_projects() {
 test_gps_overlap_both_ways_with_every_kind_of_goal() {
   gps_setup
   local rc=0
+  echo '[]' > "$DG_BIN/psc/list.json"   # no project of the owner for a milestone goal's mirror to bind (that is another test)
   dg_run "$DG_SPEC_MS"; assert_eq "$DG_RC" "0" "milestone goal registers (stderr: $DG_ERR)" || rc=1
   dg_run "$GPS_SPEC"
   assert_eq "$DG_RC" "1" "project over a live milestone goal's tickets: refused" || rc=1
@@ -419,6 +439,7 @@ test_gps_overlap_both_ways_with_every_kind_of_goal() {
   assert_contains "$DG_ERR" "route=goal-project-scope" "the refusal is captured with its route tag" || rc=1
   dg_teardown
   gps_setup
+  echo '[]' > "$DG_BIN/psc/list.json"
   dg_run "$GPS_SPEC"; assert_eq "$DG_RC" "0" "project goal registers (stderr: $DG_ERR)" || rc=1
   dg_run "$DG_SPEC_MS"
   assert_eq "$DG_RC" "1" "reverse: a milestone goal over the project goal's tickets: refused" || rc=1
@@ -540,6 +561,59 @@ test_gps_sync_follows_a_repo_that_joined_through_a_new_item() {
   dg_teardown; return $rc
 }
 
+test_gps_milestones_all_rule_holds_for_project_goals_both_ways() {
+  gps_setup
+  local rc=0
+  # project 12 holds only project-a#7: no ticket shared with the milestones:all goal (it covers 101 and 201), but the same repo
+  gps_project 12 "Q4 Delivery" false "" "$(printf '%s\n' "$(gps_issue_item example-owner/project-a 7 OPEN)" | jq -sc .)"
+  dg_run "$DG_SPEC_ALL" --approve-all; assert_eq "$DG_RC" "0" "milestones:all registers (stderr: $DG_ERR)" || rc=1
+  dg_run "$GPS_SPEC"
+  assert_eq "$DG_RC" "1" "a project goal touching that repo is refused" || rc=1
+  assert_contains "$DG_ERR" "milestones:all on example-owner/project-a" "by the milestones:all repo rule" || rc=1
+  gps_project 12 "Q4 Delivery" false "" "$(printf '%s\n' "$(gps_issue_item example-owner/project-b 1 OPEN)" | jq -sc .)"
+  dg_run "$GPS_SPEC"; assert_eq "$DG_RC" "0" "control: a project on another repo registers (stderr: $DG_ERR)" || rc=1
+  dg_teardown
+  gps_setup
+  gps_project 12 "Q4 Delivery" false "" "$(printf '%s\n' "$(gps_issue_item example-owner/project-a 7 OPEN)" | jq -sc .)"
+  dg_run "$GPS_SPEC"; assert_eq "$DG_RC" "0" "project goal registers first (stderr: $DG_ERR)" || rc=1
+  dg_run "$DG_SPEC_ALL" --approve-all
+  assert_eq "$DG_RC" "1" "reverse: milestones:all on a repo the project goal touches is refused" || rc=1
+  assert_contains "$DG_ERR" "milestones:all on example-owner/project-a" "by the same rule" || rc=1
+  dg_teardown; return $rc
+}
+
+# A project that is a goal's scope belongs to its owner: another goal's mirror sync must never adopt it (by title or by shared items), and a
+# project that is a live goal's mirror cannot become a scope.
+test_gps_another_goals_mirror_never_adopts_a_scope_project() {
+  gps_setup
+  local rc=0 f
+  # the milestone goal's mirror title is "Goal: <spec>"; project 12 carries exactly that title
+  jq -nc '[{number:12,title:"Goal: example-owner/project-a:milestone:12",closed:false}]' > "$DG_BIN/psc/list.json"
+  gps_project 12 "Goal: example-owner/project-a:milestone:12" false "" "$(printf '%s\n' "$(gps_issue_item example-owner/project-a 7 OPEN)" | jq -sc .)"
+  dg_run "$DG_SPEC_MS"; assert_eq "$DG_RC" "0" "control: with no scope project, the mirror binds the same-titled project 12 (stderr: $DG_ERR)" || rc=1
+  assert_eq "$(dg_block "$(dg_reg_file_for "$DG_ID_MS")" | jq -r '.project.number // "none"')" "12" "control bound" || rc=1
+  dg_teardown
+  gps_setup
+  jq -nc '[{number:12,title:"Goal: example-owner/project-a:milestone:12",closed:false}]' > "$DG_BIN/psc/list.json"
+  gps_project 12 "Goal: example-owner/project-a:milestone:12" false "" "$(printf '%s\n' "$(gps_issue_item example-owner/project-a 7 OPEN)" | jq -sc .)"
+  dg_run "$GPS_SPEC"; assert_eq "$DG_RC" "0" "project 12 registered as a scope (stderr: $DG_ERR)" || rc=1
+  : > "$DG_BIN/psc/project-calls.log"
+  dg_run "$DG_SPEC_MS"; assert_eq "$DG_RC" "0" "milestone goal registers (stderr: $DG_ERR)" || rc=1
+  assert_eq "$(dg_block "$(dg_reg_file_for "$DG_ID_MS")" | jq -r '.project.number // "none"')" "none" "its mirror did not adopt the scope project" || rc=1
+  assert_not_contains "$(gps_calls)" "item-add" "no item was added to the scope project" || rc=1
+  assert_not_contains "$(gps_calls)" "edit" "nothing was edited" || rc=1
+  dg_teardown
+  # the other way: a live goal's mirror cannot be registered as a scope
+  gps_setup
+  jq -nc '[{number:12,title:"Goal: example-owner/project-a:milestone:12",closed:false}]' > "$DG_BIN/psc/list.json"
+  gps_project 12 "Goal: example-owner/project-a:milestone:12" false "" "$(printf '%s\n' "$(gps_issue_item example-owner/project-a 7 OPEN)" | jq -sc .)"
+  dg_run "$DG_SPEC_MS"
+  dg_run "$GPS_SPEC"
+  assert_eq "$DG_RC" "1" "a live goal's mirror project is refused as a scope" || rc=1
+  assert_contains "$DG_ERR" "mirror project of live goal $DG_ID_MS" "says whose mirror it is" || rc=1
+  dg_teardown; return $rc
+}
+
 test_gps_milestone_approval_is_unchanged_by_a_project_goal() {
   gps_setup
   local rc=0
@@ -623,6 +697,8 @@ for t in test_gps_parse_canonical_and_alias \
          test_gps_sync_grants_go_to_new_items_with_the_usual_exclusions \
          test_gps_a_host_without_the_scope_still_works_around_a_live_project_goal \
          test_gps_sync_follows_a_repo_that_joined_through_a_new_item \
+         test_gps_milestones_all_rule_holds_for_project_goals_both_ways \
+         test_gps_another_goals_mirror_never_adopts_a_scope_project \
          test_gps_milestone_approval_is_unchanged_by_a_project_goal \
          test_gps_brief_names_the_project_and_never_milestones_or_labels \
          test_gps_mirror_never_touches_a_scope_project \
@@ -636,6 +712,7 @@ for t in test_gps_parse_canonical_and_alias \
          test_gps_business_intelligence_items_are_never_in_scope \
          test_gps_more_than_one_page_is_read_completely \
          test_gps_a_failed_page_fails_the_whole_read \
+         test_gps_a_page_that_has_more_but_no_cursor_fails_closed \
          test_gps_a_project_gh_cannot_read_fails_closed \
          test_gps_a_missing_project_fails_closed \
          test_gps_a_closed_project_fails_closed \
