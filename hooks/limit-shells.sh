@@ -25,13 +25,35 @@ if [ "$global_count" -ge "$MAX_GLOBAL" ]; then
   exit 2
 fi
 
-# Per-session cap — only shells belonging to this session
-if [ -n "$CLAUDE_CODE_SESSION_ID" ]; then
-  session_count=$(ps -eo pid,command 2>/dev/null | grep -F "$CLAUDE_CODE_SESSION_ID" | grep -v grep | grep -v "limit-shells" | wc -l | tr -d ' ')
-  if [ "$session_count" -ge "$MAX_PER_SESSION" ]; then
-    echo "BLOCKED: $session_count shells in this session (max $MAX_PER_SESSION). Wait for existing commands to finish." >&2
-    exit 2
-  fi
+# Per-session cap — only real tool shells of this session's claude CLI (#729).
+# A tool shell is "<shell> -c source …/.claude/shell-snapshots/snapshot-…" whose parent is the CLI.
+# Not counted: the app's --resume processes, detached scripts, children and forked subshells of a
+# tool shell (their parent is a shell, not the CLI). Main session and Agent-tool helpers share the
+# CLI process, so they share this one budget. The CLI pid is $CLAUDE_PID when it names a live claude
+# process, else the first claude ancestor of this hook. Only `ps -axo pid=,ppid=,command=` is used
+# (valid on macOS and Linux; macOS ps has no etimes).
+TOOL_SHELL_RE='(^|/)(zsh|bash|sh) -c ([-][a-zA-Z]+ )*source [^ ]*/[.]claude/shell-snapshots/snapshot-'
+session_count=$(RE="$TOOL_SHELL_RE" CLI="${CLAUDE_PID:-}" SID="${CLAUDE_CODE_SESSION_ID:-}" START="$PPID" \
+  awk '
+    { p = $1; c = $0; sub(/^ *[0-9]+ +[0-9]+ */, "", c); par[p] = $2; cmd[p] = c; pids[n++] = p }
+    END {
+      re = ENVIRON["RE"]; cli = ENVIRON["CLI"]; sid = ENVIRON["SID"]
+      if (cli == "" || !(cli in cmd) || cmd[cli] !~ /(^|\/)claude( |$)/) {
+        cli = ""; p = ENVIRON["START"]
+        for (d = 0; p != "" && p + 0 > 1 && d < 30; d++) {
+          if ((p in cmd) && (cmd[p] ~ /(^|\/)claude( |$)/ || (sid != "" && index(cmd[p], sid)))) { cli = p; break }
+          p = par[p]
+        }
+      }
+      if (cli == "") { print -1; exit }
+      k = 0
+      for (i = 0; i < n; i++) { p = pids[i]; if (par[p] == cli && cmd[p] ~ re) k++ }
+      print k
+    }' <<< "$(ps -axo pid=,ppid=,command= 2>/dev/null)")
+# -1 = CLI not found: fail open (this is a resource guard, not a security check).
+if [ "${session_count:--1}" -ge "$MAX_PER_SESSION" ] 2>/dev/null; then
+  echo "BLOCKED: $session_count shells in this session (max $MAX_PER_SESSION). Wait for existing commands to finish." >&2
+  exit 2
 fi
 
 exit 0
