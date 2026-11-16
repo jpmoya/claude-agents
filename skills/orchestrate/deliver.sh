@@ -58,7 +58,7 @@ body_for() { printf 'Goal: %s\n\n```json\n%s\n```\n' "$1" "$2"; }
 # _goal_same_repo (#527): a goal stored under a pre-rename slug (Benjis-Plants/scheduler) is the same repo as one under the
 # new slug, for the repo test, the milestones:all test and the shared-ticket test; a name that cannot be resolved refuses.
 check_overlap() {
-  local spec="$1" id="$2" skip="${3:-}" repos="${4:-}" extra="${5:-}" reg regrows new_repo new_kind new_rows other row o_issue o_id o_spec o_st o_repo o_kind
+  local spec="$1" id="$2" skip="${3:-}" repos="${4:-}" extra="${5:-}" reg regrows new_repo new_kind new_rows other row o_issue o_id o_spec o_st o_repo o_kind o_repos nr
   local rc r hit cand
   reg=$(_goal_registry_json) || die "cannot read the goal registry ($GOAL_REGISTRY_REPO); refusing to go on blind"
   IFS=$'\t' read -r new_repo new_kind _ <<< "$(goal_parse "$spec")"
@@ -66,10 +66,11 @@ check_overlap() {
   new_rows=$(goal_scope "$spec" "$id" "$repos") || die "cannot read the scope of $spec; refusing to go on blind"
   [ -z "$extra" ] || new_rows=$(printf '%s\n%s' "$new_rows" "$extra")
   # #527: parse first; a jq error fed straight into the loop meant zero iterations, i.e. no overlap found (fail open)
-  regrows=$(printf '%s' "$reg" | jq -r 'def f: if . == null or . == "" then "-" else tostring end; .[] | "\(.issue | f)\t\(.id | f)\t\(.spec | f)\t\(.st | f)"') \
+  regrows=$(printf '%s' "$reg" | jq -r 'def f: if . == null or . == "" then "-" else tostring end; .[] | "\(.issue | f)\t\(.id | f)\t\(.spec | f)\t\(.st | f)\t\((.block.repos? // []) | join(",") | f)"') \
     || die "cannot parse the goal registry ($GOAL_REGISTRY_REPO); refusing to go on blind"
-  while IFS=$'\t' read -r o_issue o_id o_spec o_st; do
+  while IFS=$'\t' read -r o_issue o_id o_spec o_st o_repos; do
     [ -n "$o_issue" ] || continue
+    OV_PROJ=""; [ "$new_kind" != proj ] || OV_PROJ=$spec
     [ "$o_issue" = "$skip" ] && continue
     # empty fields arrive as "-" (a tab split would collapse them); an unreadable id/state/issue fails closed
     if [ "$o_issue" = "-" ] || [ "$o_id" = "-" ] || [ "$o_st" = "-" ] || [ -z "$o_st" ]; then
@@ -123,7 +124,18 @@ check_overlap() {
       [ "$hit" = 1 ] || continue
       if [ "$o_kind" = msall ]; then die "overlaps live goal $o_id (milestones:all on $o_repo)"; fi
     fi
-    other=$(goal_scope "$o_spec" "$o_id" 2>/dev/null) || die "cannot read the scope of $o_id; refusing to go on blind"
+    if ! other=$(goal_scope "$o_spec" "$o_id" 2>/dev/null); then
+      # #736: a project goal's scope needs a token with the project scope. On a host without it the goal can still be ruled out when none of
+      # its recorded repos is a repo of the new goal; otherwise (or with no recorded repos) the guard stays closed.
+      [ "$o_kind" = proj ] && [ "$o_repos" != "-" ] || die "cannot read the scope of $o_id; refusing to go on blind"
+      for nr in $(printf '%s\n%s\n' "$repos" "$new_rows" | tr ',' '\n' | sed -E 's/#[0-9]+$//' | sort -u); do
+        for r in $(printf '%s' "$o_repos" | tr ',' ' '); do
+          rc=0; _goal_same_repo "$r" "$nr" || rc=$?
+          [ "$rc" = 1 ] || die "cannot read the scope of $o_id; refusing to go on blind"
+        done
+      done
+      continue
+    fi
     # shared ticket = same number in the same repo, the repo compared through _goal_same_repo (old vs renamed slug)
     while IFS= read -r row; do
       [ -n "$row" ] || continue
@@ -338,6 +350,8 @@ cmd_register_proj() {
   repos_json=$(printf '%s' "$kept" | jq -Rc 'split(",")')
   check_overlap "$spec" "$id"
   [ "$now" = 1 ] && host="$THIS_HOST"   # queued goals have no host until the supervisor starts them (#320)
+  # this host's token has the project scope (checked above); another host may not, so the goal stays here unless --host says otherwise
+  [ -n "$pin" ] || pin=$(printf '%s' "$THIS_HOST" | tr '[:upper:]' '[:lower:]')
   granted_at=$(date -u +%F)
   block=$(jq -nc --arg id "$id" --arg spec "$spec" --arg host "$host" --arg pin "$pin" --arg created "$(now_utc)" --arg ins "$instr" --arg title "$title" \
     --argjson repos "$repos_json" --argjson prio "$PRIORITY" --argjson sentry "$([ "$sentry" = 1 ] && echo true || echo false)" \

@@ -26,6 +26,7 @@ if [ "$1" = api ] && [ "$2" = -i ] && [ "$3" = user ]; then
   exit 0
 fi
 if [ "$1" = api ] && [ "$2" = graphql ]; then
+  [ ! -f "$HERE/noscope" ] || { echo "gh: INSUFFICIENT_SCOPES: your token has not been granted the required scopes" >&2; exit 1; }
   printf '%s\n' "$*" >> "$P/graphql.log"
   num=""; cur=""; first=""
   for a in "$@"; do case "$a" in number=*) num=${a#number=} ;; cursor=*) cur=${a#cursor=} ;; first=*) first=${a#first=} ;; esac; done
@@ -461,6 +462,41 @@ test_gps_sync_grants_go_to_new_items_with_the_usual_exclusions() {
   dg_teardown; return $rc
 }
 
+test_gps_a_host_without_the_scope_still_works_around_a_live_project_goal() {
+  gps_setup
+  local rc=0
+  gps_project 12 "Q4 Delivery" false "" "$(printf '%s\n' "$(gps_issue_item example-owner/project-a 101 OPEN)" "$(gps_issue_item example-owner/project-a 102 CLOSED COMPLETED)" | jq -sc .)"
+  dg_run "$GPS_SPEC"
+  assert_eq "$DG_RC" "0" "registered on a host with the scope (stderr: $DG_ERR)" || rc=1
+  assert_eq "$(gps_block | jq -c '[.host_pref, .repos]')" '["host-a",["example-owner/project-a"]]' "pinned to the registering host; the derived repos are recorded" || rc=1
+  # now a host whose token has no project scope (the project goal cannot be read there)
+  rm -f "$DG_BIN/scope"; touch "$DG_BIN/noscope"
+  dg_milestone example-owner_project-b 5 "b milestone"; dg_issue example-owner_project-b 2 open 5
+  dg_run example-owner/project-b:milestone:5
+  assert_eq "$DG_RC" "0" "a goal on a repo the project goal never touched still registers (stderr: $DG_ERR)" || rc=1
+  dg_run "$DG_SPEC_MS"
+  assert_eq "$DG_RC" "1" "a goal on the project goal's own repo is refused" || rc=1
+  assert_contains "$DG_ERR" "refusing to go on blind" "closed: the project goal cannot be ruled out" || rc=1
+  gps_lib "_goal_fb_covered example-owner/project-b"
+  assert_eq "$DG_RC" "0" "feedback goal on an unrelated repo: not blocked" || rc=1
+  gps_lib "_goal_fb_covered example-owner/project-a"
+  assert_eq "$DG_RC" "1" "feedback goal on the project goal's repo: fails closed" || rc=1
+  dg_teardown; return $rc
+}
+
+test_gps_sync_follows_a_repo_that_joined_through_a_new_item() {
+  gps_setup
+  local rc=0
+  gps_project 12 "Q4 Delivery" false "" "$(printf '%s\n' "$(gps_issue_item example-owner/project-a 101 OPEN)" | jq -sc .)"
+  dg_run "$GPS_SPEC"
+  assert_eq "$(gps_block | jq -c .repos)" '["example-owner/project-a"]' "registered with project-a only" || rc=1
+  gps_project 12 "Q4 Delivery" false "" "$(printf '%s\n' "$(gps_issue_item example-owner/project-a 101 OPEN)" "$(gps_issue_item example-owner/project-b 1 OPEN)" | jq -sc .)"
+  gps_lib "g=\$(_goal_find $GPS_ID); _goal_sync_grant \"\$g\""
+  assert_eq "$(gps_block | jq -c .repos)" '["example-owner/project-a","example-owner/project-b"]' "the block now lists project-b" || rc=1
+  assert_eq "$(gps_agent_go example-owner_project-b 1)" "yes" "and its item got agent-go" || rc=1
+  dg_teardown; return $rc
+}
+
 test_gps_milestone_approval_is_unchanged_by_a_project_goal() {
   gps_setup
   local rc=0
@@ -542,6 +578,8 @@ for t in test_gps_parse_canonical_and_alias \
          test_gps_feedback_goal_yields_the_tickets_of_a_live_project_goal \
          test_gps_stop_records_the_open_items_and_release_frees_them \
          test_gps_sync_grants_go_to_new_items_with_the_usual_exclusions \
+         test_gps_a_host_without_the_scope_still_works_around_a_live_project_goal \
+         test_gps_sync_follows_a_repo_that_joined_through_a_new_item \
          test_gps_milestone_approval_is_unchanged_by_a_project_goal \
          test_gps_brief_names_the_project_and_never_milestones_or_labels \
          test_gps_mirror_never_touches_a_scope_project \

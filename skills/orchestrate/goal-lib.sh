@@ -298,7 +298,17 @@ _goal_fb_covered() {
     keep=""
     if [ "$o_kind" = proj ]; then
       # #736: a project goal covers the items it holds, in any repo: read them and keep the ones of this repo
-      rows=$(_goal_scope_rows "$o_spec" "$o_id") || { _goal_fb_err "$repo" "the scope of live goal $o_id is unreadable"; return 1; }
+      if ! rows=$(_goal_scope_rows "$o_spec" "$o_id"); then
+        # a host whose token cannot read the project (no project scope) still rules the goal out when none of its recorded repos is this one
+        [ "$o_repos" != "-" ] || { _goal_fb_err "$repo" "the scope of live goal $o_id is unreadable"; return 1; }
+        keep=""
+        for r in $(printf '%s' "$o_repos" | tr ',' ' '); do
+          rc=0; _goal_same_repo "$r" "$repo" || rc=$?
+          [ "$rc" = 1 ] || keep=$r
+        done
+        [ -z "$keep" ] || { _goal_fb_err "$repo" "the scope of live goal $o_id is unreadable"; return 1; }
+        continue
+      fi
       while IFS=$'\t' read -r row _; do
         [ -n "$row" ] || continue
         rc=0; _goal_same_repo "${row%%#*}" "$repo" || rc=$?
@@ -978,10 +988,22 @@ _goal_grant_scope() {
   return $rc
 }
 
+# _goal_proj_repos <spec> <id> -> the JSON array (jq unique order) of the repos of a project goal's items (direct-route repos left out, as at register);
+# exit 1, nothing printed, when the scope is unreadable or has no dispatchable repo.
+_goal_proj_repos() {
+  local rows r out=""
+  rows=$(_goal_scope_rows "$1" "$2" 2>/dev/null) || return 1
+  for r in $(printf '%s\n' "$rows" | cut -f1 | sed -E 's/#[0-9]+$//' | sort -u); do
+    direct_route_repo "$r" || out="$out$r"$'\n'
+  done
+  [ -n "$out" ] || return 1
+  printf '%s' "$out" | jq -Rsc 'split("\n") | map(select(. != "")) | unique'
+}
+
 # _goal_sync_grant <goal json> — an approved goal (go:true in its block: label, milestone or #N) gives agent-go to in-scope tickets that arrived since
 # (any repo of the goal); the registry block and body record each grant.
 _goal_sync_grant() {
-  local g=$1 block id issue label sentry granted new repos body date
+  local g=$1 block id issue label sentry granted new repos body date nrepos
   block=$(printf '%s' "$g" | jq -c '.block // empty'); [ -n "$block" ] || return 0
   [ "$(printf '%s' "$block" | jq -r '(.go // false) == true')" = true ] || return 0
   id=$(printf '%s' "$g" | jq -r .id); issue=$(printf '%s' "$g" | jq -r .issue)
@@ -996,8 +1018,16 @@ _goal_sync_grant() {
     new=$(_goal_grant_scope "$(printf '%s' "$block" | jq -r '.spec // empty')" "$id" "$sentry" "$granted") || { goal_err "cannot grant go on every in-scope ticket of $id"; }
   fi
   [ -n "$new" ] || return 0
-  [ "$new" != "$granted" ] || return 0
+  nrepos=""
+  if [ "$(goal_parse "$(printf '%s' "$block" | jq -r '.spec // empty')" 2>/dev/null | cut -f2)" = proj ]; then
+    # #736: the repos recorded in the block follow the project's items (a repo that joined through a new item), so a host that cannot read
+    # the project still knows which repos the goal touches (feedback coverage, overlap guard)
+    nrepos=$(_goal_proj_repos "$(printf '%s' "$block" | jq -r .spec)" "$id") || nrepos=""
+    [ "$nrepos" = "$(printf '%s' "$block" | jq -c '(.repos // []) | unique')" ] && nrepos=""
+  fi
+  [ "$new" != "$granted" ] || [ -n "$nrepos" ] || return 0
   block=$(printf '%s' "$block" | jq -c --argjson n "$new" '.granted = $n')
+  [ -z "$nrepos" ] || block=$(printf '%s' "$block" | jq -c --argjson r "$nrepos" '.repos = $r')
   date=$(printf '%s' "$block" | jq -r '(.granted_at // empty)'); [ -n "$date" ] || date=$(date -u +%F)
   body=$(goal_body_v2 "$block" "$date")
   _goal_patch_body "$issue" "$body" >/dev/null 2>&1 || goal_err "cannot record the go grants of $id on the registry issue"
