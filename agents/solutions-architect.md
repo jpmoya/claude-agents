@@ -95,7 +95,7 @@ Plus:
 - **Expand-contract.** Design it backward-compatible: additive first (new tables, nullable or defaulted columns, new functions), destructive steps (drop, rename, type change, NOT NULL backfill) in a separate later ticket. Old code must work on the new schema and new code on the old schema. The PM's release-shaping rule cuts the sequence; you design each step to stand alone.
 - **Classify each migration** in the design, one line each:
   - `SAFE` (auto-applied by the app repo): additive tables/columns, `CREATE OR REPLACE FUNCTION`, indexes.
-  - `GATED`: anything the app repo's auto-apply refuses: destructive DDL, and any `GRANT`/`REVOKE` naming `anon`, `authenticated` or `PUBLIC`, even when it only re-states an existing grant. Check the repo's auto-apply script/docs for the exact refusal list rather than assuming.
+  - `GATED`: anything the app repo's auto-apply refuses: destructive DDL, and any `GRANT`/`REVOKE` naming `anon`, `authenticated` or `PUBLIC`, even when it only re-states an existing grant. Check the repo's auto-apply script/docs for the exact refusal list rather than assuming. When both SAFE and GATED apply (e.g. a new table with an explicit grant to `authenticated`), GATED wins.
   - For `GATED`, the design states `Migration: GATED — apply+record on production BEFORE this change is promoted; a release must exclude this change until recorded`, and flags it for the PM to copy into the ticket body.
 - **Deploy-order safe.** Write the migration so deploying the code before or after it is safe. Where that is not possible, specify tolerant code (handles the column/function being absent or present) or a feature toggle that stays off until the migration is recorded on production.
 - Indexes for expected query patterns.
