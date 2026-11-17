@@ -19,8 +19,14 @@ _gp_log() { slog "[goal] project: $*"; }
 
 # goal_project_enabled — GOAL_PROJECTS is not 0 and this host's gh token has the `project` scope (checked once per process).
 goal_project_enabled() {
-  local h s
   [ "${GOAL_PROJECTS:-1}" != 0 ] || return 1
+  goal_project_token_ok
+}
+
+# goal_project_token_ok — this host's gh token has the `project` scope (checked once per process). Not tied to GOAL_PROJECTS: that switch is the
+# mirror's; deliver.sh asks this before it registers a goal whose scope IS a project (#736).
+goal_project_token_ok() {
+  local h s
   if [ -z "${_GP_SCOPE:-}" ]; then
     local raw rc
     raw=$(gh api -i user 2>/dev/null); rc=$?
@@ -97,6 +103,50 @@ _gp_items() {
     content: {repository: .content.repository.nameWithOwner, number: .content.number}}]}' <<< "$nodes"
 }
 
+# goal_project_read <owner> <number> [--meta] -> {"title","url","issues":[...]} (#736): the project that IS a goal's scope. The ONE reader of
+# a bound scope project; goal-lib.sh reaches it through _goal_proj_read. Paginated `gh api graphql` (cursor via pageInfo). Issues only: draft
+# and pull-request items are ignored; each issue comes back in the REST shape _GOAL_ROW_JQ reads (lower-case state and state_reason,
+# user.login, labels[].name, milestone {state,title}, body) plus `repo`. State is the issue's own, never the project Status field.
+# --meta reads the first item only (title and url). Exit 1, one reason line on stderr, on anything that makes the scope untrustworthy:
+# a failed page, a project that is missing, closed or unreadable, an item the token cannot read. Never a partial or empty scope.
+# Needs no `project`-scope pre-check and ignores GOAL_PROJECTS (that switch is the mirror's): gh itself refuses without the scope.
+_GP_SCOPE_Q='query($owner:String!,$number:Int!,$first:Int!,$cursor:String){repositoryOwner(login:$owner){... on ProjectV2Owner{projectV2(number:$number){title url closed items(first:$first,after:$cursor){pageInfo{hasNextPage endCursor} nodes{type content{... on Issue{number state stateReason body author{login} labels(first:100){nodes{name}} milestone{state title} repository{nameWithOwner}}}}}}}}}'
+goal_project_read() {
+  local o="$1" n="$2" first=100 cur="" page nodes="[]" meta="" more errf rc
+  [ "${3:-}" != --meta ] || first=1
+  errf=$(mktemp "${TMPDIR:-/tmp}/gp-read-err.XXXXXX") || errf=/dev/null
+  while :; do
+    if [ -n "$cur" ]; then
+      page=$(gh api graphql -f query="$_GP_SCOPE_Q" -f owner="$o" -F number="$n" -F first="$first" -f cursor="$cur" 2>"$errf"); rc=$?
+    else
+      page=$(gh api graphql -f query="$_GP_SCOPE_Q" -f owner="$o" -F number="$n" -F first="$first" 2>"$errf"); rc=$?
+    fi
+    if [ "$rc" -ne 0 ]; then
+      echo "gh exit $rc: $(head -1 "$errf" 2>/dev/null | sed -E -e 's/(gh[pousr]_|github_pat_)[A-Za-z0-9_]+/[redacted]/g' -e 's/([Bb]earer|[Tt]oken)[ =:]+[^ ]+/\1 [redacted]/g' | cut -c1-200)" >&2
+      rm -f "$errf"; return 1
+    fi
+    if [ -z "$meta" ]; then
+      meta=$(jq -c '.data.repositoryOwner.projectV2 | select(. != null) | {title, url, closed}' <<< "$page" 2>/dev/null)
+      [ -n "$meta" ] || { echo "the project does not exist or the token cannot read it" >&2; rm -f "$errf"; return 1; }
+      [ "$(jq -r '.closed' <<< "$meta")" != true ] || { echo "the project is closed" >&2; rm -f "$errf"; return 1; }
+    fi
+    nodes=$(jq -c --argjson acc "$nodes" '$acc + (.data.repositoryOwner.projectV2.items.nodes | if type == "array" then . else error("no nodes") end)' <<< "$page" 2>/dev/null) \
+      || { echo "an items page does not parse" >&2; rm -f "$errf"; return 1; }
+    more=$(jq -r '.data.repositoryOwner.projectV2.items.pageInfo | if .hasNextPage == true then (.endCursor // "" | if . == "" then error("no cursor") else . end) else "" end' <<< "$page" 2>/dev/null) \
+      || { echo "an items page has no page info, or says there are more items but gives no cursor" >&2; rm -f "$errf"; return 1; }
+    [ "$first" = 100 ] || break
+    [ -n "$more" ] || break
+    cur="$more"
+  done
+  rm -f "$errf"
+  jq -c --argjson m "$meta" '
+    if any(.[]; (.type == "ISSUE" and .content.number == null) or (.type != "ISSUE" and .type != "PULL_REQUEST" and .type != "DRAFT_ISSUE")) then error("unreadable item") else . end
+    | $m + {issues: [.[] | select(.type == "ISSUE") | .content | {repo: .repository.nameWithOwner, number, state: (.state | ascii_downcase),
+        state_reason: (.stateReason // null | if . == null then null else ascii_downcase end), user: {login: (.author.login // null)}, body: (.body // ""),
+        labels: [.labels.nodes[]? | {name}], milestone: (if .milestone == null then null else {state: (.milestone.state | ascii_downcase), title: .milestone.title} end)}]}' <<< "$nodes" 2>/dev/null \
+    || { echo "an item is unreadable (redacted or not an issue)" >&2; return 1; }
+}
+
 # _gp_canon — stdin: lines starting with owner/repo#N; prints them with each repo renamed to its current full name (the project items carry
 # the current name; the registry may still hold the old one after a rename). One REST call per distinct repo.
 _gp_canon() {
@@ -109,11 +159,21 @@ _gp_canon() {
   printf '%s\n' "$in"
 }
 
+# _gp_scope_nums -> the numbers (space separated) of the owner's projects that are some goal's SCOPE (#736, registry `scope_project`, any goal
+# state). Those are the user's own projects: never adopted, synced, renamed or closed as another goal's mirror. Exit 1 when the registry is unreadable.
+_gp_scope_nums() {
+  local reg="${_GP_REG:-}"
+  [ -n "$reg" ] || reg=$(_goal_registry_json all 2>/dev/null) || return 1
+  printf '%s' "$reg" | jq -r --arg o "$(_gp_owner)" '[.[]? | .block.scope_project? | select(type == "object" and ((.owner // "") | ascii_downcase) == ($o | ascii_downcase)) | .number | tostring] | join(" ")' 2>/dev/null
+}
+
 # _gp_find <title> <scope refs> <full 0|1> -> number of an existing project that is this goal's: the same title, or (full) the
 # "Goal: " project that holds at least half of the goal's tickets (several goals may share one project).
 _gp_find() {
-  local title="$1" refs="$2" full="$3" list n c items best="" bestc=0 bestcnt=0 cnt
+  local title="$1" refs="$2" full="$3" list n c items best="" bestc=0 bestcnt=0 cnt scoped
   list=$(_gp_list) || return 0
+  scoped=$(_gp_scope_nums) || return 0   # unreadable registry: bind nothing rather than adopt a scope project
+  list=$(printf '%s' "$list" | jq -c --arg s " $scoped " '[.[] | (" \(.number) ") as $k | select(($s | contains($k)) | not)]') || return 0
   n=$(printf '%s' "$list" | jq -r --arg t "$title" '[.[] | select((.title | ascii_downcase) == ($t | ascii_downcase)) | .number] | first // empty')
   if [ -n "$n" ]; then printf '%s\n' "$n"; return 0; fi
   [ "$full" = 1 ] && [ -n "$refs" ] || return 0
@@ -178,10 +238,13 @@ goal_project_ensure() {
 # goal_project_sweep_done — close every open "Goal: " project whose tickets are all closed (at least one ticket), whatever goal it is
 # bound to or none: a finished goal's project closes by itself and moves to "recently closed" on the status page.
 goal_project_sweep_done() {
-  local o n items
+  local o n items scoped
   goal_project_enabled || return 0
   o=$(_gp_owner)
+  # #736: a project that is some goal's scope is its owner's, never swept closed (a closed scope project reads as unreadable)
+  scoped=" $(_gp_scope_nums) " || return 0   # unreadable registry: sweep nothing
   for n in $(gh project list --owner "$o" --format json -L 200 2>/dev/null | jq -r '.projects[]? | select(.title | startswith("Goal: ")) | .number'); do
+    case "$scoped" in *" $n "*) continue ;; esac
     items=$(_gp_items "$o" "$n" 2>/dev/null) || continue
     [ "$(printf '%s' "$items" | jq -r '(.items | length) > 0 and (all(.items[]; .closed == true))')" = true ] || continue
     gh project close "$n" --owner "$o" >/dev/null 2>&1 && _gp_log "project $n: every ticket is closed, closed the project" || _gp_log "cannot close project $n"
@@ -213,6 +276,9 @@ goal_project_sync_one() {
   goal_project_enabled || return 1
   st=$(printf '%s' "$g" | jq -r '.st'); id=$(printf '%s' "$g" | jq -r '.id'); spec=$(printf '%s' "$g" | jq -r '.spec')
   case "$st" in unreadable) return 0 ;; stopped|delivered) live=0 ;; esac
+  # #736: a goal whose scope IS a project (project:<owner>/<n>) has nothing to mirror: the project is the user's own, so the sync never
+  # creates a second one, renames, closes or deletes it, and never adds or removes its items. Its Status field is left to its owner.
+  [ "$(goal_parse "$spec" 2>/dev/null | cut -f2)" != proj ] || return 0
   p=$(printf '%s' "$g" | _gp_bound)
   if [ -z "$p" ]; then
     [ "$live" = 1 ] || return 0

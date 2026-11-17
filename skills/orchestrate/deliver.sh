@@ -7,6 +7,7 @@
 #                                         --hosts (default both): both = the goal's tickets run on either machine (one lead only); mac|vm = whole goal on that machine
 #                                         register (state queued). <goal> = owner/repo:milestone:<number|exact title>
 #                                         | owner/repo:milestones:all | owner/repo:feedback | owner/repo#N
+#                                         | project:<owner>/<number> (or owner/repo:project:<number>): a GitHub Project, its issue items are the scope (#736)
 #                                         --now: also launch one cycle here at once (hand use, skips the queue)
 #                                         (GOAL_SERIAL=1, one goal at a time: a --now goal that does not hold the slot returns to the queue after that cycle)
 #                                         --priority N / --after <goal> / --before <goal>: where it goes in the start order (default: last)
@@ -33,7 +34,8 @@ type slog >/dev/null 2>&1 || slog() { echo "$*" >&2; }
 type report_status_async >/dev/null 2>&1 || report_status_async() { :; }
 HOST=$(pipeline_host)
 
-die() { echo "deliver.sh: $*" >&2; exit 1; }
+OV_PROJ=""   # set by check_overlap when a project goal is involved (#736): a refusal is then captured too
+die() { [ -z "$OV_PROJ" ] || _goal_proj_err "${OV_PROJ#project:}" "$*"; echo "deliver.sh: $*" >&2; exit 1; }
 now_utc() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 THIS_HOST=$(pipeline_host)
 
@@ -56,17 +58,19 @@ body_for() { printf 'Goal: %s\n\n```json\n%s\n```\n' "$1" "$2"; }
 # _goal_same_repo (#527): a goal stored under a pre-rename slug (Benjis-Plants/scheduler) is the same repo as one under the
 # new slug, for the repo test, the milestones:all test and the shared-ticket test; a name that cannot be resolved refuses.
 check_overlap() {
-  local spec="$1" id="$2" skip="${3:-}" repos="${4:-}" extra="${5:-}" reg regrows new_repo new_kind new_rows other row o_issue o_id o_spec o_st o_repo o_kind
+  local spec="$1" id="$2" skip="${3:-}" repos="${4:-}" extra="${5:-}" reg regrows new_repo new_kind new_rows other row o_issue o_id o_spec o_st o_repo o_kind o_repos nr
   local rc r hit cand
   reg=$(_goal_registry_json) || die "cannot read the goal registry ($GOAL_REGISTRY_REPO); refusing to go on blind"
   IFS=$'\t' read -r new_repo new_kind _ <<< "$(goal_parse "$spec")"
-  new_rows=$(goal_scope "$spec" "$id" "$repos") || die "cannot read the scope of $spec"
+  [ "$new_kind" != proj ] || OV_PROJ=$spec   # #736: from here a refusal is also captured (die logs it with release, environment, route)
+  new_rows=$(goal_scope "$spec" "$id" "$repos") || die "cannot read the scope of $spec; refusing to go on blind"
   [ -z "$extra" ] || new_rows=$(printf '%s\n%s' "$new_rows" "$extra")
   # #527: parse first; a jq error fed straight into the loop meant zero iterations, i.e. no overlap found (fail open)
-  regrows=$(printf '%s' "$reg" | jq -r 'def f: if . == null or . == "" then "-" else tostring end; .[] | "\(.issue | f)\t\(.id | f)\t\(.spec | f)\t\(.st | f)"') \
+  regrows=$(printf '%s' "$reg" | jq -r 'def f: if . == null or . == "" then "-" else tostring end; .[] | "\(.issue | f)\t\(.id | f)\t\(.spec | f)\t\(.st | f)\t\((.block.repos? // []) | join(",") | f)"') \
     || die "cannot parse the goal registry ($GOAL_REGISTRY_REPO); refusing to go on blind"
-  while IFS=$'\t' read -r o_issue o_id o_spec o_st; do
+  while IFS=$'\t' read -r o_issue o_id o_spec o_st o_repos; do
     [ -n "$o_issue" ] || continue
+    OV_PROJ=""; [ "$new_kind" != proj ] || OV_PROJ=$spec
     [ "$o_issue" = "$skip" ] && continue
     # empty fields arrive as "-" (a tab split would collapse them); an unreadable id/state/issue fails closed
     if [ "$o_issue" = "-" ] || [ "$o_id" = "-" ] || [ "$o_st" = "-" ] || [ -z "$o_st" ]; then
@@ -80,6 +84,7 @@ check_overlap() {
     [ "$o_id" = "$id" ] && die "overlaps live goal $o_id (same goal)"
     o_repo=""; o_kind=""
     IFS=$'\t' read -r o_repo o_kind _ <<< "$(goal_parse "$o_spec" 2>/dev/null || true)"
+    [ "$o_kind" != proj ] || OV_PROJ=${OV_PROJ:-$o_spec}
     [ -n "$o_repo" ] || die "cannot read the stored spec of live goal $o_id; refusing to go on blind"
     # #517: a feedback goal's scope leaves out every ticket another live goal covers, so it never overlaps one: a live
     # feedback goal yields to the goal being registered, and a new one already excludes every live goal's tickets
@@ -98,7 +103,7 @@ check_overlap() {
     if [ "$new_kind" = label ] && [ "$o_kind" = label ] && [ "$o_spec" = "$spec" ]; then
       die "overlaps live goal $o_id (same goal label)"
     fi
-    if [ "$new_kind" != label ] && [ "$o_kind" != label ]; then
+    if [ "$new_kind" != label ] && [ "$o_kind" != label ] && [ "$new_kind" != proj ] && [ "$o_kind" != proj ]; then
       rc=0; _goal_same_repo "$o_repo" "$new_repo" || rc=$?
       case "$rc" in
         0) ;;
@@ -106,7 +111,7 @@ check_overlap() {
         *) die "cannot tell whether live goal $o_id ($o_repo) is on $new_repo (repo name unresolvable); refusing to go on blind" ;;
       esac
       if [ "$new_kind" = msall ] || [ "$o_kind" = msall ]; then die "overlaps live goal $o_id (milestones:all on $new_repo)"; fi
-    elif [ "$new_kind" = label ] && [ "$o_kind" != label ]; then
+    elif [ "$new_kind" = label ] && [ "$o_kind" != label ] && [ "$o_kind" != proj ]; then
       hit=0
       for r in $(printf '%s' "$repos" | tr ',' ' '); do
         rc=0; _goal_same_repo "$r" "$o_repo" || rc=$?
@@ -119,7 +124,40 @@ check_overlap() {
       [ "$hit" = 1 ] || continue
       if [ "$o_kind" = msall ]; then die "overlaps live goal $o_id (milestones:all on $o_repo)"; fi
     fi
-    other=$(goal_scope "$o_spec" "$o_id" 2>/dev/null) || die "cannot read the scope of $o_id; refusing to go on blind"
+    # #736: the milestones:all rule holds for a project goal too: a repo it touches (its items' repos, recorded in the block) and a live
+    # milestones:all goal on that repo are refused, the same as a label goal and a milestones:all goal
+    if [ "$new_kind" = proj ] && [ "$o_kind" = msall ]; then
+      for nr in $(printf '%s\n' "$new_rows" | sed -E 's/#[0-9]+$//' | sort -u); do
+        rc=0; _goal_same_repo "$nr" "$o_repo" || rc=$?
+        case "$rc" in
+          0) die "overlaps live goal $o_id (milestones:all on $o_repo)" ;;
+          1) ;;
+          *) die "cannot tell whether live goal $o_id ($o_repo) is on $nr (repo name unresolvable); refusing to go on blind" ;;
+        esac
+      done
+    elif [ "$new_kind" = msall ] && [ "$o_kind" = proj ]; then
+      [ "$o_repos" != "-" ] || die "cannot tell which repos live goal $o_id covers; refusing to go on blind"
+      for r in $(printf '%s' "$o_repos" | tr ',' ' '); do
+        rc=0; _goal_same_repo "$r" "$new_repo" || rc=$?
+        case "$rc" in
+          0) die "overlaps live goal $o_id (milestones:all on $new_repo)" ;;
+          1) ;;
+          *) die "cannot tell whether live goal $o_id ($r) is on $new_repo (repo name unresolvable); refusing to go on blind" ;;
+        esac
+      done
+    fi
+    if ! other=$(goal_scope "$o_spec" "$o_id" 2>/dev/null); then
+      # #736: a project goal's scope needs a token with the project scope. On a host without it the goal can still be ruled out when none of
+      # its recorded repos is a repo of the new goal; otherwise (or with no recorded repos) the guard stays closed.
+      [ "$o_kind" = proj ] && [ "$o_repos" != "-" ] || die "cannot read the scope of $o_id; refusing to go on blind"
+      for nr in $(printf '%s\n%s\n' "$repos" "$new_rows" | tr ',' '\n' | sed -E 's/#[0-9]+$//' | sort -u); do
+        for r in $(printf '%s' "$o_repos" | tr ',' ' '); do
+          rc=0; _goal_same_repo "$r" "$nr" || rc=$?
+          [ "$rc" = 1 ] || die "cannot read the scope of $o_id; refusing to go on blind"
+        done
+      done
+      continue
+    fi
     # shared ticket = same number in the same repo, the repo compared through _goal_same_repo (old vs renamed slug)
     while IFS= read -r row; do
       [ -n "$row" ] || continue
@@ -135,6 +173,7 @@ check_overlap() {
       done <<< "$(printf '%s\n' "$new_rows" | grep -E -- "#${row##*#}\$" || true)"
     done <<< "$other"
   done <<< "$regrows"
+  OV_PROJ=""
 }
 
 clear_stale_goal_state() {  # <id>: drop local stop/held/retry state left by an earlier goal of the same id (#224)
@@ -237,7 +276,8 @@ cmd_register_args() {
     ''|label:*) cmd_register_label "$spec" "$repos" "$title" "$req" "$sentry" "$mockups" "$instr" "$now" "$pin" "$hosts" ;;
     *)
       if [ -n "$repos$title$req" ]; then die "--repos/--title/--requirements only apply to label goals"; fi
-      cmd_register "$spec" "$instr" "$now" "$pin" "$sentry" "$approve_all" ;;
+      if [ "$(goal_parse "$spec" 2>/dev/null | cut -f2)" = proj ]; then cmd_register_proj "$spec" "$instr" "$now" "$pin" "$sentry"
+      else cmd_register "$spec" "$instr" "$now" "$pin" "$sentry" "$approve_all"; fi ;;
   esac
 }
 
@@ -306,6 +346,68 @@ cmd_register() {
     die "registered $id (issue #$n) but the launch failed and I could not close it; run 'deliver.sh stop $id'"
   fi
   echo "registered $id (issue #$n)"
+  echo "log=$PIPE/goal-$id.log"
+}
+
+# cmd_register_proj <spec> — a goal whose scope IS a GitHub Project (#736): project:<owner>/<n> (or owner/repo:project:<n>, stored in the
+# canonical form). The scope is the project's issue items, read live; the block (v2) records the repos derived from them and the project
+# (`scope_project`, never the mirror's `project` key: no second project is created for it). Registering is JP's go, as for a milestone goal.
+cmd_register_proj() {
+  local spec="$1" instr="$2" now="${3:-0}" pin="${4:-}" sentry="${5:-0}" ref id info title url repos kept="" dropped="" r checkout host=""
+  local block body resp n go=true granted='[]' granted_at repos_json owner num
+  ref=$(goal_parse "$spec" | cut -f3); spec="project:$ref"; owner=${ref%%/*}; num=${ref##*/}
+  id=$(goal_id "$spec") || exit 1
+  goal_project_token_ok || { _goal_proj_err "$ref" "this host's gh token lacks the project scope"; die "reading project $ref needs the gh \`project\` scope on this host (run: gh auth refresh -s project), or register it from a host that has it"; }
+  info=$(_goal_proj_read "$ref") || die "cannot read the project $ref (missing, closed, or the token cannot read every item); refusing to go on blind"
+  title=$(printf '%s' "$info" | jq -r .title); url=$(printf '%s' "$info" | jq -r .url)
+  for r in $(printf '%s' "$info" | jq -r '[.issues[].repo] | unique[]'); do
+    if _goal_is_bi "$r"; then echo "skipping $r: Business-Intelligence is never part of a goal" >&2; continue; fi
+    if direct_route_repo "$r"; then echo "direct-route repo $r ignored for goal $id" >&2; dropped="${dropped:-$r}"; continue; fi
+    checkout=$(_goal_checkout "$r") || die "$r (an item of project $ref) is not in DISPATCH_REPOS; goals only run on dispatched repos"
+    [ -e "$checkout/.git" ] || die "checkout $checkout for $r is not a git checkout"
+    kept="${kept:+$kept,}$r"
+  done
+  if [ -z "$kept" ] && [ -n "$dropped" ]; then die "$dropped is a direct-route repo: its changes are made by the interactive session with subagents, never by a goal (see CLAUDE.md)"; fi
+  [ -n "$kept" ] || die "empty scope: project $ref has no issue items; a goal must start with at least one"
+  repos_json=$(printf '%s' "$kept" | jq -Rc 'split(",")')
+  # a live goal's own mirror project is not a scope: the mirror sync would edit, fill and close it (#736)
+  r=$(_goal_registry_json 2>/dev/null | jq -r --arg o "$owner" --argjson n "$num" '[.[]? | select(.st == "queued" or .st == "active" or .st == "held" or .st == "waiting_jp")
+      | select((.block.project? // {}) | type == "object" and ((.owner // "") | ascii_downcase) == ($o | ascii_downcase) and .number == $n) | .id] | first // empty') \
+    || die "cannot read the goal registry ($GOAL_REGISTRY_REPO); refusing to go on blind"
+  [ -z "$r" ] || { OV_PROJ=$spec; die "project $ref is the mirror project of live goal $r; a goal's scope must be a project of your own, not another goal's mirror"; }
+  check_overlap "$spec" "$id"
+  [ "$now" = 1 ] && host="$THIS_HOST"   # queued goals have no host until the supervisor starts them (#320)
+  # this host's token has the project scope (checked above); another host may not, so the goal stays here unless --host says otherwise
+  [ -n "$pin" ] || pin=$(printf '%s' "$THIS_HOST" | tr '[:upper:]' '[:lower:]')
+  granted_at=$(date -u +%F)
+  block=$(jq -nc --arg id "$id" --arg spec "$spec" --arg host "$host" --arg pin "$pin" --arg created "$(now_utc)" --arg ins "$instr" --arg title "$title" \
+    --argjson repos "$repos_json" --argjson prio "$PRIORITY" --argjson sentry "$([ "$sentry" = 1 ] && echo true || echo false)" \
+    --arg o "$owner" --argjson num "$num" --arg url "$url" --arg d "$granted_at" \
+    '{v:2,id:$id,title:$title,repos:$repos,order:0,priority:$prio,go:true,granted:[],granted_at:$d,host_pref:$pin,hosts:"both",include_sentry:$sentry,
+      spec:$spec,host:$host,created:$created,instructions:$ins,scope_project:{owner:$o,number:$num,url:$url}}')
+  ensure_label delivery-goal
+  [ "$now" = 1 ] || ensure_label goal-queued
+  resp=$(api_json POST "repos/$GOAL_REGISTRY_REPO/issues" \
+    "$(jq -nc --arg t "Goal: $title" --arg b "$(goal_body_v2 "$block" "$granted_at")" --argjson now "$now" \
+       '{title:$t, body:$b, labels:(["delivery-goal"] + (if $now == 1 then [] else ["goal-queued"] end))}')") \
+    || die "could not create the registry issue"
+  n=$(printf '%s' "$resp" | jq -r .number)
+  granted=$(_goal_grant_scope "$spec" "$id" "$sentry" '[]') || goal_err "cannot grant go on every in-scope ticket of $id"
+  block=$(printf '%s' "$block" | jq -c --argjson g "${granted:-[]}" --argjson n "$n" '.granted = $g | .order = $n')
+  # non-fatal: the goal sync reconciles a missed record (already-labelled tickets are recorded without re-adding)
+  api_json PATCH "repos/$GOAL_REGISTRY_REPO/issues/$n" "$(jq -nc --arg b "$(goal_body_v2 "$block" "$granted_at")" '{body:$b}')" >/dev/null \
+    || goal_err "could not record the granted tickets of $id; the next goal sync reconciles them"
+  clear_stale_goal_state "$id"
+  fb_yield_here   # #527: the new goal is live: a feedback lead running here over its tickets ends now
+  if [ "$now" != 1 ]; then echo "queued $id (issue #$n)"; echo "project=$ref repos=$kept go=$go"; return 0; fi
+  mkdir -p "$LOGDIR/goals"
+  write_cache "$id" "$block" "$n"
+  if ! goal_launch "$id" "$(launch_goal_for "$id" "$n" "$resp")"; then
+    launch_alert "$id" "$n"
+    register_rollback "$n" "registered $id but the launch failed"
+  fi
+  echo "registered $id (issue #$n)"
+  echo "project=$ref repos=$kept go=$go"
   echo "log=$PIPE/goal-$id.log"
 }
 
@@ -449,7 +551,7 @@ cmd_project() {
     [ "$(printf '%s' "$g" | jq -r .st)" != unreadable ] || continue
     if [ "$arg" = all ] && [ "$(printf '%s' "$g" | jq -r .state)" != open ]; then continue; fi
     goal_project_sync_one "$g" "$mode" || echo "warning: project sync of $(printf '%s' "$g" | jq -r .id) had errors (see the log)" >&2
-    p=$(_goal_find "$(printf '%s' "$g" | jq -r .id)" 2>/dev/null | jq -r '.block.project.url? // "no project"')
+    p=$(_goal_find "$(printf '%s' "$g" | jq -r .id)" 2>/dev/null | jq -r '.block.project.url? // .block.scope_project.url? // "no project"')
     printf '%s  %s\n' "$(printf '%s' "$g" | jq -r .id)" "$p"
     n=$((n + 1))
   done <<< "$(printf '%s' "$reg" | jq -c '.[]')"
@@ -637,6 +739,6 @@ case "${1:-}" in
   stop) shift; cmd_stop "$@" ;;
   release) shift; cmd_release "$@" ;;
   resume) shift; cmd_resume "$@" ;;
-  ''|-h|--help) sed -n '2,23p' "$0"; exit 2 ;;
+  ''|-h|--help) sed -n '2,24p' "$0"; exit 2 ;;
   *) cmd_register_args "$@" ;;
 esac

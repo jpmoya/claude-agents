@@ -34,19 +34,26 @@ _goal_is_bi() { case "$1" in */Business-Intelligence) return 0 ;; esac; return 1
 # direct_route_repo (#632) comes from config.sh, which every entry point sources first; a harness that sources this file alone gets the empty rule
 type direct_route_repo >/dev/null 2>&1 || direct_route_repo() { return 1; }
 
-# goal_parse <spec> -> "repo<TAB>kind<TAB>ref" (kind: ms | msall | t | fb | label); exit 1 when malformed.
+# goal_parse <spec> -> "repo<TAB>kind<TAB>ref" (kind: ms | msall | t | fb | label | proj); exit 1 when malformed.
 # owner/repo:feedback (kind fb) is the standing staff-feedback goal (#472): scope = the repo's user-feedback tickets that are
 # not in the scope of another live goal (#517: not "in no milestone" — the product-manager gives every ticket a milestone).
 # label:<exact label name> is the cross-repo form (#319): repo is "-" (the repos live in the registry v2 block).
+# project:<owner>/<number> (#736) is a GitHub Project whose issue items are the scope: repo "-", ref "<owner>/<number>".
+# owner/repo:project:<number> is an alias for the project <number> of the repo's owner; both print the canonical ref.
+_GOAL_FORMS="owner/repo:milestone:<n|title>, owner/repo:milestones:all, owner/repo:feedback, owner/repo#N, label:<name> or project:<owner>/<number>"
 goal_parse() {
-  local spec="${1:-}" re='^([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)(.*)$' repo rest ref
+  local spec="${1:-}" re='^([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)(.*)$' pre='^([A-Za-z0-9._-]+)/([0-9]+)$' repo rest ref
   case "$spec" in
     label:*)
       ref="${spec#label:}"
       [ -n "$ref" ] || { echo "malformed goal '$spec': empty label name" >&2; return 1; }
       printf -- '-\tlabel\t%s\n' "$ref"; return 0 ;;
+    project:*)
+      ref="${spec#project:}"
+      [[ "$ref" =~ $pre ]] || { echo "malformed goal '$spec': want project:<owner>/<number> (the number is digits)" >&2; return 1; }
+      printf -- '-\tproj\t%s\n' "$ref"; return 0 ;;
   esac
-  if ! [[ "$spec" =~ $re ]]; then echo "malformed goal '$spec' (want owner/repo:milestone:<n|title>, owner/repo:milestones:all, owner/repo:feedback or owner/repo#N)" >&2; return 1; fi
+  if ! [[ "$spec" =~ $re ]]; then echo "malformed goal '$spec' (want $_GOAL_FORMS)" >&2; return 1; fi
   repo="${BASH_REMATCH[1]}"; rest="${BASH_REMATCH[2]}"
   case "$rest" in
     '#'*)
@@ -55,11 +62,15 @@ goal_parse() {
       printf '%s\tt\t%s\n' "$repo" "$ref" ;;
     ':milestones:all') printf '%s\tmsall\tall\n' "$repo" ;;
     ':feedback') printf '%s\tfb\tfeedback\n' "$repo" ;;
+    ':project:'*)
+      ref="${rest#:project:}"
+      case "$ref" in ''|*[!0-9]*) echo "malformed goal '$spec': want project:<owner>/<number> (the number is digits)" >&2; return 1 ;; esac
+      printf -- '-\tproj\t%s/%s\n' "${repo%%/*}" "$ref" ;;
     ':milestone:'*)
       ref="${rest#:milestone:}"
       [ -n "$ref" ] || { echo "malformed goal '$spec': empty milestone" >&2; return 1; }
       printf '%s\tms\t%s\n' "$repo" "$ref" ;;
-    *) echo "malformed goal '$spec'" >&2; return 1 ;;
+    *) echo "malformed goal '$spec' (want $_GOAL_FORMS)" >&2; return 1 ;;
   esac
 }
 
@@ -79,6 +90,7 @@ goal_name_for() {
         [ -n "$t" ] || return 1; printf '%s: %s\n' "$short" "$t" ;;
     msall) printf '%s: all milestones\n' "$short" ;;
     fb) printf '%s: staff feedback\n' "$short" ;;
+    proj) t=$(_goal_proj_read "$ref" --meta 2>/dev/null | jq -r '.title // empty') || return 1; [ -n "$t" ] || return 1; printf '%s\n' "$t" ;;
     *) return 1 ;;
   esac
 }
@@ -133,6 +145,7 @@ goal_id() {
   IFS=$'\t' read -r repo kind ref <<< "$line"
   [ "$kind" = ms ] && { ref=$(_goal_ms_number "$repo" "$ref") || return 1; }
   if [ "$kind" = label ]; then printf 'label-%s\n' "$ref" | sed 's/[^A-Za-z0-9._-]/_/g'; return 0; fi
+  if [ "$kind" = proj ]; then printf 'proj-%s\n' "$ref" | sed 's/[^A-Za-z0-9._-]/_/g'; return 0; fi
   printf '%s-%s-%s\n' "$repo" "$kind" "$ref" | sed 's/[^A-Za-z0-9._-]/_/g'
 }
 
@@ -187,6 +200,27 @@ _goal_fb_err() {
   if type slog >/dev/null 2>&1; then slog "$m"; else echo "$m" >&2; fi
 }
 
+# _goal_proj_err <owner/number or spec> <why> — an error on a project goal's path (#736: unreadable project, missing token scope, overlap
+# refusal), logged with release, environment and route and recorded as an error event (the same capture path as the other goal
+# errors). The caller then fails closed. Owner, number and gh's redacted first line only: no token, no ticket text.
+_goal_proj_err() {
+  local m rel env
+  rel=$(goal_release); env=${HOST:-$(pipeline_host 2>/dev/null)}
+  m="[goal] error: project goal $1: $2 (release=$rel environment=$env route=goal-project-scope)"
+  if type slog >/dev/null 2>&1; then slog "$m"; else echo "$m" >&2; fi
+  type pipeline_event >/dev/null 2>&1 && pipeline_event error --arg level error --arg route goal-project-scope --arg release "$rel" --arg environment "$env" \
+    --arg message "project goal $1: $2" || true
+}
+
+# _goal_proj_read <owner/number> [--meta] -> goal_project_read's JSON (goal-project.sh); exit 1, logged, when it cannot be read
+_goal_proj_read() {
+  local out err
+  err=$(mktemp "${TMPDIR:-/tmp}/goal-proj-err.XXXXXX") || err=/dev/null
+  out=$(goal_project_read "${1%%/*}" "${1##*/}" "${2:-}" 2>"$err") || { _goal_proj_err "$1" "cannot read the project scope: $(head -1 "$err" 2>/dev/null)"; rm -f "$err"; return 1; }
+  rm -f "$err"
+  printf '%s\n' "$out"
+}
+
 # _goal_same_repo <a> <b> -> exit 0 same repo, 1 different, 2 cannot tell. A goal registered before a GitHub rename still
 # names the old slug (Benjis-Plants/scheduler is Benjis-Plants/benjis-ops-tool), so different slugs go through repo_canon.
 _goal_same_repo() {
@@ -234,7 +268,7 @@ _goal_fb_covered() {
           unreadable)
             # the stop could not read the goal's tickets: hold the goal's whole repo(s), never guess
             o_repo=""; o_kind=""; IFS=$'\t' read -r o_repo o_kind _ <<< "$(goal_parse "$o_spec" 2>/dev/null || true)"
-            if [ "$o_kind" = label ]; then keep=$o_repos; else keep=$o_repo; fi
+            if [ "$o_kind" = label ] || [ "$o_kind" = proj ]; then keep=$o_repos; else keep=$o_repo; fi
             case "$keep" in ''|-) _goal_fb_err "$repo" "stopped goal $o_id (#$o_issue) holds unlisted tickets in unknown repos"; return 1 ;; esac
             for r in $(printf '%s' "$keep" | tr ',' ' '); do
               rc=0; _goal_same_repo "$r" "$repo" || rc=$?
@@ -262,6 +296,30 @@ _goal_fb_covered() {
     [ -n "$o_kind" ] || { _goal_fb_err "$repo" "the stored spec of live goal $o_id (#$o_issue) does not parse"; return 1; }
     [ "$o_kind" != fb ] || continue
     keep=""
+    if [ "$o_kind" = proj ]; then
+      # #736: a project goal covers the items it holds, in any repo: read them and keep the ones of this repo
+      if ! rows=$(_goal_scope_rows "$o_spec" "$o_id"); then
+        # a host whose token cannot read the project (no project scope) still rules the goal out when none of its recorded repos is this one
+        [ "$o_repos" != "-" ] || { _goal_fb_err "$repo" "the scope of live goal $o_id is unreadable"; return 1; }
+        keep=""
+        for r in $(printf '%s' "$o_repos" | tr ',' ' '); do
+          rc=0; _goal_same_repo "$r" "$repo" || rc=$?
+          [ "$rc" = 1 ] || keep=$r
+        done
+        [ -z "$keep" ] || { _goal_fb_err "$repo" "the scope of live goal $o_id is unreadable"; return 1; }
+        continue
+      fi
+      while IFS=$'\t' read -r row _; do
+        [ -n "$row" ] || continue
+        rc=0; _goal_same_repo "${row%%#*}" "$repo" || rc=$?
+        case "$rc" in
+          0) printf '%s\n' "${row##*#}" ;;
+          1) ;;
+          *) _goal_fb_err "$repo" "cannot resolve the repo name ${row%%#*} of live goal $o_id"; return 1 ;;
+        esac
+      done <<< "$rows"
+      continue
+    fi
     if [ "$o_kind" = label ]; then
       [ "$o_repos" != "-" ] || { _goal_fb_err "$repo" "live label goal $o_id (#$o_issue) names no repos"; return 1; }
       for r in $(printf '%s' "$o_repos" | tr ',' ' '); do
@@ -298,7 +356,7 @@ _goal_scope_rows() {
   local line repo kind ref n ms one repos r js covered crepo cr
   line=$(goal_parse "$1") || return 1
   IFS=$'\t' read -r repo kind ref <<< "$line"
-  crepo=$(_goal_rest_slug "$repo")   # REST paths use the canonical slug; the rows keep the name the goal was registered with
+  [ "$kind" = proj ] || crepo=$(_goal_rest_slug "$repo")   # REST paths use the canonical slug; the rows keep the name the goal was registered with
   case "$kind" in
     label)
       repos=$(_goal_repos "${2:-}" "${3:-}") || { echo "cannot find the repos of label goal ${2:-$1}" >&2; return 1; }
@@ -323,6 +381,13 @@ _goal_scope_rows() {
       printf '%s' "$js" | jq -r --arg r "$repo" --argjson l "${GOAL_SCOPE_LABELS:-0}" --argjson full "${GOAL_SCOPE_FULL:-0}" \
         --argjson cov "$(printf '%s\n' "$covered" | jq -Rsc 'split("\n") | map(select(. != "") | tonumber)')" \
         "$_GOAL_ROW_JQ"'.[] | select(has("pull_request") | not) | select(.number as $n | any($cov[]; . == $n) | not) | row' ;;
+    proj)
+      # #736: the project's issue items across any repos; Business-Intelligence is never part of a goal. One jq run per repo ($r is an --arg).
+      js=$(_goal_proj_read "$ref") || return 1
+      for r in $(printf '%s' "$js" | jq -r '[.issues[].repo] | unique[]'); do
+        _goal_is_bi "$r" && continue
+        printf '%s' "$js" | jq -r --arg r "$r" --argjson l "${GOAL_SCOPE_LABELS:-0}" --argjson full "${GOAL_SCOPE_FULL:-0}" "$_GOAL_ROW_JQ"'.issues[] | select(.repo == $r) | row'
+      done ;;
     msall)
       ms=$(_goal_get_all "repos/$crepo/milestones?state=open&per_page=100") || return 1
       for n in $(printf '%s' "$ms" | jq -r '.[].number'); do _goal_ms_rows "$crepo" "$n" "$repo" || return 1; done ;;
@@ -421,14 +486,14 @@ _goal_primary_repo() {
   local spec line r first=""
   spec=$(printf '%s' "$1" | jq -r .spec)
   line=$(goal_parse "$spec") || return 1
-  if [ "$(printf '%s' "$line" | cut -f2)" = label ]; then
+  case "$(printf '%s' "$line" | cut -f2)" in label|proj)   # #736: a project goal's repos are derived from its items, stored in the block like a label goal's
     while IFS= read -r r; do
       [ -n "$r" ] || continue
       [ -n "$first" ] || first=$r
       direct_route_repo "$r" || { printf '%s\n' "$r"; return 0; }
     done <<< "$(printf '%s' "$1" | jq -r '(.block.repos // [])[]')"
-    printf '%s\n' "$first"
-  else printf '%s' "$line" | cut -f1; fi
+    printf '%s\n' "$first" ;;
+  *) printf '%s' "$line" | cut -f1 ;; esac
 }
 
 # goal_brief <id> [goal-json] [scope file] -> the delivery-lead launch prompt, generated from live registry + ticket state
@@ -447,6 +512,10 @@ goal_brief() {
   printf 'Checkout: %s\n' "$checkout"
   if [ "$(goal_parse "$spec" | cut -f2)" = label ]; then
     printf 'Cross-repo goal: tickets carry the label "%s" in %s\n' "$(printf '%s' "$g" | jq -r '.block.label')" "$(printf '%s' "$g" | jq -r '(.block.repos // []) | join(", ")')"
+  fi
+  if [ "$(goal_parse "$spec" | cut -f2)" = proj ]; then
+    printf 'GitHub Project (this goal'"'"'s scope): %s\n' "$(printf '%s' "$g" | jq -r '.block.scope_project.url // empty')"
+    printf '  Scope is the issue items of that project, open and closed, in any repo (draft and pull-request items are ignored). A ticket is in the goal when it is an item of the project, so a new ticket joins by being added to it. Never edit the project'"'"'s Status, title or items and never create another project.\n'
   fi
   if [ "$(goal_parse "$spec" | cut -f2)" = fb ]; then
     printf 'Standing staff-feedback goal: scope is the open tickets of %s labelled %s that no other live goal covers (for a ticket another live goal covers, that other lead owns it) and no stopped goal holds (JP stopped that work: leave those tickets alone until he releases them). The scope is re-read while you run: if another goal takes a ticket over, the supervisor ends this cycle and the next brief leaves it out. Your job is to clear their TECHNICAL blocks yourself (full disk, failed or flaky CI, a merged change whose deploy is unconfirmed, a malformed or missing delegated decision: post a valid DECISION with its Resolves line, then relaunch) and to surface to JP only product/business calls and JP-only items. Never add agent-go or change the tickets'"'"' labels, milestones or routing: intake and the product-manager own those, and the supervisor already dispatches these tickets. One exception: when an in-scope ticket is blocked on an open ticket that no live goal covers and no stopped goal holds, that ticket is yours only if it already carries agent-go; add the user-feedback label to it (no other change) and handle its BLOCKEDs like any in-scope ticket. A blocker still awaiting approval goes to JP through the existing needs-JP request. Never park the in-scope ticket needs_jp to ask JP to queue a blocker.\n' "$repo" "${LABEL_FEEDBACK:-user-feedback}"
@@ -479,7 +548,7 @@ goal_brief() {
     printf '%s  %s  latest marker: %s\n' "$ref" "$st" "$last"
   done <<< "$rows"
   if [ -n "$direct" ]; then
-    printf '\nDirect route — needs the interactive session (not your work: never dispatch, label or relaunch these; list them under this heading in your report, ticket number + 3-5 word description each):\n%s' "$direct"
+    printf '\nDirect route — needs the interactive session (not your work: never dispatch, give agent-go to or relaunch these; list them under this heading in your report, ticket number + 3-5 word description each):\n%s' "$direct"
   fi
   if [ -s "$PIPE/goal-$id.notlive" ]; then
     printf '\nNOT LIVE ON PROD (all tickets are delivered but verify-shipped.sh fails; the goal cannot close until it exits 0 — merged to staging is not done): run skills/orchestrate/verify-shipped.sh <owner/repo> <PR#...> for the merged PRs of the tickets above; if the release bot has not shipped a change by its next cycle, build the promotion PR yourself and shepherd it to a green prod deploy. Last result:\n%s\n' "$(cat "$PIPE/goal-$id.notlive")"
@@ -491,7 +560,7 @@ Rules:
 - Completion is decided by the supervisor from GitHub state, never by you. Never unload, create or edit launchd/cron/loop schedulers.
 - JP-only items (a prod go, spending money, external communications, private-artefact access) park the ticket and are reported, never decided.
 - Goals only run on repos listed in DISPATCH_REPOS; never act outside the scope above.
-- A ticket in a direct-route repo (DIRECT_ROUTE_REPOS in config.sh, today jpmoya/claude-agents) is never dispatched, labelled or relaunched by you: the interactive session implements it with subagents, and orchestrate.sh refuses it. Report it under "Direct route — needs the interactive session".
+- A ticket in a direct-route repo (DIRECT_ROUTE_REPOS in config.sh, today jpmoya/claude-agents) is never dispatched, given agent-go or relaunched by you: the interactive session implements it with subagents, and orchestrate.sh refuses it. Report it under "Direct route — needs the interactive session".
 RULES
 }
 
@@ -919,10 +988,22 @@ _goal_grant_scope() {
   return $rc
 }
 
+# _goal_proj_repos <spec> <id> -> the JSON array (jq unique order) of the repos of a project goal's items (direct-route repos left out, as at register);
+# exit 1, nothing printed, when the scope is unreadable or has no dispatchable repo.
+_goal_proj_repos() {
+  local rows r out=""
+  rows=$(_goal_scope_rows "$1" "$2" 2>/dev/null) || return 1
+  for r in $(printf '%s\n' "$rows" | cut -f1 | sed -E 's/#[0-9]+$//' | sort -u); do
+    direct_route_repo "$r" || out="$out$r"$'\n'
+  done
+  [ -n "$out" ] || return 1
+  printf '%s' "$out" | jq -Rsc 'split("\n") | map(select(. != "")) | unique'
+}
+
 # _goal_sync_grant <goal json> — an approved goal (go:true in its block: label, milestone or #N) gives agent-go to in-scope tickets that arrived since
 # (any repo of the goal); the registry block and body record each grant.
 _goal_sync_grant() {
-  local g=$1 block id issue label sentry granted new repos body date
+  local g=$1 block id issue label sentry granted new repos body date nrepos
   block=$(printf '%s' "$g" | jq -c '.block // empty'); [ -n "$block" ] || return 0
   [ "$(printf '%s' "$block" | jq -r '(.go // false) == true')" = true ] || return 0
   id=$(printf '%s' "$g" | jq -r .id); issue=$(printf '%s' "$g" | jq -r .issue)
@@ -937,8 +1018,16 @@ _goal_sync_grant() {
     new=$(_goal_grant_scope "$(printf '%s' "$block" | jq -r '.spec // empty')" "$id" "$sentry" "$granted") || { goal_err "cannot grant go on every in-scope ticket of $id"; }
   fi
   [ -n "$new" ] || return 0
-  [ "$new" != "$granted" ] || return 0
+  nrepos=""
+  if [ "$(goal_parse "$(printf '%s' "$block" | jq -r '.spec // empty')" 2>/dev/null | cut -f2)" = proj ]; then
+    # #736: the repos recorded in the block follow the project's items (a repo that joined through a new item), so a host that cannot read
+    # the project still knows which repos the goal touches (feedback coverage, overlap guard)
+    nrepos=$(_goal_proj_repos "$(printf '%s' "$block" | jq -r .spec)" "$id") || nrepos=""
+    [ "$nrepos" = "$(printf '%s' "$block" | jq -c '(.repos // []) | unique')" ] && nrepos=""
+  fi
+  [ "$new" != "$granted" ] || [ -n "$nrepos" ] || return 0
   block=$(printf '%s' "$block" | jq -c --argjson n "$new" '.granted = $n')
+  [ -z "$nrepos" ] || block=$(printf '%s' "$block" | jq -c --argjson r "$nrepos" '.repos = $r')
   date=$(printf '%s' "$block" | jq -r '(.granted_at // empty)'); [ -n "$date" ] || date=$(date -u +%F)
   body=$(goal_body_v2 "$block" "$date")
   _goal_patch_body "$issue" "$body" >/dev/null 2>&1 || goal_err "cannot record the go grants of $id on the registry issue"
@@ -1690,12 +1779,12 @@ goal_queue_save() {
   v=$(printf '%s' "$1" | _goal_queue_jq '
     | (if .serial then {serial: true, slot: .slot} else {} end) + {at: (now | floor),
        candidate: (.candidate.id // null),
-       recent: (.recent | map({id, issue, spec, title: (.block.title // ""), label: (.block.label // ""), repos: (.block.repos // []), st, closed_at, priority: (.block.priority? // null), project_url: (.block.project?.url? // "")})),
+       recent: (.recent | map({id, issue, spec, title: (.block.title // ""), label: (.block.label // ""), repos: (.block.repos // []), st, closed_at, priority: (.block.priority? // null), project_url: (.block.project?.url? // .block.scope_project?.url? // "")})),
        open: (.open | map({id, issue, spec, title: (.block.title // ""), label: (.block.label // ""), repos: (.block.repos // []),
-                           st, host: (.host // ""), priority: (.block.priority? // null), hosts: (.block.hosts? // "both"), host_pref: (.block.host_pref // ""), project_url: (.block.project?.url? // "")})),
+                           st, host: (.host // ""), priority: (.block.priority? // null), hosts: (.block.hosts? // "both"), host_pref: (.block.host_pref // ""), project_url: (.block.project?.url? // .block.scope_project?.url? // "")})),
        queued: (.queued | map({id, issue, spec, title: (.block.title // ""), label: (.block.label // ""), priority: (.block.priority? // null),
                                repos: (.block.repos // []), order: (.block.order? // .issue), host_pref: (.block.host_pref // ""),
-                               hosts: (.block.hosts? // "both"), project_url: (.block.project?.url? // ""),
+                               hosts: (.block.hosts? // "both"), project_url: (.block.project?.url? // .block.scope_project?.url? // ""),
                                deferred: (.block.deferred_at? // "")}))}' 2>/dev/null) \
     || { goal_err "cannot compute the goal queue"; return 0; }
   mkdir -p "$PIPE" 2>/dev/null

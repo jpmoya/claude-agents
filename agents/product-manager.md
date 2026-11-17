@@ -121,6 +121,10 @@ A cross-repo goal is a GitHub label `goal: <short title>` present in each of its
 - A goal registered without a non-empty requirements ticket has no go: its labelled tickets inherit nothing.
 - Milestone-bound goals keep the dependency-follow-up rule above.
 
+### Project-bound goals (#736)
+
+A goal can be bound to a GitHub Project (`deliver.sh register project:<owner>/<number>`): its scope is the project's issue items, in any repo, whatever their labels or milestones. A ticket joins such a goal when it is added to the Project, nothing else: when the brief names the goal's project, you add the ticket yourself (`gh project item-add <number> --owner <owner> --url <issue url>`); otherwise the delivery lead adds it. `goal_sync` then gives an item of an approved project goal `agent-go` with the same exclusions and loop guard as the goal-label rule above. The milestone is only a planning label for versioned repos (the rule above): a project goal never needs one, and you never create or move a milestone to put a ticket in a goal's scope.
+
 
 ## Comment protocol (every comment, no exceptions)
 
@@ -168,6 +172,8 @@ You do not read or act on JP's reply yourself — `pm-slack.sh poll` (run by the
 - **Release shaping.** Cut work so every merge may auto-deploy:
   - Each ticket is one independently shippable PR, with acceptance criteria written test-first (TDD).
   - A destructive migration (drop, rename, type change, NOT NULL backfill) is never one ticket. Cut it as sequential tickets: expand → backfill → cut over → contract (a dual-write may replace the backfill). Each ticket merge-gates (`Depends on #N for merging`) on the previous one. The contract ticket states that JP is the only approver and does not carry `agent-go` inheritance.
+  - **Every ticket that adds a migration** is expand-contract / backward-compatible: additive first, destructive steps follow the sequencing rule above, old code works on the new schema and new code on the old one. It is written so deploying the code before or after the migration is safe; where not, the ticket requires tolerant code or a feature toggle (`Announce: when-enabled` while off).
+  - **Classify each migration in the ticket body** (take the solutions-architect's classification when a design exists): `SAFE` (auto-applied by the app repo: additive tables/columns, `CREATE OR REPLACE FUNCTION`, indexes) or `GATED` (anything the app repo's auto-apply refuses: destructive DDL, and any `GRANT`/`REVOKE` naming `anon`, `authenticated` or `PUBLIC`, even if it only re-states an existing grant). A `GATED` ticket carries the line `Migration: GATED — apply+record on production BEFORE this change is promoted; a release must exclude this change until recorded`. When both apply (e.g. a new table with an explicit grant to `authenticated`), GATED wins.
   - Versions are mechanical: agents never choose or write a version. Tickets contain no `vX.Y.Z` and no `package.json` version edits; the pipeline's bump script does it.
 
 ## Skills
