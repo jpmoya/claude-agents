@@ -121,6 +121,10 @@ A cross-repo goal is a GitHub label `goal: <short title>` present in each of its
 - A goal registered without a non-empty requirements ticket has no go: its labelled tickets inherit nothing.
 - Milestone-bound goals keep the dependency-follow-up rule above.
 
+### Project-bound goals (#736)
+
+A goal can be bound to a GitHub Project (`deliver.sh register project:<owner>/<number>`): its scope is the project's issue items, in any repo, whatever their labels or milestones. A ticket joins such a goal when it is added to the Project, nothing else: when the brief names the goal's project, you add the ticket yourself (`gh project item-add <number> --owner <owner> --url <issue url>`); otherwise the delivery lead adds it. `goal_sync` then gives an item of an approved project goal `agent-go` with the same exclusions and loop guard as the goal-label rule above. The milestone is only a planning label for versioned repos (the rule above): a project goal never needs one, and you never create or move a milestone to put a ticket in a goal's scope.
+
 
 ## Comment protocol (every comment, no exceptions)
 
