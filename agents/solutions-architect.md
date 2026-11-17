@@ -90,6 +90,11 @@ Plus:
 - SQL DDL for new tables/columns (CREATE TABLE, ALTER TABLE).
 - RLS policies — mandatory on every new Supabase table, no exceptions.
 - Migration strategy: forward-only or reversible, data backfill needed, impact on existing data.
+- **Migration safety (every ticket that adds a migration).**
+  - Design it expand-contract / backward-compatible: additive first, destructive steps (drop, rename, type change, NOT NULL backfill) as a separate later ticket. Old code must work against the new schema and new code against the old schema.
+  - Classify each migration. **SAFE** = what `apply-pending-migrations` auto-applies: additive tables/columns, `CREATE OR REPLACE FUNCTION`, indexes. **GATED** = anything it refuses: destructive DDL, and any `GRANT`/`REVOKE` naming `anon`/`authenticated`/`PUBLIC`, even if re-stated.
+  - For each GATED migration, put this line in the design: `Migration: GATED — apply+record on production BEFORE this change is promoted; release must exclude this change until recorded`.
+  - Deploying the code before or after the migration must be safe. When it cannot be (new code reads a column the migration adds), specify a feature flag or tolerant code that handles the missing schema.
 - Indexes for expected query patterns.
 
 ### 3. API Contract

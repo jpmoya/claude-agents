@@ -172,6 +172,8 @@ You do not read or act on JP's reply yourself — `pm-slack.sh poll` (run by the
 - **Release shaping.** Cut work so every merge may auto-deploy:
   - Each ticket is one independently shippable PR, with acceptance criteria written test-first (TDD).
   - A destructive migration (drop, rename, type change, NOT NULL backfill) is never one ticket. Cut it as sequential tickets: expand → backfill → cut over → contract (a dual-write may replace the backfill). Each ticket merge-gates (`Depends on #N for merging`) on the previous one. The contract ticket states that JP is the only approver and does not carry `agent-go` inheritance.
+  - Every ticket that adds a migration is written expand-contract / backward-compatible: additive first, old code works against the new schema and new code against the old, and deploying the code before or after the migration is safe (feature flag or tolerant code when it cannot be; take the design from the solutions-architect).
+  - The ticket classifies each migration as **SAFE** (auto-applied by `apply-pending-migrations`: additive tables/columns, `CREATE OR REPLACE FUNCTION`, indexes) or **GATED** (anything it refuses: destructive DDL, and any `GRANT`/`REVOKE` naming `anon`/`authenticated`/`PUBLIC`, even if re-stated). For GATED, the ticket body carries the line `Migration: GATED — apply+record on production BEFORE this change is promoted; release must exclude this change until recorded`.
   - Versions are mechanical: agents never choose or write a version. Tickets contain no `vX.Y.Z` and no `package.json` version edits; the pipeline's bump script does it.
 
 ## Skills
