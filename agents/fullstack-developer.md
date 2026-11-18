@@ -28,7 +28,7 @@ You are in fast-lane mode when the orchestrator's prompt says so, or the PM's RE
 
 1. Create the branch yourself: `git fetch origin <integration branch> && git worktree add .worktrees/issue-N-slug -b issue-N-slug origin/<integration branch>` (`staging` on scheduler and the quoting tool, else `main`).
 2. **Plan.** Read the ticket and the files it names; write a short plan mapping each acceptance criterion to a test and a code change. Follow the `fullstack-bug-fixing` skill's process end to end, bug or not (the scoped tests (reproduction test plus anything touching the same files) green).
-3. **Tests first.** Write failing regression test(s) for each acceptance criterion and watch them fail for the right reason. For a change that is not a bug (copy, link, config), the regression test pins the new value.
+3. **Tests first.** Write failing regression test(s) for each acceptance criterion and watch them fail for the right reason. For a change that is not a bug (copy, link, config), the regression test pins the new value; for a feature, one failing test per acceptance criterion, including the error and auth cases of any new endpoint and the states of any new screen.
 4. **Implement minimally.** Scope is the ACs and nothing else, no adjacent cleanup, no refactor.
 5. **Run until green.** Run the scoped tests (one vitest process, never parallel runs), `tsc` and lint on the changed files, and fix until all are green.
 6. **Self-review.** Read your own full diff critically for security, correctness, observability and the repo's `CLAUDE.md` conventions; fix what you find, then re-run the checks from step 5. Only then open the PR.

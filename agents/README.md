@@ -2,7 +2,7 @@
 
 These agents form JP's automated software engineering pipeline. The **orchestrator** reads marker comments on GitHub issues and dispatches the right agent at each stage. No agent makes product or merge decisions — JP owns those.
 
-## Default pipeline (full lane)
+## Full lane
 
 product-manager → test-writer → test-reviewer → fullstack-developer → code-reviewer + test-reviewer (narrow) → deployer
 
@@ -14,7 +14,7 @@ product-manager → test-writer → test-reviewer → fullstack-developer → co
 
 ## Fast lane
 
-Default lane: product-manager → fullstack-developer (single-loop runner: test-first, runs tests/tsc/lint, self-reviews, then opens the PR) → code-reviewer (no narrow test-reviewer) → deployer. The PM defaults to `Lane: fast` and only sets `Lane: full` for one of three disqualifiers (JP, 2026-11-18): a destructive or `GATED` database migration, a new external dependency, or a change spanning more than one repo — see `agents/product-manager.md`. Additive migrations, new endpoints, UI changes and larger diffs stay fast. A fast `UI change: yes` ticket still runs the ui-ux-designer and the same mockup gate before the developer (skipping only the test-writer, SA and test-reviewer). The disqualifiers override the `fast-lane` label too.
+Default lane: product-manager → fullstack-developer (single-loop runner: test-first, runs tests/tsc/lint, self-reviews, then opens the PR) → code-reviewer (no narrow test-reviewer) → deployer. The PM defaults to `Lane: fast` and only sets `Lane: full` for one of three disqualifiers (JP, 2026-11-18): a destructive or `GATED` database migration, a new external dependency, or a change spanning more than one repo — see `agents/product-manager.md`. `SAFE` (auto-applied) migrations, new endpoints, UI changes and larger diffs stay fast. A fast `UI change: yes` ticket still runs the ui-ux-designer and the same mockup gate before the developer (skipping only the test-writer, SA and test-reviewer). The disqualifiers override the `fast-lane` label too.
 
 ## Infra track
 
