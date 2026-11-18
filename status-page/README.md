@@ -288,3 +288,47 @@ No new Worker secret or KV namespace: `/learnings/push` reuses `TOKEN_MAC`/`TOKE
 `coming: true` renders a "coming" chip — flip the flag when the rule lands. The pipelines vitest
 file fails if a stage name or condition drifts from `agents/*.md`. Render errors return 500 and call
 `captureError` (release/environment/route tags; Slack via `SLACK_WEBHOOK_URL`, a no-op when unset).
+
+## Scheduled jobs (issue #756)
+
+The status page lists the VM's scheduled (cron) jobs, so a failed or silent job (say a weekly scan that
+stopped running) is visible where JP already looks. It is a section on `GET /`, "Scheduled jobs (n)",
+just above Done (the CI queue lives on `/ci`); with no jobs published there is no section at all.
+Payload `v` stays **1**: `cron[]` is a new optional top-level key. An older Worker drops it, a newer
+Worker renders a beat without it as no section, and a failed crontab read simply leaves the key out.
+
+**Shape.** Each item is exactly `{name, schedule, schedule_human, last_run, last_result, next_run}`:
+
+| Field | Meaning |
+|---|---|
+| `name` | script basename without directory or extension (`layoff-scan-cron`) |
+| `schedule` | the raw 5-field cron expression, or the `@special` (`@reboot`, `@daily`, ...) |
+| `schedule_human` | short reading, e.g. `Mondays at 13:00`, `Every 5 minutes`; `Custom schedule` when not a common shape |
+| `last_run` | ISO-8601 `...Z` of the newest file in `~/logs/<name>/`, or `null` |
+| `last_result` | `ok` \| `failed` \| `unknown` |
+| `next_run` | next fire time computed in the host's timezone, emitted as ISO-8601 `...Z`; `null` for `@reboot` |
+
+**Host half** (`skills/orchestrate/report-status.sh` runs `crontab -l`; `build-runs-json.py cron` parses it).
+Comments, blank lines, env lines and malformed lines are skipped, `@reboot`/`@daily`-style specials are
+kept, at most 50 jobs. A crontab that cannot be read (or has no entries) omits `cron` and never fails the
+beat; a read or log-scan failure is logged in `report-status.log` and alerted once per 6 hours on the
+existing Slack webhook (`route=status-reporter/cron`, with release and environment tags, never crontab
+text). The Mac host publishes whatever its own crontab holds; Claude desktop scheduled tasks are not read.
+
+**Result rule (fixed).** Take the newest file in `~/logs/<name>/` (by mtime). If one of its last 50 lines
+matches `(?i)\b(error|failed|traceback|fatal)\b`, or the last line of the form `exit=<n>` / `exit code: <n>` /
+`rc=<n>` has a non-zero `n`, the job is `failed`; otherwise `ok`. No log directory, or no files in it, is
+`unknown`. The convention this relies on: a job named `foo.sh` logs into `~/logs/foo/`.
+
+**Privacy.** Only the script basename and the schedule are published. Command lines, arguments,
+`FOO=bar` env assignments, redirections, URLs, log content and file paths never are. The Worker
+(`src/validate.js`) rebuilds each item from allow-listed fields (never spreads the input): `name` is trimmed,
+capped at 80 characters and limited to `[A-Za-z0-9._-]`; `schedule` is capped at 60 characters and limited to
+cron characters; `schedule_human` is capped at 80 and limited to plain text; a date that is not ISO-8601 `Z`
+becomes `null`; `last_result` outside the enum becomes `unknown`; a non-array `cron` is `[]`; more than 50
+items keeps the first 50; unknown keys (a `command`, say) are dropped; an item whose `name` or `schedule`
+fails its character set is dropped. `/status.json` echoes the sanitised list like every other host key.
+
+**Write budget.** `last_run` and `next_run` are left out of the host's change hash (a `*/5` job would
+otherwise change the payload every few minutes and spend the KV write budget); they ride the next push, at
+most one keep-alive (10 minutes) later. A job appearing, vanishing or flipping `ok`/`failed` still pushes.

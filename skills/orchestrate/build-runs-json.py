@@ -18,6 +18,11 @@
 #   goals:      emit the payload's "goals" array (issue #197) from <pipe-dir>/goal-<id>.json (+ .pid,
 #               .held, .stopped); no stdin, `[]` when none. Local files only; spec is NOT sanitised
 #               here (validate.js does that).
+#   cron:       emit the payload's optional "cron" array (issue #756) from the crontab text on stdin
+#               (report-status.sh runs `crontab -l`) plus ~/logs/<job>/ for last run/result. Publishes
+#               only {name, schedule, schedule_human, last_run, last_result, next_run}: never a command
+#               line, argument, env assignment, redirection, URL, log content or path. Scan problems
+#               are counted on stderr as "scan_errors=<n>" (no content) for report-status.sh to alert on.
 import sys
 import json
 import subprocess
@@ -314,6 +319,271 @@ def build_backlog():
 
 if mode == "backlog":
     print(json.dumps(build_backlog()))
+    sys.exit(0)
+
+# ---- cron (issue #756) -----------------------------------------------------------------------
+# Optional "cron" array: the VM user's crontab jobs, name + schedule + last run/result + next run.
+# The command line is only ever used to find the script basename; it is never copied to the output.
+# Log files are read for their last 50 lines to decide ok/failed; their content is never published.
+CRON_MAX = 50
+CRON_NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
+CRON_SCRIPT_EXTS = (".sh", ".bash", ".zsh", ".py", ".js", ".mjs", ".rb", ".pl", ".ts")
+CRON_WRAPPERS = {"bash", "sh", "zsh", "dash", "env", "nice", "ionice", "nohup", "flock", "timeout",
+                 "python", "python3", "node", "ruby", "perl", "sudo", "cd", "exec", "time", "chronic",
+                 "setsid", "stdbuf", "xargs", "command"}
+CRON_TAKES_ARG = {"cd", "flock", "timeout", "nice", "ionice"}  # the first non-option word after these is not the job
+CRON_ENV_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+CRON_TOKEN_RE = re.compile(r"""(?:"(?:\\.|[^"\\])*"|'[^']*'|\S)+""")  # a word: runs of quoted segments / non-space
+CRON_STOP_RE = re.compile(r"^[0-9]*[<>|;&]")  # redirection, pipe, ; or a lone & (but not && / ||, handled below)
+CRON_FAIL_RE = re.compile(r"\b(error|failed|traceback|fatal)\b", re.IGNORECASE)
+CRON_EXIT_RE = re.compile(r"\b(?:exit(?:[ _-]?code)?|rc)\s*[=:]\s*(-?[0-9]+)\s*$", re.IGNORECASE)
+CRON_LOG_TAIL_BYTES = 65536
+CRON_LOG_TAIL_LINES = 50
+CRON_MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
+CRON_DOWS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"]
+CRON_DAY_NAMES = ["Sundays", "Mondays", "Tuesdays", "Wednesdays", "Thursdays", "Fridays", "Saturdays"]
+CRON_SPECIALS = {  # name -> (human, equivalent 5-field schedule used for next_run; None = no next run)
+    "@reboot": ("At boot", None),
+    "@hourly": ("Hourly", "0 * * * *"),
+    "@daily": ("Daily at 00:00", "0 0 * * *"),
+    "@midnight": ("Daily at 00:00", "0 0 * * *"),
+    "@weekly": ("Sundays at 00:00", "0 0 * * 0"),
+    "@monthly": ("Monthly on day 1 at 00:00", "0 0 1 * *"),
+    "@yearly": ("Yearly on 1 Jan at 00:00", "0 0 1 1 *"),
+    "@annually": ("Yearly on 1 Jan at 00:00", "0 0 1 1 *"),
+}
+
+
+def _cron_field(text, lo, hi, names=None, dow=False):
+    """One cron field -> (set of ints, starts_with_star). ValueError when malformed."""
+    top = 7 if dow else hi  # day of week: 0 and 7 are both Sunday
+    values, star = set(), False
+    for part in text.split(","):
+        rng, slash, step = part.partition("/")
+        if slash and not (step.isdigit() and int(step) >= 1):
+            raise ValueError("step")
+        n = int(step) if slash else 1
+
+        def num(tok):
+            if names and tok.lower() in names:
+                return names.index(tok.lower()) + lo
+            if not tok.isdigit():
+                raise ValueError("number")
+            return int(tok)
+
+        if rng == "*":
+            a, b, star = lo, hi, True
+        else:
+            first, dash, last = rng.partition("-")
+            a = num(first)
+            b = num(last) if dash else (top if slash else a)
+        if a < lo or b > top or a > b:
+            raise ValueError("range")
+        for v in range(a, b + 1, n):
+            values.add(v % 7 if dow else v)
+    return values, star
+
+
+def parse_cron_schedule(fields):
+    mins, _ = _cron_field(fields[0], 0, 59)
+    hours, _ = _cron_field(fields[1], 0, 23)
+    doms, dom_star = _cron_field(fields[2], 1, 31)
+    months, _ = _cron_field(fields[3], 1, 12, CRON_MONTHS)
+    dows, dow_star = _cron_field(fields[4], 0, 6, CRON_DOWS, dow=True)
+    return {"minutes": sorted(mins), "hours": sorted(hours), "doms": doms, "months": months,
+            "dows": dows, "dom_star": dom_star, "dow_star": dow_star}
+
+
+def _cron_day_matches(sch, d):
+    if d.month not in sch["months"]:
+        return False
+    dom_ok = d.day in sch["doms"]
+    dow_ok = ((d.weekday() + 1) % 7) in sch["dows"]  # python Monday=0 -> cron Sunday=0
+    if not sch["dom_star"] and not sch["dow_star"]:
+        return dom_ok or dow_ok  # Vixie cron: both restricted -> either one matches
+    return dom_ok and dow_ok
+
+
+def cron_next_run(sch, now_epoch):
+    """First fire time strictly after now_epoch, evaluated in the host's local timezone (TZ/DST via
+    time.mktime); epoch seconds, or None when none within five years."""
+    now_local = datetime.datetime.fromtimestamp(now_epoch)
+    for offset in range(0, 366 * 5):
+        d = now_local.date() + datetime.timedelta(days=offset)
+        if not _cron_day_matches(sch, d):
+            continue
+        for h in sch["hours"]:
+            for m in sch["minutes"]:
+                cand = datetime.datetime(d.year, d.month, d.day, h, m)
+                if cand > now_local:
+                    return int(time.mktime(cand.timetuple()))
+    return None
+
+
+def _join_and(items):
+    return " and ".join(items) if len(items) <= 2 else ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def cron_human(fields):
+    """Short English reading of a 5-field schedule; 'Custom schedule' when it is not a common shape."""
+    mi, h, dom, mon, dow = fields
+    try:
+        sch = parse_cron_schedule(fields)
+    except ValueError:
+        return "Custom schedule"
+    if fields == ["*"] * 5:
+        return "Every minute"
+    if re.match(r"^\*/[0-9]+$", mi) and (h, dom, mon, dow) == ("*", "*", "*", "*"):
+        return "Every %s minutes" % mi[2:]
+    if re.match(r"^[0-9]+$", mi) and (h, dom, mon, dow) == ("*", "*", "*", "*"):
+        return "Hourly at :%02d" % int(mi)
+    if re.match(r"^[0-9]+$", mi) and re.match(r"^\*/[0-9]+$", h) and (dom, mon, dow) == ("*", "*", "*"):
+        return "Every %s hours at :%02d" % (h[2:], int(mi))
+    times = ["%02d:%02d" % (hh, mm) for hh in sch["hours"] for mm in sch["minutes"]]
+    if mon != "*" or len(times) > 4 or "*" in mi or "*" in h:
+        return "Custom schedule"
+    clock = _join_and(times)
+    if dom == "*" and dow == "*":
+        return "Daily at %s" % clock
+    if dom == "*" and dow == "1-5":
+        return "Weekdays at %s" % clock
+    if dom == "*":
+        return "%s at %s" % (_join_and([CRON_DAY_NAMES[i] for i in sorted(sch["dows"])]), clock)
+    if dow == "*" and re.match(r"^[0-9]+(,[0-9]+)*$", dom):
+        return "Monthly on day %s at %s" % (_join_and(dom.split(",")), clock)
+    return "Custom schedule"
+
+
+def cron_script_name(command):
+    """Script basename (no directory, no extension) in a crontab command, else None. The rest of the
+    command line is discarded here and never leaves this function."""
+    tokens = []
+    for tok in CRON_TOKEN_RE.findall(command):
+        if len(tok) >= 2 and tok[0] in "'\"" and tok[-1] == tok[0] and tok.count(tok[0]) == 2:
+            tok = tok[1:-1]  # one fully quoted word, e.g. bash -lc '<command line>'
+        tokens.append(tok)
+    words = []
+    for tok in tokens:
+        if tok in ("&&", "||"):
+            continue
+        if CRON_STOP_RE.match(tok):
+            break
+        if tok.startswith("-") or CRON_ENV_RE.match(tok):
+            continue
+        if any(c.isspace() for c in tok):  # bash -lc '<script command>': a whole command line in one word
+            inner = cron_script_name(tok)
+            if inner:
+                return inner
+            continue
+        words.append(tok)
+    chosen, skip = None, 0
+    for tok in words:
+        base = tok.rstrip("/").rsplit("/", 1)[-1]
+        if base.lower().endswith(CRON_SCRIPT_EXTS):
+            chosen = base
+            break
+    if chosen is None:
+        for tok in words:
+            base = tok.rstrip("/").rsplit("/", 1)[-1]
+            if skip:
+                skip -= 1
+                continue
+            if base in CRON_WRAPPERS:
+                skip = 1 if base in CRON_TAKES_ARG else 0
+                continue
+            chosen = base
+            break
+    if not chosen or chosen in (".", ".."):
+        return None
+    stem = os.path.splitext(chosen)[0] if chosen.lower().endswith(CRON_SCRIPT_EXTS) else chosen
+    return stem if CRON_NAME_RE.match(stem) else None
+
+
+def parse_crontab(text):
+    """-> [(name, raw_schedule, human, fields-or-None)]; comments, blanks, env lines, malformed lines skipped."""
+    jobs = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        head = line.split(None, 1)[0]
+        if head.startswith("@"):
+            spec = CRON_SPECIALS.get(head.lower())
+            rest = line.split(None, 1)[1] if len(line.split(None, 1)) > 1 else ""
+            name = cron_script_name(rest) if spec and rest else None
+            if name:
+                jobs.append((name, head.lower(), spec[0], spec[1].split() if spec[1] else None))
+        elif not CRON_ENV_RE.match(head):
+            f = line.split(None, 5)
+            if len(f) == 6:
+                try:
+                    parse_cron_schedule(f[:5])
+                except ValueError:
+                    continue
+                name = cron_script_name(f[5])
+                if name:
+                    jobs.append((name, " ".join(f[:5]), cron_human(f[:5]), f[:5]))
+        if len(jobs) >= CRON_MAX:
+            break
+    return jobs
+
+
+def _epoch_iso(epoch):
+    return datetime.datetime.fromtimestamp(epoch, tz=datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def cron_last_run(name):
+    """-> (last_run ISO-8601Z or None, 'ok' | 'failed' | 'unknown') from the newest file in ~/logs/<name>/."""
+    d = os.path.join(os.path.expanduser("~"), "logs", name)
+    if not os.path.isdir(d):
+        return None, "unknown"
+    newest = None
+    with os.scandir(d) as it:
+        for e in it:
+            if e.is_file(follow_symlinks=False):
+                m = e.stat(follow_symlinks=False).st_mtime
+                if newest is None or m > newest[0]:
+                    newest = (m, e.path)
+    if newest is None:
+        return None, "unknown"
+    with open(newest[1], "rb") as f:
+        f.seek(0, os.SEEK_END)
+        f.seek(max(0, f.tell() - CRON_LOG_TAIL_BYTES))
+        data = f.read()
+    lines = data.decode("utf-8", errors="replace").splitlines()[-CRON_LOG_TAIL_LINES:]
+    failed = any(CRON_FAIL_RE.search(l) for l in lines)
+    for l in reversed(lines):  # the log's own (last) exit marker, where it has one
+        em = CRON_EXIT_RE.search(l)
+        if em:
+            failed = failed or int(em.group(1)) != 0
+            break
+    return _epoch_iso(newest[0]), ("failed" if failed else "ok")
+
+
+def build_cron(text):
+    try:
+        now = int(os.environ.get("STATUS_CRON_NOW") or time.time())  # STATUS_CRON_NOW: test hook only
+    except ValueError:
+        now = int(time.time())
+    out, scan_errors = [], 0
+    for name, schedule, human, fields in parse_crontab(text):
+        try:
+            last_run, result = cron_last_run(name)
+        except Exception:
+            last_run, result, scan_errors = None, "unknown", scan_errors + 1
+        next_run = None
+        if fields:
+            nxt = cron_next_run(parse_cron_schedule(fields), now)
+            next_run = _epoch_iso(nxt) if nxt is not None else None
+        out.append({"name": name, "schedule": schedule, "schedule_human": human,
+                    "last_run": last_run, "last_result": result, "next_run": next_run})
+    if scan_errors:
+        sys.stderr.write("scan_errors=%d\n" % scan_errors)  # a count only, never a path or content
+    return out
+
+
+if mode == "cron":
+    print(json.dumps(build_cron(sys.stdin.read())))
     sys.exit(0)
 
 GOALS_MAX = 50

@@ -223,14 +223,29 @@ async function handleHome(env) {
   const hosts = await readHostRecords(env);
   const thresholds = computeThresholds(KEEPALIVE_SECS);
   const nowEpochSecs = Math.floor(Date.now() / 1000);
-  const html = renderPage(hosts, thresholds, nowEpochSecs);
-  return noindexResponse(html, {
-    status: 200,
-    headers: {
-      "Content-Type": "text/html; charset=utf-8",
-      "Cache-Control": "max-age=15",
-    },
-  });
+  try {
+    const html = renderPage(hosts, thresholds, nowEpochSecs);
+    return noindexResponse(html, {
+      status: 200,
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "max-age=15",
+      },
+    });
+  } catch (err) {
+    // Issue #756 AC12: a render failure (e.g. the Scheduled jobs section on a bad stored record) is
+    // captured with release/environment/route tags only — never the record — and answered with a 500.
+    const tags = {
+      release: env.RELEASE,
+      environment: env.ENVIRONMENT,
+      route: "/",
+    };
+    await captureError(err, tags, env);
+    return noindexResponse("Internal error", {
+      status: 500,
+      headers: { "Content-Type": "text/plain" },
+    });
+  }
 }
 
 async function handlePipelines(env) {
