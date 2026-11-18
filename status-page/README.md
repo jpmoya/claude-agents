@@ -10,7 +10,7 @@ Tests run entirely against the exported `fetch` handler with a hand-written mock
 
 ## What is published (issue #29)
 
-The human-facing routes (`GET /`, `/status.json`, `/pipelines`) now require Google sign-in
+The human-facing routes (`GET /`, `/status.json`, `/pipelines`, `/jobs`) now require Google sign-in
 against an allowlist (2026-11-05, JP — see "Sign-in" below); `POST /beat`'s own bearer-token
 auth is unaffected. Before sign-in was added, the page was public (no auth, `noindex` only). By
 JP's decision (2026-09-19) each run's
@@ -289,44 +289,63 @@ No new Worker secret or KV namespace: `/learnings/push` reuses `TOKEN_MAC`/`TOKE
 file fails if a stage name or condition drifts from `agents/*.md`. Render errors return 500 and call
 `captureError` (release/environment/route tags; Slack via `SLACK_WEBHOOK_URL`, a no-op when unset).
 
-## Scheduled jobs (issue #756)
+## Scheduled jobs (issue #756; Jobs tab, descriptions and Mac sources added in the follow-up)
 
-The status page lists the VM's scheduled (cron) jobs, so a failed or silent job (say a weekly scan that
-stopped running) is visible where JP already looks. It is a section on `GET /`, "Scheduled jobs (n)",
-just above Done (the CI queue lives on `/ci`); with no jobs published there is no section at all.
+The status page lists both hosts' scheduled jobs, so a failed or silent job (say a weekly scan that
+stopped running) is visible where JP already looks. They live on their own tab, `GET /jobs` ("Jobs" in the
+nav: Status | Pipelines | CI | Jobs | Learnings), as one table "Scheduled jobs (n)"; with no jobs published
+the tab shows "no scheduled-job data yet". The main page no longer carries the section.
 Payload `v` stays **1**: `cron[]` is a new optional top-level key. An older Worker drops it, a newer
-Worker renders a beat without it as no section, and a failed crontab read simply leaves the key out.
+Worker renders a beat without it as the empty state, and a failed crontab read simply leaves the key out.
 
-**Shape.** Each item is exactly `{name, schedule, schedule_human, last_run, last_result, next_run}`:
+**Shape.** Each item is `{name, schedule, schedule_human, last_run, last_result, next_run}` plus two
+optional keys, `description` and `source`:
 
 | Field | Meaning |
 |---|---|
-| `name` | script basename without directory or extension (`layoff-scan-cron`) |
-| `schedule` | the raw 5-field cron expression, or the `@special` (`@reboot`, `@daily`, ...) |
+| `name` | script basename without directory or extension (`layoff-scan-cron`); the one word after the script is appended when it is a plain lowercase slug (`run-pricing-agent.sh valley-view` becomes `run-pricing-agent-valley-view`); a launchd job is its label without the vendor prefix (`com.jp.clear-space` becomes `clear-space`); a desktop task is its directory name |
+| `schedule` | the raw 5-field cron expression, or an `@special`: `@reboot`, `@daily`, ... for cron; for launchd a calendar interval as a cron expression (`1-59/2 * * * *`), `@every 900s` (`StartInterval`), `@reboot` (RunAtLoad only), `@keepalive`, `@calendar` (a calendar that is not cron-shaped); `@app` for a Claude desktop task (its schedule lives in the app and is not readable) |
 | `schedule_human` | short reading, e.g. `Mondays at 13:00`, `Every 5 minutes`; `Custom schedule` when not a common shape |
-| `last_run` | ISO-8601 `...Z` of the newest file in `~/logs/<name>/`, or `null` |
-| `last_result` | `ok` \| `failed` \| `unknown` |
-| `next_run` | next fire time computed in the host's timezone, emitted as ISO-8601 `...Z`; `null` for `@reboot` |
+| `last_run` | ISO-8601 `...Z` of the newest file in `~/logs/<name>/`, or (launchd only) the mtime of the plist's `StandardOutPath` / `StandardErrorPath`, or `null` |
+| `last_result` | `ok` \| `failed` \| `unknown`; only ever read from `~/logs/<name>/` (a plist's log path gives a time, never a result) |
+| `next_run` | next fire time computed in the host's timezone, emitted as ISO-8601 `...Z`; for `@every` the last run plus the interval; `null` for `@reboot`, `@keepalive`, `@app` |
+| `description` | optional, "What it does" (see below), at most 140 characters |
+| `source` | optional, `cron` \| `launchd` \| `desktop`; absent means `cron`. The tab's Host column reads `Mac · launchd`, `VM · cron`, ... (Mac or VM from which host published the item) |
 
-**Host half** (`skills/orchestrate/report-status.sh` runs `crontab -l`; `build-runs-json.py cron` parses it).
-Comments, blank lines, env lines and malformed lines are skipped, `@reboot`/`@daily`-style specials are
-kept, at most 50 jobs. A crontab that cannot be read (or has no entries) omits `cron` and never fails the
-beat; a read or log-scan failure is logged in `report-status.log` and alerted once per 6 hours on the
-existing Slack webhook (`route=status-reporter/cron`, with release and environment tags, never crontab
-text). The Mac host publishes whatever its own crontab holds; Claude desktop scheduled tasks are not read.
+**Host half** (`skills/orchestrate/report-status.sh` runs `crontab -l`; `build-runs-json.py cron` does the rest).
+Crontab: comments, blank lines, env lines and malformed lines are skipped, `@reboot`/`@daily`-style specials are
+kept. **macOS only** (skipped on Linux, and when `STATUS_LAUNCHD_DIR` / `STATUS_DESKTOP_TASKS_DIR` is set empty):
+launchd jobs from `~/Library/LaunchAgents/com.jp.*`, `com.benjis.*`, `com.jpmoya.*`, `com.xaki.*` plists (Google,
+homebrew and `.retired` ones are never read; a `Disabled` plist, or one with no calendar / interval / RunAtLoad /
+KeepAlive, is skipped), and Claude desktop scheduled tasks from `~/.claude/scheduled-tasks/*/SKILL.md` (name and
+frontmatter description only; the schedule is not readable from outside the app). At most 50 items in all, crontab
+first. A crontab that cannot be read still lets the Mac collectors run; if nothing at all is found `cron` is omitted
+and the beat never fails. A read or log-scan failure is logged in `report-status.log` and alerted once per 6 hours on
+the existing Slack webhook (`route=status-reporter/cron`, with release and environment tags, never crontab text).
+
+**Description.** Plain text read from the job's script when its path is absolute, `~/`- or `$HOME/`-based and the
+real file is inside the user's home: an explicit `# desc: ...` line in the first 40 lines, else the first comment
+line of the header after the shebang (lint pragmas, rules and usage lines such as `foo.sh [--flag]` are skipped).
+Desktop tasks use the SKILL.md frontmatter `description`. It is whitespace-collapsed and capped at 140 characters
+(an ellipsis when cut). It is dropped, never trimmed, when it holds markup characters, an `@`, a URL, a `~/` or
+absolute path, a `KEY=value` assignment or a 32+ character token. No description (an empty cell) is normal.
 
 **Result rule (fixed).** Take the newest file in `~/logs/<name>/` (by mtime). If one of its last 50 lines
 matches `(?i)\b(error|failed|traceback|fatal)\b`, or the last line of the form `exit=<n>` / `exit code: <n>` /
 `rc=<n>` has a non-zero `n`, the job is `failed`; otherwise `ok`. No log directory, or no files in it, is
-`unknown`. The convention this relies on: a job named `foo.sh` logs into `~/logs/foo/`.
+`unknown`. The convention this relies on: a job named `foo.sh` logs into `~/logs/foo/`. A job run with an
+argument looks in `~/logs/<script>-<arg>/` first, then only at files of `~/logs/<script>/` whose name contains the
+argument; another argument's log is never borrowed.
 
-**Privacy.** Only the script basename and the schedule are published. Command lines, arguments,
-`FOO=bar` env assignments, redirections, URLs, log content and file paths never are. The Worker
-(`src/validate.js`) rebuilds each item from allow-listed fields (never spreads the input): `name` is trimmed,
-capped at 80 characters and limited to `[A-Za-z0-9._-]`; `schedule` is capped at 60 characters and limited to
-cron characters; `schedule_human` is capped at 80 and limited to plain text; a date that is not ISO-8601 `Z`
-becomes `null`; `last_result` outside the enum becomes `unknown`; a non-array `cron` is `[]`; more than 50
-items keeps the first 50; unknown keys (a `command`, say) are dropped; an item whose `name` or `schedule`
+**Privacy.** Only the script basename, one lowercase slug argument, the schedule and the filtered description are
+published. Command lines, other arguments, `FOO=bar` env assignments, plist environment values, redirections, URLs,
+log content, task bodies and file paths never are. The Worker (`src/validate.js`) rebuilds each item from
+allow-listed fields (never spreads the input): `name` is trimmed, capped at 80 characters and limited to
+`[A-Za-z0-9._-]`; `schedule` is capped at 60 characters and limited to cron characters; `schedule_human` is capped
+at 80 and limited to plain text; `description` is collapsed, capped at 140 code points and dropped (item kept)
+when it matches the unsafe patterns above; `source` outside the enum is dropped (item kept); a date that is not
+ISO-8601 `Z` becomes `null`; `last_result` outside the enum becomes `unknown`; a non-array `cron` is `[]`; more
+than 50 items keeps the first 50; unknown keys (a `command`, say) are dropped; an item whose `name` or `schedule`
 fails its character set is dropped. `/status.json` echoes the sanitised list like every other host key.
 
 **Write budget.** `last_run` and `next_run` are left out of the host's change hash (a `*/5` job would

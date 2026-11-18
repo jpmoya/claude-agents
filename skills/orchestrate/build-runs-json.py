@@ -19,12 +19,17 @@
 #               .held, .stopped); no stdin, `[]` when none. Local files only; spec is NOT sanitised
 #               here (validate.js does that).
 #   cron:       emit the payload's optional "cron" array (issue #756) from the crontab text on stdin
-#               (report-status.sh runs `crontab -l`) plus ~/logs/<job>/ for last run/result. Publishes
-#               only {name, schedule, schedule_human, last_run, last_result, next_run}: never a command
-#               line, argument, env assignment, redirection, URL, log content or path. Scan problems
-#               are counted on stderr as "scan_errors=<n>" (no content) for report-status.sh to alert on.
+#               (report-status.sh runs `crontab -l`) plus ~/logs/<job>/ for last run/result. On macOS it
+#               also lists the user's launchd jobs (~/Library/LaunchAgents, source "launchd") and Claude
+#               desktop scheduled tasks (~/.claude/scheduled-tasks, source "desktop"). Publishes only
+#               {name, schedule, schedule_human, last_run, last_result, next_run, source, description?}:
+#               never a command line, argument, env assignment, redirection, URL, log content or path (the
+#               one argument word allowed is a lowercase slug appended to the name; `description` is the
+#               script's own header comment, filtered). Scan problems are counted on stderr as
+#               "scan_errors=<n>" (no content) for report-status.sh to alert on.
 import sys
 import json
+import plistlib
 import subprocess
 import os
 import re
@@ -322,8 +327,9 @@ if mode == "backlog":
     sys.exit(0)
 
 # ---- cron (issue #756) -----------------------------------------------------------------------
-# Optional "cron" array: the VM user's crontab jobs, name + schedule + last run/result + next run.
-# The command line is only ever used to find the script basename; it is never copied to the output.
+# Optional "cron" array: the host user's scheduled jobs (crontab; on macOS also launchd and Claude desktop tasks),
+# name + schedule + last run/result + next run. The command line is only ever used to find the script basename;
+# it is never copied to the output.
 # Log files are read for their last 50 lines to decide ok/failed; their content is never published.
 CRON_MAX = 50
 CRON_NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
@@ -454,16 +460,16 @@ def cron_human(fields):
     return "Custom schedule"
 
 
-def cron_script_name(command):
-    """Script basename (no directory, no extension) in a crontab command, else None. The rest of the
-    command line is discarded here and never leaves this function."""
+def cron_script_ref(command):
+    """-> (script token, the literal word right after it or None) for a crontab command, else None. The
+    command line is only used to find these two words; nothing else leaves this function."""
     tokens = []
     for tok in CRON_TOKEN_RE.findall(command):
         if len(tok) >= 2 and tok[0] in "'\"" and tok[-1] == tok[0] and tok.count(tok[0]) == 2:
             tok = tok[1:-1]  # one fully quoted word, e.g. bash -lc '<command line>'
         tokens.append(tok)
-    words = []
-    for tok in tokens:
+    words = []  # (word, its index in tokens)
+    for i, tok in enumerate(tokens):
         if tok in ("&&", "||"):
             continue
         if CRON_STOP_RE.match(tok):
@@ -471,19 +477,19 @@ def cron_script_name(command):
         if tok.startswith("-") or CRON_ENV_RE.match(tok):
             continue
         if any(c.isspace() for c in tok):  # bash -lc '<script command>': a whole command line in one word
-            inner = cron_script_name(tok)
+            inner = cron_script_ref(tok)
             if inner:
                 return inner
             continue
-        words.append(tok)
+        words.append((tok, i))
     chosen, skip = None, 0
-    for tok in words:
+    for tok, i in words:
         base = tok.rstrip("/").rsplit("/", 1)[-1]
         if base.lower().endswith(CRON_SCRIPT_EXTS):
-            chosen = base
+            chosen = (tok, i)
             break
     if chosen is None:
-        for tok in words:
+        for tok, i in words:
             base = tok.rstrip("/").rsplit("/", 1)[-1]
             if skip:
                 skip -= 1
@@ -491,28 +497,55 @@ def cron_script_name(command):
             if base in CRON_WRAPPERS:
                 skip = 1 if base in CRON_TAKES_ARG else 0
                 continue
-            chosen = base
+            chosen = (tok, i)
             break
-    if not chosen or chosen in (".", ".."):
+    if chosen is None:
         return None
-    stem = os.path.splitext(chosen)[0] if chosen.lower().endswith(CRON_SCRIPT_EXTS) else chosen
+    tok, i = chosen
+    return tok, (tokens[i + 1] if i + 1 < len(tokens) else None)
+
+
+def _cron_stem(token):
+    """Script basename without directory or extension, if it is a valid job name."""
+    base = token.rstrip("/").rsplit("/", 1)[-1]
+    if not base or base in (".", ".."):
+        return None
+    stem = os.path.splitext(base)[0] if base.lower().endswith(CRON_SCRIPT_EXTS) else base
     return stem if CRON_NAME_RE.match(stem) else None
 
 
+def cron_script_name(command):
+    """Script basename (no directory, no extension) in a crontab command, else None."""
+    ref = cron_script_ref(command)
+    return _cron_stem(ref[0]) if ref else None
+
+
+# The one word right after the script is appended to the job's name when it is a plain lowercase slug
+# (`run-pricing-agent.sh valley-view` -> `run-pricing-agent-valley-view`), so the same script run with
+# different arguments is told apart. Flags, paths, numbers, anything with `=` or `.` never qualify.
+CRON_ARG_RE = re.compile(r"^[a-z]+(?:-[a-z]+)*$")
+
+
+def _cron_arg(word):
+    return word if word and len(word) <= 32 and CRON_ARG_RE.match(word) and word not in CRON_WRAPPERS else None
+
+
 def parse_crontab(text):
-    """-> [(name, raw_schedule, human, fields-or-None)]; comments, blanks, env lines, malformed lines skipped."""
+    """-> [{name, stem, arg, schedule, human, fields-or-None, script}]; comments, blanks, env lines, malformed
+    lines skipped. `script` (the script word, possibly relative) is only used to read its description."""
     jobs = []
     for raw in text.splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
         head = line.split(None, 1)[0]
+        command, schedule, human, fields = None, None, None, None
         if head.startswith("@"):
             spec = CRON_SPECIALS.get(head.lower())
             rest = line.split(None, 1)[1] if len(line.split(None, 1)) > 1 else ""
-            name = cron_script_name(rest) if spec and rest else None
-            if name:
-                jobs.append((name, head.lower(), spec[0], spec[1].split() if spec[1] else None))
+            if spec and rest:
+                command, schedule, human = rest, head.lower(), spec[0]
+                fields = spec[1].split() if spec[1] else None
         elif not CRON_ENV_RE.match(head):
             f = line.split(None, 5)
             if len(f) == 6:
@@ -520,9 +553,19 @@ def parse_crontab(text):
                     parse_cron_schedule(f[:5])
                 except ValueError:
                     continue
-                name = cron_script_name(f[5])
-                if name:
-                    jobs.append((name, " ".join(f[:5]), cron_human(f[:5]), f[:5]))
+                command, schedule, human, fields = f[5], " ".join(f[:5]), cron_human(f[:5]), f[:5]
+        if command is None:
+            continue
+        ref = cron_script_ref(command)
+        stem = _cron_stem(ref[0]) if ref else None
+        if not stem:
+            continue
+        arg = _cron_arg(ref[1])
+        name = ("%s-%s" % (stem, arg))[:80] if arg else stem
+        if not CRON_NAME_RE.match(name):
+            name, arg = stem, None
+        jobs.append({"name": name, "stem": stem, "arg": arg, "schedule": schedule, "human": human,
+                     "fields": fields, "script": ref[0]})
         if len(jobs) >= CRON_MAX:
             break
     return jobs
@@ -532,21 +575,37 @@ def _epoch_iso(epoch):
     return datetime.datetime.fromtimestamp(epoch, tz=datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def cron_last_run(name):
-    """-> (last_run ISO-8601Z or None, 'ok' | 'failed' | 'unknown') from the newest file in ~/logs/<name>/."""
-    d = os.path.join(os.path.expanduser("~"), "logs", name)
+def _home():
+    return os.path.realpath(os.path.expanduser("~"))
+
+
+def _under_home(path):
+    """The real path when it is inside the user's home directory (symlinks resolved on both sides), else None."""
+    try:
+        real = os.path.realpath(path)
+    except (OSError, ValueError):
+        return None
+    home = _home()
+    return real if home != os.sep and real.startswith(home + os.sep) else None
+
+
+def _newest_log(d, must_contain=None):
+    """-> (mtime, path) of the newest regular file in directory d (whose name contains must_contain, if given), else None."""
     if not os.path.isdir(d):
-        return None, "unknown"
+        return None
     newest = None
     with os.scandir(d) as it:
         for e in it:
-            if e.is_file(follow_symlinks=False):
+            if e.is_file(follow_symlinks=False) and (not must_contain or must_contain in e.name):
                 m = e.stat(follow_symlinks=False).st_mtime
                 if newest is None or m > newest[0]:
                     newest = (m, e.path)
-    if newest is None:
-        return None, "unknown"
-    with open(newest[1], "rb") as f:
+    return newest
+
+
+def _log_failed(path):
+    """True when the log's last 50 lines hold an error marker or a non-zero exit marker. Content is never kept."""
+    with open(path, "rb") as f:
         f.seek(0, os.SEEK_END)
         f.seek(max(0, f.tell() - CRON_LOG_TAIL_BYTES))
         data = f.read()
@@ -557,7 +616,297 @@ def cron_last_run(name):
         if em:
             failed = failed or int(em.group(1)) != 0
             break
-    return _epoch_iso(newest[0]), ("failed" if failed else "ok")
+    return failed
+
+
+def cron_last_run(stem, arg=None):
+    """-> (last_run ISO-8601Z or None, 'ok' | 'failed' | 'unknown') from the newest file in ~/logs/<stem>/. A job run
+    with an argument looks in ~/logs/<stem>-<arg>/ first, then only at files of ~/logs/<stem>/ whose name holds the
+    argument (never at the other arguments' logs: a shared log must not flip three jobs to failed at once)."""
+    logs = os.path.join(os.path.expanduser("~"), "logs")
+    if arg:
+        cands = [(os.path.join(logs, "%s-%s" % (stem, arg)), None), (os.path.join(logs, stem), arg)]
+    else:
+        cands = [(os.path.join(logs, stem), None)]
+    for d, must_contain in cands:
+        newest = _newest_log(d, must_contain)
+        if newest:
+            return _epoch_iso(newest[0]), ("failed" if _log_failed(newest[1]) else "ok")
+    return None, "unknown"
+
+
+# ---- description (the "What it does" column) ----
+# Plain text only, from the job's script: a `# desc:` line in its first 40 lines, else the first comment line
+# of its header (after the shebang). Never a command line, path or secret: a script word that is not an
+# absolute / ~ / $HOME path to a real file inside the home directory yields nothing, the text is
+# whitespace-collapsed and capped at 140 code points, and anything that looks like an email, URL, path, assignment
+# or long token is dropped whole. The Worker applies the same rule again (validate.js CRON_DESCRIPTION_UNSAFE).
+CRON_DESC_MAX = 140
+CRON_DESC_UNSAFE_RE = re.compile(
+    r"[<>&\"`@]|://|~/|(?:^|\s)/[\w.-]|\b[A-Za-z_][A-Za-z0-9_]*=\S|[A-Za-z0-9_+-]{32,}"
+    r"|\b(?:sk|ghp|gho|xox[a-z]|AKIA)[-_A-Za-z0-9]{8,}")
+CRON_DESC_EXPLICIT_RE = re.compile(r"^desc(?:ription)?\s*:\s*(.+)$", re.IGNORECASE)
+# Header comment lines that are not a description: rules, lint pragmas, a usage line (`foo.sh [--flag] ...`).
+CRON_DESC_NOISE_RE = re.compile(r"^(?:[-=#*_~/\s]*|shellcheck\b.*|vim?:.*|-\*-.*|eslint.*|pylint.*|noqa.*|type:.*|"
+                                r"pragma.*|!.*|shfmt.*|prettier.*|set\s+-.*|usage\b.*|[\w./-]+\.(?:sh|py|js|mjs|ts|rb|pl)\b.*|"
+                                r".*(?:^|\s)\[?--[a-z].*)$", re.IGNORECASE)
+
+
+def clean_description(text):
+    if not isinstance(text, str):
+        return None
+    text = re.sub(r"[\x00-\x1f\x7f\s]+", " ", text).strip()
+    if len(text) < 3 or not re.search(r"[A-Za-z]", text) or CRON_DESC_UNSAFE_RE.search(text):
+        return None
+    if len(text) > CRON_DESC_MAX:  # cut at a word boundary where there is one, marked with an ellipsis (140 in all)
+        cut = text[:CRON_DESC_MAX - 1]
+        text = (cut.rsplit(" ", 1)[0] if " " in cut[CRON_DESC_MAX // 2:] else cut).rstrip(" ,;:-") + "…"
+    return text or None
+
+
+def resolve_script(token):
+    """An absolute / ~ / $HOME path to a regular file inside the home directory -> its real path, else None."""
+    if not isinstance(token, str) or not token or "\n" in token:
+        return None
+    home = os.path.expanduser("~")
+    t = token.replace("${HOME}", home).replace("$HOME", home)
+    t = os.path.expanduser(t)
+    if not os.path.isabs(t):
+        return None  # relative to a working directory the crontab line does not give us
+    real = _under_home(t)
+    return real if real and os.path.isfile(real) else None
+
+
+def script_description(token):
+    path = resolve_script(token)
+    if not path:
+        return None
+    try:
+        with open(path, "rb") as f:
+            head = f.read(CRON_LOG_TAIL_BYTES // 16)  # 4 KB is plenty for a header comment
+    except OSError:
+        return None
+    first, in_header = None, True
+    for i, raw in enumerate(head.decode("utf-8", errors="replace").splitlines()[:40]):
+        t = raw.strip()
+        if i == 0 and t.startswith("#!"):
+            continue
+        if not t:
+            continue
+        if not t.startswith("#"):
+            in_header = False
+            continue
+        body = t.lstrip("#").strip()
+        m = CRON_DESC_EXPLICIT_RE.match(body)
+        if m:
+            return clean_description(m.group(1))  # an explicit `# desc:` line wins over the header comment
+        if in_header and first is None and not CRON_DESC_NOISE_RE.match(body):
+            first = body
+    return clean_description(first)
+
+
+# ---- launchd (macOS only): ~/Library/LaunchAgents/com.{jp,benjis,jpmoya,xaki}.*.plist ----
+LAUNCHD_PREFIXES = ("com.jp.", "com.benjis.", "com.jpmoya.", "com.xaki.")  # not Google / homebrew / retired ones
+LAUNCHD_FIELDS = (("Minute", 0, 59), ("Hour", 0, 23), ("Day", 1, 31), ("Month", 1, 12), ("Weekday", 0, 7))
+
+
+def _cron_dir(env_name, default):
+    """A collector directory: the default, an override (test hook), or None when the override is empty (= off)."""
+    v = os.environ.get(env_name)
+    return default if v is None else (v or None)
+
+
+def _is_darwin():
+    return (os.environ.get("STATUS_CRON_PLATFORM") or sys.platform) == "darwin"  # env: test hook only
+
+
+def _cron_field_text(values, lo, hi):
+    vals = sorted(values)
+    if len(vals) >= 3:
+        step = vals[1] - vals[0]
+        if step >= 1 and all(b - a == step for a, b in zip(vals, vals[1:])):
+            if step == 1:
+                return "%d-%d" % (vals[0], vals[-1])
+            if vals[0] == lo and vals[-1] + step > hi:
+                return "*/%d" % step
+            return "%d-%d/%d" % (vals[0], vals[-1], step)
+    return ",".join(str(v) for v in vals)
+
+
+def launchd_calendar(spec):
+    """StartCalendarInterval (a dict, or a list of dicts) -> cron fields [min, hour, dom, month, dow] when it is
+    exactly a cron-shaped cross product, else None. A missing key is a wildcard, as in launchd."""
+    dicts = [spec] if isinstance(spec, dict) else spec
+    if not isinstance(dicts, list) or not dicts or not all(isinstance(d, dict) and d for d in dicts):
+        return None
+    sets, product = [], 1
+    for key, lo, hi in LAUNCHD_FIELDS:
+        present = [key in d for d in dicts]
+        if not any(present):
+            sets.append(None)
+            continue
+        if not all(present):
+            return None  # some entries constrain this field and others do not: not a cross product
+        vals = set()
+        for d in dicts:
+            v = d[key]
+            if isinstance(v, bool) or not isinstance(v, int) or v < lo or v > hi:
+                return None
+            vals.add(0 if key == "Weekday" and v == 7 else v)
+        sets.append(vals)
+        product *= len(vals)
+    if len({tuple(sorted(d.items())) for d in dicts}) != len(dicts) or product != len(dicts):
+        return None
+    if sets[2] is not None and sets[4] is not None:
+        return None  # day-of-month and weekday together: cron ORs them, launchd does not
+    if sets[0] is None and any(v is not None for v in sets[1:]):
+        return None  # no Minute means every minute of the matching hours or days: not a schedule worth a cron reading
+    fields = []
+    for (key, lo, hi), vals in zip(LAUNCHD_FIELDS, sets):
+        fields.append("*" if vals is None else _cron_field_text(vals, lo, 6 if key == "Weekday" else hi))
+    return fields
+
+
+def _every_minutes_human(fields):
+    """`1-59/2 * * * *` / `*/5 * * * *` style (only the minute set varies) -> 'Every N minutes', else None."""
+    if fields[1:] != ["*"] * 4:
+        return None
+    try:
+        mins = sorted(parse_cron_schedule(fields)["minutes"])
+    except ValueError:
+        return None
+    if len(mins) < 3:
+        return None
+    step = mins[1] - mins[0]
+    if step >= 1 and all(b - a == step for a, b in zip(mins, mins[1:])) and mins[0] < step and mins[-1] + step >= 60:
+        return "Every %d minutes" % step
+    return None
+
+
+def _interval_human(secs):
+    if secs % 3600 == 0:
+        h = secs // 3600
+        return "Hourly" if h == 1 else "Every %d hours" % h
+    if secs % 60 == 0:
+        return "Every %d minutes" % (secs // 60)
+    return "Every %d seconds" % secs
+
+
+def launchd_job(path, now):
+    """One plist -> a cron[] item (source launchd), or None when it is not ours / not scheduled / disabled."""
+    with open(path, "rb") as f:
+        d = plistlib.load(f)
+    if not isinstance(d, dict) or d.get("Disabled") is True:
+        return None
+    label = d.get("Label") if isinstance(d.get("Label"), str) else os.path.basename(path)[:-len(".plist")]
+    prefix = next((p for p in LAUNCHD_PREFIXES if label.startswith(p)), None)
+    name = label[len(prefix):] if prefix else None
+    if not name or not CRON_NAME_RE.match(name):
+        return None
+    interval = d.get("StartInterval")
+    interval = interval if isinstance(interval, int) and not isinstance(interval, bool) and interval > 0 else None
+    fields, schedule, human = None, None, None
+    cal = d.get("StartCalendarInterval")
+    if cal:
+        fields = launchd_calendar(cal)
+        if fields:
+            schedule = " ".join(fields)
+            human = _every_minutes_human(fields) or cron_human(fields)
+            if len(schedule) > 60:
+                fields, schedule, human = None, "@calendar", "Custom schedule"
+        else:
+            schedule, human = "@calendar", "Custom schedule"
+    elif interval:
+        schedule, human = "@every %ds" % interval, _interval_human(interval)
+    elif d.get("KeepAlive"):
+        schedule, human = "@keepalive", "Kept running"
+    elif d.get("RunAtLoad") is True:
+        schedule, human = "@reboot", "At login"
+    else:
+        return None  # launched by hand or on demand: nothing scheduled to show
+    script = next((a for a in (d.get("ProgramArguments") or []) if isinstance(a, str) and resolve_script(a)), None)
+    last_run, result = cron_last_run(name)
+    if last_run is None:  # no ~/logs/<name>/: the plist's own log file still says when it last wrote (never the result)
+        for key in ("StandardOutPath", "StandardErrorPath"):
+            p = d.get(key)
+            real = _under_home(p) if isinstance(p, str) and os.path.isabs(p) else None
+            if real and os.path.isfile(real):
+                last_run = _epoch_iso(os.stat(real).st_mtime)
+                break
+    next_run = None
+    if fields:
+        nxt = cron_next_run(parse_cron_schedule(fields), now)
+        next_run = _epoch_iso(nxt) if nxt is not None else None
+    elif interval and last_run:
+        nxt = int(datetime.datetime.strptime(last_run, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc).timestamp()) + interval
+        next_run = _epoch_iso(nxt) if nxt > now else None
+    return _cron_item(name, schedule, human, last_run, result, next_run, script_description(script) if script else None, "launchd")
+
+
+def build_launchd(now):
+    d = _cron_dir("STATUS_LAUNCHD_DIR", os.path.join(os.path.expanduser("~"), "Library", "LaunchAgents"))
+    if not d or not _is_darwin() or not os.path.isdir(d):
+        return [], 0
+    out, errors = [], 0
+    for fname in sorted(os.listdir(d)):
+        if not fname.endswith(".plist") or not fname.startswith(LAUNCHD_PREFIXES):
+            continue
+        try:
+            item = launchd_job(os.path.join(d, fname), now)
+        except Exception:
+            errors += 1
+            continue
+        if item:
+            out.append(item)
+    return out, errors
+
+
+# ---- Claude desktop scheduled tasks (macOS only): ~/.claude/scheduled-tasks/<name>/SKILL.md ----
+# The schedule lives in the app and is not cheaply readable, so only the name and the frontmatter description are.
+def skill_description(path):
+    with open(path, "rb") as f:
+        lines = f.read(CRON_LOG_TAIL_BYTES // 16).decode("utf-8", errors="replace").splitlines()
+    if not lines or lines[0].strip() != "---":
+        return None
+    for i, raw in enumerate(lines[1:], start=1):
+        if raw.strip() == "---":
+            return None
+        m = re.match(r"^description\s*:\s*(.*)$", raw)
+        if not m:
+            continue
+        val = m.group(1).strip()
+        if val in ("", ">", "|", ">-", "|-") and i + 1 < len(lines):
+            val = lines[i + 1].strip()
+        if len(val) >= 2 and val[0] in "'\"" and val[-1] == val[0]:
+            val = val[1:-1]
+        return clean_description(val)
+    return None
+
+
+def build_desktop():
+    d = _cron_dir("STATUS_DESKTOP_TASKS_DIR", os.path.join(os.path.expanduser("~"), ".claude", "scheduled-tasks"))
+    if not d or not _is_darwin() or not os.path.isdir(d):
+        return [], 0
+    out, errors = [], 0
+    for name in sorted(os.listdir(d)):
+        skill = os.path.join(d, name, "SKILL.md")
+        if not CRON_NAME_RE.match(name) or not os.path.isfile(skill):
+            continue
+        try:
+            last_run, result = cron_last_run(name)
+            out.append(_cron_item(name, "@app", "Set in the Claude app", last_run, result, None, skill_description(skill), "desktop"))
+        except Exception:
+            errors += 1
+    return out, errors
+
+
+def _cron_item(name, schedule, human, last_run, result, next_run, description, source):
+    item = {"name": name, "schedule": schedule, "schedule_human": human,
+            "last_run": last_run, "last_result": result, "next_run": next_run}
+    if description:
+        item["description"] = description
+    item["source"] = source
+    return item
 
 
 def build_cron(text):
@@ -566,20 +915,31 @@ def build_cron(text):
     except ValueError:
         now = int(time.time())
     out, scan_errors = [], 0
-    for name, schedule, human, fields in parse_crontab(text):
+    for job in parse_crontab(text):
         try:
-            last_run, result = cron_last_run(name)
+            last_run, result = cron_last_run(job["stem"], job["arg"])
         except Exception:
             last_run, result, scan_errors = None, "unknown", scan_errors + 1
         next_run = None
-        if fields:
-            nxt = cron_next_run(parse_cron_schedule(fields), now)
+        if job["fields"]:
+            nxt = cron_next_run(parse_cron_schedule(job["fields"]), now)
             next_run = _epoch_iso(nxt) if nxt is not None else None
-        out.append({"name": name, "schedule": schedule, "schedule_human": human,
-                    "last_run": last_run, "last_result": result, "next_run": next_run})
+        try:
+            description = script_description(job["script"])
+        except Exception:
+            description, scan_errors = None, scan_errors + 1
+        out.append(_cron_item(job["name"], job["schedule"], job["human"], last_run, result, next_run, description, "cron"))
+    # Mac only, each isolated: a plist or task directory that cannot be read costs its own entries, never the beat.
+    for collect in (lambda: build_launchd(now), build_desktop):
+        try:
+            items, errors = collect()
+        except Exception:
+            items, errors = [], 1
+        out.extend(items)
+        scan_errors += errors
     if scan_errors:
         sys.stderr.write("scan_errors=%d\n" % scan_errors)  # a count only, never a path or content
-    return out
+    return out[:CRON_MAX]
 
 
 if mode == "cron":

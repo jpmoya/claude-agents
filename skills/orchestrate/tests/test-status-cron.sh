@@ -46,7 +46,7 @@ test_cron_privacy_only_basename_and_schedule_published() {
   assert_eq "$(printf '%s' "$out" | jq -r '.cron[0].name')" "layoff-scan-cron" "AC3: name is the script basename without extension" || return 1
   assert_eq "$(printf '%s' "$out" | jq -r '.cron[0].schedule')" "0 13 * * 1" "AC1: raw 5-field schedule" || return 1
   assert_eq "$(printf '%s' "$out" | jq -r '.cron[0].schedule_human')" "Mondays at 13:00" "AC1: human schedule" || return 1
-  assert_eq "$(printf '%s' "$out" | jq -c '.cron[0] | keys')" '["last_result","last_run","name","next_run","schedule","schedule_human"]' "AC1: exactly the six documented keys" || return 1
+  assert_eq "$(printf '%s' "$out" | jq -c '.cron[0] | keys')" '["last_result","last_run","name","next_run","schedule","schedule_human","source"]' "AC1: exactly the documented keys (description only when the script has a readable header comment)" || return 1
   assert_not_contains "$out" "abc123" "AC3: env assignment value never published" || return 1
   assert_not_contains "$out" "sk-xyz" "AC3: argument value never published" || return 1
   assert_not_contains "$out" "/home/u" "AC3: no path published" || return 1

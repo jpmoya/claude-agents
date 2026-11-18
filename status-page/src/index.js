@@ -28,6 +28,7 @@ import {
   renderPage,
   renderPipelines,
   renderCiPage,
+  renderJobsPage,
   renderLearnings,
 } from "./render.js";
 import { captureError } from "./capture.js";
@@ -291,6 +292,32 @@ async function handleCi(env) {
       release: env.RELEASE,
       environment: env.ENVIRONMENT,
       route: "/ci",
+    };
+    await captureError(err, tags, env);
+    return noindexResponse("Internal error", {
+      status: 500,
+      headers: { "Content-Type": "text/plain" },
+    });
+  }
+}
+
+/** GET /jobs — issue #756: the hosts' scheduled (cron) jobs on their own tab. */
+async function handleJobs(env) {
+  try {
+    const hosts = await readHostRecords(env);
+    const html = renderJobsPage(hosts);
+    return noindexResponse(html, {
+      status: 200,
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "max-age=15",
+      },
+    });
+  } catch (err) {
+    const tags = {
+      release: env.RELEASE,
+      environment: env.ENVIRONMENT,
+      route: "/jobs",
     };
     await captureError(err, tags, env);
     return noindexResponse("Internal error", {
@@ -648,6 +675,13 @@ export default {
         return noindexResponse(null, { status: 405 });
       if (!(await requireSession(request, env))) return redirectTo("/login");
       return handleCi(env);
+    }
+
+    if (url.pathname === "/jobs") {
+      if (request.method !== "GET")
+        return noindexResponse(null, { status: 405 });
+      if (!(await requireSession(request, env))) return redirectTo("/login");
+      return handleJobs(env);
     }
 
     if (url.pathname === "/backlog-priority") {

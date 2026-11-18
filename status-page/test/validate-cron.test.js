@@ -163,6 +163,74 @@ describe('validateBeatPayload — cron[] (issue #756)', () => {
     });
   });
 
+  describe('description (optional, plain text, capped at 140)', () => {
+    it('is absent from items that do not send one (the stored item is unchanged)', () => {
+      expect('description' in cronOf([cronItem()])[0]).toBe(false);
+    });
+
+    it('survives, em dash and a slash inside a word included', () => {
+      const text = 'Daily layoff/closure recruiting scan — posts new finds to Slack';
+      expect(cronOf([cronItem({ description: text })])[0].description).toBe(text);
+    });
+
+    it('collapses whitespace and control characters and trims', () => {
+      expect(cronOf([cronItem({ description: '  Weekly \n\t scan\u0000  of  things ' })])[0].description).toBe('Weekly scan of things');
+    });
+
+    it('is capped at 140 code points', () => {
+      const out = cronOf([cronItem({ description: 'ab '.repeat(100) })]);
+      expect(Array.from(out[0].description)).toHaveLength(140);
+      expect(out[0].description.startsWith('ab ab ab')).toBe(true);
+    });
+
+    it('a non-string or empty description leaves the key out (the item is kept)', () => {
+      for (const description of [5, null, ['x'], { a: 1 }, '', '   ']) {
+        const out = cronOf([cronItem({ description })]);
+        expect(out).toEqual([cronItem()]);
+      }
+    });
+
+    it('markup, an email, a URL, a path, an assignment or a long token drops the description and keeps the item', () => {
+      const unsafe = [
+        '<img src=x onerror=alert(1)>',
+        'say "hi"',
+        'back`tick`',
+        'Tom & Jerry',
+        'Mails someone@example.test daily',
+        'Posts to https://hooks.example.test/T/B/X',
+        'Reads ~/secrets nightly',
+        'Reads /etc/passwd nightly',
+        'Needs TOKEN=abc123 set',
+        `Uses ${'a'.repeat(40)} as a key`,
+        'Uses sk-abcdef123456 as a key',
+        'Uses ghp_abcdef123456 as a key',
+      ];
+      for (const description of unsafe) {
+        const out = cronOf([cronItem({ description })]);
+        expect(out).toEqual([cronItem()]);
+      }
+    });
+  });
+
+  describe('source (optional enum)', () => {
+    it('keeps cron | launchd | desktop', () => {
+      const out = cronOf(['cron', 'launchd', 'desktop'].map((source, i) => cronItem({ name: `j${i}`, source })));
+      expect(out.map((c) => c.source)).toEqual(['cron', 'launchd', 'desktop']);
+    });
+
+    it('anything else leaves the key out (the item is kept)', () => {
+      for (const source of ['systemd', 'CRON', '', 7, null, ['cron']]) {
+        expect(cronOf([cronItem({ source })])).toEqual([cronItem()]);
+      }
+    });
+
+    it('a launchd-style schedule survives (@every, @keepalive, @app, a step range)', () => {
+      const schedules = ['@every 900s', '@keepalive', '@app', '@calendar', '1-59/2 * * * *', '0 10-16/2 * * 4,5'];
+      const out = cronOf(schedules.map((schedule, i) => cronItem({ name: `j${i}`, schedule, source: 'launchd' })));
+      expect(out.map((c) => c.schedule)).toEqual(schedules);
+    });
+  });
+
   it('non-object entries are dropped without dropping the valid ones', () => {
     const out = cronOf(['x', null, 5, [], cronItem()]);
     expect(out).toEqual([cronItem()]);

@@ -200,25 +200,31 @@ function renderGroupSection(group) {
   </section>`;
 }
 
-// ---- Scheduled jobs (issue #756): the hosts' optional `cron[]`, one table. Badge classes are the
-// existing live (green) / offline (red) / nodata (grey) ones — no new colours.
-const CRON_COLUMNS = ["Job", "Schedule", "Last run", "Last result", "Next run"];
+// ---- Scheduled jobs (issue #756): the hosts' optional `cron[]`, one table on the /jobs tab. Badge
+// classes are the existing live (green) / offline (red) / nodata (grey) ones — no new colours.
+const CRON_COLUMNS = ["Job", "What it does", "Host", "Schedule", "Last run", "Last result", "Next run"];
 const CRON_RESULT_BADGE = { ok: "live", failed: "offline", unknown: "nodata" };
+const CRON_HOST_LABEL = { mac: "Mac", vm: "VM" };
+const CRON_SOURCES = ["cron", "launchd", "desktop"];
 
-/** Both hosts' cron[] items, failed first, then by name. Tolerates absent/odd shapes (old records). */
+/** Both hosts' cron[] items (each tagged with its host key): failed first, then Mac before VM, then by name. Tolerates absent/odd shapes (old records). */
 function buildCron(hosts) {
   const items = [];
-  for (const host of [hosts.mac, hosts.vm]) {
+  for (const hostKey of ["mac", "vm"]) {
+    const host = hosts[hostKey];
     if (!host || !Array.isArray(host.cron)) continue;
     for (const item of host.cron) {
       if (item && typeof item === "object" && typeof item.name === "string")
-        items.push(item);
+        items.push({ item, hostKey });
     }
   }
-  const rank = (item) => (item.last_result === "failed" ? 0 : 1);
+  const failedRank = ({ item }) => (item.last_result === "failed" ? 0 : 1);
+  const hostRank = ({ hostKey }) => (hostKey === "mac" ? 0 : 1);
   return items.sort(
     (a, b) =>
-      rank(a) - rank(b) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0),
+      failedRank(a) - failedRank(b) ||
+      hostRank(a) - hostRank(b) ||
+      (a.item.name < b.item.name ? -1 : a.item.name > b.item.name ? 1 : 0),
   );
 }
 
@@ -229,17 +235,29 @@ function cronResult(item) {
   return `<span class="badge ${CRON_RESULT_BADGE[result]}">${esc(result)}</span>`;
 }
 
+/** "Mac · launchd" / "VM · cron"; an item without a known source is a crontab job (beats from before the source field). */
+function cronHostSource(item, hostKey) {
+  const source = CRON_SOURCES.includes(item.source) ? item.source : "cron";
+  return `${CRON_HOST_LABEL[hostKey]} &middot; ${esc(source)}`;
+}
+
 /** The "Scheduled jobs" section; "" (no section at all) when no host published any job. */
 export function renderCronSection(hosts) {
   const items = buildCron(hosts);
   if (items.length === 0) return "";
   const rows = items
-    .map((item) => {
+    .map(({ item, hostKey }) => {
       const schedule = item.schedule_human
         ? `${esc(item.schedule_human)} <small><code>${esc(item.schedule)}</code></small>`
         : `<code>${esc(item.schedule)}</code>`;
+      const description =
+        typeof item.description === "string" && item.description
+          ? esc(item.description)
+          : "—";
       return `<tr>${tdsFor(CRON_COLUMNS, [
         esc(item.name),
+        description,
+        cronHostSource(item, hostKey),
         schedule,
         esc(formatCet(item.last_run) || "never"),
         cronResult(item),
@@ -441,16 +459,11 @@ function renderBacklogSection(hosts) {
   </section>`;
 }
 
-/** The status groups with "Scheduled jobs" placed just above Done (the CI queue section lives on /ci). */
-function renderGroupsWithCron(hosts, nowEpochSecs) {
-  const sections = groupTickets(hosts, nowEpochSecs).map(
-    (group) => [group.heading, renderGroupSection(group)],
-  );
-  const cron = renderCronSection(hosts);
-  const doneAt = sections.findIndex(([heading]) => heading === "Done");
-  if (doneAt === -1) return sections.map(([, html]) => html).join("") + cron;
-  sections.splice(doneAt, 0, ["Scheduled jobs", cron]);
-  return sections.map(([, html]) => html).join("");
+/** The status groups (the Scheduled jobs section lives on /jobs, the CI queue on /ci). */
+function renderGroupSections(hosts, nowEpochSecs) {
+  return groupTickets(hosts, nowEpochSecs)
+    .map((group) => renderGroupSection(group))
+    .join("");
 }
 
 function renderLegend() {
@@ -928,11 +941,11 @@ function renderCiRunnersSection(runners, runnersTotalSampled) {
   </section>`;
 }
 
-/** Four-link nav ("Status" | "Pipelines" | "CI" | "Learnings"); the current page gets aria-current. */
+/** Five-link nav ("Status" | "Pipelines" | "CI" | "Jobs" | "Learnings"); the current page gets aria-current. */
 function renderNav(current) {
   const link = (href, label, key) =>
     `<a href="${href}"${current === key ? ' aria-current="page"' : ""}>${label}</a>`;
-  return `<nav>${link("/", "Status", "status")} ${link("/pipelines", "Pipelines", "pipelines")} ${link("/ci", "CI", "ci")} ${link("/learnings", "Learnings", "learnings")}</nav>`;
+  return `<nav>${link("/", "Status", "status")} ${link("/pipelines", "Pipelines", "pipelines")} ${link("/ci", "CI", "ci")} ${link("/jobs", "Jobs", "jobs")} ${link("/learnings", "Learnings", "learnings")}</nav>`;
 }
 
 const ROOT_VARS_CSS = `  :root {
@@ -993,7 +1006,7 @@ export function renderPage(hosts, thresholds, nowEpochSecs) {
 
   const body = bothEmpty
     ? '<p class="empty">no data from either host yet</p>'
-    : `${renderHostSection("mac", hosts.mac, thresholds, nowEpochSecs)}${renderHostSection("vm", hosts.vm, thresholds, nowEpochSecs)}${renderGoalsSection(hosts)}${renderBacklogSection(hosts)}${renderGroupsWithCron(hosts, nowEpochSecs)}`;
+    : `${renderHostSection("mac", hosts.mac, thresholds, nowEpochSecs)}${renderHostSection("vm", hosts.vm, thresholds, nowEpochSecs)}${renderGoalsSection(hosts)}${renderBacklogSection(hosts)}${renderGroupSections(hosts, nowEpochSecs)}`;
 
   return `<!doctype html>
 <html lang="en">
@@ -1143,6 +1156,34 @@ ${CI_PAGE_CSS}
 <body>
 ${renderNav("ci")}
 <h1>CI queue</h1>
+${body}
+</body>
+</html>`;
+}
+
+/**
+ * Jobs tab (issue #756): the hosts' scheduled (cron) jobs, moved off `/` onto its own tab.
+ * @param {{ mac: object|null, vm: object|null }} hosts
+ * @returns {string} full HTML document
+ */
+export function renderJobsPage(hosts) {
+  const body =
+    renderCronSection(hosts) ||
+    '<p class="empty">no scheduled-job data yet</p>';
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="${PAGE_REFRESH_SECS}">
+<title>Scheduled jobs</title>
+<style>
+${CI_PAGE_CSS}
+</style>
+</head>
+<body>
+${renderNav("jobs")}
+<h1>Scheduled jobs</h1>
 ${body}
 </body>
 </html>`;
