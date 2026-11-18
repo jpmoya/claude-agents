@@ -217,7 +217,7 @@ test_gl_ac5_builder_is_stdlib_only() {
   # Every import in build-runs-json.py is a stdlib module (hand-listed allowlist).
   local bad
   bad=$(grep -E '^\s*(import|from) ' "$RS_GL/build-runs-json.py" | sed -E 's/^\s*(import|from) +([a-zA-Z0-9_]+).*/\2/' \
-    | grep -vxE 'sys|json|subprocess|os|re|datetime|time|glob|signal|errno|pathlib|collections|urllib|socket' || true)
+    | grep -vxE 'sys|json|subprocess|os|re|datetime|time|glob|signal|errno|pathlib|collections|urllib|socket|plistlib' || true)
   assert_eq "$bad" "" "AC5: only stdlib imports in build-runs-json.py" || return 1
 }
 

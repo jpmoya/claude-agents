@@ -70,6 +70,7 @@ describe("nav (AC5) — CI link appears everywhere, marks itself current only on
     ["/", "Status"],
     ["/pipelines", "Pipelines"],
     ["/ci", "CI"],
+    ["/jobs", "Jobs"],
     ["/learnings", "Learnings"],
   ])("%s shows the CI link, and marks only %s as current", async (path, current) => {
     const res = await worker.fetch(getRequest(path), makeEnv(), {});

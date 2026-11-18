@@ -127,6 +127,9 @@ _rs_ci_queue_json() {
 # Sets CRON_JSON ("" = key omitted: no jobs, or any failure) and CRON_ERR (a fixed error class, never
 # crontab text, or ""). A crontab with no entries ("no crontab for <user>") is not an error. Never
 # fails the beat. Not run in a $(...) subshell on purpose: both globals must survive.
+# On macOS the same python pass also lists the user's launchd jobs and Claude desktop scheduled tasks
+# (STATUS_LAUNCHD_DIR / STATUS_DESKTOP_TASKS_DIR override their directories, "" turns one off; run-tests.sh
+# turns both off), so a missing or unreadable crontab still runs it, with empty crontab text.
 STATUS_CRON_CMD="${STATUS_CRON_CMD:-crontab -l}"
 CRON_JSON=""; CRON_ERR=""
 _rs_cron_collect() {
@@ -135,12 +138,12 @@ _rs_cron_collect() {
   errf=$(mktemp "${TMPDIR:-/tmp}/rs-cron.XXXXXX" 2>/dev/null) || { CRON_ERR="crontab_read"; return 0; }
   raw=$($STATUS_CRON_CMD 2>"$errf"); rc=$?
   if [ "$rc" -ne 0 ]; then
+    raw=""
     grep -qi "no crontab" "$errf" 2>/dev/null || CRON_ERR="crontab_read"
-    rm -f "$errf"; return 0
   fi
   out=$(printf '%s\n' "$raw" | python3 "$RS_HERE/build-runs-json.py" "" "" "$PIPE" cron 2>"$errf") || {
     CRON_ERR="cron_build"; rm -f "$errf"; return 0; }
-  grep -q '^scan_errors=' "$errf" 2>/dev/null && CRON_ERR="log_scan"
+  if grep -q '^scan_errors=' "$errf" 2>/dev/null; then [ -n "$CRON_ERR" ] || CRON_ERR="log_scan"; fi
   rm -f "$errf"
   CRON_JSON=$(printf '%s' "$out" | jq -ce 'select(type=="array" and length>0)' 2>/dev/null) || CRON_JSON=""
   return 0

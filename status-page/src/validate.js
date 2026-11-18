@@ -9,7 +9,9 @@
 // (140 code points), has control characters and whitespace runs collapsed to one space, and is
 // HTML-escaped at render. `runs[].url` is not an exception — it must match ISSUE_URL below.
 // `cron[].name` / `.schedule` / `.schedule_human` (#756) are short strings held to a strict character
-// set (see sanitiseCronItem), not free text.
+// set (see sanitiseCronItem), not free text. `cron[].description` is the third free-text exception: collapsed
+// and capped at 140 code points like a title, and dropped when it carries markup, an email, a URL, a path,
+// an assignment or a long token (CRON_DESCRIPTION_UNSAFE). `cron[].source` is an enum.
 
 import {
   STAGE_VOCAB,
@@ -279,6 +281,25 @@ const CRON_SCHEDULE_MAX = 60;
 const CRON_HUMAN = /^[A-Za-z0-9 :,.()/@+-]+$/;
 const CRON_HUMAN_MAX = 80;
 const CRON_RESULTS = ['ok', 'failed', 'unknown'];
+const CRON_SOURCES = ['cron', 'launchd', 'desktop'];
+// `cron[].description`: plain text a person wrote to say what the job does (the first comment line of
+// its script, a frontmatter description). Like a title it is collapsed and capped at 140 code points, but
+// it is dropped (item kept, key omitted) when it could carry something that must never be published: markup
+// characters, an email address, a URL, a home-relative or absolute path, a KEY=value assignment, or a
+// long unbroken token (a secret). The em dash and a slash inside a word ("layoff/closure") are fine.
+const CRON_DESCRIPTION_UNSAFE = /[<>&"`@]|:\/\/|~\/|(?:^|\s)\/[\w.-]|\b[A-Za-z_][A-Za-z0-9_]*=\S|[A-Za-z0-9_+-]{32,}|\b(?:sk|ghp|gho|xox[a-z]|AKIA)[-_A-Za-z0-9]{8,}/;
+
+/**
+ * Collapse whitespace/control runs, then test the WHOLE text for anything unsafe, and only then cap at
+ * 140 code points (capping first could cut a long token below the pattern's length and let a fragment
+ * through). Non-string, empty or unsafe -> null (the key is left out, the item is kept).
+ */
+function sanitiseCronDescription(value) {
+  if (typeof value !== 'string') return null;
+  const collapsed = value.replace(TITLE_WHITESPACE_OR_CONTROL, ' ').trim();
+  if (collapsed === '' || CRON_DESCRIPTION_UNSAFE.test(collapsed)) return null;
+  return Array.from(collapsed).slice(0, MAX_TITLE_CODE_POINTS).join('');
+}
 
 function sanitiseCronDate(value) {
   return isIsoTimestamp(value) && !Number.isNaN(Date.parse(value)) ? value : null;
@@ -299,7 +320,7 @@ function sanitiseCronItem(raw) {
   if (!CRON_NAME.test(name) || !CRON_SCHEDULE.test(schedule)) return null;
   let human = typeof raw.schedule_human === 'string' ? raw.schedule_human.trim().slice(0, CRON_HUMAN_MAX).trim() : '';
   if (!CRON_HUMAN.test(human)) human = '';
-  return {
+  const item = {
     name,
     schedule,
     schedule_human: human,
@@ -307,6 +328,11 @@ function sanitiseCronItem(raw) {
     last_result: CRON_RESULTS.includes(raw.last_result) ? raw.last_result : 'unknown',
     next_run: sanitiseCronDate(raw.next_run),
   };
+  // Both optional: a beat from a host that predates them stores the item exactly as before.
+  const description = sanitiseCronDescription(raw.description);
+  if (description !== null) item.description = description;
+  if (CRON_SOURCES.includes(raw.source)) item.source = raw.source;
+  return item;
 }
 
 /** A non-array `cron` -> []; more than 50 items keeps the first 50 (before invalid ones are dropped). */

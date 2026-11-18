@@ -1,12 +1,13 @@
-// Issue #756 AC8/AC9 — the "Scheduled jobs" section on GET /, its escaping and ordering, the beat
-// round trip into KV, /status.json echoing the sanitised cron[], and a render failure being captured.
-// Expected strings are hand-written from the ticket, never copied from src/.
+// Issue #756 AC8/AC9 (+ the Jobs-tab follow-up) — the "Scheduled jobs" section on GET /jobs (moved off `/`):
+// its columns, escaping and ordering, the "What it does" and "Host" columns, the beat round trip into KV,
+// and /status.json echoing the sanitised cron[]. Expected strings are hand-written from the ticket, never
+// copied from src/.
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import worker, { __resetRateLimiter } from '../src/index.js';
-import { renderPage } from '../src/render.js';
+import { renderPage, renderJobsPage } from '../src/render.js';
 import { createMockKV } from './mock-kv.js';
-import { makeEnv, getRequest, beatRequest, validPayload, hostRecord, TOKEN_VM } from './fixtures.js';
+import { makeEnv, getRequest, beatRequest, validPayload, hostRecord, TOKEN_VM, TOKEN_MAC } from './fixtures.js';
 
 beforeEach(() => {
   __resetRateLimiter();
@@ -27,8 +28,13 @@ function item(overrides = {}) {
   };
 }
 
+function hosts(cron, mac = null) {
+  return { mac, vm: { ...hostRecord({ received_at: '2026-11-19T09:59:00Z' }), ...(cron === undefined ? {} : { cron }) } };
+}
+
+/** The whole /jobs document. */
 function page(cron, mac = null) {
-  return renderPage({ mac, vm: { ...hostRecord({ received_at: '2026-11-19T09:59:00Z' }), ...(cron === undefined ? {} : { cron }) } }, thresholds, NOW);
+  return renderJobsPage(hosts(cron, mac));
 }
 
 /** Just the Scheduled jobs section's markup. */
@@ -37,12 +43,12 @@ function cronSection(html) {
   return m ? m[0] : null;
 }
 
-describe('AC8 — Scheduled jobs section', () => {
-  it('renders the Job / Schedule / Last run / Last result / Next run columns', () => {
+describe('AC8 — Scheduled jobs section on /jobs', () => {
+  it('renders the Job / What it does / Host / Schedule / Last run / Last result / Next run columns', () => {
     const s = cronSection(page([item()]));
     expect(s).not.toBeNull();
     expect(s).toContain('<h2>Scheduled jobs (1)</h2>');
-    for (const col of ['Job', 'Schedule', 'Last run', 'Last result', 'Next run']) {
+    for (const col of ['Job', 'What it does', 'Host', 'Schedule', 'Last run', 'Last result', 'Next run']) {
       expect(s).toContain(`<th>${col}</th>`);
     }
     expect(s).toContain('layoff-scan-cron');
@@ -85,26 +91,32 @@ describe('AC8 — Scheduled jobs section', () => {
 
   it('HTML-escapes every value (a <script> name never lands as markup)', () => {
     const s = cronSection(
-      page([item({ name: '<script>x</script>', schedule: '"><b>', schedule_human: '<i>h</i>', last_run: '<u>t</u>', next_run: '<u>n</u>' })]),
+      page([
+        item({
+          name: '<script>x</script>',
+          schedule: '"><b>',
+          schedule_human: '<i>h</i>',
+          last_run: '<u>t</u>',
+          next_run: '<u>n</u>',
+          description: '<img src=x onerror=alert(1)>',
+          source: '<b>cron</b>',
+        }),
+      ]),
     );
     expect(s).toContain('&lt;script&gt;x&lt;/script&gt;');
+    expect(s).toContain('&lt;img src=x onerror=alert(1)&gt;');
     expect(s).not.toContain('<script>x</script>');
     expect(s).not.toContain('<i>h</i>');
     expect(s).not.toContain('<b>');
+    expect(s).not.toContain('<img');
   });
 
-  it('absent, empty or non-array cron renders no section at all', () => {
-    expect(cronSection(page(undefined))).toBeNull();
-    expect(cronSection(page([]))).toBeNull();
-    expect(cronSection(page('nope'))).toBeNull();
-    expect(page(undefined)).not.toContain('Scheduled jobs');
-  });
-
-  it('is placed just above Done, below the other status groups', () => {
-    const html = page([item()]);
-    const iCron = html.indexOf('<h2>Scheduled jobs');
-    expect(iCron).toBeGreaterThan(html.indexOf('<h2>Parked'));
-    expect(iCron).toBeLessThan(html.indexOf('<h2>Done'));
+  it('absent, empty or non-array cron renders no section, just the empty-state line', () => {
+    for (const cron of [undefined, [], 'nope']) {
+      const html = page(cron);
+      expect(cronSection(html)).toBeNull();
+      expect(html).toContain('<p class="empty">no scheduled-job data yet</p>');
+    }
   });
 
   it('merges jobs published by both hosts', () => {
@@ -114,10 +126,68 @@ describe('AC8 — Scheduled jobs section', () => {
     expect(s).toContain('vm-job');
     expect(s).toContain('<h2>Scheduled jobs (2)</h2>');
   });
+
+  it('the page is a full document with the Jobs tab marked current', () => {
+    const html = page([item()]);
+    expect(html).toContain('<title>Scheduled jobs</title>');
+    expect(html).toContain('<h1>Scheduled jobs</h1>');
+    expect(html).toContain('<a href="/jobs" aria-current="page">Jobs</a>');
+  });
+});
+
+describe('"What it does" column', () => {
+  it('shows the description, and a dash when the item has none', () => {
+    const s = cronSection(
+      page([
+        item({ name: 'with', description: 'Daily layoff/closure recruiting scan — posts new finds to Slack' }),
+        item({ name: 'without' }),
+        item({ name: 'blank', description: '' }),
+      ]),
+    );
+    expect(s).toContain('Daily layoff/closure recruiting scan — posts new finds to Slack');
+    const rowOf = (name) => new RegExp(`<tr><td[^>]*>${name}</td>([\\s\\S]*?)</tr>`).exec(s)[1];
+    expect(rowOf('without')).toMatch(/^<td[^>]*data-label="What it does"[^>]*>—<\/td>/);
+    expect(rowOf('blank')).toMatch(/^<td[^>]*data-label="What it does"[^>]*>—<\/td>/);
+  });
+});
+
+describe('Host / source column', () => {
+  it('reads "<Host> · <source>": Mac rows from the Mac host, VM rows from the VM host', () => {
+    const mac = {
+      ...hostRecord({ received_at: '2026-11-19T09:59:00Z' }),
+      cron: [item({ name: 'a-launchd-job', source: 'launchd' }), item({ name: 'a-desktop-task', source: 'desktop' }), item({ name: 'a-mac-cron', source: 'cron' })],
+    };
+    const s = cronSection(page([item({ name: 'a-vm-job', source: 'cron' })], mac));
+    expect(s).toMatch(/a-launchd-job<\/td>[\s\S]*?Mac &middot; launchd/);
+    expect(s).toMatch(/a-desktop-task<\/td>[\s\S]*?Mac &middot; desktop/);
+    expect(s).toMatch(/a-mac-cron<\/td>[\s\S]*?Mac &middot; cron/);
+    expect(s).toMatch(/a-vm-job<\/td>[\s\S]*?VM &middot; cron/);
+  });
+
+  it('an item with no (or an unknown) source is a crontab job', () => {
+    const s = cronSection(page([item({ name: 'old-beat' }), item({ name: 'odd-source', source: 'systemd' })]));
+    expect(s.match(/VM &middot; cron/g)).toHaveLength(2);
+    expect(s).not.toContain('systemd');
+  });
+
+  it('within the same result, Mac jobs come before VM jobs, then by name', () => {
+    const mac = { ...hostRecord({ received_at: '2026-11-19T09:59:00Z' }), cron: [item({ name: 'zzz-mac' })] };
+    const s = cronSection(page([item({ name: 'aaa-vm' })], mac));
+    expect(s.indexOf('>zzz-mac<')).toBeLessThan(s.indexOf('>aaa-vm<'));
+  });
+});
+
+describe('the main page no longer carries the section', () => {
+  it('renderPage has no Scheduled jobs section even when a host published cron[]', () => {
+    const html = renderPage(hosts([item()]), thresholds, NOW);
+    expect(html).not.toContain('Scheduled jobs');
+    expect(html).not.toContain('<section class="group cron">');
+    expect(html).not.toContain('layoff-scan-cron');
+  });
 });
 
 describe('beat -> KV -> page / status.json (AC7, AC9)', () => {
-  it('a beat with cron[] stores the sanitised list; /status.json echoes it and the page renders it', async () => {
+  it('a beat with cron[] stores the sanitised list; /status.json echoes it and /jobs renders it', async () => {
     const kv = createMockKV();
     const env = makeEnv({ STATUS: kv });
     const body = validPayload({
@@ -130,19 +200,38 @@ describe('beat -> KV -> page / status.json (AC7, AC9)', () => {
     expect(json.hosts.vm.cron).toEqual([item()]);
     expect(JSON.stringify(json)).not.toContain('curl');
 
-    const html = await (await worker.fetch(getRequest('/'), env, {})).text();
+    const html = await (await worker.fetch(getRequest('/jobs'), env, {})).text();
     expect(html).toContain('<h2>Scheduled jobs (1)</h2>');
+    expect(html).toContain('VM &middot; cron');
   });
 
-  it('a beat without cron still validates (204) and shows no section', async () => {
+  it('description and source survive the beat; the Mac host renders as Mac', async () => {
+    const kv = createMockKV();
+    const env = makeEnv({ STATUS: kv });
+    const body = validPayload({
+      cron: [item({ name: 'message-triage', schedule: '@every 900s', schedule_human: 'Every 15 minutes', description: 'Headless run of the message-triage agent.', source: 'launchd' })],
+    });
+    expect((await worker.fetch(beatRequest({ body, token: TOKEN_MAC }), env, {})).status).toBe(204);
+
+    const json = await (await worker.fetch(getRequest('/status.json'), env, {})).json();
+    expect(json.hosts.mac.cron[0].description).toBe('Headless run of the message-triage agent.');
+    expect(json.hosts.mac.cron[0].source).toBe('launchd');
+
+    const html = await (await worker.fetch(getRequest('/jobs'), env, {})).text();
+    expect(html).toContain('Headless run of the message-triage agent.');
+    expect(html).toContain('Mac &middot; launchd');
+  });
+
+  it('a beat without cron still validates (204) and /jobs shows the empty state, / no section', async () => {
     const kv = createMockKV();
     const env = makeEnv({ STATUS: kv });
     const res = await worker.fetch(beatRequest({ body: validPayload(), token: TOKEN_VM }), env, {});
     expect(res.status).toBe(204);
     const json = await (await worker.fetch(getRequest('/status.json'), env, {})).json();
     expect('cron' in json.hosts.vm).toBe(false);
-    const html = await (await worker.fetch(getRequest('/'), env, {})).text();
-    expect(html).not.toContain('Scheduled jobs');
+    const jobs = await (await worker.fetch(getRequest('/jobs'), env, {})).text();
+    expect(jobs).toContain('no scheduled-job data yet');
+    const home = await (await worker.fetch(getRequest('/'), env, {})).text();
+    expect(home).not.toContain('Scheduled jobs');
   });
 });
-
