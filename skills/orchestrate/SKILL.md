@@ -76,6 +76,18 @@ Each goal has a GitHub Project (v2, "Goal: <title>", fields copied from project 
 - **Host pin:** a goal is pinned to the host that registered it; another host's supervisor does not run it. `resume <goal> --here` re-pins it to this host.
 - **State words in `status`:** running, between cycles, held, waiting on JP, stopped, delivered.
 
+## Registering a goal (JP, 2026-11-18: a GitHub Project, never a milestone)
+
+Every new goal is a GitHub Project whose issue items are the goal's tickets (#736). Milestone goals are no longer registered: `deliver.sh` refuses `owner/repo:milestone:...` and `owner/repo:milestones:all` with this recipe, and `hooks/block-milestone-goal.sh` (PreToolUse on Bash) stops the call before it runs. Label, `owner/repo#N` and `:feedback` goals are untouched, and existing milestone goals keep working (`status`, `stop`, `release`, `resume`, `priority` are never blocked).
+
+```
+gh project create --owner Benjis-Plants --title "<goal title>"          # prints the project number <n>
+gh project item-add <n> --owner Benjis-Plants --url <issue URL>         # once per ticket (any repo)
+~/.claude/skills/orchestrate/deliver.sh project:Benjis-Plants/<n> [--now] [instructions...]
+```
+
+`owner/repo:project:<n>` is an alias of `project:<owner>/<n>`. The hosts' gh token needs the `project` scope (`gh auth refresh -s project`). `GOAL_ALLOW_MILESTONE_REGISTER=1` (in `deliver.sh`'s environment) lifts the refusal for legacy tooling only; the hook honours it only from its own environment, never from a prefix inside a session's command.
+
 ## Check on a run
 
 ```bash

@@ -253,6 +253,10 @@ reg_priority() {
 cmd_register_args() {
   local spec="" repos="" title="" req="" sentry=0 mockups=review instr="" now=0 pin="" a hosts=both approve_all=0
   case "${1:-}" in --*|'') ;; *) spec="$1"; shift ;; esac
+  # JP, 2026-11-18: a new goal is a GitHub Project, never a milestone (status/stop/release/resume of existing ones are other subcommands)
+  if [ -n "$spec" ] && [ "${GOAL_ALLOW_MILESTONE_REGISTER:-}" != 1 ]; then
+    case "$(goal_parse "$spec" 2>/dev/null | cut -f2)" in ms|msall) die "$(goal_milestone_refusal "$spec")" ;; esac
+  fi
   while [ $# -gt 0 ]; do
     case "$1" in
       --repos) repos="${2:-}"; [ -n "$repos" ] || die "--repos needs a value (a/b,c/d)"; shift 2 ;;

@@ -71,7 +71,7 @@ test_gl_url_milestone_ticket_and_registry_fallbacks() {
   jq -nc '{id:"T",host:"mac",state:"active",spec:"o/r#9",issue:7}' > "$GL_PIPE/goal-T.json"
   jq -nc '{id:"X",host:"mac",state:"active",spec:"weird",issue:8}' > "$GL_PIPE/goal-X.json"
   local out; out=$(gl_mode); gl_cleanup
-  assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id=="M") | .id')" '' "milestone goal -> not listed (goals only)" || return 1
+  assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id=="M") | .url')" 'https://github.com/o/r/milestone/4?closed=1' "milestone goal -> listed like any registered goal (2026-11-18: the registry is the list), milestone page" || return 1
   assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id=="T") | .url')" 'https://github.com/o/r/issues/9' "ticket goal -> the ticket" || return 1
   assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id=="X") | .url')" 'https://github.com/jpmoya/claude-agents/issues/8' "otherwise the registry issue" || return 1
 }
@@ -99,7 +99,9 @@ test_gl_name_from_goalnames_file() {
   assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id=="N2") | .title')" "Own title" "a title in the block wins" || return 1
 }
 
-test_gl_milestone_goals_not_listed() {
+# 2026-11-18 (JP): the registry is the list. Milestone goals are registered goals and show like the others; a local cache with no registry
+# entry (MS1, MS2, TK: never registered, or long gone from the registry) does not.
+test_gl_registered_milestone_goals_are_listed_and_unregistered_local_caches_are_not() {
   gl_env
   gl_goal MS1 active "o/r:milestone:32"; gl_goal MS2 held "o/r:milestones:all"
   gl_goal o_r-ms-32 active "x"; gl_goal TK active "o/r#5"
@@ -110,7 +112,7 @@ test_gl_milestone_goals_not_listed() {
  "recent":[{"id":"o_r-ms-99","st":"delivered","title":"m"},{"id":"label-goal__Y","st":"stopped","title":"Y"},{"id":"o_r-t-3","st":"delivered","title":"t"}]}
 J
   local out; out=$(gl_mode); gl_cleanup
-  assert_eq "$(printf '%s' "$out" | jq -r '[.[].id] | sort | join(",")')" "TK,label-goal__X,label-goal__Y,o_r-t-1,o_r-t-2,o_r-t-3" "only label/ticket goals listed" || return 1
+  assert_eq "$(printf '%s' "$out" | jq -r '[.[].id] | sort | join(",")')" "label-goal__X,label-goal__Y,o_r-ms-32,o_r-ms-9,o_r-ms-99,o_r-ms-all,o_r-t-1,o_r-t-2,o_r-t-3" "exactly the nine registered goals (open, queued, recent), milestone ones included; MS1, MS2, TK absent" || return 1
 }
 
 test_gl_ac1_reporter_does_not_sanitise_spec() {
@@ -227,7 +229,7 @@ run_test test_gl_url_label_goal_is_a_cross_repo_search
 run_test test_gl_url_milestone_ticket_and_registry_fallbacks
 run_test test_gl_hostname_maps_to_mac_or_vm
 run_test test_gl_name_from_goalnames_file
-run_test test_gl_milestone_goals_not_listed
+run_test test_gl_registered_milestone_goals_are_listed_and_unregistered_local_caches_are_not
 run_test test_gl_ac1_reporter_does_not_sanitise_spec
 run_test test_gl_ac1_empty_pipe_has_no_goals_key
 run_test test_gl_only_skipped_goals_has_no_goals_key

@@ -74,6 +74,16 @@ goal_parse() {
   esac
 }
 
+# goal_milestone_refusal <spec> — the text deliver.sh dies with when asked to register a milestone / milestones:all goal (JP, 2026-11-18:
+# every new goal is a GitHub Project). hooks/block-milestone-goal.sh carries the same recipe; keep the two in step.
+goal_milestone_refusal() {
+  printf '%s\n' "refusing to register $1: milestone goals are no longer registered; register the goal as a GitHub Project (spec project:<owner>/<n>):" \
+    '  1. gh project create --owner Benjis-Plants --title "<goal title>"   (note the project number <n>)' \
+    '  2. gh project item-add <n> --owner Benjis-Plants --url <issue URL>   (once per ticket)' \
+    '  3. deliver.sh project:Benjis-Plants/<n> [--now] [instructions...]' \
+    "Existing milestone goals keep working (status, stop, release, resume, priority). Legacy tooling only: GOAL_ALLOW_MILESTONE_REGISTER=1 deliver.sh <spec>."
+}
+
 # goal_name_for <spec> -> a human-readable name for a milestone / ticket goal ("scheduler: Native 3.4", "scheduler #1345: Title");
 # empty (exit 1) when GitHub cannot say. The status page shows it instead of the raw spec.
 goal_name_for() {
@@ -409,12 +419,14 @@ goal_scope() { local r; r=$(_goal_scope_rows "$@") || return 1; [ -z "$r" ] || p
 _GOAL_ISSUE_JQ='def goal_of: . as $i
           | ([try (($i.body // "") | capture("```json\\n(?<j>[^\\n]*)\\n```") | .j | fromjson) catch null] | .[0]) as $b
           | ([$i.labels[].name]) as $l
+          | (($i.title // "") | gsub("^\\s*(Goal:\\s*)+";"") | gsub("\\s+$";"")) as $n
           | if $b == null then
               (select($i.state == "open")
                | {issue: $i.number, id: "registry-issue-\($i.number)", spec: "", host: "", instructions: "",
                   state: $i.state, closed_at: $i.closed_at, block: null, st: "unreadable"})
             else
             {issue: $i.number, id: $b.id, spec: ($b.spec // (if ($b.label // "") != "" then "label:\($b.label)" else "" end)), host: ($b.host // ""), instructions: ($b.instructions // ""),
+             name: (if $n == ($b.spec // "") or $n == ($b.id // "") then "" else $n end),
              state: $i.state, closed_at: $i.closed_at, block: $b,
              st: (if $i.state == "closed" then (if ($l | index("goal-stopped")) then "stopped" else "delivered" end)
                   elif ($l | index("goal-stopped")) then "stopped"
@@ -1779,10 +1791,10 @@ goal_queue_save() {
   v=$(printf '%s' "$1" | _goal_queue_jq '
     | (if .serial then {serial: true, slot: .slot} else {} end) + {at: (now | floor),
        candidate: (.candidate.id // null),
-       recent: (.recent | map({id, issue, spec, title: (.block.title // ""), label: (.block.label // ""), repos: (.block.repos // []), st, closed_at, priority: (.block.priority? // null), project_url: (.block.project?.url? // .block.scope_project?.url? // "")})),
-       open: (.open | map({id, issue, spec, title: (.block.title // ""), label: (.block.label // ""), repos: (.block.repos // []),
+       recent: (.recent | map({id, issue, spec, name: (.name // ""), title: (.block.title // ""), label: (.block.label // ""), repos: (.block.repos // []), st, closed_at, priority: (.block.priority? // null), project_url: (.block.project?.url? // .block.scope_project?.url? // "")})),
+       open: (.open | map({id, issue, spec, name: (.name // ""), title: (.block.title // ""), label: (.block.label // ""), repos: (.block.repos // []),
                            st, host: (.host // ""), priority: (.block.priority? // null), hosts: (.block.hosts? // "both"), host_pref: (.block.host_pref // ""), project_url: (.block.project?.url? // .block.scope_project?.url? // "")})),
-       queued: (.queued | map({id, issue, spec, title: (.block.title // ""), label: (.block.label // ""), priority: (.block.priority? // null),
+       queued: (.queued | map({id, issue, spec, name: (.name // ""), title: (.block.title // ""), label: (.block.label // ""), priority: (.block.priority? // null),
                                repos: (.block.repos // []), order: (.block.order? // .issue), host_pref: (.block.host_pref // ""),
                                hosts: (.block.hosts? // "both"), project_url: (.block.project?.url? // .block.scope_project?.url? // ""),
                                deferred: (.block.deferred_at? // "")}))}' 2>/dev/null) \
