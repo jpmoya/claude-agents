@@ -39,6 +39,10 @@ export GH_BUDGET_ENABLED=0   # gh-budget.sh (call log, quota guard, read cache) 
 # against this plain export.
 export CI_QUEUE_COLLECT_ENABLED=0
 export CI_QUEUE_COLLECT_TEST_DISABLE=1
+# #756: report-status.sh reads the host user's real crontab (`crontab -l`) for the payload's optional `cron[]`;
+# a suite must never publish (or depend on) whatever the machine running it happens to schedule. `true` is an empty crontab.
+# test-status-cron.sh overrides this per call with its own fixtures.
+export STATUS_CRON_CMD=true
 # verify-shipped gate (goal_eval's "not live on prod" check, real timeline reads + git fetches): off for the suites that fake a GitHub
 # without those routes; test-goal-ship-gate.sh turns it on for itself via config.local.sh.
 export GOAL_SHIP_GATE=0

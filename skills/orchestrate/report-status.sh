@@ -120,6 +120,32 @@ _rs_ci_queue_json() {
   jq -ce 'select(type=="object")' "$f" 2>/dev/null || printf ''
 }
 
+# ---- cron (issue #756): the host user's scheduled jobs, name + schedule + last run/result only.
+# STATUS_CRON_CMD reads the crontab (default `crontab -l`; run-tests.sh points it at `true` so a
+# host's real crontab never leaks into a test payload). build-runs-json.py's `cron` mode does the
+# parsing and the ~/logs/<job>/ scan; the crontab text and log content stay in that process.
+# Sets CRON_JSON ("" = key omitted: no jobs, or any failure) and CRON_ERR (a fixed error class, never
+# crontab text, or ""). A crontab with no entries ("no crontab for <user>") is not an error. Never
+# fails the beat. Not run in a $(...) subshell on purpose: both globals must survive.
+STATUS_CRON_CMD="${STATUS_CRON_CMD:-crontab -l}"
+CRON_JSON=""; CRON_ERR=""
+_rs_cron_collect() {
+  local raw rc errf out
+  CRON_JSON=""; CRON_ERR=""
+  errf=$(mktemp "${TMPDIR:-/tmp}/rs-cron.XXXXXX" 2>/dev/null) || { CRON_ERR="crontab_read"; return 0; }
+  raw=$($STATUS_CRON_CMD 2>"$errf"); rc=$?
+  if [ "$rc" -ne 0 ]; then
+    grep -qi "no crontab" "$errf" 2>/dev/null || CRON_ERR="crontab_read"
+    rm -f "$errf"; return 0
+  fi
+  out=$(printf '%s\n' "$raw" | python3 "$RS_HERE/build-runs-json.py" "" "" "$PIPE" cron 2>"$errf") || {
+    CRON_ERR="cron_build"; rm -f "$errf"; return 0; }
+  grep -q '^scan_errors=' "$errf" 2>/dev/null && CRON_ERR="log_scan"
+  rm -f "$errf"
+  CRON_JSON=$(printf '%s' "$out" | jq -ce 'select(type=="array" and length>0)' 2>/dev/null) || CRON_JSON=""
+  return 0
+}
+
 build_payload() {
   local runs_tsv running queued runs_json completed_json staging_json approved_json goals_json backlog_json ci_queue_json
   runs_tsv=$(derive_runs)
@@ -135,6 +161,7 @@ build_payload() {
   backlog_json=$(_rs_build_backlog_json); [ -n "$backlog_json" ] || backlog_json='[]'
   ci_queue_json=$(_rs_ci_queue_json)
   jq -n \
+    --argjson cron "${CRON_JSON:-null}" \
     --argjson goals "$goals_json" \
     --argjson ci_queue "${ci_queue_json:-null}" \
     --arg sent_at "$SENT_AT" \
@@ -151,11 +178,13 @@ build_payload() {
       capacity: {running: $running, max: $max, queued: $queued}, runs: $runs, completed: $completed,
       staging: $staging, approved: $approved, backlog: $backlog}
       + (if ($goals | length) > 0 then {goals: $goals} else {} end)
-      + (if $ci_queue != null then {ci_queue: $ci_queue} else {} end)'
+      + (if $ci_queue != null then {ci_queue: $ci_queue} else {} end)
+      + (if $cron != null then {cron: $cron} else {} end)'
 }
 
 SENT_AT=$(python3 -c "import datetime; print(datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))")
 SUPERVISOR_LAST_TICK=$(_rs_supervisor_last_tick)
+_rs_cron_collect   # top level, not inside PAYLOAD=$(...): CRON_JSON / CRON_ERR must reach this shell
 PAYLOAD=$(build_payload)
 
 # --print: payload only, no lock, no network, no state write (ACs 1/2/5's entry point).
@@ -188,7 +217,34 @@ rs_log() {  # rs_log <line...> — decision + HTTP status only, never the curl c
   printf '[%s] %s\n' "$(date -u +%FT%TZ)" "$*" >> "$LOGDIR/report-status.log" 2>/dev/null
 }
 
-hash_payload() {  # hash the payload minus sent_at/supervisor_last_tick/ci_queue.as_of (else every
+rs_post() { curl -sS -X POST --connect-timeout 3 --max-time 5 "$@"; }   # the script's one network call site
+
+# ---- cron collection failure (issue #756 AC12): this host script has no Sentry SDK, so it reuses the
+# push-failure path above: one line in report-status.log plus the existing Slack webhook (no new one),
+# tags only: release (commit SHA), environment (host), route, and a fixed error class. Never the
+# crontab text, a log line or a path. At most once per STATUS_CRON_ALERT_SECS (6 h) while it keeps failing
+# (a state file, cleared by the next clean collection) so a broken crontab can't alert every tick. After
+# the --print exit on purpose: --print stays network-free. The beat itself is never affected: the
+# payload just goes out without a `cron` key.
+STATUS_CRON_ALERT_SECS=${STATUS_CRON_ALERT_SECS:-21600}
+_rs_cron_alert() {
+  local state="$PIPE/status-cron-alert.state" now last _rel _msg
+  if [ -z "$CRON_ERR" ]; then rm -f "$state" 2>/dev/null; return 0; fi
+  now=$(date +%s); last=$(cat "$state" 2>/dev/null)
+  case "$last" in ''|*[!0-9]*) last=0 ;; esac
+  [ $((now - last)) -ge "$STATUS_CRON_ALERT_SECS" ] || return 0
+  printf '%s' "$now" > "$state" 2>/dev/null
+  rs_log "$EVENT cron collection failed class=$CRON_ERR"
+  if [ -n "${SLACK_WEBHOOK_URL:-}" ]; then
+    _rel=$(git -C "$RS_HERE" rev-parse --short HEAD 2>/dev/null || echo unknown)
+    _msg="status cron collection failed: release=$_rel environment=$(hostname -s 2>/dev/null || echo unknown) route=status-reporter/cron class=$CRON_ERR"
+    rs_post -H 'Content-type: application/json' --data "{\"text\": \"$_msg\"}" "$SLACK_WEBHOOK_URL" >/dev/null 2>&1
+  fi
+  return 0
+}
+_rs_cron_alert
+
+hash_payload() {  # hash the payload minus sent_at/supervisor_last_tick/ci_queue.as_of/cron[].last_run+next_run (else every
                    # tick, or every collector cycle with identical counts, looks like a change)
   python3 -c "
 import json, hashlib, sys
@@ -201,6 +257,14 @@ d.pop('supervisor_last_tick', None)
 ci_queue = d.get('ci_queue')
 if isinstance(ci_queue, dict):
     ci_queue.pop('as_of', None)
+# cron (issue #756): last_run / next_run drift on their own (a */5 job changes them every few minutes),
+# which would defeat the write budget; a job appearing, vanishing, or flipping ok/failed still pushes.
+cron = d.get('cron')
+if isinstance(cron, list):
+    for item in cron:
+        if isinstance(item, dict):
+            item.pop('last_run', None)
+            item.pop('next_run', None)
 print(hashlib.sha256(json.dumps(d, sort_keys=True).encode()).hexdigest())
 " "$1" 2>/dev/null
 }
@@ -273,7 +337,6 @@ if [ "$should_push" -eq 0 ]; then
 fi
 
 # ---- push --------------------------------------------------------------------------------------
-rs_post() { curl -sS -X POST --connect-timeout 3 --max-time 5 "$@"; }   # the script's one network call site
 http_code=$(printf '%s' "$PAYLOAD" | rs_post \
   -H "Authorization: Bearer $STATUS_PUSH_TOKEN" \
   -H 'Content-Type: application/json' \

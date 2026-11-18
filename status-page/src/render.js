@@ -200,6 +200,62 @@ function renderGroupSection(group) {
   </section>`;
 }
 
+// ---- Scheduled jobs (issue #756): the hosts' optional `cron[]`, one table. Badge classes are the
+// existing live (green) / offline (red) / nodata (grey) ones — no new colours.
+const CRON_COLUMNS = ["Job", "Schedule", "Last run", "Last result", "Next run"];
+const CRON_RESULT_BADGE = { ok: "live", failed: "offline", unknown: "nodata" };
+
+/** Both hosts' cron[] items, failed first, then by name. Tolerates absent/odd shapes (old records). */
+function buildCron(hosts) {
+  const items = [];
+  for (const host of [hosts.mac, hosts.vm]) {
+    if (!host || !Array.isArray(host.cron)) continue;
+    for (const item of host.cron) {
+      if (item && typeof item === "object" && typeof item.name === "string")
+        items.push(item);
+    }
+  }
+  const rank = (item) => (item.last_result === "failed" ? 0 : 1);
+  return items.sort(
+    (a, b) =>
+      rank(a) - rank(b) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0),
+  );
+}
+
+function cronResult(item) {
+  const result = Object.hasOwn(CRON_RESULT_BADGE, item.last_result)
+    ? item.last_result
+    : "unknown";
+  return `<span class="badge ${CRON_RESULT_BADGE[result]}">${esc(result)}</span>`;
+}
+
+/** The "Scheduled jobs" section; "" (no section at all) when no host published any job. */
+export function renderCronSection(hosts) {
+  const items = buildCron(hosts);
+  if (items.length === 0) return "";
+  const rows = items
+    .map((item) => {
+      const schedule = item.schedule_human
+        ? `${esc(item.schedule_human)} <small><code>${esc(item.schedule)}</code></small>`
+        : `<code>${esc(item.schedule)}</code>`;
+      return `<tr>${tdsFor(CRON_COLUMNS, [
+        esc(item.name),
+        schedule,
+        esc(formatCet(item.last_run) || "never"),
+        cronResult(item),
+        esc(formatCet(item.next_run) || "—"),
+      ])}</tr>`;
+    })
+    .join("");
+  return `<section class="group cron">
+    <h2>Scheduled jobs (${items.length})</h2>
+    <div class="table-scroll"><table>
+      <tr class="cols">${CRON_COLUMNS.map((c) => `<th>${esc(c)}</th>`).join("")}</tr>
+      <tbody>${rows}</tbody>
+    </table></div>
+  </section>`;
+}
+
 const GOAL_STATE_LABELS = {
   waiting_jp: "waiting on JP",
   held: "held",
@@ -383,6 +439,18 @@ function renderBacklogSection(hosts) {
     </table></div>
     ${hasKeys ? BACKLOG_REORDER_SCRIPT : ""}
   </section>`;
+}
+
+/** The status groups with "Scheduled jobs" placed just above Done (the CI queue section lives on /ci). */
+function renderGroupsWithCron(hosts, nowEpochSecs) {
+  const sections = groupTickets(hosts, nowEpochSecs).map(
+    (group) => [group.heading, renderGroupSection(group)],
+  );
+  const cron = renderCronSection(hosts);
+  const doneAt = sections.findIndex(([heading]) => heading === "Done");
+  if (doneAt === -1) return sections.map(([, html]) => html).join("") + cron;
+  sections.splice(doneAt, 0, ["Scheduled jobs", cron]);
+  return sections.map(([, html]) => html).join("");
 }
 
 function renderLegend() {
@@ -925,7 +993,7 @@ export function renderPage(hosts, thresholds, nowEpochSecs) {
 
   const body = bothEmpty
     ? '<p class="empty">no data from either host yet</p>'
-    : `${renderHostSection("mac", hosts.mac, thresholds, nowEpochSecs)}${renderHostSection("vm", hosts.vm, thresholds, nowEpochSecs)}${renderGoalsSection(hosts)}${renderBacklogSection(hosts)}${groupTickets(hosts, nowEpochSecs).map(renderGroupSection).join("")}`;
+    : `${renderHostSection("mac", hosts.mac, thresholds, nowEpochSecs)}${renderHostSection("vm", hosts.vm, thresholds, nowEpochSecs)}${renderGoalsSection(hosts)}${renderBacklogSection(hosts)}${renderGroupsWithCron(hosts, nowEpochSecs)}`;
 
   return `<!doctype html>
 <html lang="en">

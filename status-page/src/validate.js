@@ -5,9 +5,11 @@
 // free-text string reaches storage — every string field is an enum or a strict pattern. See
 // issue #11 / #4 §5 for the full field table.
 //
-// Exactly one documented exception (issue #29): `runs[].title` is free text. It is length-capped
+// Documented exceptions (issues #29, #756): `runs[].title` is free text. It is length-capped
 // (140 code points), has control characters and whitespace runs collapsed to one space, and is
 // HTML-escaped at render. `runs[].url` is not an exception — it must match ISSUE_URL below.
+// `cron[].name` / `.schedule` / `.schedule_human` (#756) are short strings held to a strict character
+// set (see sanitiseCronItem), not free text.
 
 import {
   STAGE_VOCAB,
@@ -266,6 +268,51 @@ function sanitiseBacklogItem(rawItem) {
 
 function sanitiseBacklog(raw) {
   return Array.isArray(raw) ? raw.map(sanitiseBacklogItem).filter((item) => item !== null).slice(0, MAX_BACKLOG) : [];
+}
+
+// ---- cron[] (issue #756): the host user's scheduled jobs, name + schedule + last run/result only.
+const MAX_CRON = 50;
+const CRON_NAME = /^[A-Za-z0-9._-]+$/;
+const CRON_NAME_MAX = 80;
+const CRON_SCHEDULE = /^[A-Za-z0-9@*/,?\- ]+$/; // a raw 5-field expression or an @special
+const CRON_SCHEDULE_MAX = 60;
+const CRON_HUMAN = /^[A-Za-z0-9 :,.()/@+-]+$/;
+const CRON_HUMAN_MAX = 80;
+const CRON_RESULTS = ['ok', 'failed', 'unknown'];
+
+function sanitiseCronDate(value) {
+  return isIsoTimestamp(value) && !Number.isNaN(Date.parse(value)) ? value : null;
+}
+
+/**
+ * Sanitises one cron[] item by reconstruction (a `command`, `env` or any other extra key never
+ * survives). Returns null to DROP the item when `name` or `schedule` is not a plain string in the
+ * allowed character set (after trim and the length cap). `schedule_human` falls back to "" when
+ * unusable, a date that is not ISO-8601 Z becomes null, and `last_result` outside the enum is
+ * "unknown".
+ */
+function sanitiseCronItem(raw) {
+  if (!isPlainObject(raw)) return null;
+  if (typeof raw.name !== 'string' || typeof raw.schedule !== 'string') return null;
+  const name = raw.name.trim().slice(0, CRON_NAME_MAX).trim();
+  const schedule = raw.schedule.trim().slice(0, CRON_SCHEDULE_MAX).trim();
+  if (!CRON_NAME.test(name) || !CRON_SCHEDULE.test(schedule)) return null;
+  let human = typeof raw.schedule_human === 'string' ? raw.schedule_human.trim().slice(0, CRON_HUMAN_MAX).trim() : '';
+  if (!CRON_HUMAN.test(human)) human = '';
+  return {
+    name,
+    schedule,
+    schedule_human: human,
+    last_run: sanitiseCronDate(raw.last_run),
+    last_result: CRON_RESULTS.includes(raw.last_result) ? raw.last_result : 'unknown',
+    next_run: sanitiseCronDate(raw.next_run),
+  };
+}
+
+/** A non-array `cron` -> []; more than 50 items keeps the first 50 (before invalid ones are dropped). */
+function sanitiseCron(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.slice(0, MAX_CRON).map(sanitiseCronItem).filter((item) => item !== null);
 }
 
 // #657: tracks CI_QUEUE_CATEGORY_VOCAB's length (not hand-picked) so adding/removing a vocab
@@ -652,6 +699,9 @@ export function validateBeatPayload(parsedBody) {
     const goals = parsedBody.goals.slice(0, MAX_GOALS).map(sanitiseGoal).filter((g) => g !== null);
     if (goals.length > 0) value.goals = goals;
   }
+
+  // Optional (issue #756): absent -> no key (an older host); present but not an array -> [].
+  if ('cron' in parsedBody) value.cron = sanitiseCron(parsedBody.cron);
 
   // Optional (issue #643): absent, non-object, or any single malformed sub-field -> no key
   // (never a rejection, never a partial rebuild — see sanitiseCiQueue).
