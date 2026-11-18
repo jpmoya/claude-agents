@@ -39,11 +39,11 @@ c756_job() {  # c756_job <json> <name> <field>
 test_cron_privacy_only_basename_and_schedule_published() {
   local pipe home out ct
   pipe=$(new_pipe); home=$(new_home)
-  ct=$(c756_crontab "$pipe" '0 13 * * 1 TOKEN=abc123 /home/u/bin/layoff-scan-cron.sh --key sk-xyz >> ~/logs/x.log 2>&1')
+  ct=$(c756_crontab "$pipe" '0 13 * * 1 TOKEN=abc123 /home/u/bin/weekly-scan-job.sh --key sk-xyz >> ~/logs/x.log 2>&1')
   out=$(c756_print "$pipe" "$home" cat "$ct")
   rm -rf "$pipe" "$home"
   assert_eq "$(printf '%s' "$out" | jq -c '.cron | length')" "1" "AC3: one job parsed" || return 1
-  assert_eq "$(printf '%s' "$out" | jq -r '.cron[0].name')" "layoff-scan-cron" "AC3: name is the script basename without extension" || return 1
+  assert_eq "$(printf '%s' "$out" | jq -r '.cron[0].name')" "weekly-scan-job" "AC3: name is the script basename without extension" || return 1
   assert_eq "$(printf '%s' "$out" | jq -r '.cron[0].schedule')" "0 13 * * 1" "AC1: raw 5-field schedule" || return 1
   assert_eq "$(printf '%s' "$out" | jq -r '.cron[0].schedule_human')" "Mondays at 13:00" "AC1: human schedule" || return 1
   assert_eq "$(printf '%s' "$out" | jq -c '.cron[0] | keys')" '["last_result","last_run","name","next_run","schedule","schedule_human","source"]' "AC1: exactly the documented keys (description only when the script has a readable header comment)" || return 1

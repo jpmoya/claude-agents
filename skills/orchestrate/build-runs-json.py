@@ -25,7 +25,8 @@
 #               {name, schedule, schedule_human, last_run, last_result, next_run, source, description?}:
 #               never a command line, argument, env assignment, redirection, URL, log content or path (the
 #               one argument word allowed is a lowercase slug appended to the name; `description` is the
-#               script's own header comment, filtered). Scan problems are counted on stderr as
+#               script's own header comment, filtered; a hand-written CRON_DESC_FALLBACK entry fills in when
+#               there is none, a CRON_DESC_OVERRIDE entry corrects a stale or cut-off one). Scan problems are counted on stderr as
 #               "scan_errors=<n>" (no content) for report-status.sh to alert on.
 import sys
 import json
@@ -705,6 +706,50 @@ def script_description(token):
     return clean_description(first)
 
 
+# ---- curated descriptions (the fallback / correction table for "What it does") ----
+# Written by hand from the jobs' real scripts, plain English, each <= 140 code points and clean under both
+# filters (a test pins `clean_description(text) == text` for every entry). Keyed by the published job name.
+#   CRON_DESC_FALLBACK  used only when the script / SKILL.md gave nothing (a header added later wins).
+#   CRON_DESC_OVERRIDE  wins even over a header: for a header that is stale (layoff-scan-cron says "Daily", it
+#                       runs on Mondays) or cut off / boilerplate (supervisor, message-triage, github-runner-mobile).
+CRON_DESC_FALLBACK = {
+    # VM crontab
+    "run-pricing-agent-valley-view": "Weekly Valley View supplier price sync: the pricing agent updates product prices and flags big changes.",
+    "run-pricing-agent-greenville": "Quarterly Greenville supplier pricing agent: refreshes product prices and flags large changes for review.",
+    "run-pricing-agent-lechuza": "Quarterly Lechuza supplier pricing agent: refreshes product prices and flags large changes for review.",
+    "payroll-sync": "Every other Tuesday, pushes staff timesheet hours into QuickBooks Online and posts the payroll summary to Slack.",
+    "scan-backlog": "Hourly pipeline backlog scan: labels new open issues as proposed and posts a digest to Slack.",
+    "message-triage-run": "Triages the owner's Gmail and Slack messages with the message-triage agent, hourly early on, then every 10 minutes.",
+    "interview-coordinator-run": "Every 4 hours, screens new candidates, follows up on open outreach and books interviews for open postings.",
+    # both hosts
+    "host-drift": "Daily check that this machine's agent setup matches the shared manifest; fixes safe drift and opens one issue if it finds more.",
+    "memory-sync": "Hourly sync of Claude memory notes between the Mac and the VM through one private git remote; never deletes anything.",
+    "rotate-logs": "Rotates the pipeline logs once they grow past a size limit and trims old runs from the run history.",
+    # Mac crontab
+    "session-backfill": "Daily scan of Claude session transcripts into one metadata row per session (agent, timing, cost) for pipeline cost reports.",
+    # Mac launchd
+    "qbo-scraper": "Scrapes payroll figures from QuickBooks Online several times on Thursdays and Fridays.",
+    "cd-proof": "Every 5 minutes, relaunches the continuous-deployment proof delivery lead if it died, until its done file appears.",
+    "pm-release341": "Old 30-minute project-manager cycle for the release 3.4.1 plan; its script no longer exists, so it does nothing now.",
+    "weekly-cache-cleanup": "Mondays at 09:00, clears the npm, Wispr Flow, Spotify and Claude desktop caches to free disk space.",
+}
+CRON_DESC_OVERRIDE = {
+    "layoff-scan-cron": "Weekly, on Mondays: searches for layoffs and closures at related companies and posts new finds to Slack for recruiting.",
+    "supervisor": "Pipeline supervisor, every 2 minutes: restarts exited runs, drains the queue, dispatches approved issues and reconciles status.",
+    "pipeline-supervisor": "Pipeline supervisor, every 2 minutes: restarts exited runs, drains the queue, dispatches approved issues and reconciles status.",
+    "message-triage": "Every 15 minutes, runs the message-triage agent on the Mac to triage the owner's Gmail and Slack messages.",
+    "github-runner-mobile": "Keeps the Mac GitHub Actions runner for mobile builds running.",
+}
+
+
+def curated_description(name, scanned):
+    """The description to publish for job `name`: a CRON_DESC_OVERRIDE entry, else what the script / SKILL.md gave,
+    else a CRON_DESC_FALLBACK entry. Curated text goes through clean_description like everything else."""
+    if name in CRON_DESC_OVERRIDE:
+        return clean_description(CRON_DESC_OVERRIDE[name]) or scanned
+    return scanned or clean_description(CRON_DESC_FALLBACK.get(name))
+
+
 # ---- launchd (macOS only): ~/Library/LaunchAgents/com.{jp,benjis,jpmoya,xaki}.*.plist ----
 LAUNCHD_PREFIXES = ("com.jp.", "com.benjis.", "com.jpmoya.", "com.xaki.")  # not Google / homebrew / retired ones
 LAUNCHD_FIELDS = (("Minute", 0, 59), ("Hour", 0, 23), ("Day", 1, 31), ("Month", 1, 12), ("Weekday", 0, 7))
@@ -903,6 +948,7 @@ def build_desktop():
 def _cron_item(name, schedule, human, last_run, result, next_run, description, source):
     item = {"name": name, "schedule": schedule, "schedule_human": human,
             "last_run": last_run, "last_result": result, "next_run": next_run}
+    description = curated_description(name, description)
     if description:
         item["description"] = description
     item["source"] = source

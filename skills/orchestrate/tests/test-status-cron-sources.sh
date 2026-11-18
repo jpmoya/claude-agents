@@ -50,10 +50,10 @@ csj_job() {  # csj_job <json> <name> <field> [source]
 test_csj_description_from_script_header_comment() {
   local pipe home out ct
   pipe=$(new_pipe); home=$(new_home)
-  csj_script "$home" layoff-scan-cron.sh '#!/bin/bash
+  csj_script "$home" weekly-scan-job.sh '#!/bin/bash
 # shellcheck disable=SC2034
 
-# Daily layoff/closure recruiting scan — posts new finds to Slack
+# Daily closure scan — posts new finds to Slack
 # a second comment line is not part of the description
 echo hi'
   csj_script "$home" desc-wins.sh '#!/bin/bash
@@ -64,17 +64,17 @@ echo hi
 echo hi'
   csj_script "$home" homevar.sh '# Home variable job
 echo hi'
-  ct=$(csj_crontab "$pipe" "0 13 * * * $home/bin/layoff-scan-cron.sh >> ~/logs/x.log 2>&1
+  ct=$(csj_crontab "$pipe" "0 13 * * * $home/bin/weekly-scan-job.sh >> ~/logs/x.log 2>&1
 0 1 * * * $home/bin/desc-wins.sh
 0 2 * * * ~/bin/tilde.sh
 0 3 * * * \$HOME/bin/homevar.sh")
   out=$(csj_print "$pipe" "$home" linux cat "$ct")
   rm -rf "$pipe" "$home"
-  assert_eq "$(csj_job "$out" layoff-scan-cron description)" "Daily layoff/closure recruiting scan — posts new finds to Slack" "first comment line after the shebang (lint pragma skipped); the em dash and the slash survive" || return 1
+  assert_eq "$(csj_job "$out" weekly-scan-job description)" "Daily closure scan — posts new finds to Slack" "first comment line after the shebang (lint pragma skipped); the em dash and the slash survive" || return 1
   assert_eq "$(csj_job "$out" desc-wins description)" "Weekly pricing check for one supplier" "an explicit '# desc:' line wins over the header comment" || return 1
   assert_eq "$(csj_job "$out" tilde description)" "Tilde job runs nightly" "~/ script path resolved" || return 1
   assert_eq "$(csj_job "$out" homevar description)" "Home variable job" "\$HOME/ script path resolved" || return 1
-  assert_eq "$(csj_job "$out" layoff-scan-cron source)" "cron" "crontab items carry source cron" || return 1
+  assert_eq "$(csj_job "$out" weekly-scan-job source)" "cron" "crontab items carry source cron" || return 1
 }
 
 test_csj_description_omitted_when_unresolvable_or_unsafe() {
@@ -276,6 +276,82 @@ test_csj_crontab_and_mac_sources_are_combined_in_one_list() {
   assert_eq "$(printf '%s' "$out" | jq -c '[.cron[] | [.source, .name]]')" '[["cron","a-cron-job"],["launchd","clear-space"],["desktop","a-task"]]' "crontab first, then launchd, then desktop tasks" || return 1
 }
 
+# ---- curated descriptions (fallback / override table in build-runs-json.py) ---------------------------------------
+
+test_csj_curated_description_fills_in_when_the_script_gives_none() {
+  local pipe home out ct
+  pipe=$(new_pipe); home=$(new_home)
+  csj_script "$home" scan-backlog.sh '#!/bin/bash
+echo hi'
+  csj_script "$home" payroll-sync.sh '#!/bin/bash
+# Header written by the script author
+echo hi'
+  ct=$(csj_crontab "$pipe" "0 * * * * $home/bin/scan-backlog.sh
+0 14 * * 2 $home/bin/payroll-sync.sh
+0 2 * * * $home/bin/not-in-the-table.sh")
+  csj_plist "$home" com.jp.host-drift.plist "{'Label':'com.jp.host-drift','ProgramArguments':['/usr/bin/true'],'StartInterval':600}"
+  out=$(csj_print "$pipe" "$home" darwin cat "$ct")
+  rm -rf "$pipe" "$home"
+  assert_eq "$(csj_job "$out" scan-backlog description)" "Hourly pipeline backlog scan: labels new open issues as proposed and posts a digest to Slack." "no header -> curated fallback" || return 1
+  assert_eq "$(csj_job "$out" host-drift description)" "Daily check that this machine's agent setup matches the shared manifest; fixes safe drift and opens one issue if it finds more." "launchd job without a readable script -> curated fallback" || return 1
+  assert_eq "$(csj_job "$out" payroll-sync description)" "Header written by the script author" "a fallback entry never replaces a description the script gave" || return 1
+  assert_eq "$(csj_job "$out" not-in-the-table description)" "null" "a job without a curated entry and without a header still has no description" || return 1
+}
+
+test_csj_curated_override_corrects_a_stale_or_cut_off_header() {
+  local pipe home out ct
+  pipe=$(new_pipe); home=$(new_home)
+  csj_script "$home" layoff-scan-cron.sh '#!/bin/bash
+# Daily layoff scan, stale text that no longer matches the schedule
+echo hi'
+  csj_script "$home" sup.sh '#!/bin/bash
+# Stateless supervisor tick, one tick does, in order:
+echo hi'
+  ct=$(csj_crontab "$pipe" "0 13 * * 1 $home/bin/layoff-scan-cron.sh")
+  csj_plist "$home" com.jp.pipeline-supervisor.plist "{'Label':'com.jp.pipeline-supervisor','ProgramArguments':['$home/bin/sup.sh'],'StartInterval':120}"
+  out=$(csj_print "$pipe" "$home" darwin cat "$ct")
+  rm -rf "$pipe" "$home"
+  assert_eq "$(csj_job "$out" layoff-scan-cron description)" "Weekly, on Mondays: searches for layoffs and closures at related companies and posts new finds to Slack for recruiting." "override wins over a stale header" || return 1
+  assert_eq "$(csj_job "$out" pipeline-supervisor description)" "Pipeline supervisor, every 2 minutes: restarts exited runs, drains the queue, dispatches approved issues and reconciles status." "override wins over a cut-off header" || return 1
+}
+
+# Both tables, one entry per line, read out of the source without importing it (it runs on import).
+csj_curated_table() {
+  python3 -I -c '
+import ast, sys
+for n in ast.parse(open(sys.argv[1]).read()).body:
+    if isinstance(n, ast.Assign) and any(getattr(t, "id", None) in ("CRON_DESC_FALLBACK", "CRON_DESC_OVERRIDE") for t in n.targets):
+        for k, v in ast.literal_eval(n.value).items():
+            print(k + "\t" + v)' "$RS_CSJ/build-runs-json.py"
+}
+
+test_csj_every_curated_description_survives_both_filters_untouched() {
+  local table py worker
+  table=$(csj_curated_table)
+  assert_eq "$(printf '%s\n' "$table" | grep -c .)" "20" "15 fallback and 5 override entries" || return 1
+  # Python filter: clean_description (same regex, 140 cap) must return each text unchanged
+  py=$(printf '%s\n' "$table" | python3 -I -c '
+import ast, re, sys
+tree = ast.parse(open(sys.argv[1]).read())
+keep = {"CRON_DESC_MAX", "CRON_DESC_UNSAFE_RE"}
+nodes = [n for n in tree.body if (isinstance(n, ast.Assign) and any(getattr(t, "id", None) in keep for t in n.targets))
+         or (isinstance(n, ast.FunctionDef) and n.name == "clean_description")]
+ns = {"re": re}
+exec(compile(ast.Module(nodes, []), "curated", "exec"), ns)
+for line in sys.stdin.read().splitlines():
+    name, text = line.split("\t", 1)
+    ok = ns["clean_description"](text) == text and re.match(r"^[A-Za-z0-9._-]{1,80}$", name)
+    print("OK" if ok else "BAD " + name)' "$RS_CSJ/build-runs-json.py")
+  assert_eq "$(printf '%s\n' "$py" | grep -c '^OK$')" "20" "every entry is unchanged by clean_description (nothing filtered or truncated); bad: $(printf '%s' "$py" | grep BAD)" || return 1
+  # the Worker's own filter (status-page/src/validate.js) must keep every entry too, or it vanishes from the page
+  worker=$(printf '%s\n' "$table" | cut -f2- | node -e '
+const src = require("fs").readFileSync(process.argv[1], "utf8");
+const re = eval(src.match(/const CRON_DESCRIPTION_UNSAFE = (\/.*\/);/)[1]);
+const texts = require("fs").readFileSync(0, "utf8").split("\n").filter(Boolean);
+console.log(texts.filter((t) => re.test(t) || Array.from(t).length > 140).length);' "$RS_CSJ/../../status-page/src/validate.js")
+  assert_eq "$worker" "0" "no curated description is rejected by the Worker's CRON_DESCRIPTION_UNSAFE or its 140 cap" || return 1
+}
+
 run_test test_csj_description_from_script_header_comment
 run_test test_csj_description_omitted_when_unresolvable_or_unsafe
 run_test test_csj_one_slug_argument_is_appended_to_the_name
@@ -284,3 +360,6 @@ run_test test_csj_launchd_not_collected_off_macos_or_when_switched_off
 run_test test_csj_desktop_tasks_listed_by_name_and_description
 run_test test_csj_mac_jobs_still_listed_when_the_crontab_is_missing_or_unreadable
 run_test test_csj_crontab_and_mac_sources_are_combined_in_one_list
+run_test test_csj_curated_description_fills_in_when_the_script_gives_none
+run_test test_csj_curated_override_corrects_a_stale_or_cut_off_header
+run_test test_csj_every_curated_description_survives_both_filters_untouched
