@@ -39,9 +39,9 @@ for ln in lines:
         continue
     if hit:
         ctx = ("TICKET REQUEST DETECTED (JP hard rule, 2026-11-18). REQUIRED, before anything else (no investigating, no coding, no gh issue create): "
-               "invoke the ticket-intake skill (skills/ticket-intake/SKILL.md). It runs the duplicate check, has product-manager file the ticket "
+               "invoke the ticket-intake skill (~/.claude/skills/ticket-intake/SKILL.md). It runs the duplicate check, has product-manager file the ticket "
                "with the Reported by / Intake lines, asks JP ONE short question (which goal project, or none), then puts the ticket in that project "
-               "and adds agent-go with skills/ticket-intake/ticket-intake.sh. A ticket in an application repo created without it is refused by hooks/ticket-intake-guard.sh. "
+               "and adds agent-go with ~/.claude/skills/ticket-intake/ticket-intake.sh. A ticket in an application repo created without it is refused by hooks/ticket-intake-guard.sh. "
                "If the message is not actually a request to log a ticket, say so in one line and carry on. The jpmoya/claude-agents repo is exempt (direct route: no project, no agent-go).")
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": ctx}}))
         break

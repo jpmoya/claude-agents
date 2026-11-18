@@ -35,6 +35,13 @@ direct_route_list() {
   l=$(grep -E '^DIRECT_ROUTE_REPOS=\(' "$HERE/../orchestrate/config.sh" 2>/dev/null | head -n 1 | grep -oE '[A-Za-z0-9._-]+/[A-Za-z0-9._-]+')
   printf '%s\n' "${l:-jpmoya/claude-agents}"
 }
+# canon_repo <owner/repo> -> the current name of a renamed repo (repo-aliases.txt, the one list the guard hook reads too)
+canon_repo() {
+  local want out
+  want=$(lower "$1")
+  out=$(awk -v w="$want" '/^[[:space:]]*#/ { next } NF == 2 && tolower($1) == w { print $2; exit }' "$HERE/repo-aliases.txt" 2>/dev/null)
+  printf '%s' "${out:-$1}"
+}
 is_direct_route() { local want e; want=$(lower "$1"); for e in $(direct_route_list); do [ "$(lower "$e")" = "$want" ] && return 0; done; return 1; }
 
 # registry_goals <owner/repo|""> -> TSV lines: <owner>/<n> \t name \t go \t url
@@ -42,14 +49,14 @@ registry_goals() {
   local raw rc
   raw=$(gh api -X GET "repos/$REGISTRY/issues" -f labels=delivery-goal -f state=open -f per_page=100 --paginate 2>/dev/null); rc=$?
   [ "$rc" -eq 0 ] || { echo "ticket-intake: cannot read the goal registry $REGISTRY (gh api exit $rc)" >&2; return 1; }
-  printf '%s' "$raw" | jq -rs --arg repo "$(lower "${1:-}")" '
+  printf '%s' "$raw" | jq -rs --arg repo "$(lower "$(canon_repo "${1:-}")")" --argjson al "$(awk '/^[[:space:]]*#/ { next } NF == 2 { printf "%s%s:%s", (n++ ? "," : "{"), "\"" tolower($1) "\"", "\"" tolower($2) "\"" } END { print (n ? "}" : "{}") }' "$HERE/repo-aliases.txt" 2>/dev/null)" '
     [ .[] | (if type == "array" then .[] else . end) ]
     | map(select(has("pull_request") | not)
           | select(any(.labels[]; .name == "goal-stopped") | not)
           | . as $i
           | ([try (($i.body // "") | capture("```json\\n(?<j>[^\\n]*)\\n```") | .j | fromjson) catch null] | .[0]) as $b
           | select($b != null and (($b.spec // "") | startswith("project:")) and ($b.scope_project.number? != null))
-          | select($repo == "" or (($b.repos // []) | length == 0) or (($b.repos // []) | map(ascii_downcase) | index($repo)))
+          | select($repo == "" or (($b.repos // []) | length == 0) or (($b.repos // []) | map(ascii_downcase | ($al[.] // .)) | index($repo)))
           | "\($b.scope_project.owner)/\($b.scope_project.number)\t\($i.title | sub("^Goal: "; ""))\tgo=\(if ($b.go == true) then "true" elif ($b.go == false) then "false" else "unset" end)\t\($b.scope_project.url // "")")
     | .[]'
 }
@@ -57,7 +64,7 @@ registry_goals() {
 cmd=${1:-}; [ $# -gt 0 ] && shift
 case "$cmd" in
   goals)
-    repo=${1:-}
+    repo=${1:-}; [ -z "$repo" ] || repo=$(canon_repo "$repo")
     if [ -n "$repo" ] && is_direct_route "$repo"; then
       echo "ticket-intake: $repo is a direct-route repo: no project, no agent-go. Nothing to choose." >&2; exit 0
     fi
@@ -77,6 +84,7 @@ case "$cmd" in
       esac
     done
     case "$repo" in */*) ;; *) die "bad repo '$repo'" ;; esac
+    repo=$(canon_repo "$repo")
     issue=${issue#\#}; case "$issue" in ''|*[!0-9]*) die "bad issue number '$issue'" ;; esac
     if [ -n "$project" ] && [ "$none" = 1 ]; then die "give --project or --none, not both"; fi
     if [ -z "$project" ] && [ "$none" = 0 ]; then die "the project step is never skipped silently: give --project <owner>/<n> or --none"; fi
@@ -87,7 +95,7 @@ case "$cmd" in
       echo "ticket-intake: $repo#$issue is in a direct-route repo: no project, no agent-go (the interactive session implements it). Nothing done."
       exit 0
     fi
-    info=$(gh issue view "$issue" -R "$repo" --json state,labels,url,projectItems 2>/dev/null) || die "cannot read $repo#$issue (gh issue view failed)" 3
+    info=$(gh issue view "$issue" -R "$repo" --json state,labels,url 2>/dev/null) || die "cannot read $repo#$issue (gh issue view failed)" 3
     url=$(printf '%s' "$info" | jq -r .url)
     state=$(printf '%s' "$info" | jq -r .state)
 
@@ -103,17 +111,15 @@ case "$cmd" in
         { echo "ticket-intake: project $project is not an open registered goal's project for $repo. Registered choices:"; printf '%s\n' "$rows" | cut -f1,2,3; echo "(or use --none)"; } >&2
         exit 2
       fi
-      if printf '%s' "$info" | jq -e --argjson n "$pnum" 'any((.projectItems // [])[]?; ((.project.number? // .number? // -1) == $n))' >/dev/null 2>&1; then
-        pres="already in $project ($goalname)"
-      else
-        err=$(gh project item-add "$pnum" --owner "$powner" --url "$url" 2>&1 >/dev/null) || {
-          echo "ticket-intake: could not add $repo#$issue to project $project: $err" >&2
-          echo "ticket-intake: the gh token needs the project scope (gh auth refresh -s project) and write access to the project" >&2
-          elog "FAIL project repo=$repo issue=$issue project=$project"
-          exit 4
-        }
-        pres="added to $project ($goalname)"
-      fi
+      # No "already in the project" pre-read: gh's projectItems needs the read:project scope and only carries titles, and
+      # GitHub's item-add returns the existing item when the issue is already in the project, so re-running is harmless.
+      err=$(gh project item-add "$pnum" --owner "$powner" --url "$url" 2>&1 >/dev/null) || {
+        echo "ticket-intake: could not add $repo#$issue to project $project: $err" >&2
+        echo "ticket-intake: the gh token needs the project scope (gh auth refresh -s project) and write access to the project" >&2
+        elog "FAIL project repo=$repo issue=$issue project=$project"
+        exit 4
+      }
+      pres="in $project ($goalname)"
     fi
 
     # ---- agent-go ----

@@ -1,0 +1,5 @@
+# Old GitHub repo name -> current name (owner/repo, case-insensitive). THE ONE PLACE both hooks/ticket-intake-guard.sh and
+# skills/ticket-intake/ticket-intake.sh read, so a ticket created through an old name (GitHub redirects it) is treated as the
+# renamed repo. Same renames as DEDUPE_REPO_GROUPS in skills/orchestrate/find-duplicates.sh. Format: "<old> <new>" per line.
+Benjis-Plants/scheduler Benjis-Plants/benjis-ops-tool
+Benjis-Plants/benjis-quoting-tool Benjis-Plants/benjis-sales-tool

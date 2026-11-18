@@ -35,14 +35,14 @@ items = [
 ]
 json.dump(items, open(sys.argv[1], "w"))
 PY
-  ti_issue OPEN "" ""
+  ti_issue OPEN ""
   cat > "$TI_D/bin/gh" <<GHEOF
 #!/bin/bash
 # Fake gh for test-ticket-intake.sh: registry fixture, per-case issue fixture, write log, failure switches.
 printf '%s\n' "\$*" >> "$TI_D/gh.log"
 case "\$*" in
   "api -X GET repos/jpmoya/claude-agents/issues"*) cat "$TI_D/registry.json" ;;
-  "issue view "*) cat "$TI_D/issue.json" ;;
+  "issue view "*--json\ state,labels,url) cat "$TI_D/issue.json" ;;
   "project item-add "*) [ -e "$TI_D/fail-project" ] && { echo "missing project scope" >&2; exit 1; }; echo '{}' ;;
   "issue edit "*) [ -e "$TI_D/fail-label" ] && { echo "label failure" >&2; exit 1; }; : ;;
   *) echo "fake gh: unexpected: \$*" >&2; exit 1 ;;
@@ -54,14 +54,13 @@ GHEOF
 }
 ti_teardown() { PATH=$TI_OLDPATH; rm -rf "$TI_D"; unset TICKET_INTAKE_LOG; }
 
-# ti_issue <state> <labels comma list> <project numbers comma list>  -> the fake `gh issue view` answer
+# ti_issue <state> <labels comma list>  -> the fake `gh issue view --json state,labels,url` answer (projectItems is deliberately never requested)
 ti_issue() {
-  python3 - "$TI_D/issue.json" "$1" "$2" "$3" <<'PY'
+  python3 - "$TI_D/issue.json" "$1" "$2" <<'PY'
 import json, sys
-out, state, labels, projs = sys.argv[1:5]
+out, state, labels = sys.argv[1:4]
 json.dump({"state": state, "url": "https://github.com/Benjis-Plants/benjis-ops-tool/issues/77",
-           "labels": [{"name": l} for l in labels.split(",") if l],
-           "projectItems": [{"project": {"number": int(p)}} for p in projs.split(",") if p]}, open(out, "w"))
+           "labels": [{"name": l} for l in labels.split(",") if l]}, open(out, "w"))
 PY
 }
 ti_writes() { grep -E '^(project item-add|issue edit)' "$TI_D/gh.log" 2>/dev/null; }
@@ -154,6 +153,7 @@ test_ti_reminder_output_is_hook_json_with_the_hard_instruction() {
   ctx=$(printf '%s' "$TI_OUT" | jq -r .hookSpecificOutput.additionalContext)
   assert_contains "$ctx" "REQUIRED, before anything else" "hard instruction" || rc=1
   assert_contains "$ctx" "skills/ticket-intake/SKILL.md" "names the skill" || rc=1
+  assert_contains "$ctx" "~/.claude/skills/ticket-intake/SKILL.md" "absolute skill path (resolves from any checkout)" || rc=1
   assert_contains "$ctx" "jpmoya/claude-agents repo is exempt" "tells about the direct-route exemption" || rc=1
   return $rc
 }
@@ -189,11 +189,13 @@ test_ti_guard_refuses_a_bare_create_on_application_repos() {
   assert_contains "$TI_OUT" "Intake: project=" "message names the marker" || rc=1
   assert_contains "$TI_OUT" "ticket-intake.sh goals" "message names the helper" || rc=1
   ti_guard "gh issue create --repo $SALES_TI --title T --body B"; assert_eq "$?" "2" "sales tool refused" || rc=1
-  ti_guard "gh issue create -R Benjis-Plants/benjis-quoting-tool --title T --body B"; assert_eq "$?" "2" "quoting tool refused (built-in list)" || rc=1
   ti_guard "gh api repos/$OPS_TI/issues -f title=T -f body=B"; assert_eq "$?" "2" "issues POST via gh api refused" || rc=1
   ti_guard "gh api -X POST repos/$OPS_TI/issues -f title=T"; assert_eq "$?" "2" "explicit POST refused" || rc=1
   ti_guard "curl -s -X POST https://api.github.com/repos/$OPS_TI/issues -d '{\"title\":\"T\"}'"; assert_eq "$?" "2" "curl POST refused" || rc=1
   ti_guard "gh api graphql -f query='mutation { createIssue(input:{repositoryId:\"R\",title:\"T\"}) { issue { id } } }'"; assert_eq "$?" "2" "GraphQL createIssue refused" || rc=1
+  ti_guard "gh issue create -R Benjis-Plants/scheduler --title T --body B"; assert_eq "$?" "2" "the old name of the ops tool (scheduler) is the ops tool" || rc=1
+  ti_guard "gh issue create -R Benjis-Plants/benjis-quoting-tool --title T --body B"; assert_eq "$?" "2" "the old name of the sales tool is the sales tool" || rc=1
+  ti_guard "gh issue create -R Benjis-Plants/scheduler --title T --body 'Intake: project=none'"; assert_eq "$?" "0" "old name + marker passes" || rc=1
   assert_contains "$(cat "$TI_D/guard.log")" '"outcome": "blocked"' "refusal logged" || rc=1
   ti_teardown; return $rc
 }
@@ -318,6 +320,7 @@ test_ti_goals_lists_only_open_project_goals_that_fit_the_repo() {
   out=$("$HELPER_TI" goals "$SALES_TI" 2>&1)
   assert_contains "$out" "jpmoya/44" "sales repo: the cross-repo project" || rc=1
   assert_not_contains "$out" "jpmoya/41" "sales repo: the ops-only project is filtered out" || rc=1
+  out=$("$HELPER_TI" goals Benjis-Plants/scheduler 2>&1); assert_contains "$out" "jpmoya/41" "old repo name resolves to the ops tool's goals" || rc=1
   out=$("$HELPER_TI" goals Benjis-Plants/other-app 2>&1); assert_contains "$out" "the answer is none" "no fit: says none" || rc=1
   out=$("$HELPER_TI" goals jpmoya/claude-agents 2>&1); assert_eq "$?" "0" "direct-route repo: exit 0" || rc=1
   assert_contains "$out" "direct-route" "direct-route repo: nothing to choose" || rc=1
@@ -333,12 +336,12 @@ test_ti_finish_adds_to_the_project_and_agent_go_then_is_idempotent() {
   assert_eq "$TI_RC" "0" "finish exits 0 ($TI_OUT)" || rc=1
   assert_contains "$(ti_writes)" "project item-add 41 --owner jpmoya --url https://github.com/Benjis-Plants/benjis-ops-tool/issues/77" "project item-add with the issue URL" || rc=1
   assert_contains "$(ti_writes)" "issue edit 77 -R $OPS_TI --add-label agent-go" "agent-go added" || rc=1
-  assert_contains "$TI_OUT" "project: added to jpmoya/41 (CD release hardening); agent-go added" "summary line" || rc=1
-  : > "$TI_D/gh.log"; ti_issue OPEN "agent-go,bug" "41"
+  assert_contains "$TI_OUT" "project: in jpmoya/41 (CD release hardening); agent-go added" "summary line" || rc=1
+  : > "$TI_D/gh.log"; ti_issue OPEN "agent-go,bug"
   ti_fin "$OPS_TI" 77 --project jpmoya/41
   assert_eq "$TI_RC" "0" "second run exits 0" || rc=1
-  assert_eq "$(ti_writes)" "" "second run writes nothing (already in the project, already labelled)" || rc=1
-  assert_contains "$TI_OUT" "already in jpmoya/41" "says so" || rc=1
+  assert_not_contains "$(ti_writes)" "issue edit" "second run relabels nothing (GitHub's item-add returns the existing item, so the project step is safe to repeat)" || rc=1
+  assert_not_contains "$(grep -c '^issue view .*projectItems' "$TI_D/gh.log" || true)" "1" "projectItems is never requested (needs read:project, carries titles only)" || rc=1
   assert_contains "$TI_OUT" "agent-go already there" "says so for the label" || rc=1
   ti_teardown; return $rc
 }
@@ -354,6 +357,15 @@ test_ti_finish_go_false_goal_and_none_still_get_agent_go() {
   assert_eq "$TI_RC" "0" "--none exits 0" || rc=1
   assert_not_contains "$(ti_writes)" "project item-add" "--none touches no project" || rc=1
   assert_contains "$(ti_writes)" "issue edit 13 -R $OPS_TI --add-label agent-go" "--none still adds agent-go" || rc=1
+  ti_teardown; return $rc
+}
+
+test_ti_finish_resolves_a_renamed_repo() {
+  ti_setup
+  local rc=0
+  ti_fin Benjis-Plants/scheduler 77 --project jpmoya/41
+  assert_eq "$TI_RC" "0" "old name accepted ($TI_OUT)" || rc=1
+  assert_contains "$(ti_writes)" "issue edit 77 -R $OPS_TI --add-label agent-go" "the write goes to the current repo name" || rc=1
   ti_teardown; return $rc
 }
 
@@ -406,11 +418,11 @@ test_ti_finish_exemptions_and_edge_states() {
   assert_eq "$TI_RC" "0" "Business-Intelligence exits 0" || rc=1
   assert_not_contains "$(ti_writes)" "add-label" "Business-Intelligence never gets an automatic agent-go" || rc=1
   assert_contains "$TI_OUT" "only JP adds it" "says why" || rc=1
-  ti_issue CLOSED "" ""; : > "$TI_D/gh.log"
+  ti_issue CLOSED ""; : > "$TI_D/gh.log"
   ti_fin "$OPS_TI" 77 --none; assert_not_contains "$(ti_writes)" "add-label" "a closed issue gets no agent-go" || rc=1
-  ti_issue OPEN "agent-in-progress" ""; : > "$TI_D/gh.log"
+  ti_issue OPEN "agent-in-progress"; : > "$TI_D/gh.log"
   ti_fin "$OPS_TI" 77 --none; assert_eq "$(ti_writes)" "" "an issue already running is left alone" || rc=1
-  ti_issue OPEN "infra" ""; : > "$TI_D/gh.log"
+  ti_issue OPEN "infra"; : > "$TI_D/gh.log"
   ti_fin "$OPS_TI" 77 --none; assert_contains "$TI_OUT" "every prod step still waits for JP's go" "infra: agent-go is launch permission only" || rc=1
   ti_teardown; return $rc
 }
@@ -470,6 +482,7 @@ run_test test_ti_guard_and_dedupe_guard_are_independent
 run_test test_ti_goals_lists_only_open_project_goals_that_fit_the_repo
 run_test test_ti_finish_adds_to_the_project_and_agent_go_then_is_idempotent
 run_test test_ti_finish_go_false_goal_and_none_still_get_agent_go
+run_test test_ti_finish_resolves_a_renamed_repo
 run_test test_ti_finish_never_skips_the_project_step_silently
 run_test test_ti_finish_refuses_a_project_that_is_not_a_registered_goals
 run_test test_ti_finish_no_go_needs_a_reason_and_skips_the_label

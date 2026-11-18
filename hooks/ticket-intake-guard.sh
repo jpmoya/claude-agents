@@ -10,7 +10,8 @@
 # search (that is hooks/dedupe-ticket-guard.sh, which runs alongside and is satisfied by its own `Dup-check:` line — put both lines
 # in the body from the start). The marker says the skill's decision was made; ticket-intake.sh finish performs it afterwards.
 # Not enforced: the direct-route repo (jpmoya/claude-agents: no project, no agent-go, ever), repos outside the application set
-# (DISPATCH_REPOS / SCAN_ONLY_REPOS of ~/.claude/pipeline/config.local.sh, plus the built-in default list), pipeline stage processes
+# (DISPATCH_REPOS / SCAN_ONLY_REPOS of ~/.claude/pipeline/config.local.sh, plus the ops and sales tools; renamed repos resolve through
+# skills/ticket-intake/repo-aliases.txt: scheduler = ops tool, benjis-quoting-tool = sales tool), pipeline stage processes
 # (PIPELINE_AGENT) and the headless orchestrator / delivery-lead / product-manager sessions (agentSetting in the transcript): they
 # file under their own agent-go rules (dependency follow-ups, goal inheritance).
 # Env (tests): TICKET_INTAKE_REPOS (space-separated, replaces the whole set), TICKET_INTAKE_CONFIG (config.local.sh path),
@@ -24,6 +25,7 @@ esac
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 export TI_CONFIG="${TICKET_INTAKE_CONFIG:-$HOME/.claude/pipeline/config.local.sh}"
 export TI_BASE_CONFIG="$HERE/../skills/orchestrate/config.sh"
+export TI_ALIASES="$HERE/../skills/ticket-intake/repo-aliases.txt"
 export TI_LOG="${TICKET_INTAKE_LOG:-$HOME/logs/pipeline/ticket-intake.log}"
 printf '%s' "$INPUT" | python3 -I -c '
 import json, os, re, shlex, subprocess, sys, time
@@ -160,7 +162,7 @@ if op is None:
     sys.exit(0)
 
 # ---- which repos are enforced -----------------------------------------------------------------------------------
-DEFAULT_REPOS = ["Benjis-Plants/benjis-ops-tool", "Benjis-Plants/benjis-sales-tool", "Benjis-Plants/benjis-quoting-tool"]
+DEFAULT_REPOS = ["Benjis-Plants/benjis-ops-tool", "Benjis-Plants/benjis-sales-tool"]
 def config_repos():
     out = []
     try:
@@ -192,8 +194,18 @@ if "TICKET_INTAKE_REPOS" in os.environ:
     enforced = os.environ["TICKET_INTAKE_REPOS"].split()
 else:
     enforced = DEFAULT_REPOS + config_repos()
-lc = lambda xs: {x.lower() for x in xs}
-repo = (op.get("repo") or "").strip()
+# Renamed repos (skills/ticket-intake/repo-aliases.txt): `gh issue create -R Benjis-Plants/scheduler` is the ops tool.
+aliases = {}
+try:
+    for ln in open(os.environ["TI_ALIASES"], encoding="utf-8", errors="replace"):
+        w = ln.split()
+        if len(w) == 2 and not ln.lstrip().startswith("#"):
+            aliases[w[0].lower()] = w[1]
+except OSError:
+    pass
+canon = lambda r: aliases.get(r.lower(), r)
+lc = lambda xs: {canon(x).lower() for x in xs}
+repo = canon((op.get("repo") or "").strip())
 known = bool(repo) and not repo.startswith("$")
 if known:
     if repo.lower() in lc(direct_route()):
