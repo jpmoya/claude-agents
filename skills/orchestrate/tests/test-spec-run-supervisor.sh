@@ -52,6 +52,10 @@ num=$(printf '%s' "$3" | grep -E '^[0-9]+$')
 withc() { jq -c --slurpfile c "$D/comments.json" '. as $i | $i + {state:($i.state // "OPEN"), comments: [$c[0][] | select(.number==$i.number)]}'; }
 case "$1" in api)   # #388: REST twin of `issue view` (state lower-case, created_at)
   anum=$(printf '%s' "$2" | sed -n 's|^repos/[^/]*/[^/]*/issues/\([0-9][0-9]*\).*|\1|p')
+  case "$*" in   # pm-goal-assignment: the live goals (step 3c needs the repo's feedback goal); `gh api --paginate <path>` puts the path in $3
+    *labels=delivery-goal*state=open*) cat "$D/registry.json"; exit 0 ;;
+    *labels=delivery-goal*state=closed*) echo '[]'; exit 0 ;;
+  esac
   case "$2" in
     */comments*) jq -c --argjson n "${anum:-0}" '[.[]|select(.number==$n)|{body:.body, created_at:.createdAt}]' "$D/comments.json" ;;
     *) jq -c --argjson n "${anum:-0}" '.[]|select(.number==$n)|{state:((.state // "OPEN")|ascii_downcase), body:"", updated_at:"2026-01-01T00:00:00Z", labels:.labels}' "$D/issues.json" ;;
@@ -76,6 +80,8 @@ case "$1 $2" in
 esac
 exit 0
 X
+  jq -nc '[ {number:901, state:"open", closed_at:null, labels:[{name:"delivery-goal"},{name:"goal-active"}], body:("Goal: x\n\n```json\n" + ({id:"project-a_repo-a-fb-feedback", spec:"project-a/repo-a:feedback"} | tojson) + "\n```\n")},
+              {number:902, state:"open", closed_at:null, labels:[{name:"delivery-goal"},{name:"goal-active"}], body:("Goal: x\n\n```json\n" + ({id:"project-b_repo-b-fb-feedback", spec:"project-b/repo-b:feedback"} | tojson) + "\n```\n")} ]' > "$SP_D/registry.json"
   chmod +x "$SP_D/pmset" "$SP_D/claude" "$SP_D/gh"
 }
 
@@ -192,7 +198,7 @@ test_sp_ac1_step_a_block_is_small_and_labelled() {
   local blk; blk=$(awk '/^# 3c\. Spec/ {p=1} p {print} p && /^$/ {exit}' "$SUP_SP")
   assert_ne "$blk" "" "AC1: supervisor.sh carries a block headed '# 3c. Spec' (guard contract)" || return 1
   local n; n=$(printf '%s\n' "$blk" | grep -c .)
-  assert_le "$n" "60" "AC1: step A is ~50 lines (got $n)" || return 1
+  assert_le "$n" "70" "AC1: step A is ~50 lines (got $n; 8 lines of goal resolution added by pm-goal-assignment)" || return 1
   assert_contains "$(head -20 "$SUP_SP")" "#   3c. spec: " "AC1: file-header step list names 3c (guard contract)" || return 1
   assert_not_contains "$blk" "orchestrate.sh" "AC1: step A never starts an orchestrator" || return 1
   assert_not_contains "$blk" "--add-label \"\$LABEL_GO\"" "AC1: step A never adds agent-go" || return 1

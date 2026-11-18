@@ -2190,11 +2190,17 @@ if [ "$launched" -eq 0 ] && [ "$HAS_CAP" -eq 1 ] && [ "${#DISPATCH_REPOS[@]}" -g
     owner_repo="${entry%%:*}"; local_path="${entry#*:}"; local_path="${local_path/#\~/$HOME}"
     case "$owner_repo" in */Business-Intelligence) continue ;; esac
     [ -d "$local_path/.git" ] || continue
+    sg_done=""; sg_id=""   # the repo's live feedback goal, read once per tick and only when a candidate exists (pm-goal.sh)
     for num in $(gh issue list --repo "$owner_repo" --state open --label user-feedback-needs-spec --limit 50 --json number,labels \
         --jq ".[] | select([.labels[].name] | (index(\"$LABEL_IN_PROGRESS\") or index(\"$LABEL_GO\")) | not) | .number" 2>/dev/null); do
       case "$num" in ''|*[!0-9]*) continue ;; esac
       k=$(spec_key "$owner_repo" "$num"); [ -e "$PIPE/$k.id" ] && continue; fb_claimable "$k" || continue   # #676: a give-up younger than 6h (or the final one), or a transient wait not over yet
       [ "$(spec_pm_markers "$owner_repo" "$num")" = 0 ] || continue
+      # the PM starts only with a Goal line (skills/pm-goal-assignment): a user-feedback idea belongs to the repo's feedback goal; none live = no launch
+      if [ -z "$sg_done" ]; then sg_done=1; sg_id=$("$HERE/pm-goal.sh" feedback "$owner_repo" 2>/dev/null) || sg_id=""; [ -n "$sg_id" ] || slog "[spec] $owner_repo — no live staff-feedback goal, PM spec runs not launched (the PM needs a Goal line)"; fi
+      [ -n "$sg_id" ] || continue
+      sg_prompt="Write the spec for $owner_repo#$num as the product-manager (spec-only run for a user-feedback idea): do not add agent-go; do not file dependency follow-ups on this issue; post your READY marker."$'\n'"Goal: $sg_id"
+      "$HERE/pm-goal.sh" require "$sg_prompt" 2>/dev/null || { slog "[spec] $owner_repo#$num — launch prompt has no Goal line, not launched"; continue; }
       gh issue comment "$num" --repo "$owner_repo" --body "**[supervisor] NOTE** claim: $HOST $(date -u +%FT%TZ)" >/dev/null 2>&1 || continue
       sleep "$CLAIM_SETTLE_SECS"
       winner=$(claim_winner "$local_path" "$num")
@@ -2202,7 +2208,7 @@ if [ "$launched" -eq 0 ] && [ "$HAS_CAP" -eq 1 ] && [ "${#DISPATCH_REPOS[@]}" -g
       gh issue edit "$num" --repo "$owner_repo" --add-label "$LABEL_IN_PROGRESS" >/dev/null 2>&1; rm -f "$PIPE/$k.exit" "$PIPE/$k.retry-after"; date +%s > "$PIPE/$k.launched-at"   # #676: this run's own exit code; launch epoch
       ( cd "$PIPE" && PIPELINE_ISSUE="$num" PIPELINE_AGENT=product-manager PIPELINE_REPO="$owner_repo" PIPE="$PIPE" CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 \
         nohup $SETSID bash -c 'claude --dangerously-skip-permissions --agent product-manager -p "$1"; echo $? > "$2"' _ \
-        "Write the spec for $owner_repo#$num as the product-manager (spec-only run for a user-feedback idea): do not add agent-go; do not file dependency follow-ups on this issue; post your READY marker." "$PIPE/$k.exit" \
+        "$sg_prompt" "$PIPE/$k.exit" \
         >> "$PIPE/$k.log" 2>&1 9>&- & echo $! > "$PIPE/$k.pid" ) 9>&-   # outer 9>&-: see intake_launch (the waiting copy of this shell held the lock fd)
       echo "$owner_repo $num" > "$PIPE/$k.id"; echo $(( $(cat "$PIPE/$k.attempts" 2>/dev/null || echo 0) + 1 )) > "$PIPE/$k.attempts"
       slog "[spec] $owner_repo#$num launched (attempt $(cat "$PIPE/$k.attempts"))"; launched=1; break

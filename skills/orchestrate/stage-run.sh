@@ -100,6 +100,14 @@ cost_ceiling_check() {
 }
 cost_ceiling_check 2>/dev/null; [ $? -eq 7 ] && exit 0
 
+# ---- goal gate: a product-manager stage starts only with a `Goal: <goal id>` (or `Goal: none-confirmed-by-JP`) line in its prompt;
+# the launcher resolves the goal (skills/pm-goal-assignment). One refusal line, a stage_end row, no claude process. Same grammar as pm-goal.sh.
+if [ "$AGENT" = product-manager ] && ! printf '%s\n' "$@" | grep -Eq '(^|[[:space:]])Goal: [A-Za-z0-9][A-Za-z0-9._-]*'; then
+  echo "stage-run.sh: refusing to start the product-manager: no 'Goal: <goal id>' line in the launch prompt (the launcher resolves the goal first; see skills/pm-goal-assignment)" >&2
+  emit "$(row_head stage_end 2>/dev/null | jq -c '. + {dur_s:0, exit_code:2, outcome:"refused_no_goal", limit_kind:null, marker_before:null, marker_after:null, marker_comment_id:null, marker_read_ok:true, findings:null, block_class:null, cost_usd:null, in_tok:null, out_tok:null, cache_read:null, cache_create:null, models:{}, tool_calls:null} | .session_id = null' 2>/dev/null)"
+  exit 2
+fi
+
 emit "$(row_head stage_start 2>/dev/null)"
 
 # ---- run the child, keeping a private copy of the output for the limit check

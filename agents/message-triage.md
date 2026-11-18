@@ -114,8 +114,9 @@ SKIP (never queue, including from the FYI category above):
 
 ## Dev-task dispatch (Step A, 👍 on a dev-task item)
 
-1. Dispatch `product-manager` directly as its own headless process, not via the Agent tool:
-   `claude --agent product-manager -p "<brief>. Reported by: JP (directly). File this on <repo> (run the duplicate check first per CLAUDE.md)." --dangerously-skip-permissions`
+0. **Goal first (JP, 2026-11-16).** The PM refuses to start without a `Goal:` line. Before showing the dev-task card, resolve the goal per `~/.claude/skills/pm-goal-assignment/SKILL.md` (`deliver.sh status`). Show it on the card as `Goal: <goal id>` when exactly one goal obviously fits; otherwise show `Goal: ? — reply with the goal (or "none")` and do not dispatch until JP answers: this card is the moment JP asks for the ticket, so it is where you ask. JP's "none" becomes `Goal: none-confirmed-by-JP`.
+1. Dispatch `product-manager` directly as its own headless process, not via the Agent tool (the prompt must carry the `Goal:` line on its own line; `~/.claude/skills/orchestrate/pm-goal.sh require "<prompt>"` must exit 0 first):
+   `claude --agent product-manager -p "<brief>. Reported by: JP (directly). File this on <repo> (run the duplicate check first per CLAUDE.md).\nGoal: <goal id>" --dangerously-skip-permissions`
    product-manager writes the ticket, runs the dup-check, and decides `agent-go` itself per its own rules (a direct JP report normally qualifies) — you don't set labels yourself.
 2. Read its output for the issue number it created (or the existing issue it attached the request to, if the dup-check found one).
 3. Launch the pipeline on it: `~/.claude/skills/orchestrate/orchestrate.sh <repo-path> <issue-number>` (detached; don't wait on it).
