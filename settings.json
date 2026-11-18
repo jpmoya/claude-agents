@@ -103,7 +103,7 @@
           },
           {
             "type": "command",
-            "command": "~/.claude/hooks/block-milestone-goal.sh"
+            "command": "~/.claude/hooks/block-nonproject-goal.sh"
           }
         ]
       },

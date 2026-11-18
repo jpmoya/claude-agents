@@ -5,9 +5,9 @@
 # Usage:
 #   deliver.sh <goal> [--now] [--host <hostname>] [--hosts both|mac|vm] [--priority <n>] [instructions...]
 #                                         --hosts (default both): both = the goal's tickets run on either machine (one lead only); mac|vm = whole goal on that machine
-#                                         register (state queued). <goal> = owner/repo:milestone:<number|exact title>
-#                                         | owner/repo:milestones:all | owner/repo:feedback | owner/repo#N
-#                                         | project:<owner>/<number> (or owner/repo:project:<number>): a GitHub Project, its issue items are the scope (#736)
+#                                         register (state queued). <goal> = project:<owner>/<number> (or owner/repo:project:<number>): a GitHub Project
+#                                         titled "Goal: <short human name>", its issue items are the scope (#736). JP, 2026-11-18: the ONLY form registered;
+#                                         milestone / label / #N / :feedback goals are refused (GOAL_ALLOW_LEGACY_REGISTER=1 for legacy tooling)
 #                                         --now: also launch one cycle here at once (hand use, skips the queue)
 #                                         (GOAL_SERIAL=1, one goal at a time: a --now goal that does not hold the slot returns to the queue after that cycle)
 #                                         --priority N / --after <goal> / --before <goal>: where it goes in the start order (default: last)
@@ -251,11 +251,15 @@ reg_priority() {
 }
 
 cmd_register_args() {
-  local spec="" repos="" title="" req="" sentry=0 mockups=review instr="" now=0 pin="" a hosts=both approve_all=0
+  local spec="" repos="" title="" req="" sentry=0 mockups=review instr="" now=0 pin="" a hosts=both approve_all=0 line
   case "${1:-}" in --*|'') ;; *) spec="$1"; shift ;; esac
-  # JP, 2026-11-18: a new goal is a GitHub Project, never a milestone (status/stop/release/resume of existing ones are other subcommands)
-  if [ -n "$spec" ] && [ "${GOAL_ALLOW_MILESTONE_REGISTER:-}" != 1 ]; then
-    case "$(goal_parse "$spec" 2>/dev/null | cut -f2)" in ms|msall) die "$(goal_milestone_refusal "$spec")" ;; esac
+  # JP, 2026-11-18: every goal is a GitHub Project (project:<owner>/<n>). Milestone, label (--repos/--title), ticket and feedback goals are no
+  # longer registered; status/stop/release/resume/priority of existing ones are other subcommands. A malformed spec falls through to its own error.
+  if [ "${GOAL_ALLOW_LEGACY_REGISTER:-}" != 1 ]; then
+    if [ -z "$spec" ]; then die "$(goal_nonproject_refusal "a label goal")"
+    elif line=$(goal_parse "$spec" 2>/dev/null); then
+      [ "$(printf '%s' "$line" | cut -f2)" = proj ] || die "$(goal_nonproject_refusal "$spec")"
+    fi
   fi
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -358,12 +362,16 @@ cmd_register() {
 # (`scope_project`, never the mirror's `project` key: no second project is created for it). Registering is JP's go, as for a milestone goal.
 cmd_register_proj() {
   local spec="$1" instr="$2" now="${3:-0}" pin="${4:-}" sentry="${5:-0}" ref id info title url repos kept="" dropped="" r checkout host=""
-  local block body resp n go=true granted='[]' granted_at repos_json owner num
+  local block body resp n go=true granted='[]' granted_at repos_json owner num why
   ref=$(goal_parse "$spec" | cut -f3); spec="project:$ref"; owner=${ref%%/*}; num=${ref##*/}
   id=$(goal_id "$spec") || exit 1
   goal_project_token_ok || { _goal_proj_err "$ref" "this host's gh token lacks the project scope"; die "reading project $ref needs the gh \`project\` scope on this host (run: gh auth refresh -s project), or register it from a host that has it"; }
   info=$(_goal_proj_read "$ref") || die "cannot read the project $ref (missing, closed, or the token cannot read every item); refusing to go on blind"
   title=$(printf '%s' "$info" | jq -r .title); url=$(printf '%s' "$info" | jq -r .url)
+  # JP, 2026-11-18: one name everywhere. The project must be titled "Goal: <short human name>"; the registry issue gets the same string
+  # and the status page shows the name. A title that breaks the convention is refused (rename it with gh project edit, then register).
+  why=$(goal_title_check "$title" 2>&1) || die "project $ref is titled \"$title\", which $why; name it \"Goal: <short human name>\" first (gh project edit $num --owner $owner --title \"Goal: <short human name>\"), the registry issue and the status page use that name"
+  title=$(goal_name_of_title "$title")
   for r in $(printf '%s' "$info" | jq -r '[.issues[].repo] | unique[]'); do
     if _goal_is_bi "$r"; then echo "skipping $r: Business-Intelligence is never part of a goal" >&2; continue; fi
     if direct_route_repo "$r"; then echo "direct-route repo $r ignored for goal $id" >&2; dropped="${dropped:-$r}"; continue; fi
@@ -392,7 +400,7 @@ cmd_register_proj() {
   ensure_label delivery-goal
   [ "$now" = 1 ] || ensure_label goal-queued
   resp=$(api_json POST "repos/$GOAL_REGISTRY_REPO/issues" \
-    "$(jq -nc --arg t "Goal: $title" --arg b "$(goal_body_v2 "$block" "$granted_at")" --argjson now "$now" \
+    "$(jq -nc --arg t "$(goal_title "$title")" --arg b "$(goal_body_v2 "$block" "$granted_at")" --argjson now "$now" \
        '{title:$t, body:$b, labels:(["delivery-goal"] + (if $now == 1 then [] else ["goal-queued"] end))}')") \
     || die "could not create the registry issue"
   n=$(printf '%s' "$resp" | jq -r .number)

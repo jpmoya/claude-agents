@@ -76,17 +76,21 @@ Each goal has a GitHub Project (v2, "Goal: <title>", fields copied from project 
 - **Host pin:** a goal is pinned to the host that registered it; another host's supervisor does not run it. `resume <goal> --here` re-pins it to this host.
 - **State words in `status`:** running, between cycles, held, waiting on JP, stopped, delivered.
 
-## Registering a goal (JP, 2026-11-18: a GitHub Project, never a milestone)
+## Registering a goal (JP, 2026-11-18: a GitHub Project, one name everywhere)
 
-Every new goal is a GitHub Project whose issue items are the goal's tickets (#736). Milestone goals are no longer registered: `deliver.sh` refuses `owner/repo:milestone:...` and `owner/repo:milestones:all` with this recipe, and `hooks/block-milestone-goal.sh` (PreToolUse on Bash) stops the call before it runs. Label, `owner/repo#N` and `:feedback` goals are untouched, and existing milestone goals keep working (`status`, `stop`, `release`, `resume`, `priority` are never blocked).
+Every goal is a GitHub Project whose issue items are the goal's tickets (#736); the registry (GitHub issues labelled `delivery-goal` in jpmoya/claude-agents, created by `deliver.sh`) is the one list of goals, and the status page shows exactly the registered goals, never a bare project. `deliver.sh` registers a project spec only: milestone (`owner/repo:milestone:...`, `:milestones:all`), label (`label:...` or `--repos/--title`), ticket (`owner/repo#N`) and feedback (`owner/repo:feedback`) goals are refused with this recipe, and `hooks/block-nonproject-goal.sh` (PreToolUse on Bash) stops the call before it runs. Existing goals keep working (`status`, `stop`, `release`, `resume`, `priority` are never blocked).
 
 ```
-gh project create --owner Benjis-Plants --title "<goal title>"          # prints the project number <n>
-gh project item-add <n> --owner Benjis-Plants --url <issue URL>         # once per ticket (any repo)
+gh project create --owner Benjis-Plants --title "Goal: <short human name>"   # prints the project number <n>
+gh project item-add <n> --owner Benjis-Plants --url <issue URL>               # once per ticket (any repo)
 ~/.claude/skills/orchestrate/deliver.sh project:Benjis-Plants/<n> [--now] [instructions...]
 ```
 
-`owner/repo:project:<n>` is an alias of `project:<owner>/<n>`. The hosts' gh token needs the `project` scope (`gh auth refresh -s project`). `GOAL_ALLOW_MILESTONE_REGISTER=1` (in `deliver.sh`'s environment) lifts the refusal for legacy tooling only; the hook honours it only from its own environment, never from a prefix inside a session's command.
+**Naming convention.** One string names a goal everywhere: the project is `Goal: <Name>`, `deliver.sh` creates the registry issue as `Goal: <Name>` from the project's name, and the status page shows `<Name>`. `<Name>` is a short human name (at most 80 characters): no repo path, no `#N`, no spec syntax (`:milestone:`, `:feedback`, `label:`), no second `Goal:` prefix. `deliver.sh` refuses to register a project whose title breaks it (rename with `gh project edit <n> --owner <o> --title "Goal: <Name>"` first) and the hook rejects a `gh project create|edit --title "Goal: ..."` that breaks it. `owner/repo:project:<n>` is an alias of `project:<owner>/<n>`. The host's gh token needs the `project` scope (`gh auth refresh -s project`). `GOAL_ALLOW_LEGACY_REGISTER=1` (in `deliver.sh`'s environment) lifts the refusal for legacy tooling only; the hook honours it only from its own environment, never from a prefix inside a session's command.
+
+**Status page = registry.** `build-runs-json.py goals` lists the goals the supervisor sync copied from the registry into `goalqueue.json` (open, queued, the 5 most recently closed), each under its registry name (`name`: the issue title without `Goal: `; the block title when the issue title only repeats the spec). A project is only the link of the goal it is bound to; an open `Goal: ...` project with no registry issue is not a row, and a local goal cache the registry does not list is not a row. A host that never synced (no `goalqueue.json`) keeps its local rows.
+
+**Feedback goals as projects.** A feedback goal re-registered as `project:<owner>/<n>` keeps its id (`...-fb-feedback`) and its slot exemption (`GOAL_SERIAL_FEEDBACK=0`: it never holds the one goal slot), but its scope is now the project's issue items, not "every `user-feedback` ticket of the repo": a new feedback ticket joins the goal only when it is added to the project (`gh project item-add`). Feedback tickets keep dispatching through the shared dispatcher either way.
 
 ## Check on a run
 

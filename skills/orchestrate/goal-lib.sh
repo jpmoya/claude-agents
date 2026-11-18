@@ -74,14 +74,43 @@ goal_parse() {
   esac
 }
 
-# goal_milestone_refusal <spec> — the text deliver.sh dies with when asked to register a milestone / milestones:all goal (JP, 2026-11-18:
-# every new goal is a GitHub Project). hooks/block-milestone-goal.sh carries the same recipe; keep the two in step.
-goal_milestone_refusal() {
-  printf '%s\n' "refusing to register $1: milestone goals are no longer registered; register the goal as a GitHub Project (spec project:<owner>/<n>):" \
-    '  1. gh project create --owner Benjis-Plants --title "<goal title>"   (note the project number <n>)' \
+# Goal naming convention (JP, 2026-11-18): ONE string names a goal everywhere. The registry issue is "Goal: <Name>", its GitHub Project is
+# "Goal: <Name>", the status page shows <Name>. <Name> is a short human name: no repo path, ticket reference or spec syntax, no second
+# "Goal:" prefix. deliver.sh builds the registry title from the project's name at registration and refuses a project that breaks it.
+# goal_title <name> -> "Goal: <name>"
+goal_title() { printf 'Goal: %s\n' "$1"; }
+# goal_name_of_title <title> -> the name: every leading "Goal: " removed (read side, lenient: a title without the prefix is its own name)
+goal_name_of_title() {
+  local t="$1"
+  while [[ "$t" =~ ^[[:space:]]*[Gg]oal:[[:space:]]* ]]; do t="${t#"${BASH_REMATCH[0]}"}"; done
+  t="${t%"${t##*[![:space:]]}"}"
+  printf '%s\n' "$t"
+}
+# goal_title_check <title> -> exit 0 when the title is exactly "Goal: <Name>" with a valid short human name; else 1 with the reason on stderr
+goal_title_check() {
+  local t="$1" n
+  case "$t" in "Goal: "*) ;; *) echo "must start with \"Goal: \"" >&2; return 1 ;; esac
+  n="${t#"Goal: "}"
+  [ -n "$n" ] || { echo "has no name after \"Goal: \"" >&2; return 1; }
+  case "$n" in [Gg]oal:*) echo "repeats the \"Goal:\" prefix" >&2; return 1 ;; esac
+  case "$n" in " "*|*" ") echo "has a leading or trailing space" >&2; return 1 ;; esac
+  [ "${#n}" -le 80 ] || { echo "is longer than 80 characters" >&2; return 1; }
+  if [[ "$n" == */* ]] || [[ "$n" =~ \#[0-9] ]] || [[ "$n" =~ :(milestones?|feedback|project)(:|$) ]] || [[ "$n" =~ ^(label|project): ]]; then
+    echo "carries repo-path or spec syntax (use a short human name)" >&2; return 1
+  fi
+  return 0
+}
+
+# goal_nonproject_refusal <what> — the text deliver.sh dies with when asked to register a goal that is not a GitHub Project (JP, 2026-11-18:
+# every goal is a project; milestone, label, ticket and feedback goals are no longer registered). hooks/block-nonproject-goal.sh carries
+# the same recipe; keep the two in step.
+goal_nonproject_refusal() {
+  printf '%s\n' "refusing to register $1: every goal is registered as a GitHub Project (spec project:<owner>/<n>); milestone, label, ticket and feedback goals are no longer registered:" \
+    '  1. gh project create --owner Benjis-Plants --title "Goal: <short human name>"   (note the project number <n>)' \
     '  2. gh project item-add <n> --owner Benjis-Plants --url <issue URL>   (once per ticket)' \
     '  3. deliver.sh project:Benjis-Plants/<n> [--now] [instructions...]' \
-    "Existing milestone goals keep working (status, stop, release, resume, priority). Legacy tooling only: GOAL_ALLOW_MILESTONE_REGISTER=1 deliver.sh <spec>."
+    'The project title is the goal'"'"'s name everywhere: the registry issue and the status page use the same "<short human name>".' \
+    "Existing goals keep working (status, stop, release, resume, priority). Legacy tooling only: GOAL_ALLOW_LEGACY_REGISTER=1 deliver.sh <spec>."
 }
 
 # goal_name_for <spec> -> a human-readable name for a milestone / ticket goal ("scheduler: Native 3.4", "scheduler #1345: Title");
@@ -100,7 +129,7 @@ goal_name_for() {
         [ -n "$t" ] || return 1; printf '%s: %s\n' "$short" "$t" ;;
     msall) printf '%s: all milestones\n' "$short" ;;
     fb) printf '%s: staff feedback\n' "$short" ;;
-    proj) t=$(_goal_proj_read "$ref" --meta 2>/dev/null | jq -r '.title // empty') || return 1; [ -n "$t" ] || return 1; printf '%s\n' "$t" ;;
+    proj) t=$(_goal_proj_read "$ref" --meta 2>/dev/null | jq -r '.title // empty') || return 1; [ -n "$t" ] || return 1; goal_name_of_title "$t" ;;
     *) return 1 ;;
   esac
 }
@@ -1459,7 +1488,7 @@ goal_tick_one() {  # <id>
         new=$(printf '%s' "$GE_SNAP" | goal_snapshot); old=$(cat "$PIPE/goal-$id.snap" 2>/dev/null)
         if [ "$GE_TOTAL" -gt 0 ] && [ -n "$old" ] && [ "$new" != "$old" ]; then
           # GOAL_SERIAL=1: a goal coming back is not a new start that skips the line: it rejoins the queue
-          if goal_serial && ! goal_slot_exempt "$spec"; then goal_requeue "$id" "$issue" "unheld (scope changed)"; return 0; fi
+          if goal_serial && ! goal_slot_exempt "$spec" "$id"; then goal_requeue "$id" "$issue" "unheld (scope changed)"; return 0; fi
           rm -f "$PIPE/goal-$id.held"; echo 0 > "$PIPE/goal-$id.np"; _goal_reset_streaks "$id"
           _goal_label_del "$issue" goal-held
           slog "[goal] $id unheld — scope changed"
@@ -1513,7 +1542,7 @@ goal_tick_one() {  # <id>
     fi
   fi
   if [ -f "$PIPE/goal-$id.idle" ]; then   # #627: the lead found nothing it may dispatch: hand the slot to the next queued goal
-    if goal_serial && ! goal_slot_exempt "$spec"; then
+    if goal_serial && ! goal_slot_exempt "$spec" "$id"; then
       local qn qids icnt isnap
       # the scope is read first (one evaluation): a delivered goal closes and a goal whose every open ticket waits on JP is
       # "waiting on JP" (frees the slot, resumes by itself when a ticket moves) — neither rotates through the queue
@@ -1583,7 +1612,7 @@ goal_tick_one() {  # <id>
     goal_mirror "$id" waiting_jp "$GE_TOTAL" "$GE_DELIVERED"
     goal_waiting "$id" "$issue" "$spec"; return 0
   fi
-  if goal_serial && ! goal_slot_exempt "$spec"; then
+  if goal_serial && ! goal_slot_exempt "$spec" "$id"; then
     # GOAL_SERIAL=1 (one goal for both hosts): a goal back from waiting on JP rejoins the queue; an active goal that does not
     # hold the slot (a hand launch, or one already running when the mode was switched on) ended its cycle: back to the queue.
     # The slot is read fresh from the registry here (one read per relaunch decision); its in-flight tickets are untouched.
@@ -1659,7 +1688,7 @@ _GOAL_QUEUE_JQ='def okey: [((.block.priority? // .block.order? // .issue) | if t
 # again within $cool seconds (GOAL_CYCLE_SECS) of the hand-off: several idle goals cost one lead cycle each per cycle
 # instead of rotating back-to-back. Needs --argjson now (epoch seconds) and --argjson cool.
 _GOAL_QUEUE_SERIAL_JQ='def okey: [(if (.block.deferred_at? // "") != "" then 1 else 0 end), ((.block.priority? // .block.order? // .issue) | if type == "number" then . else 1e12 end), .issue];
-  def exempt: $fbfree and ((.spec // "") | test(":feedback$"));
+  def exempt: $fbfree and (((.spec // "") | test(":feedback$")) or ((.id // "") | test("-fb-feedback$")));   # a feedback goal re-registered as a project keeps its id
   def cooling: .st == "queued" and ((.block.deferred_at? // "") != "") and (((.block.deferred_at | try fromdateiso8601 catch 0) + $cool) > $now);
   sort_by(okey) as $all
   | ($all | map(select(.st == "queued"))) as $q
@@ -1686,6 +1715,7 @@ _goal_queue_jq() {
 goal_slot_exempt() {
   [ "${GOAL_SERIAL_FEEDBACK:-0}" = 1 ] && return 1
   case "$1" in *:feedback) return 0 ;; esac
+  case "${2:-}" in *-fb-feedback) return 0 ;; esac   # the feedback goal's id survives its re-registration as project:<owner>/<n>
   return 1
 }
 
