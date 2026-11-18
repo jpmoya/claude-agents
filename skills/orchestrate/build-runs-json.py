@@ -469,6 +469,11 @@ def cron_script_name(command):
             break
         if tok.startswith("-") or CRON_ENV_RE.match(tok):
             continue
+        if any(c.isspace() for c in tok):  # bash -lc '<script command>': a whole command line in one word
+            inner = cron_script_name(tok)
+            if inner:
+                return inner
+            continue
         words.append(tok)
     chosen, skip = None, 0
     for tok in words:
