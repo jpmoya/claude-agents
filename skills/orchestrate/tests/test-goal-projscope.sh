@@ -79,7 +79,7 @@ gps_world_items() {  # the standard 5 items as a JSON array
 
 gps_setup() {
   dg_setup; gps_install_gh; touch "$DG_BIN/scope"
-  gps_project 12 "Q4 Delivery" false "" "$(gps_world_items)"
+  gps_project 12 "Goal: Q4 Delivery" false "" "$(gps_world_items)"
 }
 
 # gps_lib '<snippet>' — dg_lib with slog captured to $DG_HOME/slog.log
@@ -144,7 +144,7 @@ test_gps_scope_rows_full_shape_maps_graphql_values_to_rest_values() {
   local rc=0 items row
   items=$(printf '%s\n' "$(jq -nc '{type:"ISSUE", repo:"example-owner/project-a", number:7, state:"CLOSED", stateReason:"NOT_PLANNED", author:"jp-author",
       labels:["bug","agent-go"], milestone:{state:"CLOSED", title:"v1.2.3 - Done"}, body:"Depends on example-owner/project-b#9 for starting work"}')" | jq -sc .)
-  gps_project 12 "Q4 Delivery" false "" "$items"
+  gps_project 12 "Goal: Q4 Delivery" false "" "$items"
   gps_lib "GOAL_SCOPE_FULL=1 _goal_scope_rows $GPS_SPEC $GPS_ID"
   row=$DG_OUT
   # columns: ref, state, labels csv, author, start-gate refs, state_reason, milestone "state|title" (all lower-case, REST values)
@@ -158,7 +158,7 @@ test_gps_item_status_field_never_decides_the_state() {
   gps_setup
   local rc=0 items
   items=$(printf '%s\n' "$(jq -nc '{type:"ISSUE", repo:"example-owner/project-a", number:101, state:"OPEN", status:"Done"}')" | jq -sc .)
-  gps_project 12 "Q4 Delivery" false "" "$items"
+  gps_project 12 "Goal: Q4 Delivery" false "" "$items"
   gps_lib "_goal_scope_rows $GPS_SPEC $GPS_ID"
   assert_eq "$DG_OUT" "$(printf 'example-owner/project-a#101\topen')" "an open issue on a project item whose Status is Done reads open" || rc=1
   assert_not_contains "$(cat "$DG_BIN/psc/graphql.log")" "Status" "the query does not ask for the Status field" || rc=1
@@ -169,7 +169,7 @@ test_gps_business_intelligence_items_are_never_in_scope() {
   gps_setup
   local rc=0 items
   items=$(printf '%s\n' "$(gps_issue_item example-owner/project-a 101 OPEN)" "$(gps_issue_item example-owner/Business-Intelligence 5 OPEN)" | jq -sc .)
-  gps_project 12 "Q4 Delivery" false "" "$items"
+  gps_project 12 "Goal: Q4 Delivery" false "" "$items"
   gps_lib "_goal_scope_rows $GPS_SPEC $GPS_ID"
   assert_eq "$DG_OUT" "$(printf 'example-owner/project-a#101\topen')" "Business-Intelligence is never part of a goal" || rc=1
   dg_teardown; return $rc
@@ -180,7 +180,7 @@ test_gps_business_intelligence_items_are_never_in_scope() {
 test_gps_more_than_one_page_is_read_completely() {
   gps_setup
   local rc=0
-  gps_project 12 "Q4 Delivery" false 2 "$(gps_world_items)"   # 5 items, 2 per page: 3 pages
+  gps_project 12 "Goal: Q4 Delivery" false 2 "$(gps_world_items)"   # 5 items, 2 per page: 3 pages
   gps_lib "_goal_scope_rows $GPS_SPEC $GPS_ID"
   assert_eq "$DG_RC" "0" "paginated read exits 0 (stderr: $DG_ERR)" || rc=1
   assert_eq "$(printf '%s\n' "$DG_OUT" | wc -l | tr -d ' ')" "3" "all three issues, across the pages" || rc=1
@@ -191,7 +191,7 @@ test_gps_more_than_one_page_is_read_completely() {
 test_gps_a_failed_page_fails_the_whole_read() {
   gps_setup
   local rc=0
-  gps_project 12 "Q4 Delivery" false 2 "$(gps_world_items)"
+  gps_project 12 "Goal: Q4 Delivery" false 2 "$(gps_world_items)"
   # control: the same 3-page fixture reads completely when no page fails
   gps_lib "_goal_scope_rows $GPS_SPEC $GPS_ID"
   assert_eq "$(printf '%s\n' "$DG_OUT" | wc -l | tr -d ' ')" "3" "control: without a failing page all 3 issues come back" || rc=1
@@ -216,7 +216,7 @@ gps_control_read() {
 test_gps_a_page_that_has_more_but_no_cursor_fails_closed() {
   gps_setup
   local rc=0
-  gps_project 12 "Q4 Delivery" false 2 "$(gps_world_items)"
+  gps_project 12 "Goal: Q4 Delivery" false 2 "$(gps_world_items)"
   gps_control_read || rc=1
   touch "$DG_BIN/psc/no-cursor"   # page 1 says hasNextPage true and gives no endCursor
   : > "$DG_BIN/psc/graphql.log"
@@ -256,7 +256,7 @@ test_gps_a_closed_project_fails_closed() {
   gps_setup
   local rc=0
   gps_control_read || rc=1
-  gps_project 12 "Q4 Delivery" true "" "$(gps_world_items)"   # same items, now closed
+  gps_project 12 "Goal: Q4 Delivery" true "" "$(gps_world_items)"   # same items, now closed
   gps_lib "_goal_scope_rows $GPS_SPEC $GPS_ID"
   assert_ne "$DG_RC" "0" "a closed project: fail closed, never an empty or stale scope" || rc=1
   assert_eq "$DG_OUT" "" "no rows although the items are readable" || rc=1
@@ -268,7 +268,7 @@ test_gps_a_redacted_item_fails_the_whole_read() {
   gps_setup
   local rc=0
   gps_control_read || rc=1
-  gps_project 12 "Q4 Delivery" false "" "$(printf '%s\n' "$(gps_issue_item example-owner/project-a 101 OPEN)" '{"type":"REDACTED"}' | jq -sc .)"
+  gps_project 12 "Goal: Q4 Delivery" false "" "$(printf '%s\n' "$(gps_issue_item example-owner/project-a 101 OPEN)" '{"type":"REDACTED"}' | jq -sc .)"
   gps_lib "_goal_scope_rows $GPS_SPEC $GPS_ID"
   assert_ne "$DG_RC" "0" "an item the token cannot read: fail closed, never a partial scope" || rc=1
   assert_eq "$DG_OUT" "" "the readable item 101 is not returned alone" || rc=1
@@ -288,7 +288,7 @@ test_gps_the_read_does_not_depend_on_the_mirror_switch() {
 test_gps_an_empty_project_reads_as_an_empty_scope_not_an_error() {
   gps_setup
   local rc=0
-  gps_project 12 "Q4 Delivery" false "" '[]'
+  gps_project 12 "Goal: Q4 Delivery" false "" '[]'
   gps_lib "_goal_scope_rows $GPS_SPEC $GPS_ID"
   assert_eq "$DG_RC" "0" "a readable project with no issue items: rc 0" || rc=1
   assert_eq "$DG_OUT" "" "no rows (callers refuse an empty scope: it is never delivered)" || rc=1
@@ -309,10 +309,10 @@ test_gps_goal_eval_open_while_any_item_is_open_and_delivered_when_all_closed() {
   local rc=0
   gps_eval
   assert_eq "$DG_OUT" "0 3 1 2" "1 closed of 3: open (2 active)" || rc=1
-  gps_project 12 "Q4 Delivery" false "" "$(printf '%s\n' "$(gps_issue_item example-owner/project-a 101 CLOSED COMPLETED)" "$(gps_issue_item example-owner/project-b 1 CLOSED COMPLETED)" | jq -sc .)"
+  gps_project 12 "Goal: Q4 Delivery" false "" "$(printf '%s\n' "$(gps_issue_item example-owner/project-a 101 CLOSED COMPLETED)" "$(gps_issue_item example-owner/project-b 1 CLOSED COMPLETED)" | jq -sc .)"
   gps_eval
   assert_eq "$DG_OUT" "0 2 2 0" "all items closed: delivered" || rc=1
-  gps_project 12 "Q4 Delivery" false "" "$(printf '%s\n' "$(gps_issue_item example-owner/project-a 101 CLOSED COMPLETED)" "$(gps_issue_item example-owner/project-b 1 CLOSED COMPLETED)" "$(gps_issue_item example-owner/project-b 2 OPEN)" | jq -sc .)"
+  gps_project 12 "Goal: Q4 Delivery" false "" "$(printf '%s\n' "$(gps_issue_item example-owner/project-a 101 CLOSED COMPLETED)" "$(gps_issue_item example-owner/project-b 1 CLOSED COMPLETED)" "$(gps_issue_item example-owner/project-b 2 OPEN)" | jq -sc .)"
   gps_eval
   assert_eq "$DG_OUT" "0 3 2 1" "an item added later makes the goal open again" || rc=1
   dg_teardown; return $rc
@@ -321,7 +321,7 @@ test_gps_goal_eval_open_while_any_item_is_open_and_delivered_when_all_closed() {
 test_gps_goal_eval_an_empty_project_is_not_delivered_and_an_unreadable_one_fails() {
   gps_setup
   local rc=0
-  gps_project 12 "Q4 Delivery" false "" '[]'
+  gps_project 12 "Goal: Q4 Delivery" false "" '[]'
   gps_eval
   assert_eq "$DG_OUT" "0 0 0 0" "empty scope: total 0, so never delivered (#605 rule)" || rc=1
   touch "$DG_BIN/psc/fail-12"
@@ -411,6 +411,82 @@ test_gps_register_refuses_without_the_project_scope_but_other_goals_still_regist
   dg_teardown; return $rc
 }
 
+# 2026-11-18 (JP): no default go. gps_run_strict runs deliver.sh with the legacy override unset (run-tests.sh exports it for the older suites).
+gps_run_strict() {
+  local keep=${GOAL_ALLOW_LEGACY_REGISTER-__unset__}
+  unset GOAL_ALLOW_LEGACY_REGISTER
+  dg_run "$@"
+  [ "$keep" = __unset__ ] || export GOAL_ALLOW_LEGACY_REGISTER=$keep
+}
+
+test_gps_register_requires_an_explicit_go_choice_and_records_it() {
+  gps_setup
+  local rc=0 f
+  gps_run_strict "$GPS_SPEC"
+  assert_eq "$DG_RC" "1" "no --go / --no-go: refused" || rc=1
+  assert_contains "$DG_ERR" "ask JP: go true or go false?" "asks the question" || rc=1
+  assert_contains "$DG_ERR" "a session may never pick it" "says the session never picks" || rc=1
+  assert_eq "$(dg_reg_count)" "0" "no registry issue" || rc=1
+  assert_eq "$(dg_writes)" "0" "nothing written to GitHub" || rc=1
+  gps_run_strict "$GPS_SPEC" --go --no-go
+  assert_eq "$DG_RC" "1" "both flags: refused" || rc=1
+  assert_contains "$DG_ERR" "exclusive" "says they are exclusive" || rc=1
+  gps_run_strict "$GPS_SPEC" --priority 1
+  assert_eq "$DG_RC" "1" "a priority but no go choice: refused" || rc=1
+  assert_contains "$DG_ERR" "ask JP: go true or go false?" "asks the go question" || rc=1
+  assert_eq "$(dg_reg_count)" "0" "none of them wrote a registry issue" || rc=1
+  assert_eq "$(dg_writes)" "0" "nothing written to GitHub" || rc=1
+  gps_run_strict "$GPS_SPEC" --go
+  assert_eq "$DG_RC" "0" "--go with no priority registers (stderr: $DG_ERR)" || rc=1
+  f=$(dg_reg_file_for "$GPS_ID")
+  assert_eq "$(dg_block "$f" | jq -c 'has("priority")')" "false" "no priority was given: none is recorded (the goal queues in registration order)" || rc=1
+  assert_eq "$(dg_block "$f" | jq -c '[.go, (.granted | length), (.granted_at != null)]')" "[true,2,true]" "go true: the two open items are granted, granted_at recorded" || rc=1
+  assert_ne "$(grep -c 'POST repos/example-owner/project-a/issues/101/labels' "$DG_BIN/writes.log")" "0" "go true: agent-go was added to an open item" || rc=1
+  gps_run_strict status
+  assert_contains "$DG_OUT" "go=true" "status shows go=true" || rc=1
+  dg_teardown
+  gps_setup
+  gps_run_strict "$GPS_SPEC" --no-go --priority 1
+  assert_eq "$DG_RC" "0" "--no-go registers (stderr: $DG_ERR)" || rc=1
+  f=$(dg_reg_file_for "$GPS_ID")
+  assert_eq "$(dg_block "$f" | jq -c '[.go, (.granted | length), (.granted_at // "none")]')" '[false,0,"none"]' "go false: nothing granted, no granted_at" || rc=1
+  assert_eq "$(grep -cE 'repos/example-owner/project-[ab]/issues/[0-9]+/labels' "$DG_BIN/writes.log")" "0" "go false: no agent-go label written to any ticket" || rc=1
+  assert_not_contains "$(jq -r .body "$f")" "Go-granted" "go false: no Go-granted line in the registry body" || rc=1
+  assert_eq "$(dg_block "$f" | jq -r .priority)" "1" "an explicit priority is recorded as given" || rc=1
+  gps_run_strict status
+  assert_contains "$DG_OUT" "go=false" "status shows go=false" || rc=1
+  dg_teardown
+  # a registry block with no go field (the two standing feedback goals) is shown explicitly, its behaviour unchanged
+  gps_setup
+  DG_GOAL_ID=$DG_ID_T7; dg_goal 507 "$DG_SPEC_T7" host-a active
+  gps_run_strict status
+  assert_contains "$DG_OUT" "go=unset" "status shows go=unset for a block with no go field" || rc=1
+  dg_teardown
+  return $rc
+}
+
+# 2026-11-18 (JP): one name everywhere. The project must be titled "Goal: <short human name>"; the registry issue gets the same string.
+test_gps_register_names_the_registry_issue_from_the_project_name_and_refuses_a_bad_title() {
+  gps_setup
+  local rc=0 t f
+  dg_run "$GPS_SPEC"; assert_eq "$DG_RC" "0" "a conforming title registers (stderr: $DG_ERR)" || rc=1
+  f=$(dg_reg_file_for "$GPS_ID")
+  assert_eq "$(jq -r .title "$f")" "Goal: Q4 Delivery" "registry issue title = the project's title, one prefix" || rc=1
+  assert_eq "$(dg_block "$f" | jq -r .title)" "Q4 Delivery" "the block's name has no prefix (the status page shows it)" || rc=1
+  dg_teardown
+  for t in "Q4 Delivery" "Goal: Goal: Q4 Delivery" "Goal: example-owner/project-a:feedback" "Goal: Q4 #12" "goal: Q4 Delivery" "Goal: "; do
+    gps_setup
+    gps_project 12 "$t" false "" "$(gps_world_items)"
+    dg_run "$GPS_SPEC"
+    assert_eq "$DG_RC" "1" "title '$t': refused" || rc=1
+    assert_contains "$DG_ERR" 'Goal: <short human name>' "title '$t': names the convention" || rc=1
+    assert_contains "$DG_ERR" "gh project edit 12 --owner example-owner" "title '$t': says how to rename" || rc=1
+    assert_eq "$(dg_reg_count)" "0" "title '$t': no registry issue" || rc=1
+    dg_teardown
+  done
+  return $rc
+}
+
 test_gps_register_refuses_unreadable_empty_and_undispatched_projects() {
   gps_setup
   local rc=0
@@ -418,10 +494,10 @@ test_gps_register_refuses_unreadable_empty_and_undispatched_projects() {
   dg_run "$GPS_SPEC"; assert_eq "$DG_RC" "1" "unreadable: refused" || rc=1
   assert_contains "$DG_ERR" "refusing to go on blind" "unreadable: fail closed" || rc=1
   rm -f "$DG_BIN/psc/fail-12"
-  gps_project 12 "Q4 Delivery" false "" '[]'
+  gps_project 12 "Goal: Q4 Delivery" false "" '[]'
   dg_run "$GPS_SPEC"; assert_eq "$DG_RC" "1" "empty project: refused" || rc=1
   assert_contains "$DG_ERR" "empty scope" "empty: says so" || rc=1
-  gps_project 12 "Q4 Delivery" false "" "$(printf '%s\n' "$(gps_issue_item example-owner/elsewhere 3 OPEN)" | jq -sc .)"
+  gps_project 12 "Goal: Q4 Delivery" false "" "$(printf '%s\n' "$(gps_issue_item example-owner/elsewhere 3 OPEN)" | jq -sc .)"
   dg_run "$GPS_SPEC"; assert_eq "$DG_RC" "1" "an item in a repo that is not dispatched: refused" || rc=1
   assert_contains "$DG_ERR" "not in DISPATCH_REPOS" "says why" || rc=1
   assert_eq "$(dg_reg_count)" "0" "nothing registered" || rc=1
@@ -514,7 +590,7 @@ test_gps_sync_grants_go_to_new_items_with_the_usual_exclusions() {
     "$(gps_issue_item example-owner/project-b 2 OPEN)" \
     "$(gps_issue_item example-owner/project-b 3 OPEN | jq -c '. + {labels:["source:sentry"]}')" \
     "$(gps_issue_item example-owner/Business-Intelligence 9 OPEN)" | jq -sc .)
-  gps_project 12 "Q4 Delivery" false "" "$items"
+  gps_project 12 "Goal: Q4 Delivery" false "" "$items"
   gps_lib "g=\$(_goal_find $GPS_ID); _goal_sync_grant \"\$g\""
   assert_eq "$DG_RC" "0" "sync exits 0 (stderr: $DG_ERR)" || rc=1
   assert_eq "$(gps_agent_go example-owner_project-b 2)" "yes" "a later item gets agent-go" || rc=1
@@ -529,7 +605,7 @@ test_gps_sync_grants_go_to_new_items_with_the_usual_exclusions() {
 test_gps_a_host_without_the_scope_still_works_around_a_live_project_goal() {
   gps_setup
   local rc=0
-  gps_project 12 "Q4 Delivery" false "" "$(printf '%s\n' "$(gps_issue_item example-owner/project-a 101 OPEN)" "$(gps_issue_item example-owner/project-a 102 CLOSED COMPLETED)" | jq -sc .)"
+  gps_project 12 "Goal: Q4 Delivery" false "" "$(printf '%s\n' "$(gps_issue_item example-owner/project-a 101 OPEN)" "$(gps_issue_item example-owner/project-a 102 CLOSED COMPLETED)" | jq -sc .)"
   dg_run "$GPS_SPEC"
   assert_eq "$DG_RC" "0" "registered on a host with the scope (stderr: $DG_ERR)" || rc=1
   assert_eq "$(gps_block | jq -c '[.host_pref, .repos]')" '["host-a",["example-owner/project-a"]]' "pinned to the registering host; the derived repos are recorded" || rc=1
@@ -551,10 +627,10 @@ test_gps_a_host_without_the_scope_still_works_around_a_live_project_goal() {
 test_gps_sync_follows_a_repo_that_joined_through_a_new_item() {
   gps_setup
   local rc=0
-  gps_project 12 "Q4 Delivery" false "" "$(printf '%s\n' "$(gps_issue_item example-owner/project-a 101 OPEN)" | jq -sc .)"
+  gps_project 12 "Goal: Q4 Delivery" false "" "$(printf '%s\n' "$(gps_issue_item example-owner/project-a 101 OPEN)" | jq -sc .)"
   dg_run "$GPS_SPEC"
   assert_eq "$(gps_block | jq -c .repos)" '["example-owner/project-a"]' "registered with project-a only" || rc=1
-  gps_project 12 "Q4 Delivery" false "" "$(printf '%s\n' "$(gps_issue_item example-owner/project-a 101 OPEN)" "$(gps_issue_item example-owner/project-b 1 OPEN)" | jq -sc .)"
+  gps_project 12 "Goal: Q4 Delivery" false "" "$(printf '%s\n' "$(gps_issue_item example-owner/project-a 101 OPEN)" "$(gps_issue_item example-owner/project-b 1 OPEN)" | jq -sc .)"
   gps_lib "g=\$(_goal_find $GPS_ID); _goal_sync_grant \"\$g\""
   assert_eq "$(gps_block | jq -c .repos)" '["example-owner/project-a","example-owner/project-b"]' "the block now lists project-b" || rc=1
   assert_eq "$(gps_agent_go example-owner_project-b 1)" "yes" "and its item got agent-go" || rc=1
@@ -565,16 +641,16 @@ test_gps_milestones_all_rule_holds_for_project_goals_both_ways() {
   gps_setup
   local rc=0
   # project 12 holds only project-a#7: no ticket shared with the milestones:all goal (it covers 101 and 201), but the same repo
-  gps_project 12 "Q4 Delivery" false "" "$(printf '%s\n' "$(gps_issue_item example-owner/project-a 7 OPEN)" | jq -sc .)"
+  gps_project 12 "Goal: Q4 Delivery" false "" "$(printf '%s\n' "$(gps_issue_item example-owner/project-a 7 OPEN)" | jq -sc .)"
   dg_run "$DG_SPEC_ALL" --approve-all; assert_eq "$DG_RC" "0" "milestones:all registers (stderr: $DG_ERR)" || rc=1
   dg_run "$GPS_SPEC"
   assert_eq "$DG_RC" "1" "a project goal touching that repo is refused" || rc=1
   assert_contains "$DG_ERR" "milestones:all on example-owner/project-a" "by the milestones:all repo rule" || rc=1
-  gps_project 12 "Q4 Delivery" false "" "$(printf '%s\n' "$(gps_issue_item example-owner/project-b 1 OPEN)" | jq -sc .)"
+  gps_project 12 "Goal: Q4 Delivery" false "" "$(printf '%s\n' "$(gps_issue_item example-owner/project-b 1 OPEN)" | jq -sc .)"
   dg_run "$GPS_SPEC"; assert_eq "$DG_RC" "0" "control: a project on another repo registers (stderr: $DG_ERR)" || rc=1
   dg_teardown
   gps_setup
-  gps_project 12 "Q4 Delivery" false "" "$(printf '%s\n' "$(gps_issue_item example-owner/project-a 7 OPEN)" | jq -sc .)"
+  gps_project 12 "Goal: Q4 Delivery" false "" "$(printf '%s\n' "$(gps_issue_item example-owner/project-a 7 OPEN)" | jq -sc .)"
   dg_run "$GPS_SPEC"; assert_eq "$DG_RC" "0" "project goal registers first (stderr: $DG_ERR)" || rc=1
   dg_run "$DG_SPEC_ALL" --approve-all
   assert_eq "$DG_RC" "1" "reverse: milestones:all on a repo the project goal touches is refused" || rc=1
@@ -587,7 +663,7 @@ test_gps_milestones_all_rule_holds_for_project_goals_both_ways() {
 test_gps_another_goals_mirror_never_adopts_a_scope_project() {
   gps_setup
   local rc=0 f
-  # the milestone goal's mirror title is "Goal: <spec>"; project 12 carries exactly that title
+  # the milestone goal's mirror title is "Goal: <spec>"; the project LIST (what the mirror searches) carries exactly that title for project 12, while the scope read shows its conforming name
   jq -nc '[{number:12,title:"Goal: example-owner/project-a:milestone:12",closed:false}]' > "$DG_BIN/psc/list.json"
   gps_project 12 "Goal: example-owner/project-a:milestone:12" false "" "$(printf '%s\n' "$(gps_issue_item example-owner/project-a 7 OPEN)" | jq -sc .)"
   dg_run "$DG_SPEC_MS"; assert_eq "$DG_RC" "0" "control: with no scope project, the mirror binds the same-titled project 12 (stderr: $DG_ERR)" || rc=1
@@ -595,7 +671,7 @@ test_gps_another_goals_mirror_never_adopts_a_scope_project() {
   dg_teardown
   gps_setup
   jq -nc '[{number:12,title:"Goal: example-owner/project-a:milestone:12",closed:false}]' > "$DG_BIN/psc/list.json"
-  gps_project 12 "Goal: example-owner/project-a:milestone:12" false "" "$(printf '%s\n' "$(gps_issue_item example-owner/project-a 7 OPEN)" | jq -sc .)"
+  gps_project 12 "Goal: Q4 Delivery" false "" "$(printf '%s\n' "$(gps_issue_item example-owner/project-a 7 OPEN)" | jq -sc .)"
   dg_run "$GPS_SPEC"; assert_eq "$DG_RC" "0" "project 12 registered as a scope (stderr: $DG_ERR)" || rc=1
   : > "$DG_BIN/psc/project-calls.log"
   dg_run "$DG_SPEC_MS"; assert_eq "$DG_RC" "0" "milestone goal registers (stderr: $DG_ERR)" || rc=1
@@ -606,7 +682,7 @@ test_gps_another_goals_mirror_never_adopts_a_scope_project() {
   # the other way: a live goal's mirror cannot be registered as a scope
   gps_setup
   jq -nc '[{number:12,title:"Goal: example-owner/project-a:milestone:12",closed:false}]' > "$DG_BIN/psc/list.json"
-  gps_project 12 "Goal: example-owner/project-a:milestone:12" false "" "$(printf '%s\n' "$(gps_issue_item example-owner/project-a 7 OPEN)" | jq -sc .)"
+  gps_project 12 "Goal: Q4 Delivery" false "" "$(printf '%s\n' "$(gps_issue_item example-owner/project-a 7 OPEN)" | jq -sc .)"
   dg_run "$DG_SPEC_MS"
   dg_run "$GPS_SPEC"
   assert_eq "$DG_RC" "1" "a live goal's mirror project is refused as a scope" || rc=1
@@ -689,6 +765,8 @@ test_gps_product_manager_doc_ties_project_goals_to_the_project_not_the_milestone
 for t in test_gps_parse_canonical_and_alias \
          test_gps_register_writes_a_v2_block_with_derived_repos_and_the_go \
          test_gps_register_refuses_without_the_project_scope_but_other_goals_still_register \
+         test_gps_register_requires_an_explicit_go_choice_and_records_it \
+         test_gps_register_names_the_registry_issue_from_the_project_name_and_refuses_a_bad_title \
          test_gps_register_refuses_unreadable_empty_and_undispatched_projects \
          test_gps_overlap_both_ways_with_every_kind_of_goal \
          test_gps_overlap_refuses_blind_when_the_live_project_goals_scope_is_unreadable \

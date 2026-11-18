@@ -1,0 +1,6 @@
+  1. gh project create --owner Benjis-Plants --title "Goal: <short human name>"   (note the project number <n>)
+  2. gh project item-add <n> --owner Benjis-Plants --url <issue URL>   (once per ticket)
+  3. deliver.sh project:Benjis-Plants/<n> --go|--no-go [--priority <n>] [--now] [instructions...]   (ask JP: go true or go false? never pick it yourself)
+The project title is the goal's name everywhere: the registry issue and the status page use the same "<short human name>".
+Existing goals keep working (status, stop, release, resume, priority). Legacy tooling only: GOAL_ALLOW_LEGACY_REGISTER=1 deliver.sh <spec>.
+Priority only orders the queue (and is optional: with none the goal queues in registration order; deliver.sh priority reorders it). Priority 1 does NOT make a goal start immediately or take the goal slot from a goal that is already running. To start a new goal right away you must force it: stop the goal that holds the slot (deliver.sh stop <goal>; a held or waiting-on-JP goal does not hold it), or register with --now (runs one cycle by hand; under GOAL_SERIAL=1 a --now goal that does not hold the slot returns to the queue after that cycle). There is no preempt or force-start command: stopping the holder is the only way to hand the slot over.

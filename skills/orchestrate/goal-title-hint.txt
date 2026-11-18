@@ -1,0 +1,1 @@
+name it "Goal: <short human name>" first (gh project edit @N@ --owner @OWNER@ --title "Goal: <short human name>"), the registry issue and the status page use that name

@@ -47,6 +47,8 @@ const MAX_GOALS = 50;
 const GOAL_STATES = ['running', 'between_cycles', 'waiting_jp', 'held', 'queued', 'delivered', 'stopped'];
 // why the head of the queue is not starting (#320): a closed list, never free text
 const GOAL_PAUSED = ['Mac on battery'];
+// where a goal stands on the one goal slot (GOAL_SERIAL=1): holds it, waits for it (queued), or is exempt and runs alongside (feedback goals)
+const GOAL_SLOT = ['holds', 'waits', 'alongside'];
 const GOAL_HOSTS = ['mac', 'vm'];
 const GOAL_UNSAFE = /[<>&"`]/;
 
@@ -237,6 +239,7 @@ function sanitiseGoal(raw) {
   if (typeof raw.url === 'string' && GOAL_URL.test(raw.url)) goal.url = raw.url;
   if (isIsoTimestamp(raw.last_cycle_at)) goal.last_cycle_at = raw.last_cycle_at;
   if ((raw.state === 'delivered' || raw.state === 'stopped') && isIsoTimestamp(raw.closed_at)) goal.closed_at = raw.closed_at;
+  if (GOAL_SLOT.includes(raw.slot) && raw.state !== 'delivered' && raw.state !== 'stopped') goal.slot = raw.slot;
   if (raw.state === 'queued') {
     if (isIntInRange(raw.queue_pos, 1, 9999)) goal.queue_pos = raw.queue_pos;
     if (GOAL_PAUSED.includes(raw.paused)) goal.paused = raw.paused;

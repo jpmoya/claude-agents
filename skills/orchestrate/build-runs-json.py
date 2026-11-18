@@ -1077,13 +1077,6 @@ def _set_priority(entry, d):
         entry["priority"] = p
 
 
-def _is_milestone_goal(e):  # milestone-kind goals (spec owner/repo:milestone(s):..., id ...-ms-<n|all>) are not listed
-    sp, i = e.get("spec"), e.get("id", "")
-    if isinstance(sp, str) and re.match(r"^[\w.-]+/[\w.-]+:milestones?:", sp):
-        return True
-    return not i.startswith("label-goal__") and re.search(r"-ms-(\d+|all)$", i) is not None
-
-
 def build_goals():
     if not pipe_dir:
         return []
@@ -1274,77 +1267,51 @@ def build_goals():
             _fill_name(entry)
             out.append(entry)
             n += 1
-    rows = _project_rows(out)   # every goal (milestone ones too) can give its bound project its state / host / priority
-    if rows is not None:
-        return rows
-    return [e for e in out if not _is_milestone_goal(e)]
-
-
-_PROJECT_RANK = {"running": 0, "waiting_jp": 1, "held": 2, "between_cycles": 3, "queued": 4}
-
-
-def _project_rows(out):
-    """The goal list IS the GitHub projects (goal-project.sh keeps $PIPE/goalprojects.json): one row per open project, its title as the
-    name linking to the project, state / host / priority / progress taken from the live goals bound to it (best state wins); a project
-    no goal is bound to yet is `queued` (not started); a closed project that a live goal is bound to is that goal's live row; any other
-    project closed within a week is `delivered` (`stopped` when every registry goal bound to it was stopped). Goals bound to no project
-    are not rows. None when the cache does not exist (this host cannot list projects): the caller keeps the plain goal rows."""
-    try:
-        with open(os.path.join(pipe_dir, "goalprojects.json"), encoding="utf-8") as f:
-            cache = json.load(f)
-    except (OSError, ValueError):
-        return None
-    projects = cache.get("projects") if isinstance(cache, dict) else None
-    if not isinstance(projects, list):
-        return None
-    proj_re = re.compile(r"^https://github\.com/(users|orgs)/[\w.-]+/projects/\d+$")
-    now = time.time()
-    rows, closed_rows = [], []
-    for p in projects:
-        if not isinstance(p, dict) or not isinstance(p.get("number"), int) or isinstance(p.get("number"), bool):
-            continue
-        title, url = p.get("title"), p.get("url")
-        if not (isinstance(title, str) and title.strip()) or not (isinstance(url, str) and proj_re.match(url)):
-            continue
-        entry = {"id": "project-%d" % p["number"], "host": "", "title": re.sub(r"[<>\"`]", "", re.sub(r"^Goal:\s*", "", title.strip()).replace("&", "and")), "url": url}   # the page refuses < > & \" `
-        live = [e for e in out if e.get("url") == url and e.get("state") in _PROJECT_RANK]
-        if p.get("closed") and not live:
-            # closed and no live goal bound to it: "delivered" only from the registry's own verdict on the goals bound to it
-            # (a stopped goal used to close a project a live goal shared, which then read as delivered); a project no
-            # known goal is bound to keeps the old reading (goal_project_sweep_done closes it once every ticket is closed)
-            bound = [e for e in out if e.get("url") == url and e.get("state") in ("delivered", "stopped")]
-            seen = p.get("closed_seen")
-            try:
-                age = now - datetime.datetime.strptime(seen, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc).timestamp()
-            except (TypeError, ValueError):
+    # The registry is the one source of truth (JP, 2026-11-18): the list is exactly the registered goals (open, queued, recently closed),
+    # each under its registry name. A GitHub Project is never a row of its own (an unregistered "Goal: ..." project used to show as a
+    # queued goal that never started, #697); a project only supplies the link of the goal it is bound to. Milestone goals are
+    # registered goals too and show like any other.
+    reg_name, reg_ids = _registry_names(q)
+    if reg_ids is not None:
+        out = [e for e in out if e["id"] in reg_ids]   # a leftover local cache of a goal the registry no longer lists is not a goal
+    for e in out:
+        if e["id"] in reg_name:
+            e["title"] = reg_name[e["id"]]
+    # Where each goal stands on the one goal slot (GOAL_SERIAL=1; the sync writes `slot` = the holder's id and `exempt` = the slot-exempt goals,
+    # i.e. the feedback goals, into goalqueue.json from the same registry read goal-lib's slot logic uses): "holds" on the holder (its host is the
+    # row's host), "alongside" on an exempt goal, "waits" on a queued one. Nothing when the queue file does not say it is serial.
+    if isinstance(q, dict) and q.get("serial") is True:
+        holder = q.get("slot") if isinstance(q.get("slot"), str) else None
+        exempt = set(x for x in (q.get("exempt") or []) if isinstance(x, str)) if isinstance(q.get("exempt"), list) else set()
+        for e in out:
+            if e.get("state") in ("delivered", "stopped"):
                 continue
-            if age <= 7 * 86400:
-                entry["state"] = "stopped" if bound and all(e["state"] == "stopped" for e in bound) else "delivered"
-                entry["closed_at"] = seen
-                closed_rows.append((age, entry))
-            continue
-        # a live goal always gets its row, even while its project reads closed (closed under it by another goal's sync)
-        if live:
-            live.sort(key=lambda e: _PROJECT_RANK[e["state"]])
-            best = live[0]
-            entry["state"] = best["state"]
-            entry["host"] = best.get("host", "")
-            for k in ("last_cycle_at", "paused"):
-                if best.get(k):
-                    entry[k] = best[k]
-            prios = [e["priority"] for e in live if isinstance(e.get("priority"), int)]
-            if prios:
-                entry["priority"] = min(prios)
-            for k in ("scope_total", "scope_delivered"):
-                vals = [e[k] for e in live if isinstance(e.get(k), int)]
-                if vals:
-                    entry[k] = sum(vals)
-        else:
-            entry["state"] = "queued"
-        rows.append(entry)
-    closed_rows.sort(key=lambda t: t[0])
-    rows.sort(key=lambda e: (e.get("priority", 10 ** 6), e["id"]))
-    return (rows + [e for _, e in closed_rows[:GOALS_RECENT_MAX]])[:GOALS_MAX]
+            if e["id"] in exempt:
+                e["slot"] = "alongside"
+            elif holder and e["id"] == holder:
+                e["slot"] = "holds"
+            elif e.get("state") == "queued":
+                e["slot"] = "waits"
+    return out
+
+
+def _registry_names(q):
+    """From goalqueue.json (the supervisor sync's copy of the registry): ({goal id: registry name}, set of every registered goal id the file
+    lists), or ({}, None) when the file is missing or unreadable (a host that never synced keeps its local goal rows as they are).
+    The name is the registry's own (`name`, the registry issue title without its "Goal: " prefix); the sync leaves it empty when the issue
+    title only repeats the spec, and the block's title is the name then."""
+    if not isinstance(q, dict) or not isinstance(q.get("open"), list):
+        return {}, None
+    names, ids = {}, set()
+    for k in ("open", "queued", "recent"):
+        for d in q.get(k) or []:
+            if not isinstance(d, dict) or not (isinstance(d.get("id"), str) and d["id"]):
+                continue
+            ids.add(d["id"])
+            nm = d.get("name")
+            if isinstance(nm, str) and nm.strip():
+                names[d["id"]] = nm.strip()
+    return names, ids
 
 
 if mode == "goals":

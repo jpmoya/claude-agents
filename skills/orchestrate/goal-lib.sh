@@ -74,6 +74,56 @@ goal_parse() {
   esac
 }
 
+# Goal naming convention (JP, 2026-11-18): ONE string names a goal everywhere. The registry issue is "Goal: <Name>", its GitHub Project is
+# "Goal: <Name>", the status page shows <Name>. <Name> is a short human name: no repo path, ticket reference or spec syntax, no second
+# "Goal:" prefix. deliver.sh builds the registry title from the project's name at registration and refuses a project that breaks it.
+# goal_title <name> -> "Goal: <name>"
+goal_title() { printf 'Goal: %s\n' "$1"; }
+# goal_name_of_title <title> -> the name: every leading "Goal: " removed (read side, lenient: a title without the prefix is its own name)
+goal_name_of_title() {
+  local t="$1"
+  while [[ "$t" =~ ^[[:space:]]*[Gg]oal:[[:space:]]* ]]; do t="${t#"${BASH_REMATCH[0]}"}"; done
+  t="${t%"${t##*[![:space:]]}"}"
+  printf '%s\n' "$t"
+}
+# goal_title_check <title> -> exit 0 when the title is exactly "Goal: <Name>" with a valid short human name; else 1 with the reason on stderr
+goal_title_check() {
+  local t="$1" n
+  case "$t" in "Goal: "*) ;; *) echo "must start with \"Goal: \"" >&2; return 1 ;; esac
+  n="${t#"Goal: "}"
+  [ -n "$n" ] || { echo "has no name after \"Goal: \"" >&2; return 1; }
+  case "$n" in [Gg]oal:*) echo "repeats the \"Goal:\" prefix" >&2; return 1 ;; esac
+  case "$n" in " "*|*" ") echo "has a leading or trailing space" >&2; return 1 ;; esac
+  [ "${#n}" -le 80 ] || { echo "is longer than 80 characters" >&2; return 1; }
+  if [[ "$n" == */* ]] || [[ "$n" =~ \#[0-9] ]] || [[ "$n" =~ :(milestones?|feedback|project)(:|$) ]] || [[ "$n" =~ ^(label|project): ]]; then
+    echo "carries repo-path or spec syntax (use a short human name)" >&2; return 1
+  fi
+  return 0
+}
+
+# goal_nonproject_refusal <what> — the text deliver.sh dies with when asked to register a goal that is not a GitHub Project (JP, 2026-11-18:
+# every goal is a project; milestone, label, ticket and feedback goals are no longer registered). hooks/block-nonproject-goal.sh carries
+# the same recipe; keep the two in step.
+goal_nonproject_refusal() {
+  # the recipe lives in goal-register-recipe.txt (plain text: the goal scripts hold no `gh project` text, tests pin that)
+  printf '%s\n' "refusing to register $1: every goal is registered as a GitHub Project (spec project:<owner>/<n>); milestone, label and ticket goals are no longer registered (only the standing owner/repo:feedback goal keeps its spec):"
+  cat "$_GOAL_LIB_DIR/goal-register-recipe.txt" 2>/dev/null || echo "see skills/orchestrate/SKILL.md, \"Registering a goal\""
+}
+
+# goal_title_hint <project number> <owner> — how to rename a project to the naming convention (goal-title-hint.txt)
+goal_title_hint() {
+  sed -e "s/@N@/$1/" -e "s/@OWNER@/$2/" "$_GOAL_LIB_DIR/goal-title-hint.txt" 2>/dev/null || echo 'rename the project to "Goal: <short human name>"'
+}
+
+# goal_go_refusal <spec> — the text deliver.sh dies with when a registration states no go choice (JP, 2026-11-18: there is NO default).
+# hooks/block-nonproject-goal.sh carries the same question; keep the two in step.
+goal_go_refusal() {
+  printf '%s\n' "refusing to register ${1:-the goal}: ask JP: go true or go false? Registering a goal needs his explicit choice and a session may never pick it:" \
+    '  --go     go true: every ticket in the goal'"'"'s scope inherits agent-go (the goal'"'"'s tickets start on their own)' \
+    '  --no-go  go false: no agent-go is given; each ticket needs its own agent-go from JP' \
+    "Add the flag he chose: deliver.sh project:<owner>/<n> --go|--no-go [--priority <n>] [--now] [instructions...]. Legacy tooling only: GOAL_ALLOW_LEGACY_REGISTER=1."
+}
+
 # goal_name_for <spec> -> a human-readable name for a milestone / ticket goal ("scheduler: Native 3.4", "scheduler #1345: Title");
 # empty (exit 1) when GitHub cannot say. The status page shows it instead of the raw spec.
 goal_name_for() {
@@ -90,7 +140,7 @@ goal_name_for() {
         [ -n "$t" ] || return 1; printf '%s: %s\n' "$short" "$t" ;;
     msall) printf '%s: all milestones\n' "$short" ;;
     fb) printf '%s: staff feedback\n' "$short" ;;
-    proj) t=$(_goal_proj_read "$ref" --meta 2>/dev/null | jq -r '.title // empty') || return 1; [ -n "$t" ] || return 1; printf '%s\n' "$t" ;;
+    proj) t=$(_goal_proj_read "$ref" --meta 2>/dev/null | jq -r '.title // empty') || return 1; [ -n "$t" ] || return 1; goal_name_of_title "$t" ;;
     *) return 1 ;;
   esac
 }
@@ -409,12 +459,14 @@ goal_scope() { local r; r=$(_goal_scope_rows "$@") || return 1; [ -z "$r" ] || p
 _GOAL_ISSUE_JQ='def goal_of: . as $i
           | ([try (($i.body // "") | capture("```json\\n(?<j>[^\\n]*)\\n```") | .j | fromjson) catch null] | .[0]) as $b
           | ([$i.labels[].name]) as $l
+          | (($i.title // "") | gsub("^\\s*(Goal:\\s*)+";"") | gsub("\\s+$";"")) as $n
           | if $b == null then
               (select($i.state == "open")
                | {issue: $i.number, id: "registry-issue-\($i.number)", spec: "", host: "", instructions: "",
                   state: $i.state, closed_at: $i.closed_at, block: null, st: "unreadable"})
             else
             {issue: $i.number, id: $b.id, spec: ($b.spec // (if ($b.label // "") != "" then "label:\($b.label)" else "" end)), host: ($b.host // ""), instructions: ($b.instructions // ""),
+             name: (if $n == ($b.spec // "") or $n == ($b.id // "") then "" else $n end),
              state: $i.state, closed_at: $i.closed_at, block: $b,
              st: (if $i.state == "closed" then (if ($l | index("goal-stopped")) then "stopped" else "delivered" end)
                   elif ($l | index("goal-stopped")) then "stopped"
@@ -1647,7 +1699,7 @@ _GOAL_QUEUE_JQ='def okey: [((.block.priority? // .block.order? // .issue) | if t
 # again within $cool seconds (GOAL_CYCLE_SECS) of the hand-off: several idle goals cost one lead cycle each per cycle
 # instead of rotating back-to-back. Needs --argjson now (epoch seconds) and --argjson cool.
 _GOAL_QUEUE_SERIAL_JQ='def okey: [(if (.block.deferred_at? // "") != "" then 1 else 0 end), ((.block.priority? // .block.order? // .issue) | if type == "number" then . else 1e12 end), .issue];
-  def exempt: $fbfree and ((.spec // "") | test(":feedback$"));
+  def exempt: $fbfree and (((.spec // "") | test(":feedback$")));
   def cooling: .st == "queued" and ((.block.deferred_at? // "") != "") and (((.block.deferred_at | try fromdateiso8601 catch 0) + $cool) > $now);
   sort_by(okey) as $all
   | ($all | map(select(.st == "queued"))) as $q
@@ -1655,6 +1707,7 @@ _GOAL_QUEUE_SERIAL_JQ='def okey: [(if (.block.deferred_at? // "") != "" then 1 e
   | (($h != null) or any($all[]; .st == "unreadable")) as $busy
   | ($all | map(select(.st == "unreadable" or (.st == "queued" and (cooling | not)))) | first // null) as $f
   | {queued: $q, candidate: (if ($busy | not) and $f != null and $f.st == "queued" then $f else null end), serial: true, slot: ($h.id // null),
+     exempt: ($all | map(select(exempt)) | map(.id)),
      recent: ($all | map(select(.st == "delivered" or .st == "stopped")) | sort_by(.closed_at // "") | reverse | .[:5]),
      open: ($all | map(select(.st == "active" or .st == "held" or .st == "waiting_jp")))}'
 
@@ -1777,12 +1830,12 @@ goal_slot_spread_nums() {
 goal_queue_save() {
   local f="$PIPE/$GOAL_QUEUE_FILE_NAME" v
   v=$(printf '%s' "$1" | _goal_queue_jq '
-    | (if .serial then {serial: true, slot: .slot} else {} end) + {at: (now | floor),
+    | (if .serial then {serial: true, slot: .slot, exempt: (.exempt // [])} else {} end) + {at: (now | floor),
        candidate: (.candidate.id // null),
-       recent: (.recent | map({id, issue, spec, title: (.block.title // ""), label: (.block.label // ""), repos: (.block.repos // []), st, closed_at, priority: (.block.priority? // null), project_url: (.block.project?.url? // .block.scope_project?.url? // "")})),
-       open: (.open | map({id, issue, spec, title: (.block.title // ""), label: (.block.label // ""), repos: (.block.repos // []),
+       recent: (.recent | map({id, issue, spec, name: (.name // ""), title: (.block.title // ""), label: (.block.label // ""), repos: (.block.repos // []), st, closed_at, priority: (.block.priority? // null), project_url: (.block.project?.url? // .block.scope_project?.url? // "")})),
+       open: (.open | map({id, issue, spec, name: (.name // ""), title: (.block.title // ""), label: (.block.label // ""), repos: (.block.repos // []),
                            st, host: (.host // ""), priority: (.block.priority? // null), hosts: (.block.hosts? // "both"), host_pref: (.block.host_pref // ""), project_url: (.block.project?.url? // .block.scope_project?.url? // "")})),
-       queued: (.queued | map({id, issue, spec, title: (.block.title // ""), label: (.block.label // ""), priority: (.block.priority? // null),
+       queued: (.queued | map({id, issue, spec, name: (.name // ""), title: (.block.title // ""), label: (.block.label // ""), priority: (.block.priority? // null),
                                repos: (.block.repos // []), order: (.block.order? // .issue), host_pref: (.block.host_pref // ""),
                                hosts: (.block.hosts? // "both"), project_url: (.block.project?.url? // .block.scope_project?.url? // ""),
                                deferred: (.block.deferred_at? // "")}))}' 2>/dev/null) \

@@ -100,6 +100,10 @@
             "type": "command",
             "command": "~/.claude/hooks/dedupe-ticket-guard.sh",
             "timeout": 120
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/block-nonproject-goal.sh"
           }
         ]
       },

@@ -49,6 +49,9 @@ export STATUS_DESKTOP_TASKS_DIR=""
 # verify-shipped gate (goal_eval's "not live on prod" check, real timeline reads + git fetches): off for the suites that fake a GitHub
 # without those routes; test-goal-ship-gate.sh turns it on for itself via config.local.sh.
 export GOAL_SHIP_GATE=0
+# JP, 2026-11-18: deliver.sh refuses to register any goal that is not a GitHub Project. The older suites register milestone goals
+# as fixtures, so the legacy override is on for them; test-goal-nomilestone.sh unsets it around every call it makes.
+export GOAL_ALLOW_LEGACY_REGISTER=1
 
 . "$HERE/lib/assert.sh"
 . "$HERE/lib/fixture.sh"

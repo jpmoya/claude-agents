@@ -136,23 +136,27 @@ test_gp_live_sharer_fails_closed_on_an_unreadable_registry() {
   dg_teardown; return $rc
 }
 
-# Bug C: a closed project is "delivered" on the status page only when no live goal is bound to it; a live goal bound to a
-# closed project still gets its live row; a closed project whose bound goals were all stopped reads "stopped".
-test_gp_status_page_closed_project_with_a_live_goal_keeps_its_row() {
+# 2026-11-18 (JP, #697): the registry is the one source of the status page's goal list. A GitHub Project (open, closed or shared by
+# several goals) is never a row of its own; a registered goal shows under its own id with its project only as the link.
+test_gp_status_page_lists_registered_goals_never_bare_projects() {
   local rc=0 d out seen
   d=$(mktemp -d "${TMPDIR:-/tmp}/gp-pipe.XXXXXX")
   seen=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   jq -nc --arg s "$seen" '{owner:"x", projects:[
       {number:22,title:"Goal: Shared",url:"https://github.com/users/x/projects/22",closed:true,closed_seen:$s},
       {number:23,title:"Goal: Abandoned",url:"https://github.com/users/x/projects/23",closed:true,closed_seen:$s},
-      {number:24,title:"Goal: Shipped",url:"https://github.com/users/x/projects/24",closed:true,closed_seen:$s}]}' > "$d/goalprojects.json"
+      {number:24,title:"Goal: Shipped",url:"https://github.com/users/x/projects/24",closed:true,closed_seen:$s},
+      {number:25,title:"Goal: Orphan",url:"https://github.com/users/x/projects/25",closed:false,closed_seen:null}]}' > "$d/goalprojects.json"
   jq -nc '{id:"g1", host:"mac", spec:"o/r#4", state:"active", priority:3, project:{owner:"x",number:22,url:"https://github.com/users/x/projects/22"}}' > "$d/goal-g1.json"
-  jq -nc '{recent:[{id:"g2", spec:"o/r#5", st:"stopped", project_url:"https://github.com/users/x/projects/23"},
+  jq -nc '{open:[{id:"g1", spec:"o/r#4", st:"active"}],
+           recent:[{id:"g2", spec:"o/r#5", st:"stopped", project_url:"https://github.com/users/x/projects/23"},
                    {id:"g3", spec:"o/r#6", st:"delivered", project_url:"https://github.com/users/x/projects/24"}]}' > "$d/goalqueue.json"
   out=$(python3 "$DG_SKILL/build-runs-json.py" "" "$d/runs.jsonl" "$d" goals </dev/null 2>/dev/null)
-  assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id == "project-22") | "\(.state) \(.host) \(.priority)"')" "between_cycles mac 3" "a live goal on a closed project keeps its live row" || rc=1
-  assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id == "project-23") | .state')" "stopped" "a closed project whose goal was stopped is not delivered" || rc=1
-  assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id == "project-24") | .state')" "delivered" "a closed project whose goal was delivered is delivered" || rc=1
+  assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id == "g1") | "\(.state) \(.host) \(.priority) \(.url)"')" "between_cycles mac 3 https://github.com/users/x/projects/22" "the live goal keeps its own row, linking to its project" || rc=1
+  assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id == "g2") | .state')" "stopped" "a stopped registry goal reads stopped" || rc=1
+  assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id == "g3") | .state')" "delivered" "a delivered registry goal reads delivered" || rc=1
+  assert_eq "$(printf '%s' "$out" | jq -r '[.[] | select(.id | startswith("project-"))] | length')" "0" "no project is a row of its own (the orphan project 25 included)" || rc=1
+  assert_eq "$(printf '%s' "$out" | jq -r 'length')" "3" "exactly the three registered goals" || rc=1
   rm -rf "$d"; return $rc
 }
 
@@ -249,7 +253,7 @@ test_gp_status_page_link_prefers_the_project() {
   rm -rf "$d"; return $rc
 }
 
-test_gp_new_project_appears_on_the_status_page_without_manual_steps() {
+test_gp_an_unregistered_project_is_listed_by_the_sync_but_never_shown_as_a_goal() {
   gp_setup
   local rc=0 out
   jq -nc '[{number:3, title:"Goal: Brand new", closed:false, id:"PVT_3", url:"https://github.com/users/example-owner/projects/3"},
@@ -258,24 +262,15 @@ test_gp_new_project_appears_on_the_status_page_without_manual_steps() {
            {number:6, title:"Goal: scheduler: v1.18.0 - Master Schedule", closed:false, id:"PVT_6", url:"https://github.com/users/example-owner/projects/6"}]' > "$DG_BIN/proj/projects.json"
   jq -nc '{owner:"example-owner", projects:[{number:5,title:"Old",url:"https://github.com/users/example-owner/projects/5",closed:true,closed_seen:"2020-01-01T00:00:00Z"}]}' > "$DG_PIPE/goalprojects.json"
   dg_lib 'goal_project_refresh_list'; assert_eq "$DG_RC" "0" "refresh exits 0 (stderr: $DG_ERR)" || rc=1
+  assert_eq "$(jq -r '[.projects[] | select(.number == 3 or .number == 6)] | length' "$DG_PIPE/goalprojects.json")" "2" "the sync still keeps the project list (bindings use it)" || rc=1
   out=$(PATH="$PATH" python3 "$DG_SKILL/build-runs-json.py" "" "$DG_HOME/r.jsonl" "$DG_PIPE" goals </dev/null 2>/dev/null)
-  assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id == "project-3") | "\(.state) \(.title) \(.url)"')" "queued Brand new https://github.com/users/example-owner/projects/3" "an open project with no goal is a not-started row linking to the project" || rc=1
-  assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id == "project-4") | .state')" "delivered" "a freshly closed project is recently closed" || rc=1
-  assert_eq "$(printf '%s' "$out" | jq -r '[.[] | select(.id == "project-5")] | length')" "0" "a project closed long ago is not listed" || rc=1
-  assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id == "project-6") | "\(.state) \(.title) \(.url)"')" "queued scheduler: v1.18.0 - Master Schedule https://github.com/users/example-owner/projects/6" "an open project with a version-shaped title is still a goal row" || rc=1
-  # goals are the projects: a bound goal gives its project row state/host/priority; an unbound goal is not a row
+  assert_eq "$(printf '%s' "$out" | jq -r 'length')" "0" "projects with no registry goal are not goals: the page lists nothing" || rc=1
+  # a registered goal bound to project 3 is the row; the project itself still is not
   jq -nc '{id:"g1", host:"mac", spec:"o/r#5", state:"waiting_jp", priority:2, project:{owner:"x",number:3,url:"https://github.com/users/example-owner/projects/3"}}' > "$DG_PIPE/goal-g1.json"
-  jq -nc '{id:"g2", host:"mac", spec:"o/r#6", state:"active", priority:1}' > "$DG_PIPE/goal-g2.json"
   out=$(PATH="$PATH" python3 "$DG_SKILL/build-runs-json.py" "" "$DG_HOME/r.jsonl" "$DG_PIPE" goals </dev/null 2>/dev/null)
-  assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id == "project-3") | "\(.state) \(.host) \(.priority)"')" "waiting_jp mac 2" "the project row carries its goal's state, host and priority" || rc=1
-  assert_eq "$(printf '%s' "$out" | jq -r '[.[] | select(.id == "g1" or .id == "g2")] | length')" "0" "ticket goals are not rows of their own" || rc=1
-  # a milestone goal bound to a project gives that project its state, though it is no row of its own
-  jq -nc '{id:"o_r-ms-3", host:"mac", spec:"o/r:milestone:3", state:"held", priority:7, project:{owner:"x",number:3,url:"https://github.com/users/example-owner/projects/3"}}' > "$DG_PIPE/goal-g1.json"
-  out=$(PATH="$PATH" python3 "$DG_SKILL/build-runs-json.py" "" "$DG_HOME/r.jsonl" "$DG_PIPE" goals </dev/null 2>/dev/null)
-  assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id == "project-3") | "\(.state) \(.priority)"')" "held 7" "a bound milestone goal supplies the project's state" || rc=1
-  assert_eq "$(printf '%s' "$out" | jq -r '[.[] | select(.id == "o_r-ms-3")] | length')" "0" "and is not a row itself" || rc=1
+  assert_eq "$(printf '%s' "$out" | jq -r '.[] | "\(.id) \(.state) \(.host) \(.priority) \(.url)"')" "g1 waiting_jp mac 2 https://github.com/users/example-owner/projects/3" "the registered goal is the only row, carrying its project link" || rc=1
   # nothing manual: the registry has no goal for it
-  assert_eq "$(dg_reg_count)" "0" "no registry goal needed" || rc=1
+  assert_eq "$(dg_reg_count)" "0" "no registry goal created by the page or the sync" || rc=1
   dg_teardown; return $rc
 }
 
@@ -314,8 +309,8 @@ test_gp_gh_project_and_graphql_only_in_goal_project_sh() {
 }
 
 for t in test_gp_register_creates_project_adds_tickets_and_records_it test_gp_project_command_is_idempotent_and_mirrors_status \
-         test_gp_stopped_goal_closes_its_project_not_the_registry_row test_gp_stopped_duplicate_never_closes_a_live_goals_project test_gp_live_sharer_fails_closed_on_an_unreadable_registry test_gp_status_page_closed_project_with_a_live_goal_keeps_its_row test_gp_project_command_binds_but_never_creates_for_existing_goals test_gp_brief_names_the_bound_project test_gp_binds_existing_project_with_the_same_title test_gp_register_joins_the_project_that_already_holds_all_its_tickets test_gp_register_joins_a_project_holding_half_of_its_tickets \
+         test_gp_stopped_goal_closes_its_project_not_the_registry_row test_gp_stopped_duplicate_never_closes_a_live_goals_project test_gp_live_sharer_fails_closed_on_an_unreadable_registry test_gp_status_page_lists_registered_goals_never_bare_projects test_gp_project_command_binds_but_never_creates_for_existing_goals test_gp_brief_names_the_bound_project test_gp_binds_existing_project_with_the_same_title test_gp_register_joins_the_project_that_already_holds_all_its_tickets test_gp_register_joins_a_project_holding_half_of_its_tickets \
          test_gp_without_project_scope_nothing_runs_and_register_succeeds test_gp_project_failure_never_fails_the_goal \
-         test_gp_status_page_link_prefers_the_project test_gp_new_project_appears_on_the_status_page_without_manual_steps test_gp_process_without_project_scope_never_blanks_an_existing_list test_gp_binding_to_a_deleted_project_is_dropped test_gp_gh_project_and_graphql_only_in_goal_project_sh; do
+         test_gp_status_page_link_prefers_the_project test_gp_an_unregistered_project_is_listed_by_the_sync_but_never_shown_as_a_goal test_gp_process_without_project_scope_never_blanks_an_existing_list test_gp_binding_to_a_deleted_project_is_dropped test_gp_gh_project_and_graphql_only_in_goal_project_sh; do
   run_test "$t"
 done
