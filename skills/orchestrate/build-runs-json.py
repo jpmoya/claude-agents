@@ -32,7 +32,6 @@ import datetime
 import urllib.parse
 import socket
 import time
-import shlex
 
 aliases_raw, runs_jsonl = sys.argv[1], sys.argv[2]
 pipe_dir = sys.argv[3] if len(sys.argv) > 3 else ""
@@ -334,6 +333,7 @@ CRON_WRAPPERS = {"bash", "sh", "zsh", "dash", "env", "nice", "ionice", "nohup", 
                  "setsid", "stdbuf", "xargs", "command"}
 CRON_TAKES_ARG = {"cd", "flock", "timeout", "nice", "ionice"}  # the first non-option word after these is not the job
 CRON_ENV_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+CRON_TOKEN_RE = re.compile(r"""(?:"(?:\\.|[^"\\])*"|'[^']*'|\S)+""")  # a word: runs of quoted segments / non-space
 CRON_STOP_RE = re.compile(r"^[0-9]*[<>|;&]")  # redirection, pipe, ; or a lone & (but not && / ||, handled below)
 CRON_FAIL_RE = re.compile(r"\b(error|failed|traceback|fatal)\b", re.IGNORECASE)
 CRON_EXIT_RE = re.compile(r"\b(?:exit(?:[ _-]?code)?|rc)\s*[=:]\s*(-?[0-9]+)\s*$", re.IGNORECASE)
@@ -457,10 +457,11 @@ def cron_human(fields):
 def cron_script_name(command):
     """Script basename (no directory, no extension) in a crontab command, else None. The rest of the
     command line is discarded here and never leaves this function."""
-    try:
-        tokens = shlex.split(command, posix=True)
-    except ValueError:
-        tokens = command.split()
+    tokens = []
+    for tok in CRON_TOKEN_RE.findall(command):
+        if len(tok) >= 2 and tok[0] in "'\"" and tok[-1] == tok[0] and tok.count(tok[0]) == 2:
+            tok = tok[1:-1]  # one fully quoted word, e.g. bash -lc '<command line>'
+        tokens.append(tok)
     words = []
     for tok in tokens:
         if tok in ("&&", "||"):

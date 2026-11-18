@@ -61,7 +61,7 @@ test_cron_parsing_skips_comments_blanks_env_and_malformed_lines() {
 MAILTO=someone@example.test
 SHELL=/bin/bash
 
-*/5 * * * * cd /srv/app && flock -n /tmp/l.lock ./tick.py
+*/5 * * * * cd /srv/app && timeout 30 ./tick.py
 30 8,20 * * 1-5 /usr/bin/python3 /opt/foo/report.py | mail -s x someone
 @reboot /home/u/boot.sh
 @daily nice -n 5 cleanup
