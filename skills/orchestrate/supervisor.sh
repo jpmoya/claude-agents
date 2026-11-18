@@ -3,7 +3,7 @@
 #   0b. worktree sweep (time-gated to once per 30 min): remove merged, clean-enough ad hoc worktrees under DISPATCH_REPOS
 #   1. restart exited non-terminal local orchestrators with backoff; 1b: requeue held runs whose machine-clearable cause
 #      (CI, merge conflict, dependency, start-gate #677) has cleared, remind JP once of a run waiting on him (#677)
-#   2. drain the local launch queue
+#   2. drain the local launch queue (up to DRAIN_MAX_PER_TICK launches, slots and memory re-checked before each)
 #   3. label lifecycle: drop agent-in-progress on issues this machine finished, parked, or abandoned
 #   4. label reconciliation: clear orphaned agent-in-progress labels (no local pid, no queue, stale marker)
 #   3b. intake: triage one user-feedback-intake issue from DISPATCH_REPOS (claim, swap label, launch `--agent intake`)
@@ -14,7 +14,7 @@
 #   8. PM Slack DM poll: record JP's replies to delivery-lead asks (backgrounded, no-op without PM_SLACK_BOT_TOKEN; issue #117)
 #   9. stale-work digest: log (never act on) stale agent-go, stuck ci_red/ci_pending/merge_conflict holds, disk
 #      pressure >= 85%, feedback tickets with no owner (#676) (throttled to once per 600 s; issue #491)
-# One launch per tick max. All state is local (~/.claude/pipeline/state); the only shared state is the issue's markers and labels.
+# One launch per tick max outside the drain (step 2 may start up to DRAIN_MAX_PER_TICK queued runs). All state is local (~/.claude/pipeline/state); the only shared state is the issue's markers and labels.
 set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source "$HERE/config.sh"
@@ -1605,14 +1605,28 @@ PY
   report_status_async "auto-retry"
 done
 
-# 2. Drain queue (one item per tick, oldest queued_at first)
+# 2. Drain queue (up to DRAIN_MAX_PER_TICK items per tick, oldest queued_at first)
 # Capacity is decided once per tick; the drain and the dispatch step (5) share the result. A slot freed mid-tick is
 # never launched into by step 5 on this decision; when the drain took the slot or none is free, step 5 still claims its
 # top candidate and orchestrate.sh queues it (#714), so new agent-go tickets get a place in the oldest-first line even
 # while relaunches keep the queue busy.
-HAS_CAP=0; drain_launched=0; dispatch_hold=0
+# Audit 2026-11-18: up to DRAIN_MAX_PER_TICK entries per tick (15 queued Mac tickets drained one per 6-16 min tick while 1-4 of
+# 7 slots were busy). The first launch uses the tick's single capacity decision above; each further one re-checks has_capacity
+# and also needs MEM_FLOOR_MB + DRAIN_MEM_PER_LAUNCH_MB x launches-already-made free, because free memory lags a run that just started.
+HAS_CAP=0; drain_launched=0; dispatch_hold=0; drain_n=0; drain_stop=""
 has_capacity && HAS_CAP=1
-if [ "$launched" -eq 0 ] && [ "$HAS_CAP" -eq 1 ]; then
+DRAIN_MAX=${DRAIN_MAX_PER_TICK:-3}; case "$DRAIN_MAX" in ''|*[!0-9]*|0) DRAIN_MAX=1 ;; esac   # garbage or 0 -> the old one per tick
+DRAIN_MEM=${DRAIN_MEM_PER_LAUNCH_MB:-1200}; case "$DRAIN_MEM" in ''|*[!0-9]*) DRAIN_MEM=1200 ;; esac
+while [ "$launched" -eq 0 ] && [ "$HAS_CAP" -eq 1 ] || [ "$drain_n" -gt 0 ]; do
+  if [ "$drain_n" -gt 0 ]; then   # an extra launch this tick: slots and memory must still allow it
+    if [ "$drain_n" -ge "$DRAIN_MAX" ]; then drain_stop="cap $DRAIN_MAX per tick"
+    elif ! has_capacity; then drain_stop="no free slot or memory below the floor"
+    elif [ "$(mem_available_mb)" -lt $(( MEM_FLOOR_MB + drain_n * DRAIN_MEM )) ]; then drain_stop="memory $(mem_available_mb)MB < floor ${MEM_FLOOR_MB}MB + ${drain_n}x${DRAIN_MEM}MB reserved for this tick's launches"; fi
+    if [ -n "$drain_stop" ]; then
+      ls "$QUEUE"/orch-*.json >/dev/null 2>&1 && slog "[drain] stopping after $drain_n launch(es): $drain_stop; the rest wait for the next tick"
+      break
+    fi
+  fi
   now_epoch=$(date +%s)
   best_qf=""
   best_issue=""
@@ -1687,14 +1701,16 @@ except Exception:
 " 2>/dev/null)
     # #178: a cap exit is not counted, so count may be 0; the relaunch still needs its (cap) preamble
     [ "$q_reason" = "auto-restart" ] && [ "$restart_n" -eq 0 ] && [ -f "$PIPE/orch-$best_rk.cap-exit" ] && restart_n=1
-    do_launch "$q_repo" "$best_issue" "$q_extra" "$restart_n" "$q_reason" "$q_wait" "$best_rk"
-    case $? in
-      0) rm -f "$best_qf"; launched=1; drain_launched=1 ;;
-      1) sentry_slot_release "$best_qf"; rm -f "$best_qf" ;;   # #438: the other host holds the claim; drop our queue entry (#182: and its counted place)
-      *) : ;;                  # #438: claim unreadable; keep the entry for the next tick
+    do_launch "$q_repo" "$best_issue" "$q_extra" "$restart_n" "$q_reason" "$q_wait" "$best_rk"; dl_rc=$?
+    case $dl_rc in
+      0) rm -f "$best_qf"; launched=1; drain_launched=1; drain_n=$((drain_n + 1)) ;;
+      1) sentry_slot_release "$best_qf"; rm -f "$best_qf"; [ "$drain_n" -gt 0 ] || break ;;   # #438: the other host holds the claim; drop our queue entry (#182: and its counted place)
+      *) break ;;              # #438: claim unreadable; keep the entry for the next tick
     esac
+  else
+    break
   fi
-fi
+done
 
 gh_class normal   # steps 3-5 and the goal step: not run below GH_QUOTA_ESSENTIAL_BELOW
 if [ "$T_NORMAL" = 1 ]; then
