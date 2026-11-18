@@ -73,11 +73,17 @@ describe('goal priority', () => {
     expect(text(html).indexOf('Charlie')).toBeLessThan(text(html).indexOf('Bravo'));
     expect(text(html).indexOf('Bravo')).toBeLessThan(text(html).indexOf('Alpha'));
   });
-  it('numbers goals by their place in the start order, from 1', () => {
-    const html = goalsHtml(render(rec([running({ id: 'a', title: 'Alpha', priority: 9 }), running({ id: 'b', title: 'Bravo', priority: 4 })])));
-    const rows = [...html.matchAll(/<tr><td[^>]*>(\d+)<\/td><td[^>]*>([\s\S]*?)<\/td>/g)].map((m) => [m[1], text(m[2])]);
-    expect(rows.map((r) => r[0])).toEqual(['1', '2']);
+  it("shows the registry's own priority value (not the row's place), lowest first, a dash when there is none", () => {
+    const html = goalsHtml(render(rec([running({ id: 'a', title: 'Alpha', priority: 9 }), running({ id: 'b', title: 'Bravo', priority: 4 }), running({ id: 'c', title: 'Charlie' })])));
+    const rows = [...html.matchAll(/<tr><td[^>]*>([^<]*)<\/td><td[^>]*>([\s\S]*?)<\/td>/g)].map((m) => [m[1], text(m[2])]);
+    expect(rows.map((r) => r[0])).toEqual(['4', '9', '–']);
     expect(rows[0][1]).toContain('Bravo');
+  });
+  it("breaks a priority tie with the registry's order, as the supervisor's queue does", () => {
+    const html = goalsHtml(render(rec([running({ id: 'a', title: 'Alpha', priority: 2, order: 30 }), running({ id: 'b', title: 'Bravo', priority: 2, order: 10 }), running({ id: 'c', title: 'Charlie', priority: 1, order: 99 })])));
+    const t = text(html);
+    expect(t.indexOf('Charlie')).toBeLessThan(t.indexOf('Bravo'));
+    expect(t.indexOf('Bravo')).toBeLessThan(t.indexOf('Alpha'));
   });
   it('shows registered goals that have not started', () => {
     const html = goalsHtml(render(rec([{ id: 'q', title: 'Not yet', repos: ['org/repo-a'], host: '', state: 'queued', queue_pos: 1, priority: 1 }])));

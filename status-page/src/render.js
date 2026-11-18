@@ -529,6 +529,8 @@ function mergeGoals(hosts) {
       (a, b) =>
         (Number.isInteger(a.priority) ? a.priority : 1e9) -
           (Number.isInteger(b.priority) ? b.priority : 1e9) ||
+        // the registry's own key (goal-lib's queue order): priority, then the block's order (the registry issue number), then issue number
+        (Number.isInteger(a.order) ? a.order : 1e9) - (Number.isInteger(b.order) ? b.order : 1e9) ||
         rank(a) - rank(b) ||
         (a.state === "queued" && b.state === "queued"
           ? (a.queue_pos || 0) - (b.queue_pos || 0)
@@ -543,6 +545,41 @@ function goalStateText(g) {
   return g.state === "queued" && Number.isInteger(g.queue_pos)
     ? `${label} #${g.queue_pos}`
     : label;
+}
+
+/** The goal-slot icons (inline SVG, currentColor so they follow the badge colour in light and dark): a padlock for the goal that HOLDS the
+ *  one goal slot (GOAL_SERIAL=1, one goal at a time across both hosts), an hourglass for a queued goal WAITING for it, two parallel arrows for a
+ *  goal that RUNS ALONGSIDE (slot-exempt: the standing feedback goals). */
+const slotSvg = (inner) =>
+  `<svg class="slot-icon" viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${inner}</svg>`;
+const SLOT_ICONS = {
+  holds: slotSvg('<rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/>'),
+  waits: slotSvg('<path d="M4 2h8M4 14h8M5 2c0 3.2 3 4.2 3 6s-3 2.8-3 6M11 2c0 3.2-3 4.2-3 6s3 2.8 3 6"/>'),
+  alongside: slotSvg('<path d="M2 5h11M2 11h11"/><path d="M10.5 2.8 13.5 5l-3 2.2M10.5 8.8 13.5 11l-3 2.2"/>'),
+};
+const SLOT_LABELS = { holds: "HOLDS GOAL SLOT", waits: "waiting for slot", alongside: "runs alongside" };
+const SLOT_TIPS = {
+  holds: "Holds the goal slot: only one goal runs at a time across both hosts, and this is the one",
+  waits: "Waiting for the goal slot: starts when the goal holding it finishes, is stopped, is held or waits on JP",
+  alongside: "Runs alongside: a standing feedback goal never holds or waits for the goal slot",
+};
+
+/** Where the goal stands on the one goal slot (GOAL_SERIAL=1): "HOLDS GOAL SLOT · Mac" on the goal that holds it, a muted "waiting for slot"
+ *  on a queued goal, "runs alongside" on a slot-exempt (feedback) goal, each with its icon and a tooltip. Nothing when the reporter did not say. */
+function slotBadge(g) {
+  if (!Object.hasOwn(SLOT_LABELS, g.slot)) return "";
+  const host = g.slot === "holds" ? HOST_LABELS[g.host] || g.host : "";
+  const tip = host ? `${SLOT_TIPS.holds} (running on the ${host})` : SLOT_TIPS[g.slot];
+  return `<br><span class="badge slot-${g.slot}" title="${esc(tip)}">${SLOT_ICONS[g.slot]}<span>${SLOT_LABELS[g.slot]}${host ? ` · ${esc(host)}` : ""}</span></span>`;
+}
+
+/** The legend of the three slot icons, shown above the Goals table whenever a goal carries a slot state. */
+function slotLegend(goals) {
+  if (!goals.some((g) => Object.hasOwn(SLOT_LABELS, g.slot))) return "";
+  const keys = ["holds", "waits", "alongside"]
+    .map((k) => `<span class="slot-key" title="${esc(SLOT_TIPS[k])}"><span class="badge slot-${k}">${SLOT_ICONS[k]}</span> ${esc(SLOT_LABELS[k])}</span>`)
+    .join("");
+  return `<p class="slot-legend" aria-label="Goal slot legend">${keys}</p>`;
 }
 
 /** Compact list of the most recent closed goals: "Title (repos) — delivered, 20 Sep". */
@@ -568,7 +605,9 @@ function renderClosedGoals(closed) {
 function renderGoalsSection(hosts) {
   const all = mergeGoals(hosts);
   const closed = all.filter((g) => g.state in GOAL_CLOSED_LABELS);
-  const goals = all.filter((g) => !(g.state in GOAL_CLOSED_LABELS));
+  // a slot-exempt (standing feedback) goal runs alongside the queue: it is listed after the priority-ordered goals, with no priority number
+  const live = all.filter((g) => !(g.state in GOAL_CLOSED_LABELS));
+  const goals = [...live.filter((g) => g.slot !== "alongside"), ...live.filter((g) => g.slot === "alongside")];
   if (all.length === 0) return "";
   const delivered = (g) =>
     Number.isInteger(g.scope_delivered) && Number.isInteger(g.scope_total)
@@ -579,17 +618,17 @@ function renderGoalsSection(hosts) {
     g.title
       ? `<strong>${goalName(g, g.title)}</strong><br><small>${esc((g.repos || []).join(", "))}${Number.isInteger(g.order) ? ` · order ${esc(String(g.order))}` : ""}</small>`
       : goalName(g, g.spec);
-  // the number shown is the goal's place in the start order (1 = next); it renumbers by itself as goals finish
-  const cells = (g, i) => [
-    esc(String(i + 1)),
+  // the number shown is the registry's own `priority` (the value `deliver.sh status` prints; lower starts first), not the row's place
+  const cells = (g) => [
+    esc(g.slot !== "alongside" && Number.isInteger(g.priority) ? String(g.priority) : "–"),
     goalCell(g),
     esc(HOST_LABELS[g.host] || g.host || "–"),
-    `<span class="badge goal-${esc(g.state)}${g.state === "queued" ? " goal-between_cycles" : ""}">${esc(goalStateText(g))}</span>${g.paused ? `<br><small>paused: ${esc(g.paused)}</small>` : ""}`,
+    `<span class="badge goal-${esc(g.state)}${g.state === "queued" ? " goal-between_cycles" : ""}">${esc(goalStateText(g))}</span>${slotBadge(g)}${g.paused ? `<br><small>paused: ${esc(g.paused)}</small>` : ""}`,
     esc(delivered(g)),
     esc(formatCet(g.last_cycle_at) || "–"),
   ];
   const rows = goals
-    .map((g, i) => `<tr>${tdsFor(GOAL_COLUMNS, cells(g, i))}</tr>`)
+    .map((g) => `<tr>${tdsFor(GOAL_COLUMNS, cells(g))}</tr>`)
     .join("");
   const table =
     goals.length === 0
@@ -600,7 +639,7 @@ function renderGoalsSection(hosts) {
     </table></div>`;
   return `<section class="group">
     <h2>Goals</h2>
-    ${table}${renderClosedGoals(closed)}
+    ${slotLegend(goals)}${table}${renderClosedGoals(closed)}
   </section>`;
 }
 
@@ -1020,6 +1059,12 @@ ${ROOT_VARS_CSS}
   .badge.goal-between_cycles { background: var(--gray-soft); color: var(--gray); }
   .badge.goal-delivered { background: var(--green-soft); color: var(--green); }
   .badge.goal-stopped { background: var(--gray-soft); color: var(--gray); }
+  .badge.slot-holds { background: var(--green-soft); color: var(--green); }
+  .badge.slot-waits { background: var(--gray-soft); color: var(--muted); font-weight: 500; }
+  .badge.slot-alongside { background: var(--gray-soft); color: var(--text); font-weight: 500; }
+  .slot-icon { flex: none; vertical-align: -2px; }
+  .slot-legend { display: flex; flex-wrap: wrap; gap: 0.35rem 1rem; margin: 0 0 0.6rem; font-size: 0.8rem; color: var(--muted); }
+  .slot-key { display: inline-flex; align-items: center; gap: 0.3rem; }
   .backlog-help { font-size: 0.85rem; color: var(--muted); margin: 0 0 0.75rem; }
   .bp-controls { white-space: nowrap; text-align: center; }
   tr[draggable="true"] { cursor: grab; }

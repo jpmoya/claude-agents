@@ -1,10 +1,10 @@
 #!/bin/bash
 # PreToolUse hook on Bash: JP's rule (2026-11-18) — every goal is registered as a GitHub Project
-# (`deliver.sh project:<owner>/<n>`), never as a release milestone, label, ticket or feedback goal. Issue #736 / PR #745 added the project
+# (`deliver.sh project:<owner>/<n>`), never as a release milestone, label or ticket goal (the standing `owner/repo:feedback` goals keep their spec). Issue #736 / PR #745 added the project
 # form, but milestone goals (#544 milestone 136, #618 Client portal V1) were still being registered afterwards.
 #
-# 1. Blocks a `deliver.sh` REGISTER call whose goal spec is not a project: `owner/repo:milestone:<..>`, `:milestones:all`, `label:<x>` (or a
-#    bare `--repos/--title` label registration), `owner/repo#N`, `owner/repo:feedback`, anything unparsable (also behind `register`,
+# 1. Blocks a `deliver.sh` REGISTER call whose goal spec is not a project (the standing `owner/repo:feedback` goal is the one other form allowed): `owner/repo:milestone:<..>`, `:milestones:all`, `label:<x>` (or a
+#    bare `--repos/--title` label registration), `owner/repo#N`, anything unparsable (also behind `register`,
 #    env/nohup/bash/ssh wrappers, `bash -c '...'`, `&&`/`;`/newlines). Every other subcommand (stop, release, status, resume, priority,
 #    project), `--help` and the project forms (`project:<owner>/<n>`, `owner/repo:project:<n>`) pass, and so does text that merely
 #    mentions deliver.sh (echo, grep, gh comment, git commit).
@@ -34,16 +34,20 @@ OPS = "();<>|&`\n"
 NON_REGISTER = {"status", "project", "stop", "release", "resume", "priority"}
 PASSTHRU = {"nohup", "exec", "command", "time", "env", "sudo", "setsid", "nice", "caffeinate"}
 SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "ssh", "eval"}
+FEEDBACK_SPEC = re.compile(r"^[^\s:]+/[^\s:]+:feedback$")
 PROJECT_SPEC = re.compile(r"^(project:[^\s:/]+/\d+|[^\s:]+/[^\s:]+:project:\d+)$")
 ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-
+GO_QUESTION = (
+    "ask JP: go true or go false? Registering a goal needs his explicit choice and a session may never pick it: "
+    "add --go (every ticket in the goal\x27s scope inherits agent-go) or --no-go (no agent-go is given; each ticket needs its own) to the deliver.sh command")
 RECIPE = (
     "  1. gh project create --owner Benjis-Plants --title \"Goal: <short human name>\"   (note the project number <n>)\n"
     "  2. gh project item-add <n> --owner Benjis-Plants --url <issue URL>   (once per ticket)\n"
-    "  3. ~/.claude/skills/orchestrate/deliver.sh project:Benjis-Plants/<n> [--now] [instructions...]\n"
+    "  3. ~/.claude/skills/orchestrate/deliver.sh project:Benjis-Plants/<n> --go|--no-go [--priority <n>] [--now] [instructions...]   (ask JP: go true or go false? never pick it yourself)\n"
     "The spec form is project:<owner>/<n> (or owner/repo:project:<n>). The project title is the goal\x27s name everywhere: the registry issue "
     "and the status page use the same \"<short human name>\" (no repo path, no #N, no second \"Goal:\"). Existing goals keep working: "
-    "stop, release, status, resume and priority are not blocked. See skills/orchestrate/SKILL.md, \"Registering a goal\".\n")
+    "stop, release, status, resume and priority are not blocked. See skills/orchestrate/SKILL.md, \"Registering a goal\".\n"
+    "Priority only orders the queue (and is optional: with none the goal queues in registration order; deliver.sh priority reorders it). Priority 1 does NOT make a goal start immediately or take the goal slot from a goal that is already running. To start a new goal right away you must force it: stop the goal that holds the slot (deliver.sh stop <goal>; a held or waiting-on-JP goal does not hold it), or register with --now (runs one cycle by hand; under GOAL_SERIAL=1 a --now goal that does not hold the slot returns to the queue after that cycle). There is no preempt or force-start command: stopping the holder is the only way to hand the slot over.\n")
 
 def tokens(s):
     lex = shlex.shlex(s, posix=True, punctuation_chars=OPS)
@@ -78,10 +82,15 @@ def bad_register(args):
         args = args[1:]
     if not args or args[0] in ("-h", "--help") or args[0] in NON_REGISTER:
         return None
+    if FEEDBACK_SPEC.match(args[0]):
+        return None   # the standing staff-feedback goal keeps its spec (slot exemption and scope are keyed on it); it has no go choice
     if PROJECT_SPEC.match(args[0]):
-        return None
+        missing = []
+        if "--go" not in args and "--no-go" not in args:
+            missing.append(GO_QUESTION)
+        return "; ".join(missing) if missing else None
     what = "a label goal" if args[0].startswith("-") else args[0]
-    return "refusing to register %s: every goal is registered as a GitHub Project (milestone, label, ticket and feedback goals are no longer registered)" % what
+    return "refusing to register %s: every goal is registered as a GitHub Project (milestone, label and ticket goals are no longer registered)" % what
 
 def title_problem(title):
     """Why a goal project title breaks the naming convention, or None. Only titles that claim to be goals ("Goal:...") are judged."""

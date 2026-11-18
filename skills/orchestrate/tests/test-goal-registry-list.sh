@@ -86,9 +86,45 @@ test_grl_list_a_host_that_never_synced_keeps_its_local_goal_rows() {
   dg_teardown; return $rc
 }
 
+# JP (2026-11-18): the page says which goal holds the one goal slot (GOAL_SERIAL=1), which queued goals wait for it and which standing feedback
+# goals run alongside. All three come from the registry read goal-lib's slot logic uses: goal_queue_save writes `slot` (the holder's id) and
+# `exempt` (the slot-exempt ids: spec ending :feedback, or the id of a feedback goal re-registered as a project) into goalqueue.json.
+test_grl_slot_holder_waiting_and_exempt_goals_come_from_the_registry() {
+  dg_setup
+  local rc=0 out q="$DG_PIPE/goalqueue.json"
+  GRL_ISSUES=$(jq -sc '.' \
+    <(grl_issue 600 open "Goal: Holder goal" '{"v":2,"id":"ex_holder","spec":"project:example-owner/5","host":"vm","title":"Holder goal","priority":2,"order":600}') \
+    <(grl_issue 601 open "Goal: Waiting goal" '{"v":2,"id":"ex_waiter","spec":"project:example-owner/6","host":"","title":"Waiting goal","priority":3,"order":601}' goal-queued) \
+    <(grl_issue 537 open "Goal: Ops feedback" '{"v":1,"id":"ex_ops-fb-feedback","spec":"example-owner/ops:feedback","host":"mac","title":"ops feedback","priority":1}') \
+    <(grl_issue 538 open "Goal: Sales feedback" '{"v":1,"id":"ex_sales-fb-feedback","spec":"example-owner/sales:feedback","host":"mac","title":"sales feedback","priority":4}'))
+  export GRL_ISSUES
+  dg_lib 'printf "%s" "$GRL_ISSUES" | jq -c "$_GOAL_ISSUE_JQ"" map(goal_of)" > "$PIPE/grl-registry.json"; goal_queue_save "$(cat "$PIPE/grl-registry.json")"'
+  assert_eq "$(jq -c '[.serial, .slot]' "$q")" '[true,"ex_holder"]' "the sync records the holder: the first active goal that is not slot-exempt" || rc=1
+  assert_eq "$(jq -c '.exempt | sort' "$q")" '["ex_ops-fb-feedback","ex_sales-fb-feedback"]' "and the exempt goals: the :feedback specs" || rc=1
+  jq -nc '{id:"ex_holder", host:"vm", spec:"project:example-owner/5", state:"active"}' > "$DG_PIPE/goal-ex_holder.json"
+  jq -nc '{id:"ex_ops-fb-feedback", host:"mac", spec:"example-owner/ops:feedback", state:"active"}' > "$DG_PIPE/goal-ex_ops-fb-feedback.json"
+  out=$(grl_page)
+  assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id == "ex_holder") | "\(.slot) \(.host)"')" "holds vm" "the holder holds the slot, on the host it runs on" || rc=1
+  assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id == "ex_waiter") | .slot')" "waits" "a queued goal waits for the slot" || rc=1
+  assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id == "ex_ops-fb-feedback") | .slot')" "alongside" "a :feedback goal runs alongside" || rc=1
+  assert_eq "$(printf '%s' "$out" | jq -r '.[] | select(.id == "ex_sales-fb-feedback") | .slot')" "alongside" "a :feedback goal runs alongside" || rc=1
+  # the registry's own numbers on the page: priority as registered
+  assert_eq "$(printf '%s' "$out" | jq -c '[.[] | {id, priority}] | map(select(.priority != null)) | sort_by(.id) | map(.priority)')" "[2,1,4,3]" "priority values are the registry's (sorted by id: holder, ops-fb, sales-fb, waiter)" || rc=1
+  # GOAL_SERIAL_FEEDBACK=1: feedback goals take their turn like any goal, so nothing is "alongside"
+  dg_lib 'GOAL_SERIAL_FEEDBACK=1; printf "%s" "$GRL_ISSUES" | jq -c "$_GOAL_ISSUE_JQ"" map(goal_of)" > "$PIPE/grl-registry2.json"; goal_queue_save "$(cat "$PIPE/grl-registry2.json")"'
+  assert_eq "$(jq -c '.exempt' "$q")" "[]" "GOAL_SERIAL_FEEDBACK=1: no goal is exempt" || rc=1
+  assert_eq "$(jq -r '.slot' "$q")" "ex_ops-fb-feedback" "and the first active goal in queue order (ops feedback, priority 1) holds the slot" || rc=1
+  # a host that is not serial reports no slot at all
+  dg_lib 'GOAL_SERIAL=0; printf "%s" "$GRL_ISSUES" | jq -c "$_GOAL_ISSUE_JQ"" map(goal_of)" > "$PIPE/grl-registry3.json"; goal_queue_save "$(cat "$PIPE/grl-registry3.json")"'
+  out=$(grl_page)
+  assert_eq "$(printf '%s' "$out" | jq -c '[.[] | has("slot")] | any')" "false" "GOAL_SERIAL=0: no slot field on any goal" || rc=1
+  dg_teardown; return $rc
+}
+
 for t in test_grl_names_registry_issue_title_is_the_goal_name \
          test_grl_list_the_status_page_lists_exactly_the_registered_goals_under_registry_names \
          test_grl_list_equals_the_registry_whatever_the_projects_hold \
-         test_grl_list_a_host_that_never_synced_keeps_its_local_goal_rows; do
+         test_grl_list_a_host_that_never_synced_keeps_its_local_goal_rows \
+         test_grl_slot_holder_waiting_and_exempt_goals_come_from_the_registry; do
   run_test "$t"
 done

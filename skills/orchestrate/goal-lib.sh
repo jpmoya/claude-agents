@@ -105,12 +105,22 @@ goal_title_check() {
 # every goal is a project; milestone, label, ticket and feedback goals are no longer registered). hooks/block-nonproject-goal.sh carries
 # the same recipe; keep the two in step.
 goal_nonproject_refusal() {
-  printf '%s\n' "refusing to register $1: every goal is registered as a GitHub Project (spec project:<owner>/<n>); milestone, label, ticket and feedback goals are no longer registered:" \
+  printf '%s\n' "refusing to register $1: every goal is registered as a GitHub Project (spec project:<owner>/<n>); milestone, label and ticket goals are no longer registered (only the standing owner/repo:feedback goal keeps its spec):" \
     '  1. gh project create --owner Benjis-Plants --title "Goal: <short human name>"   (note the project number <n>)' \
     '  2. gh project item-add <n> --owner Benjis-Plants --url <issue URL>   (once per ticket)' \
-    '  3. deliver.sh project:Benjis-Plants/<n> [--now] [instructions...]' \
+    '  3. deliver.sh project:Benjis-Plants/<n> --go|--no-go [--priority <n>] [--now] [instructions...]   (ask JP: go true or go false? never pick it yourself)' \
     'The project title is the goal'"'"'s name everywhere: the registry issue and the status page use the same "<short human name>".' \
-    "Existing goals keep working (status, stop, release, resume, priority). Legacy tooling only: GOAL_ALLOW_LEGACY_REGISTER=1 deliver.sh <spec>."
+    "Existing goals keep working (status, stop, release, resume, priority). Legacy tooling only: GOAL_ALLOW_LEGACY_REGISTER=1 deliver.sh <spec>." \
+    "Priority only orders the queue (and is optional: with none the goal queues in registration order; deliver.sh priority reorders it). Priority 1 does NOT make a goal start immediately or take the goal slot from a goal that is already running. To start a new goal right away you must force it: stop the goal that holds the slot (deliver.sh stop <goal>; a held or waiting-on-JP goal does not hold it), or register with --now (runs one cycle by hand; under GOAL_SERIAL=1 a --now goal that does not hold the slot returns to the queue after that cycle). There is no preempt or force-start command: stopping the holder is the only way to hand the slot over."
+}
+
+# goal_go_refusal <spec> — the text deliver.sh dies with when a registration states no go choice (JP, 2026-11-18: there is NO default).
+# hooks/block-nonproject-goal.sh carries the same question; keep the two in step.
+goal_go_refusal() {
+  printf '%s\n' "refusing to register ${1:-the goal}: ask JP: go true or go false? Registering a goal needs his explicit choice and a session may never pick it:" \
+    '  --go     go true: every ticket in the goal'"'"'s scope inherits agent-go (the goal'"'"'s tickets start on their own)' \
+    '  --no-go  go false: no agent-go is given; each ticket needs its own agent-go from JP' \
+    "Add the flag he chose: deliver.sh project:<owner>/<n> --go|--no-go [--priority <n>] [--now] [instructions...]. Legacy tooling only: GOAL_ALLOW_LEGACY_REGISTER=1."
 }
 
 # goal_name_for <spec> -> a human-readable name for a milestone / ticket goal ("scheduler: Native 3.4", "scheduler #1345: Title");
@@ -1488,7 +1498,7 @@ goal_tick_one() {  # <id>
         new=$(printf '%s' "$GE_SNAP" | goal_snapshot); old=$(cat "$PIPE/goal-$id.snap" 2>/dev/null)
         if [ "$GE_TOTAL" -gt 0 ] && [ -n "$old" ] && [ "$new" != "$old" ]; then
           # GOAL_SERIAL=1: a goal coming back is not a new start that skips the line: it rejoins the queue
-          if goal_serial && ! goal_slot_exempt "$spec" "$id"; then goal_requeue "$id" "$issue" "unheld (scope changed)"; return 0; fi
+          if goal_serial && ! goal_slot_exempt "$spec"; then goal_requeue "$id" "$issue" "unheld (scope changed)"; return 0; fi
           rm -f "$PIPE/goal-$id.held"; echo 0 > "$PIPE/goal-$id.np"; _goal_reset_streaks "$id"
           _goal_label_del "$issue" goal-held
           slog "[goal] $id unheld — scope changed"
@@ -1542,7 +1552,7 @@ goal_tick_one() {  # <id>
     fi
   fi
   if [ -f "$PIPE/goal-$id.idle" ]; then   # #627: the lead found nothing it may dispatch: hand the slot to the next queued goal
-    if goal_serial && ! goal_slot_exempt "$spec" "$id"; then
+    if goal_serial && ! goal_slot_exempt "$spec"; then
       local qn qids icnt isnap
       # the scope is read first (one evaluation): a delivered goal closes and a goal whose every open ticket waits on JP is
       # "waiting on JP" (frees the slot, resumes by itself when a ticket moves) — neither rotates through the queue
@@ -1612,7 +1622,7 @@ goal_tick_one() {  # <id>
     goal_mirror "$id" waiting_jp "$GE_TOTAL" "$GE_DELIVERED"
     goal_waiting "$id" "$issue" "$spec"; return 0
   fi
-  if goal_serial && ! goal_slot_exempt "$spec" "$id"; then
+  if goal_serial && ! goal_slot_exempt "$spec"; then
     # GOAL_SERIAL=1 (one goal for both hosts): a goal back from waiting on JP rejoins the queue; an active goal that does not
     # hold the slot (a hand launch, or one already running when the mode was switched on) ended its cycle: back to the queue.
     # The slot is read fresh from the registry here (one read per relaunch decision); its in-flight tickets are untouched.
@@ -1688,7 +1698,7 @@ _GOAL_QUEUE_JQ='def okey: [((.block.priority? // .block.order? // .issue) | if t
 # again within $cool seconds (GOAL_CYCLE_SECS) of the hand-off: several idle goals cost one lead cycle each per cycle
 # instead of rotating back-to-back. Needs --argjson now (epoch seconds) and --argjson cool.
 _GOAL_QUEUE_SERIAL_JQ='def okey: [(if (.block.deferred_at? // "") != "" then 1 else 0 end), ((.block.priority? // .block.order? // .issue) | if type == "number" then . else 1e12 end), .issue];
-  def exempt: $fbfree and (((.spec // "") | test(":feedback$")) or ((.id // "") | test("-fb-feedback$")));   # a feedback goal re-registered as a project keeps its id
+  def exempt: $fbfree and (((.spec // "") | test(":feedback$")));
   def cooling: .st == "queued" and ((.block.deferred_at? // "") != "") and (((.block.deferred_at | try fromdateiso8601 catch 0) + $cool) > $now);
   sort_by(okey) as $all
   | ($all | map(select(.st == "queued"))) as $q
@@ -1696,6 +1706,7 @@ _GOAL_QUEUE_SERIAL_JQ='def okey: [(if (.block.deferred_at? // "") != "" then 1 e
   | (($h != null) or any($all[]; .st == "unreadable")) as $busy
   | ($all | map(select(.st == "unreadable" or (.st == "queued" and (cooling | not)))) | first // null) as $f
   | {queued: $q, candidate: (if ($busy | not) and $f != null and $f.st == "queued" then $f else null end), serial: true, slot: ($h.id // null),
+     exempt: ($all | map(select(exempt)) | map(.id)),
      recent: ($all | map(select(.st == "delivered" or .st == "stopped")) | sort_by(.closed_at // "") | reverse | .[:5]),
      open: ($all | map(select(.st == "active" or .st == "held" or .st == "waiting_jp")))}'
 
@@ -1715,7 +1726,6 @@ _goal_queue_jq() {
 goal_slot_exempt() {
   [ "${GOAL_SERIAL_FEEDBACK:-0}" = 1 ] && return 1
   case "$1" in *:feedback) return 0 ;; esac
-  case "${2:-}" in *-fb-feedback) return 0 ;; esac   # the feedback goal's id survives its re-registration as project:<owner>/<n>
   return 1
 }
 
@@ -1819,7 +1829,7 @@ goal_slot_spread_nums() {
 goal_queue_save() {
   local f="$PIPE/$GOAL_QUEUE_FILE_NAME" v
   v=$(printf '%s' "$1" | _goal_queue_jq '
-    | (if .serial then {serial: true, slot: .slot} else {} end) + {at: (now | floor),
+    | (if .serial then {serial: true, slot: .slot, exempt: (.exempt // [])} else {} end) + {at: (now | floor),
        candidate: (.candidate.id // null),
        recent: (.recent | map({id, issue, spec, name: (.name // ""), title: (.block.title // ""), label: (.block.label // ""), repos: (.block.repos // []), st, closed_at, priority: (.block.priority? // null), project_url: (.block.project?.url? // .block.scope_project?.url? // "")})),
        open: (.open | map({id, issue, spec, name: (.name // ""), title: (.block.title // ""), label: (.block.label // ""), repos: (.block.repos // []),

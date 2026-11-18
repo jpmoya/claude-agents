@@ -411,6 +411,60 @@ test_gps_register_refuses_without_the_project_scope_but_other_goals_still_regist
   dg_teardown; return $rc
 }
 
+# 2026-11-18 (JP): no default go. gps_run_strict runs deliver.sh with the legacy override unset (run-tests.sh exports it for the older suites).
+gps_run_strict() {
+  local keep=${GOAL_ALLOW_LEGACY_REGISTER-__unset__}
+  unset GOAL_ALLOW_LEGACY_REGISTER
+  dg_run "$@"
+  [ "$keep" = __unset__ ] || export GOAL_ALLOW_LEGACY_REGISTER=$keep
+}
+
+test_gps_register_requires_an_explicit_go_choice_and_records_it() {
+  gps_setup
+  local rc=0 f
+  gps_run_strict "$GPS_SPEC"
+  assert_eq "$DG_RC" "1" "no --go / --no-go: refused" || rc=1
+  assert_contains "$DG_ERR" "ask JP: go true or go false?" "asks the question" || rc=1
+  assert_contains "$DG_ERR" "a session may never pick it" "says the session never picks" || rc=1
+  assert_eq "$(dg_reg_count)" "0" "no registry issue" || rc=1
+  assert_eq "$(dg_writes)" "0" "nothing written to GitHub" || rc=1
+  gps_run_strict "$GPS_SPEC" --go --no-go
+  assert_eq "$DG_RC" "1" "both flags: refused" || rc=1
+  assert_contains "$DG_ERR" "exclusive" "says they are exclusive" || rc=1
+  gps_run_strict "$GPS_SPEC" --priority 1
+  assert_eq "$DG_RC" "1" "a priority but no go choice: refused" || rc=1
+  assert_contains "$DG_ERR" "ask JP: go true or go false?" "asks the go question" || rc=1
+  assert_eq "$(dg_reg_count)" "0" "none of them wrote a registry issue" || rc=1
+  assert_eq "$(dg_writes)" "0" "nothing written to GitHub" || rc=1
+  gps_run_strict "$GPS_SPEC" --go
+  assert_eq "$DG_RC" "0" "--go with no priority registers (stderr: $DG_ERR)" || rc=1
+  f=$(dg_reg_file_for "$GPS_ID")
+  assert_eq "$(dg_block "$f" | jq -c 'has("priority")')" "false" "no priority was given: none is recorded (the goal queues in registration order)" || rc=1
+  assert_eq "$(dg_block "$f" | jq -c '[.go, (.granted | length), (.granted_at != null)]')" "[true,2,true]" "go true: the two open items are granted, granted_at recorded" || rc=1
+  assert_ne "$(grep -c 'POST repos/example-owner/project-a/issues/101/labels' "$DG_BIN/writes.log")" "0" "go true: agent-go was added to an open item" || rc=1
+  gps_run_strict status
+  assert_contains "$DG_OUT" "go=true" "status shows go=true" || rc=1
+  dg_teardown
+  gps_setup
+  gps_run_strict "$GPS_SPEC" --no-go --priority 1
+  assert_eq "$DG_RC" "0" "--no-go registers (stderr: $DG_ERR)" || rc=1
+  f=$(dg_reg_file_for "$GPS_ID")
+  assert_eq "$(dg_block "$f" | jq -c '[.go, (.granted | length), (.granted_at // "none")]')" '[false,0,"none"]' "go false: nothing granted, no granted_at" || rc=1
+  assert_eq "$(grep -cE 'repos/example-owner/project-[ab]/issues/[0-9]+/labels' "$DG_BIN/writes.log")" "0" "go false: no agent-go label written to any ticket" || rc=1
+  assert_not_contains "$(jq -r .body "$f")" "Go-granted" "go false: no Go-granted line in the registry body" || rc=1
+  assert_eq "$(dg_block "$f" | jq -r .priority)" "1" "an explicit priority is recorded as given" || rc=1
+  gps_run_strict status
+  assert_contains "$DG_OUT" "go=false" "status shows go=false" || rc=1
+  dg_teardown
+  # a registry block with no go field (the two standing feedback goals) is shown explicitly, its behaviour unchanged
+  gps_setup
+  DG_GOAL_ID=$DG_ID_T7; dg_goal 507 "$DG_SPEC_T7" host-a active
+  gps_run_strict status
+  assert_contains "$DG_OUT" "go=unset" "status shows go=unset for a block with no go field" || rc=1
+  dg_teardown
+  return $rc
+}
+
 # 2026-11-18 (JP): one name everywhere. The project must be titled "Goal: <short human name>"; the registry issue gets the same string.
 test_gps_register_names_the_registry_issue_from_the_project_name_and_refuses_a_bad_title() {
   gps_setup
@@ -711,6 +765,7 @@ test_gps_product_manager_doc_ties_project_goals_to_the_project_not_the_milestone
 for t in test_gps_parse_canonical_and_alias \
          test_gps_register_writes_a_v2_block_with_derived_repos_and_the_go \
          test_gps_register_refuses_without_the_project_scope_but_other_goals_still_register \
+         test_gps_register_requires_an_explicit_go_choice_and_records_it \
          test_gps_register_names_the_registry_issue_from_the_project_name_and_refuses_a_bad_title \
          test_gps_register_refuses_unreadable_empty_and_undispatched_projects \
          test_gps_overlap_both_ways_with_every_kind_of_goal \

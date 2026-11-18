@@ -871,6 +871,21 @@ def build_goals():
     for e in out:
         if e["id"] in reg_name:
             e["title"] = reg_name[e["id"]]
+    # Where each goal stands on the one goal slot (GOAL_SERIAL=1; the sync writes `slot` = the holder's id and `exempt` = the slot-exempt goals,
+    # i.e. the feedback goals, into goalqueue.json from the same registry read goal-lib's slot logic uses): "holds" on the holder (its host is the
+    # row's host), "alongside" on an exempt goal, "waits" on a queued one. Nothing when the queue file does not say it is serial.
+    if isinstance(q, dict) and q.get("serial") is True:
+        holder = q.get("slot") if isinstance(q.get("slot"), str) else None
+        exempt = set(x for x in (q.get("exempt") or []) if isinstance(x, str)) if isinstance(q.get("exempt"), list) else set()
+        for e in out:
+            if e.get("state") in ("delivered", "stopped"):
+                continue
+            if e["id"] in exempt:
+                e["slot"] = "alongside"
+            elif holder and e["id"] == holder:
+                e["slot"] = "holds"
+            elif e.get("state") == "queued":
+                e["slot"] = "waits"
     return out
 
 

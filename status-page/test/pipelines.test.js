@@ -417,6 +417,12 @@ describe("existing status view unchanged (AC3)", () => {
   .badge.goal-between_cycles { background: var(--gray-soft); color: var(--gray); }
   .badge.goal-delivered { background: var(--green-soft); color: var(--green); }
   .badge.goal-stopped { background: var(--gray-soft); color: var(--gray); }
+  .badge.slot-holds { background: var(--green-soft); color: var(--green); }
+  .badge.slot-waits { background: var(--gray-soft); color: var(--muted); font-weight: 500; }
+  .badge.slot-alongside { background: var(--gray-soft); color: var(--text); font-weight: 500; }
+  .slot-icon { flex: none; vertical-align: -2px; }
+  .slot-legend { display: flex; flex-wrap: wrap; gap: 0.35rem 1rem; margin: 0 0 0.6rem; font-size: 0.8rem; color: var(--muted); }
+  .slot-key { display: inline-flex; align-items: center; gap: 0.3rem; }
   .backlog-help { font-size: 0.85rem; color: var(--muted); margin: 0 0 0.75rem; }
   .bp-controls { white-space: nowrap; text-align: center; }
   tr[draggable="true"] { cursor: grab; }

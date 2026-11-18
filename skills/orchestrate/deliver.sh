@@ -6,8 +6,9 @@
 #   deliver.sh <goal> [--now] [--host <hostname>] [--hosts both|mac|vm] [--priority <n>] [instructions...]
 #                                         --hosts (default both): both = the goal's tickets run on either machine (one lead only); mac|vm = whole goal on that machine
 #                                         register (state queued). <goal> = project:<owner>/<number> (or owner/repo:project:<number>): a GitHub Project
-#                                         titled "Goal: <short human name>", its issue items are the scope (#736). JP, 2026-11-18: the ONLY form registered;
-#                                         milestone / label / #N / :feedback goals are refused (GOAL_ALLOW_LEGACY_REGISTER=1 for legacy tooling)
+#                                         titled "Goal: <short human name>", its issue items are the scope (#736), with --go|--no-go (JP's choice, no default).
+#                                         JP, 2026-11-18: the only form registered besides the standing owner/repo:feedback goal (no go, no priority);
+#                                         milestone / label / #N goals are refused (GOAL_ALLOW_LEGACY_REGISTER=1 for legacy tooling)
 #                                         --now: also launch one cycle here at once (hand use, skips the queue)
 #                                         (GOAL_SERIAL=1, one goal at a time: a --now goal that does not hold the slot returns to the queue after that cycle)
 #                                         --priority N / --after <goal> / --before <goal>: where it goes in the start order (default: last)
@@ -251,14 +252,16 @@ reg_priority() {
 }
 
 cmd_register_args() {
-  local spec="" repos="" title="" req="" sentry=0 mockups=review instr="" now=0 pin="" a hosts=both approve_all=0 line
+  local spec="" repos="" title="" req="" sentry=0 mockups=review instr="" now=0 pin="" a hosts=both approve_all=0 line go_choice=""
   case "${1:-}" in --*|'') ;; *) spec="$1"; shift ;; esac
-  # JP, 2026-11-18: every goal is a GitHub Project (project:<owner>/<n>). Milestone, label (--repos/--title), ticket and feedback goals are no
-  # longer registered; status/stop/release/resume/priority of existing ones are other subcommands. A malformed spec falls through to its own error.
+  # JP, 2026-11-18: every goal is a GitHub Project (project:<owner>/<n>), except the standing staff-feedback goals (owner/repo:feedback), whose
+  # slot exemption and per-repo scope are keyed on that spec (goal-lib's exempt test, goal_slot_exempt). Milestone, label (--repos/--title)
+  # and ticket goals are no longer registered; status/stop/release/resume/priority of existing ones are other subcommands. A malformed spec
+  # falls through to its own error.
   if [ "${GOAL_ALLOW_LEGACY_REGISTER:-}" != 1 ]; then
     if [ -z "$spec" ]; then die "$(goal_nonproject_refusal "a label goal")"
     elif line=$(goal_parse "$spec" 2>/dev/null); then
-      [ "$(printf '%s' "$line" | cut -f2)" = proj ] || die "$(goal_nonproject_refusal "$spec")"
+      case "$(printf '%s' "$line" | cut -f2)" in proj|fb) ;; *) die "$(goal_nonproject_refusal "$spec")" ;; esac
     fi
   fi
   while [ $# -gt 0 ]; do
@@ -269,7 +272,9 @@ cmd_register_args() {
       --mockups) mockups="${2:-}"; case "$mockups" in review|skip) ;; *) die "--mockups takes review or skip" ;; esac; shift 2 ;;
       --include-sentry) sentry=1; shift ;;
       --now) now=1; shift ;;
+      --go|--no-go) [ -z "$go_choice" ] || [ "$go_choice" = "${1#--}" ] || die "--go and --no-go are exclusive: JP chooses one"; go_choice="${1#--}"; shift ;;
       --approve-all) approve_all=1; shift ;;
+      --priority=*) PRIORITY="${1#--priority=}"; case "$PRIORITY" in ''|*[!0-9]*|0) die "--priority needs a whole number, 1 or more (1 starts first)" ;; esac; shift ;;
       --priority) PRIORITY="${2:-}"; case "$PRIORITY" in ''|*[!0-9]*|0) die "--priority needs a whole number, 1 or more (1 starts first)" ;; esac; shift 2 ;;
       --after|--before) PLACE_MODE="${1#--}"; PLACE_REF="${2:-}"; [ -n "$PLACE_REF" ] || die "$1 needs a goal (spec or id)"; shift 2 ;;
       --hosts) hosts="${2:-}"; case "$hosts" in both|mac|vm) ;; *) die "--hosts takes both, mac or vm" ;; esac; shift 2 ;;
@@ -277,14 +282,22 @@ cmd_register_args() {
       *) instr="${instr:+$instr }$1"; shift ;;
     esac
   done
-  PRIORITY=$(reg_priority) || exit 1; PLACE_MODE=""   # resolved once: the others are renumbered now
+  # JP, 2026-11-18: no default go. JP states it (--go: tickets in scope inherit agent-go; --no-go: each ticket needs its own agent-go); a session
+  # may never pick it. Legacy tooling (GOAL_ALLOW_LEGACY_REGISTER=1) keeps the old default (go).
+  # (a standing feedback goal has no go field: its tickets dispatch on their own, so the choice does not apply to it)
+  if [ -z "$go_choice" ] && [ "${GOAL_ALLOW_LEGACY_REGISTER:-}" != 1 ] && [ "$(goal_parse "$spec" 2>/dev/null | cut -f2)" != fb ]; then die "$(goal_go_refusal "$spec")"; fi
+  [ -n "$go_choice" ] || go_choice=go
+  # a project goal registered with no --priority/--after/--before queues in registration order (block.order, then issue number, as goal-lib's queue
+  # key falls back) and records no priority; deliver.sh priority reorders it later (JP, 2026-11-18). Legacy kinds keep the old "last" default.
+  if [ "$(goal_parse "$spec" 2>/dev/null | cut -f2)" = proj ] && [ -z "$PRIORITY" ] && [ -z "$PLACE_MODE" ]; then PLACE_MODE=""
+  else PRIORITY=$(reg_priority) || exit 1; PLACE_MODE=""; fi   # resolved once: the others are renumbered now
   case "$spec" in ''|label:*) [ "$approve_all" = 0 ] || die "--approve-all only applies to msall goals" ;; esac
   [ "$hosts" = both ] || case "$spec" in ''|label:*) ;; *) die "--hosts only applies to label goals" ;; esac
   case "$spec" in
     ''|label:*) cmd_register_label "$spec" "$repos" "$title" "$req" "$sentry" "$mockups" "$instr" "$now" "$pin" "$hosts" ;;
     *)
       if [ -n "$repos$title$req" ]; then die "--repos/--title/--requirements only apply to label goals"; fi
-      if [ "$(goal_parse "$spec" 2>/dev/null | cut -f2)" = proj ]; then cmd_register_proj "$spec" "$instr" "$now" "$pin" "$sentry"
+      if [ "$(goal_parse "$spec" 2>/dev/null | cut -f2)" = proj ]; then cmd_register_proj "$spec" "$instr" "$now" "$pin" "$sentry" "$go_choice"
       else cmd_register "$spec" "$instr" "$now" "$pin" "$sentry" "$approve_all"; fi ;;
   esac
 }
@@ -361,8 +374,9 @@ cmd_register() {
 # canonical form). The scope is the project's issue items, read live; the block (v2) records the repos derived from them and the project
 # (`scope_project`, never the mirror's `project` key: no second project is created for it). Registering is JP's go, as for a milestone goal.
 cmd_register_proj() {
-  local spec="$1" instr="$2" now="${3:-0}" pin="${4:-}" sentry="${5:-0}" ref id info title url repos kept="" dropped="" r checkout host=""
+  local spec="$1" instr="$2" now="${3:-0}" pin="${4:-}" sentry="${5:-0}" go_choice="${6:-go}" ref id info title url repos kept="" dropped="" r checkout host=""
   local block body resp n go=true granted='[]' granted_at repos_json owner num why
+  [ "$go_choice" != no-go ] || go=false   # JP's explicit choice (--no-go): no agent-go is given, each ticket needs its own
   ref=$(goal_parse "$spec" | cut -f3); spec="project:$ref"; owner=${ref%%/*}; num=${ref##*/}
   id=$(goal_id "$spec") || exit 1
   goal_project_token_ok || { _goal_proj_err "$ref" "this host's gh token lacks the project scope"; die "reading project $ref needs the gh \`project\` scope on this host (run: gh auth refresh -s project), or register it from a host that has it"; }
@@ -391,12 +405,13 @@ cmd_register_proj() {
   [ "$now" = 1 ] && host="$THIS_HOST"   # queued goals have no host until the supervisor starts them (#320)
   # this host's token has the project scope (checked above); another host may not, so the goal stays here unless --host says otherwise
   [ -n "$pin" ] || pin=$(printf '%s' "$THIS_HOST" | tr '[:upper:]' '[:lower:]')
-  granted_at=$(date -u +%F)
+  granted_at=""; [ "$go" != true ] || granted_at=$(date -u +%F)
   block=$(jq -nc --arg id "$id" --arg spec "$spec" --arg host "$host" --arg pin "$pin" --arg created "$(now_utc)" --arg ins "$instr" --arg title "$title" \
-    --argjson repos "$repos_json" --argjson prio "$PRIORITY" --argjson sentry "$([ "$sentry" = 1 ] && echo true || echo false)" \
-    --arg o "$owner" --argjson num "$num" --arg url "$url" --arg d "$granted_at" \
-    '{v:2,id:$id,title:$title,repos:$repos,order:0,priority:$prio,go:true,granted:[],granted_at:$d,host_pref:$pin,hosts:"both",include_sentry:$sentry,
-      spec:$spec,host:$host,created:$created,instructions:$ins,scope_project:{owner:$o,number:$num,url:$url}}')
+    --argjson repos "$repos_json" --argjson prio "${PRIORITY:-null}" --argjson sentry "$([ "$sentry" = 1 ] && echo true || echo false)" \
+    --arg o "$owner" --argjson num "$num" --arg url "$url" --arg d "$granted_at" --argjson go "$go" \
+    '{v:2,id:$id,title:$title,repos:$repos,order:0,go:$go,granted:[],host_pref:$pin,hosts:"both",include_sentry:$sentry,
+      spec:$spec,host:$host,created:$created,instructions:$ins,scope_project:{owner:$o,number:$num,url:$url}}
+     + (if $d != "" then {granted_at:$d} else {} end) + (if $prio != null then {priority:$prio} else {} end)')
   ensure_label delivery-goal
   [ "$now" = 1 ] || ensure_label goal-queued
   resp=$(api_json POST "repos/$GOAL_REGISTRY_REPO/issues" \
@@ -404,7 +419,7 @@ cmd_register_proj() {
        '{title:$t, body:$b, labels:(["delivery-goal"] + (if $now == 1 then [] else ["goal-queued"] end))}')") \
     || die "could not create the registry issue"
   n=$(printf '%s' "$resp" | jq -r .number)
-  granted=$(_goal_grant_scope "$spec" "$id" "$sentry" '[]') || goal_err "cannot grant go on every in-scope ticket of $id"
+  if [ "$go" = true ]; then granted=$(_goal_grant_scope "$spec" "$id" "$sentry" '[]') || goal_err "cannot grant go on every in-scope ticket of $id"; else granted='[]'; fi
   block=$(printf '%s' "$block" | jq -c --argjson g "${granted:-[]}" --argjson n "$n" '.granted = $g | .order = $n')
   # non-fatal: the goal sync reconciles a missed record (already-labelled tickets are recorded without re-adding)
   api_json PATCH "repos/$GOAL_REGISTRY_REPO/issues/$n" "$(jq -nc --arg b "$(goal_body_v2 "$block" "$granted_at")" '{body:$b}')" >/dev/null \
@@ -586,8 +601,11 @@ cmd_status() {
     else
       total="?"; closed="?"
     fi
-    printf '%s  %s  host=%s  %s  %s/%s%s\n' "$id" "$spec" "$(printf '%s' "$g" | jq -r .host)" "$(goal_state_label "$g")" "$closed" "$total" \
-      "$(printf '%s' "$g" | jq -r 'if (.block.priority? | type) == "number" then "  priority=\(.block.priority)" else "" end')"
+    # go is always shown (JP, 2026-11-18): true / false as registered; "unset" for a block with no go field (the two standing feedback goals,
+    # whose behaviour is unchanged: their tickets dispatch on their own)
+    printf '%s  %s  host=%s  %s  %s/%s%s%s\n' "$id" "$spec" "$(printf '%s' "$g" | jq -r .host)" "$(goal_state_label "$g")" "$closed" "$total" \
+      "$(printf '%s' "$g" | jq -r 'if (.block.priority? | type) == "number" then "  priority=\(.block.priority)" else "" end')" \
+      "$(printf '%s' "$g" | jq -r '"  go=" + (.block.go? | if . == true then "true" elif . == false then "false" else "unset" end)')"
     n=$((n + 1))
   done <<< "$(printf '%s' "$reg" | jq -c '.[]')"
   [ "$n" -gt 0 ] || echo "no goals"
