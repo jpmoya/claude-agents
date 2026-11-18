@@ -288,3 +288,18 @@ No new Worker secret or KV namespace: `/learnings/push` reuses `TOKEN_MAC`/`TOKE
 `coming: true` renders a "coming" chip — flip the flag when the rule lands. The pipelines vitest
 file fails if a stage name or condition drifts from `agents/*.md`. Render errors return 500 and call
 `captureError` (release/environment/route tags; Slack via `SLACK_WEBHOOK_URL`, a no-op when unset).
+
+## Sales Agents tab
+
+`GET /sales-agents` is a static, server-rendered diagram of Benji's separate outbound-sales agent
+pipeline (lead-sourcing-researcher, outbound-sales-writer, partnership-outbound-writer,
+outbound-sequencer, and a reply-watch scheduled task) — documentation only, since that pipeline
+lives in a different repo (Benjis-Plants/sales-agents) and has nothing to do with the engineering
+ticket pipeline the Pipelines tab renders. Data lives in `src/sales-agents.js`, reusing
+`src/pipelines.js`'s `{ name, when?, inputs }` stage shape so it renders with the same
+box-and-arrow UML style, but it is free text throughout and carries none of the Pipelines tab's
+drift check against `agents/*.md`. Shows the two Copper-pipeline tracks (Vancouver Outbound;
+Preferred Vendor Outreach) with their own daily-volume stat tiles (5-7/day and 3/day) alongside a
+distinctly labelled per-prospect cap tile (3 emails, ever) — the two "3"s mean different things and
+are kept visually and textually separate. Same noindex/session-cookie/`captureError` conventions
+as the other tabs.
