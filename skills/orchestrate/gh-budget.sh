@@ -221,7 +221,8 @@ _gh_since_mark_synced() {  # <owner/repo> — this process trusts the no-TTL cac
 }
 _gh_since_unmark_synced() {  # <owner/repo> — a failed sync must never leave it trusted
   local r; r=$(_gh_since_lc "$1")
-  _GH_SYNCED=$(printf '%s' "${_GH_SYNCED:- }" | sed "s/ $r / /")
+  local cur=${_GH_SYNCED:- }
+  _GH_SYNCED=${cur//" $r "/ }   # quoted pattern: the "/" of owner/repo broke the old sed expression and emptied the whole set
 }
 _gh_since_synced() {  # <owner/repo> — 0 if this process has successfully synced it
   case "${_GH_SYNCED:- }" in *" $(_gh_since_lc "$1") "*) return 0 ;; esac

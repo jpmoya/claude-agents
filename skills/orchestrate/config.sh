@@ -26,6 +26,11 @@ sentry_goal_label() {
 MAX_CONCURRENT=3
 MAX_CLAUDE_PROCS=10                         # orchestrator pre-dispatch gate ceiling: counts pipeline-launched claude processes (orchestrators, their stages, delivery-lead goal runs and supervisor-launched intake/product-manager runs, minus the caller; a rough bound). must stay ≥ 3 × (1 + 2 stages) − 1 + MAX_GOALS — raise it whenever MAX_CONCURRENT or MAX_GOALS is raised.
 MEM_FLOOR_MB=1200
+# Queue drain (supervisor step 2, audit 2026-11-18): at most this many queued runs start per tick; each one after the first
+# needs a free slot and MEM_FLOOR_MB + DRAIN_MEM_PER_LAUNCH_MB x (launches already made this tick) free memory (a run that
+# just started has not taken its memory yet; ~1190 MB per orchestrator + stage, measured 2026-09-21). 1 = the old one per tick.
+DRAIN_MAX_PER_TICK=3
+DRAIN_MEM_PER_LAUNCH_MB=1200
 MAX_NO_PROGRESS=3
 MAX_TOTAL=6
 BACKOFF=(120 300 900 1800)

@@ -155,10 +155,17 @@ already looks at; #762 is the place for the goal-side banner.
 
 ## 6. Fixed in this audit
 
-- Queue drain launches up to `DRAIN_MAX_PER_TICK` (default 3) queued tickets per tick, oldest first, re-checking slots
-  and memory before each extra launch and reserving `DRAIN_MEM_PER_LAUNCH_MB` (default 1200) per launch already made this
-  tick, because free memory lags a just-started run. PR: see the PR that adds this file.
-- `gh-budget.sh` synced-set removal no longer builds a sed expression from `owner/repo`.
+- **Queue drain starts up to 3 queued runs per tick** (`supervisor.sh` step 2, `DRAIN_MAX_PER_TICK=3` and
+  `DRAIN_MEM_PER_LAUNCH_MB=1200` in `config.sh`). Oldest `queued_at` first, as before. The first launch uses the tick's
+  single capacity decision (#63, #714 unchanged); each extra launch re-checks `has_capacity` and needs
+  `MEM_FLOOR_MB + 1200 MB x launches already made this tick` free, because free memory lags a run that has just started
+  (VM OOM, 2026-11-01). A stop is logged as `[drain] stopping after N launch(es): <reason>`. A lost claim drops that entry
+  and moves to the next; an unreadable claim keeps the entry and ends the drain for the tick. `DRAIN_MAX_PER_TICK=1`
+  restores the old behaviour. Tests: `tests/test-supervisor-queue-z-multi-drain.sh` (5 cases); the ordering cases in
+  `test-supervisor-queue-order.sh` pin the cap to 1. On tonight's Mac numbers this turns a 2.5 h drain of 15 tickets
+  into about 5 ticks.
+- **`gh-budget.sh` unmark bug**: the synced-repo removal no longer builds a sed expression from `owner/repo` (test:
+  `tests/test-issue637-since-unmark-slash.sh`).
 
 ## 7. Left for JP, and why
 

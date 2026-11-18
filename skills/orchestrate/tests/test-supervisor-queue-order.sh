@@ -54,7 +54,8 @@ GHW
   printf '#!/bin/bash\nexit 0\n' > "$QO_GH/claude"; chmod +x "$QO_GH/claude"
   printf '#!/bin/bash\necho "Now drawing from '"'"'AC Power'"'"'"\n' > "$QO_GH/pmset"; chmod +x "$QO_GH/pmset"
   : > "$QO_GH/go-issues"
-  printf 'MEM_FLOOR_MB=0\nCLAIM_SETTLE_SECS=0\n' > "$QO_HOME/.claude/pipeline/config.local.sh"
+  # DRAIN_MAX_PER_TICK=1: these cases pin which entry goes first; the multi-launch drain has its own file (test-supervisor-queue-z-multi-drain.sh)
+  printf 'MEM_FLOOR_MB=0\nCLAIM_SETTLE_SECS=0\nDRAIN_MAX_PER_TICK=1\n' > "$QO_HOME/.claude/pipeline/config.local.sh"
 }
 
 qo_cleanup() { cleanup_running; rm -rf "$QO_PIPE" "$QO_HOME" "${QO_COPY:-}"; QO_COPY=""; }
