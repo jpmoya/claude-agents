@@ -142,7 +142,7 @@ export const PIPELINES = [
       {
         name: "product-manager",
         when: { label: "schema change" },
-        inputs: ["Schema change or new endpoint forces Lane: full"],
+        inputs: ["Gated migration, new dependency or multi-repo forces Lane: full"],
       },
       {
         name: "fullstack-developer",
