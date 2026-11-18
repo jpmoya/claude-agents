@@ -104,10 +104,15 @@ You are dispatched after the ux-flow-designer posts `USER FLOW READY`. You run i
    https://github.com/<owner>/<repo>/blob/<branch>/.mockups/issue-<N>/<filename>.png?raw=true
    ```
 
-7. **Post the mockups to the issue.** Comment with all mockup images embedded:
+7. **Post the mockups to the issue.** Comment with all mockup images embedded. The closing "please review" line is conditional (skip-by-default, #701/#712): it is posted only when JP's `**[jp] REVIEW MOCKUPS**` marker is on the issue (exact first line of a comment, any channel); otherwise the mockups are posted for the record only and nobody is asked to reply. Compute `REVIEW_LINE` first, then build the body around it:
 
    ```bash
-   gh issue comment <N> --body "$(cat <<'EOF'
+   if gh issue view <N> --json comments -q '.comments[].body | split("\n")[0] | rtrimstr("\r")' | grep -qxF '**[jp] REVIEW MOCKUPS**'; then
+     REVIEW_LINE='@jpmoya — please review these mockups. To approve, reply `approved` (or go / proceed / lgtm, or `**[jp] MOCKUPS APPROVED**`; notes may follow on later lines); otherwise reply with feedback for revisions.'
+   else
+     REVIEW_LINE='Mockups posted for the record; engineering proceeds without a review gate unless `**[jp] REVIEW MOCKUPS**` is posted.'
+   fi
+   { cat <<'EOF'
    **[ui-ux-designer] MOCKUPS PENDING APPROVAL**
 
    ## UI Mockups
@@ -132,9 +137,8 @@ You are dispatched after the ux-flow-designer posts `USER FLOW READY`. You run i
    - Typography: <fonts and sizes used>
    - Spacing: <spacing scale applied>
 
-   @jpmoya — please review these mockups. To approve, reply `approved` (or go / proceed / lgtm, or `**[jp] MOCKUPS APPROVED**`; notes may follow on later lines); otherwise reply with feedback for revisions.
    EOF
-   )"
+   printf '\n%s\n' "$REVIEW_LINE"; } | gh issue comment <N> --body-file -
    ```
 
 ## Output quality standards

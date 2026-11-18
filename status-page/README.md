@@ -83,7 +83,7 @@ Payload (`v` stays 1, every new key optional; the host half is #65):
 - `staging[]` (first 60 valid kept) and `approved[]` (first 20): `{repo, issue, title?, url?,
   updated_at?}`, sanitised by reconstruction (`issue` 1–999999 required else the item is dropped;
   `updated_at` ISO-8601 Z else omitted). Absent or non-array → `[]`.
-- `runs[].needs` (one of `Approve mockups`, `Say go`, `Approve effort`, `Missing credential`,
+- `runs[].needs` (one of `mockups skipped (default or JP)` (display only, not a gate), `Approve mockups`, `Say go`, `Approve effort`, `Missing credential`,
   `Decision needed`; `BLOCKED` → `Missing credential` when its `Blocked on:` line matches
   `credential|token|secret|api key|password|access`), `runs[].gate_at` (ISO-8601 Z) and
   `runs[].parked_reason` (`answered` | `out_of_scope` | `auto_retry`) and `runs[].block_class` (fixed class, shown on

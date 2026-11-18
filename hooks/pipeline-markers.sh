@@ -68,9 +68,14 @@ skip_mockups_marker_body() {  # skip_mockups_marker_body <jp-reply-text> → the
 
 jp_review_mockups_words() { echo 'review( it| them| mockups| the mockups)?|have a look|take a look|want to see (it|them)'; }  # JP's plain-language reply choosing to keep reviewing mockups, since #701 flipped the default to skip (the mirror of jp_skip_mockups_words)
 
-is_jp_review_mockups_reply() {  # is_jp_review_mockups_reply <text> → exit 0 when text is a plain-language JP reply choosing to keep the mockup review gate. Used only against a JP Slack reply to pm-slack.sh's mockup-skip ask (#701 note: the ask's wording and kind stay the same; only the default flipped). Never a substitute for the `**[jp] REVIEW MOCKUPS**` marker itself. A reply recognized as BOTH a skip and a review phrase (contradictory) is ambiguous — no marker, same safe-failure shape as is_jp_skip_mockups_reply.
+jp_review_mockups_negation_re() { printf '%s' "(?i)\\b(?:no|not|never|don'?t|do\\s+not|dont|won'?t|wont|without)\\b(?:(?!skip)[^.,;:!?\\n]){0,15}?\\b(?:review|have\\s+a\\s+look|take\\s+a\\s+look|want\\s+to\\s+see)"; }   # mirror of jp_skip_mockups_negation_re (#712): "don't review them" / "no need to review" / "not going to review" — a review word preceded by a negation within a few words is NOT a review request. The gap stops at punctuation and at the word "skip", so "don't skip, review them" and "no, review them" stay clear review requests. The safe failure is no marker (pm-slack.sh then leaves the ask open and asks JP to clarify).
+
+is_jp_review_mockups_reply() {  # is_jp_review_mockups_reply <text> → exit 0 when text is a plain-language JP reply choosing to keep the mockup review gate. Used only against a JP Slack reply to pm-slack.sh's mockup-skip ask (#701 note: the ask's wording and kind stay the same; only the default flipped). Never a substitute for the `**[jp] REVIEW MOCKUPS**` marker itself. A reply recognized as BOTH a skip and a review phrase (contradictory) is ambiguous — no marker, same safe-failure shape as is_jp_skip_mockups_reply; a negated review ("don't review them", jp_review_mockups_negation_re, #712) is not a review request either.
   if is_jp_skip_mockups_reply "$1"; then return 1; fi
-  jq -ne --arg b "$1" --arg w "$(jp_review_mockups_words)" '$b | test("(?i)(?:^|[^a-z])(?:" + $w + ")(?:$|[^a-z])")' >/dev/null
+  jq -ne --arg b "$1" --arg w "$(jp_review_mockups_words)" --arg neg "$(jp_review_mockups_negation_re)" '
+    ($b | test("(?i)(?:^|[^a-z])(?:" + $w + ")(?:$|[^a-z])")) as $is_review
+    | ($b | test($neg)) as $negated
+    | $is_review and ($negated | not)' >/dev/null
 }
 
 review_mockups_marker_body() {  # review_mockups_marker_body <jp-reply-text> → the canonical two-line `**[jp] REVIEW MOCKUPS**` body with JP's reply echoed verbatim on line 2, same shape as skip_mockups_marker_body. This marker is a raw-comment flag read directly by marker_last_jq (#701) — it is never added to markers_for/marker_re, so it can never stand in as an approval or a routing marker elsewhere.

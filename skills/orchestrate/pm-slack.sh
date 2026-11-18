@@ -215,6 +215,16 @@ cmd_poll() {
           # same deterministic shape as the SKIP bridge above, posted as JP's own account.
           gh issue comment "$issue" --repo "$repo" --body "$(review_mockups_marker_body "$mtext")" >/dev/null \
             || { echo "pm-slack: REVIEW MOCKUPS bridge comment on $repo#$issue failed" >&2; exit 1; }
+        elif [ "$kind" = mockup-skip ]; then
+          # #712: a reply that is neither a clear skip nor a clear review request ("show me the mockups",
+          # "don't review them", "ok") must not close the ask: marking it answered would auto-advance the
+          # ticket past a gate with no marker at all, on a guess. Leave the ask open (the next reply, and
+          # the reminder sweep, still find it), tell JP plainly, and skip the white_check_mark so the
+          # unanswered state is visible. The NOTE above already put his words on the issue.
+          post "$ch" "Not sure what you meant for #${issue}. Reply \"#${issue} skip\" to go straight to engineering, or \"#${issue} review\" to see the mockups first." \
+            || exit 1
+          printf '%s\n' "$mts" | write_atomic "$LASTREAD"
+          continue
         fi
         IFS="$TAB" read -r _ _ _ ats aat _ rem _ <<< "$matches"
         set_ask "$repo" "$issue" "$mch" "$ats" "$aat" answered "$rem" "$kind"
