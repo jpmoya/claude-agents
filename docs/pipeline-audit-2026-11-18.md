@@ -54,7 +54,7 @@ tick lock (`flock`) skips overlapping ticks, so a slow goal step directly divide
    only re-checks machine-clearable BLOCKED classes, start-gates and the loop-cap decision path. A `[jp] GO`,
    `[jp] SKIP MOCKUPS`, `[jp] MOCKUPS APPROVED` or `[delivery-lead] DECISION` posted after a JP-gate or needs-JP BLOCKED
    hold is read by nothing until someone relaunches by hand. The hold alert tells JP to "re-add agent-go", which does
-   nothing while `SHARED_DISPATCH_ENABLED=0` unless a live goal covers the ticket. Now: 10 held runs whose newest marker
+   nothing while `SHARED_DISPATCH_ENABLED=0` unless a live goal covers the ticket or it is staff feedback (`user-feedback`). Now: 10 held runs whose newest marker
    is a GO or a DECISION (5 each). Left for JP (section 7).
 4. **The goal queue fails closed on one bad entry.** `_GOAL_QUEUE_SERIAL_JQ` (`goal-lib.sh` ~1655): `$busy` is true if
    any registry goal is `unreadable`, so no queued goal starts. A project goal whose GitHub project is closed did this to
@@ -114,6 +114,7 @@ Local state = both hosts' `~/.claude/pipeline/state`.
 | Direct-route repo ticket carrying agent-go (nothing will ever run it) | claude-agents label | **4** (#463 lock hook git add, #478 shell limiter Monitor, #513 markers() NOTE filter, #516 deployer required-checks; idle 12 to 26 days) |
 | Goal deferred behind a lower-priority slot holder | `goalqueue.json` | **1** (Sales Workflow 3.0, priority 1, deferred 20:00Z, behind `proj-jpmoya_41` priority 4) |
 | Goal blocked by an unreadable registry entry | `goalqueue.json` | 0 now (was the Workflow 3.0 stall earlier tonight) |
+| Triaged Sentry bug whose label write fails every tick (goal label renamed when its goal closed) | VM `grep 'label write failed'` | **1** (sales #1508, since 23:33Z; fixed, see section 6) |
 | Bare backlog (no pipeline label, no marker, no live goal) | same snapshot | 1 (sales #1430 contract template v2.5) |
 
 Caveats: the marker regex reads the last 25 comments only; "released" uses origin/main commit subjects and merge
@@ -164,6 +165,11 @@ already looks at; #762 is the place for the goal-side banner.
   restores the old behaviour. Tests: `tests/test-supervisor-queue-z-multi-drain.sh` (5 cases); the ordering cases in
   `test-supervisor-queue-order.sh` pin the cap to 1. On tonight's Mac numbers this turns a 2.5 h drain of 15 tickets
   into about 5 ticks.
+- **Intake drops a missing Sentry goal label instead of failing the whole write.** `config.sh` `sentry_goal_label`
+  names `goal: Sales Sentry goal`, which the repo renamed `goal: Sales Sentry goal (done)` when that goal closed, so every
+  sales Sentry bug's label edit (agent-go included) failed every tick. The edit is retried once without the goal label and
+  the drop is logged (test: `tests/test-intake-sentry-goal-label-missing.sh`). Which open goal sales Sentry bugs should
+  join now is left for JP (the mapping still names the closed goal).
 - **`gh-budget.sh` unmark bug**: the synced-repo removal no longer builds a sed expression from `owner/repo` (test:
   `tests/test-issue637-since-unmark-slash.sh`).
 
@@ -181,6 +187,8 @@ already looks at; #762 is the place for the goal-side banner.
 - **Goal queue fail-closed and no preemption** (items 4, 6): design calls; #762 makes the stall visible.
 - **Sentry cap for CI-critical tickets** (item 7): spend.
 - **limit-shells killer and caps** (item 8): resource limits.
+- **Sales Sentry goal mapping**: `sentry_goal_label` still names the closed sales Sentry goal; point it at the goal JP
+  wants Sentry bugs in (or none).
 - **Mac `MAX_CLAUDE_PROCS=16`** below the formula (item 9): host config, JP's call (the Mac is his laptop).
 - **The 4 claude-agents tickets with agent-go**: they will never run through the pipeline; an interactive session must
   pick them up or drop the label.

@@ -2007,8 +2007,15 @@ intake_apply_decision() {  # <owner/repo> <issue>
     [ -n "$adds" ] || return 2
     # #182: one write for the whole set, so agent-go never lands without sentry-auto-go (a label missing in the repo fails
     # the write: nothing is added, the tick retries, and the line below says why)
-    gh issue edit "$n" --repo "$repo" --add-label "$adds" >/dev/null 2>&1 || {
-      slog "[intake] $repo#$n label write failed ($adds) — retried next tick; every label must exist in the repo"; return 2; } ;;
+    # Audit 2026-11-18: the Sentry goal label is optional. A goal label the repo no longer has (renamed "... (done)" when its goal
+    # closed) failed this edit every tick and the bug never got agent-go (sales #1508): retry once without it, never without the rest.
+    if ! gh issue edit "$n" --repo "$repo" --add-label "$adds" >/dev/null 2>&1; then
+      if [ -n "${sg:-}" ] && [ "$v" = bug ] && gh issue edit "$n" --repo "$repo" --add-label "${adds%,"$sg"}" >/dev/null 2>&1; then
+        slog "[intake] $repo#$n goal label '$sg' could not be added (missing in the repo? fix sentry_goal_label in config.sh); the other labels were written without it"
+      else
+        slog "[intake] $repo#$n label write failed ($adds) — retried next tick; every label must exist in the repo"; return 2
+      fi
+    fi ;;
   esac
   case "$v" in noise|duplicate) gh issue close "$n" --repo "$repo" --reason "not planned" >/dev/null 2>&1 || return 2 ;; esac
   case "$v" in
