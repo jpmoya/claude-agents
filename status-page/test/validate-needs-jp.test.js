@@ -12,7 +12,7 @@ const runOut = (extra) => {
 };
 
 describe('#139 runs[].needs', () => {
-  it.each(['Approve mockups', 'Say go', 'Approve effort', 'Missing credential', 'Decision needed'])('valid label %s is kept', (needs) => {
+  it.each(['mockups skipped (default or JP)', 'Approve mockups', 'Say go', 'Approve effort', 'Missing credential', 'Decision needed'])('valid label %s is kept', (needs) => {
     expect(runOut({ needs }).needs).toBe(needs);
   });
 

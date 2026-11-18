@@ -217,3 +217,100 @@ test_msa_bridge_posted_body_clears_the_real_gate_for_a_multiline_reply() {
 run_test test_msa_bridge_posted_body_clears_the_real_gate_for_a_multiline_reply
 
 run_test test_msa_pm_doc_marker_is_posted_by_the_script_not_the_pm
+
+# ---------------------------------------------------------------- #712 follow-ups (review bridge, unrecognized reply, docs)
+msa_ask_status() { awk -F'\t' -v r="$PMS_REPO_A" -v i=42 '$1==r && $2==i {print $6}' "$PMS_PIPE/pm-slack/asks.tsv"; }
+
+test_msa_review_regex_matches_review_phrases_and_rejects_negations() {
+  local t
+  for t in "review" "review them" "have a look" "take a look" "I want to see them" "no, review them" "don't skip, review them" "do not skip, let's review" "skip? no, review them"; do
+    ( . "$MARKERS_MSA"; is_jp_review_mockups_reply "#42 $t" ) || { fail "must match: $t"; return 1; }
+  done
+  for t in "don't review them" "do not review" "dont review" "no need to review" "not going to review them" "never review" "without review" \
+           "skip" "skip it" "show me the mockups" "ok" "approved" "reviewing"; do
+    ( . "$MARKERS_MSA"; is_jp_review_mockups_reply "#42 $t" ) && { fail "must not match: $t"; return 1; }
+  done
+  return 0
+}
+
+test_msa_poll_review_reply_posts_review_marker_and_answers() {
+  pms_setup
+  msa_ask "$PMS_REPO_A" 42 "question" mockup-skip
+  pms_history "1700000101.000100|$PMS_JP|#42 review them"
+  pms_run poll
+  assert_exit0 "$PMS_RC" "poll ($PMS_OUT)" || return 1
+  assert_eq "$(gh_call_count "$PMS_BIN" 'REVIEW MOCKUPS')" 1 "REVIEW MOCKUPS marker posted once" || return 1
+  assert_eq "$(gh_call_count "$PMS_BIN" 'SKIP MOCKUPS')" 0 "no skip marker" || return 1
+  assert_eq "$(msa_ask_status)" "answered" "a clear review reply answers the ask" || return 1
+}
+
+test_msa_poll_negated_review_reply_posts_no_marker_and_stays_open() {
+  local variant
+  for variant in "don't review them" "no need to review"; do
+    pms_setup
+    msa_ask "$PMS_REPO_A" 42 "question" mockup-skip
+    pms_history "1700000101.000100|$PMS_JP|#42 $variant"
+    pms_run poll
+    assert_exit0 "$PMS_RC" "[$variant] poll ($PMS_OUT)" || return 1
+    assert_eq "$(gh_call_count "$PMS_BIN" 'REVIEW MOCKUPS')" 0 "[$variant]: no review marker" || return 1
+    assert_eq "$(gh_call_count "$PMS_BIN" 'SKIP MOCKUPS')" 0 "[$variant]: no skip marker" || return 1
+    assert_eq "$(msa_ask_status)" "open" "[$variant]: ask stays open, not silently answered" || return 1
+  done
+}
+
+test_msa_poll_unrecognized_reply_leaves_ask_open_and_tells_jp() {
+  local variant
+  for variant in "show me the mockups" "ok" "sure, sounds good"; do
+    pms_setup
+    msa_ask "$PMS_REPO_A" 42 "question" mockup-skip
+    pms_history "1700000101.000100|$PMS_JP|#42 $variant"
+    pms_run poll
+    assert_exit0 "$PMS_RC" "[$variant] poll ($PMS_OUT)" || return 1
+    assert_eq "$(msa_ask_status)" "open" "[$variant]: ask stays open" || return 1
+    assert_eq "$(gh_call_count "$PMS_BIN" 'SKIP MOCKUPS')" 0 "[$variant]: no skip marker" || return 1
+    assert_eq "$(gh_call_count "$PMS_BIN" 'REVIEW MOCKUPS')" 0 "[$variant]: no review marker" || return 1
+    assert_eq "$(pms_gh_n 'jp-reply')" 1 "[$variant]: the reply is still recorded as a NOTE on the issue" || return 1
+    assert_eq "$(pms_n chat.postMessage)" 2 "[$variant]: the original ask plus one clarification DM" || return 1
+    assert_contains "$(pms_lines chat.postMessage | tail -1)" "#42 skip" "[$variant]: clarification names the accepted replies" || return 1
+    assert_eq "$(pms_n reactions.add)" 0 "[$variant]: no white_check_mark on an unanswered ask" || return 1
+  done
+}
+
+test_msa_poll_ordinary_ask_unrecognized_reply_still_answers() {
+  pms_setup
+  pms_ask "$PMS_REPO_A" 42 "Blocked: pick A or B."   # no kind
+  pms_history "1700000101.000100|$PMS_JP|#42 go with A"
+  pms_run poll
+  assert_eq "$(msa_ask_status)" "answered" "the open-ask behavior for ordinary asks is unchanged" || return 1
+}
+
+test_msa_pm_doc_no_longer_claims_the_dm_never_opts_a_ticket_in() {
+  local t; t=$(cat "$PM_MSA")
+  assert_not_contains "$t" "never opts a ticket in" "stale claim removed" || return 1
+  assert_not_contains "$t" "never through this DM" "stale claim removed" || return 1
+  mg_has "$PM_MSA" "REVIEW MOCKUPS" || return 1
+}
+
+test_msa_designer_template_review_line_is_conditional_on_review_marker() {
+  local d="$ROOT_MSA/agents/ui-ux-designer.md"
+  mg_has "$d" 'REVIEW_LINE' || return 1
+  mg_has "$d" 'grep -qxF' || return 1
+  # the unconditional "please review" text may appear only inside the conditional's REVIEW_LINE assignment
+  local n; n=$(grep -c "please review these mockups" "$d")
+  assert_eq "$n" 1 "exactly one occurrence of the review ask, inside the REVIEW_LINE branch" || return 1
+  assert_contains "$(grep -n "please review these mockups" "$d")" "REVIEW_LINE=" "it is the REVIEW_LINE assignment" || return 1
+}
+
+test_msa_status_page_needs_vocab_has_the_skipped_label() {
+  mg_has "$ROOT_MSA/status-page/src/vocab.js" "mockups skipped (default or JP)" || return 1
+  mg_has "$ROOT_MSA/skills/orchestrate/build-runs-json.py" "mockups skipped (default or JP)" || return 1
+}
+
+run_test test_msa_review_regex_matches_review_phrases_and_rejects_negations
+run_test test_msa_poll_review_reply_posts_review_marker_and_answers
+run_test test_msa_poll_negated_review_reply_posts_no_marker_and_stays_open
+run_test test_msa_poll_unrecognized_reply_leaves_ask_open_and_tells_jp
+run_test test_msa_poll_ordinary_ask_unrecognized_reply_still_answers
+run_test test_msa_pm_doc_no_longer_claims_the_dm_never_opts_a_ticket_in
+run_test test_msa_designer_template_review_line_is_conditional_on_review_marker
+run_test test_msa_status_page_needs_vocab_has_the_skipped_label
