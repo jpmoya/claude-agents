@@ -318,7 +318,7 @@ test_gnm_hook_text_and_deliver_text_say_the_same_thing() {
   local rc=0 phrase
   for phrase in 'project:<owner>/<n>' 'gh project create' 'gh project item-add' '<short human name>'; do
     assert_contains "$(cat "$GNM_HOOK")" "$phrase" "hook carries: $phrase" || rc=1
-    assert_contains "$(cat "$GNM_ROOT/skills/orchestrate/goal-lib.sh")" "$phrase" "goal-lib carries: $phrase" || rc=1
+    assert_contains "$(cat "$GNM_ROOT/skills/orchestrate/goal-lib.sh" "$GNM_ROOT/skills/orchestrate/goal-register-recipe.txt" "$GNM_ROOT/skills/orchestrate/goal-title-hint.txt")" "$phrase" "goal-lib / its recipe text carries: $phrase" || rc=1
   done
   return $rc
 }

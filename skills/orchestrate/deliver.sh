@@ -11,7 +11,8 @@
 #                                         milestone / label / #N goals are refused (GOAL_ALLOW_LEGACY_REGISTER=1 for legacy tooling)
 #                                         --now: also launch one cycle here at once (hand use, skips the queue)
 #                                         (GOAL_SERIAL=1, one goal at a time: a --now goal that does not hold the slot returns to the queue after that cycle)
-#                                         --priority N / --after <goal> / --before <goal>: where it goes in the start order (default: last)
+#                                         --priority N / --after <goal> / --before <goal>: where it goes in the start order (default: last; a project goal given none
+#                                         records no priority and queues in registration order; priority only orders the queue, it never preempts a running goal)
 #                                         --host: pin the goal to that host (advisory for single tickets, see delivery-lead.md)
 #   deliver.sh --repos a/b,c/d --title "<title>" [--requirements owner/repo#N] [--include-sentry] [--mockups review|skip] [--now] [--host <hostname>] [--priority <n>] [instructions...]
 #                                         cross-repo goal (#319): a `goal: <short title>` label in every repo; also
@@ -372,7 +373,7 @@ cmd_register() {
 
 # cmd_register_proj <spec> — a goal whose scope IS a GitHub Project (#736): project:<owner>/<n> (or owner/repo:project:<n>, stored in the
 # canonical form). The scope is the project's issue items, read live; the block (v2) records the repos derived from them and the project
-# (`scope_project`, never the mirror's `project` key: no second project is created for it). Registering is JP's go, as for a milestone goal.
+# (`scope_project`, never the mirror's `project` key: no second project is created for it). Registering needs JP's explicit --go / --no-go (no default).
 cmd_register_proj() {
   local spec="$1" instr="$2" now="${3:-0}" pin="${4:-}" sentry="${5:-0}" go_choice="${6:-go}" ref id info title url repos kept="" dropped="" r checkout host=""
   local block body resp n go=true granted='[]' granted_at repos_json owner num why
@@ -384,7 +385,7 @@ cmd_register_proj() {
   title=$(printf '%s' "$info" | jq -r .title); url=$(printf '%s' "$info" | jq -r .url)
   # JP, 2026-11-18: one name everywhere. The project must be titled "Goal: <short human name>"; the registry issue gets the same string
   # and the status page shows the name. A title that breaks the convention is refused (rename it with gh project edit, then register).
-  why=$(goal_title_check "$title" 2>&1) || die "project $ref is titled \"$title\", which $why; name it \"Goal: <short human name>\" first (gh project edit $num --owner $owner --title \"Goal: <short human name>\"), the registry issue and the status page use that name"
+  why=$(goal_title_check "$title" 2>&1) || die "project $ref is titled \"$title\", which $why; $(goal_title_hint "$num" "$owner")"
   title=$(goal_name_of_title "$title")
   for r in $(printf '%s' "$info" | jq -r '[.issues[].repo] | unique[]'); do
     if _goal_is_bi "$r"; then echo "skipping $r: Business-Intelligence is never part of a goal" >&2; continue; fi

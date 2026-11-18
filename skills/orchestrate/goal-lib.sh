@@ -105,13 +105,14 @@ goal_title_check() {
 # every goal is a project; milestone, label, ticket and feedback goals are no longer registered). hooks/block-nonproject-goal.sh carries
 # the same recipe; keep the two in step.
 goal_nonproject_refusal() {
-  printf '%s\n' "refusing to register $1: every goal is registered as a GitHub Project (spec project:<owner>/<n>); milestone, label and ticket goals are no longer registered (only the standing owner/repo:feedback goal keeps its spec):" \
-    '  1. gh project create --owner Benjis-Plants --title "Goal: <short human name>"   (note the project number <n>)' \
-    '  2. gh project item-add <n> --owner Benjis-Plants --url <issue URL>   (once per ticket)' \
-    '  3. deliver.sh project:Benjis-Plants/<n> --go|--no-go [--priority <n>] [--now] [instructions...]   (ask JP: go true or go false? never pick it yourself)' \
-    'The project title is the goal'"'"'s name everywhere: the registry issue and the status page use the same "<short human name>".' \
-    "Existing goals keep working (status, stop, release, resume, priority). Legacy tooling only: GOAL_ALLOW_LEGACY_REGISTER=1 deliver.sh <spec>." \
-    "Priority only orders the queue (and is optional: with none the goal queues in registration order; deliver.sh priority reorders it). Priority 1 does NOT make a goal start immediately or take the goal slot from a goal that is already running. To start a new goal right away you must force it: stop the goal that holds the slot (deliver.sh stop <goal>; a held or waiting-on-JP goal does not hold it), or register with --now (runs one cycle by hand; under GOAL_SERIAL=1 a --now goal that does not hold the slot returns to the queue after that cycle). There is no preempt or force-start command: stopping the holder is the only way to hand the slot over."
+  # the recipe lives in goal-register-recipe.txt (plain text: the goal scripts hold no `gh project` text, tests pin that)
+  printf '%s\n' "refusing to register $1: every goal is registered as a GitHub Project (spec project:<owner>/<n>); milestone, label and ticket goals are no longer registered (only the standing owner/repo:feedback goal keeps its spec):"
+  cat "$_GOAL_LIB_DIR/goal-register-recipe.txt" 2>/dev/null || echo "see skills/orchestrate/SKILL.md, \"Registering a goal\""
+}
+
+# goal_title_hint <project number> <owner> — how to rename a project to the naming convention (goal-title-hint.txt)
+goal_title_hint() {
+  sed -e "s/@N@/$1/" -e "s/@OWNER@/$2/" "$_GOAL_LIB_DIR/goal-title-hint.txt" 2>/dev/null || echo 'rename the project to "Goal: <short human name>"'
 }
 
 # goal_go_refusal <spec> — the text deliver.sh dies with when a registration states no go choice (JP, 2026-11-18: there is NO default).
