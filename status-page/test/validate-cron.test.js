@@ -183,6 +183,11 @@ describe('validateBeatPayload — cron[] (issue #756)', () => {
       expect(out[0].description.startsWith('ab ab ab')).toBe(true);
     });
 
+    it('a long token that starts inside the 140-character window is still caught (checked before the cap, never trimmed to a fragment)', () => {
+      const out = cronOf([cronItem({ description: `${'word '.repeat(25)}${'A'.repeat(40)}` })]);
+      expect(out).toEqual([cronItem()]);
+    });
+
     it('a non-string or empty description leaves the key out (the item is kept)', () => {
       for (const description of [5, null, ['x'], { a: 1 }, '', '   ']) {
         const out = cronOf([cronItem({ description })]);

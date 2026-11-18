@@ -289,6 +289,18 @@ const CRON_SOURCES = ['cron', 'launchd', 'desktop'];
 // long unbroken token (a secret). The em dash and a slash inside a word ("layoff/closure") are fine.
 const CRON_DESCRIPTION_UNSAFE = /[<>&"`@]|:\/\/|~\/|(?:^|\s)\/[\w.-]|\b[A-Za-z_][A-Za-z0-9_]*=\S|[A-Za-z0-9_+-]{32,}|\b(?:sk|ghp|gho|xox[a-z]|AKIA)[-_A-Za-z0-9]{8,}/;
 
+/**
+ * Collapse whitespace/control runs, then test the WHOLE text for anything unsafe, and only then cap at
+ * 140 code points (capping first could cut a long token below the pattern's length and let a fragment
+ * through). Non-string, empty or unsafe -> null (the key is left out, the item is kept).
+ */
+function sanitiseCronDescription(value) {
+  if (typeof value !== 'string') return null;
+  const collapsed = value.replace(TITLE_WHITESPACE_OR_CONTROL, ' ').trim();
+  if (collapsed === '' || CRON_DESCRIPTION_UNSAFE.test(collapsed)) return null;
+  return Array.from(collapsed).slice(0, MAX_TITLE_CODE_POINTS).join('');
+}
+
 function sanitiseCronDate(value) {
   return isIsoTimestamp(value) && !Number.isNaN(Date.parse(value)) ? value : null;
 }
@@ -317,8 +329,8 @@ function sanitiseCronItem(raw) {
     next_run: sanitiseCronDate(raw.next_run),
   };
   // Both optional: a beat from a host that predates them stores the item exactly as before.
-  const description = sanitiseTitle(raw.description);
-  if (description !== null && !CRON_DESCRIPTION_UNSAFE.test(description)) item.description = description;
+  const description = sanitiseCronDescription(raw.description);
+  if (description !== null) item.description = description;
   if (CRON_SOURCES.includes(raw.source)) item.source = raw.source;
   return item;
 }

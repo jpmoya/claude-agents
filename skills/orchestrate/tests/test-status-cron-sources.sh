@@ -118,28 +118,28 @@ test_csj_one_slug_argument_is_appended_to_the_name() {
   csj_script "$home" run-pricing-agent.sh '#!/bin/bash
 # Pricing agent for one supplier
 echo hi'
-  ct=$(csj_crontab "$pipe" "0 6 * * 1 $home/bin/run-pricing-agent.sh valley-view
-0 6 1 */3 * $home/bin/run-pricing-agent.sh greenville
-0 7 1 */3 * $home/bin/run-pricing-agent.sh lechuza >> ~/logs/x.log 2>&1
+  ct=$(csj_crontab "$pipe" "0 6 * * 1 $home/bin/run-pricing-agent.sh supplier-a
+0 6 1 */3 * $home/bin/run-pricing-agent.sh supplier-b
+0 7 1 */3 * $home/bin/run-pricing-agent.sh supplier-c >> ~/logs/x.log 2>&1
 0 1 * * * $home/bin/plain.sh --key sk-xyz
 0 1 * * * $home/bin/numarg.sh 123
 0 1 * * * $home/bin/dotarg.sh a.b
 0 1 * * * $home/bin/eqarg.sh mode=fast
 0 1 * * * $home/bin/patharg.sh /etc/passwd")
-  mkdir -p "$home/logs/run-pricing-agent-valley-view" "$home/logs/run-pricing-agent"
-  printf 'all good\n' > "$home/logs/run-pricing-agent-valley-view/run.log"
-  csj_touch "$home/logs/run-pricing-agent-valley-view/run.log" 1795000000
-  printf 'ERROR boom\n' > "$home/logs/run-pricing-agent/2026-11-greenville.log"
-  csj_touch "$home/logs/run-pricing-agent/2026-11-greenville.log" 1795050000
+  mkdir -p "$home/logs/run-pricing-agent-supplier-a" "$home/logs/run-pricing-agent"
+  printf 'all good\n' > "$home/logs/run-pricing-agent-supplier-a/run.log"
+  csj_touch "$home/logs/run-pricing-agent-supplier-a/run.log" 1795000000
+  printf 'ERROR boom\n' > "$home/logs/run-pricing-agent/2026-11-supplier-b.log"
+  csj_touch "$home/logs/run-pricing-agent/2026-11-supplier-b.log" 1795050000
   out=$(csj_print "$pipe" "$home" linux cat "$ct")
   rm -rf "$pipe" "$home"
-  assert_eq "$(printf '%s' "$out" | jq -c '[.cron[].name]')" '["run-pricing-agent-valley-view","run-pricing-agent-greenville","run-pricing-agent-lechuza","plain","numarg","dotarg","eqarg","patharg"]' "slug arguments appended, flags / numbers / dots / assignments / paths never" || return 1
-  assert_eq "$(csj_job "$out" run-pricing-agent-valley-view description)" "Pricing agent for one supplier" "the three jobs share the script's description" || return 1
-  assert_eq "$(csj_job "$out" run-pricing-agent-valley-view last_result)" "ok" "own ~/logs/<name>-<arg>/ dir used first" || return 1
-  assert_eq "$(csj_job "$out" run-pricing-agent-valley-view last_run)" "2026-11-18T11:06:40Z" "own log dir mtime" || return 1
-  assert_eq "$(csj_job "$out" run-pricing-agent-greenville last_result)" "failed" "shared ~/logs/<script>/: only files named after the argument count" || return 1
-  assert_eq "$(csj_job "$out" run-pricing-agent-lechuza last_result)" "unknown" "another argument's log is never borrowed" || return 1
-  assert_eq "$(csj_job "$out" run-pricing-agent-lechuza last_run)" "null" "no log of its own -> no last_run" || return 1
+  assert_eq "$(printf '%s' "$out" | jq -c '[.cron[].name]')" '["run-pricing-agent-supplier-a","run-pricing-agent-supplier-b","run-pricing-agent-supplier-c","plain","numarg","dotarg","eqarg","patharg"]' "slug arguments appended, flags / numbers / dots / assignments / paths never" || return 1
+  assert_eq "$(csj_job "$out" run-pricing-agent-supplier-a description)" "Pricing agent for one supplier" "the three jobs share the script's description" || return 1
+  assert_eq "$(csj_job "$out" run-pricing-agent-supplier-a last_result)" "ok" "own ~/logs/<name>-<arg>/ dir used first" || return 1
+  assert_eq "$(csj_job "$out" run-pricing-agent-supplier-a last_run)" "2026-11-18T11:06:40Z" "own log dir mtime" || return 1
+  assert_eq "$(csj_job "$out" run-pricing-agent-supplier-b last_result)" "failed" "shared ~/logs/<script>/: only files named after the argument count" || return 1
+  assert_eq "$(csj_job "$out" run-pricing-agent-supplier-c last_result)" "unknown" "another argument's log is never borrowed" || return 1
+  assert_eq "$(csj_job "$out" run-pricing-agent-supplier-c last_run)" "null" "no log of its own -> no last_run" || return 1
   assert_not_contains "$out" "sk-xyz" "a flag's value is never published" || return 1
   assert_not_contains "$out" "passwd" "a path argument is never published" || return 1
   assert_not_contains "$out" "mode=fast" "an assignment argument is never published" || return 1
