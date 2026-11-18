@@ -476,7 +476,9 @@ test_gi_ac4_orchestrator_mockups_approved_lines_untouched() {
   # about the new default; the "JP revision feedback" row gained a scoping clause (it now only applies while
   # REVIEW MOCKUPS makes the gate terminal). The MOCKUPS APPROVED wording itself (the legacy-marker mention, jp_go,
   # the approval-word set, the gate-section outcome text) is untouched — only surrounding context was added.
-  assert_eq "$(grep -F 'MOCKUPS APPROVED' "$ORCH_GI" | gi_sha)" "7a95c9bde7d3c4990ca7f5b71bc190a646cd837696ae3564208b40d8d91a9693" "AC4: MOCKUPS APPROVED lines"
+  # Re-pinned 2026-11-18 (fast lane default): the READY FOR ENGINEERING and approval rows gained lane-aware routing text
+  # (UI tickets on the fast lane run the designer first; "Next stage after design"); the approval wording is unchanged.
+  assert_eq "$(grep -F 'MOCKUPS APPROVED' "$ORCH_GI" | gi_sha)" "05902a21bd3b79614b861845a45ddada15663f8ee666286dbe19bf9c98a3f261" "AC4: MOCKUPS APPROVED lines"
 }
 
 test_gi_ac4_orchestrator_needs_jp_lines_untouched() {
