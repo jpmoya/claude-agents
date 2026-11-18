@@ -93,6 +93,9 @@ case "$1 $2" in
     if [ -n "$bodyf" ]; then body=$(cat "$bodyf") || exit 1; fi
     jq --argjson n "${num:-0}" --arg b "$body" --arg t "$now" '. + [{n:$n,body:$b,createdAt:$t}]' "$D/comments.json" > "$D/c.tmp" && mv "$D/c.tmp" "$D/comments.json"; exit 0;;
   "issue edit")
+    if [ -f "$D/missing-labels" ]; then   # like the real CLI: adding a label the repo does not have fails the whole edit
+      for l in $(printf '%s' "$addl" | tr ',' '\n' | tr ' ' '_'); do grep -qxF "$l" "$D/missing-labels" && exit 1; done
+    fi
     if [ -n "$bodyf" ]; then nb=$(cat "$bodyf") || exit 1; else nb=""; fi
     jq --argjson n "${num:-0}" --arg a "$addl" --arg r "$reml" --arg nb "$nb" '
       map(if .number==$n then (.labels = ((.labels|map(.name)) - ($r|split(",")) + ($a|split(",")|map(select(.!=""))) | unique | map({name:.})))
