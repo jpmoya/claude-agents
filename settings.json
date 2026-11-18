@@ -104,6 +104,10 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/block-nonproject-goal.sh"
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/ticket-intake-guard.sh"
           }
         ]
       },
@@ -137,6 +141,10 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/brevity-reminder.sh"
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/ticket-intake-reminder.sh"
           }
         ]
       }
