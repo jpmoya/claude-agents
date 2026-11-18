@@ -1,0 +1,35 @@
+# Ticket-logging intent patterns for hooks/ticket-intake-reminder.sh (UserPromptSubmit). THE ONE PLACE the list lives.
+# One Python regex per line (matched case-insensitively against JP's prompt); blank lines and lines starting with "#" are ignored.
+# Placeholders: {NOUN} = a ticket word (ticket, issue, bug, story, task, card, bug report; with an optional modifier such as
+# "new", "github", "follow-up"); {END} = the noun must end there (end of text, punctuation, or a preposition such as
+# "for/to/about"), so "create a task runner" and "file upload bug" never match. A prompt that matches ANY line gets the
+# reminder to invoke the ticket-intake skill. A false positive only costs a reminder (the skill's step 0 drops a prompt that is
+# not a ticket request); a false negative leaves a ticket without its project and agent-go, so lean toward matching.
+# Tested in skills/orchestrate/tests/test-ticket-intake.sh with positive and negative examples; add a pair there with every change.
+
+# log / file / raise / submit / report a ticket|bug|issue
+\b(?:log|file|raise|submit|report)\s+(?:me\s+)?(?:a|an|another|one|this|that|the|these|those|a\s+few|some)?\s*{NOUN}{END}
+# create / open / write / draft / make / cut a (new) ticket|issue|bug|story|card  (an indefinite article is required: "open issues" is not a request)
+\b(?:create|open|write|draft|make|cut|start|put\s+together)\s+(?:me\s+|up\s+)?(?:a|an|another|one\s+more|a\s+new)\s+{NOUN}{END}
+# add a ticket|issue|bug|story (not "add a task": too common in other contexts)
+\badd\s+(?:a|an|another)\s+(?:(?:new|github|gh|follow-?up|bug|feature)\s+)*(?:tickets?|issues?|stor(?:y|ies)|bugs?){END}
+# "write me a ticket", "write up a ticket"
+\bwrite\s+(?:me\s+|up\s+)?(?:a\s+)?tickets?\b
+# make this a ticket / turn this into an issue
+\b(?:make|turn|convert)\s+(?:this|that|it|these)\s+(?:(?:in)?to\s+)?(?:a|an)\s+{NOUN}{END}
+# I want / need / get / have a ticket logged|filed|created
+\b(?:want|wants|need|needs|get|have|has|should\s+be|to\s+be|be)\s+(?:a\s+|an\s+|the\s+|some\s+)?{NOUN}\s+(?:logged|filed|created|opened|raised|written|added)\b
+# ticket this / track this
+\b(?:ticket|track)\s+(?:this|that)\b
+# add this to the backlog / put it on the board / backlog this
+\b(?:add|put|throw|stick|drop|park|log)\s+(?:this|that|it|these|them)\s+(?:in|into|on|to|onto)\s+(?:the\s+|our\s+|a\s+)?(?:backlog|board|queue)\b
+\bbacklog\s+(?:this|that|it)\b
+# something to be done through the pipeline / the agents / this environment
+\b(?:send|put|run|push|route|pass)\s+(?:this|that|it)\s+(?:through|to|into|via)\s+(?:the\s+)?(?:pipeline|agents?|orchestrator)\b
+\b(?:get|have|let)\s+(?:the\s+)?(?:agents?|pipeline)\s+(?:to\s+)?(?:do|fix|build|handle|work\s+on|implement|take)\b
+\b(?:done|handled|fixed|built)\s+(?:through|by|via)\s+(?:this\s+environment|the\s+(?:pipeline|agents))\b
+# a bug report / feature request meant to be filed
+\b(?:found|spotted|hit|noticed|discovered)\s+(?:a|another|this|one\s+more)\s+(?:new\s+)?bug\b
+^\s*(?:new\s+)?bug\s*[:\-]\s*\S
+\b(?:i\s+have|i've\s+got|here'?s|new)\s+(?:a\s+)?feature\s+request\b
+\b(?:we|you|i)\s+(?:need|should\s+have|want)\s+(?:a|an)\s+(?:ticket|bug\s+report)\b
