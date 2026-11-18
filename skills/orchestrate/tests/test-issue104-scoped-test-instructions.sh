@@ -102,21 +102,16 @@ test_issue104_skill_phase4_scoped() {
     || { fail "SKILL.md Phase 4 must name --changed <merge-base> instead of the full suite"; return 1; }
 }
 
-# test_issue104_orchestrator_dispatch_untouched — AC: agents/orchestrator.md:47 (the
-# fast-lane dispatch prompt) is explicitly out of scope and must be unchanged relative to
-# origin/main. Best-effort: only runs when origin/main is resolvable (e.g. not in a shallow
-# CI checkout with no origin remote); otherwise skipped rather than failed.
+# test_issue104_orchestrator_dispatch_untouched — AC: the fast-lane dispatch prompt in the
+# READY FOR ENGINEERING routing row is explicitly out of scope of #104 and must stay verbatim.
+# 2026-11-18 (fast lane default): the row around the prompt changed (UI tickets on the fast lane
+# run the designer first), so this now pins the quoted prompt itself, not the whole row.
 test_issue104_orchestrator_dispatch_untouched() {
-  if ! git -C "$ROOT_104" rev-parse --verify origin/main >/dev/null 2>&1; then
-    return 0
-  fi
-  # narrowed to the routing row named above: #136 AC11 legitimately edits other parts of the file
-  local want got
-  want=$(git -C "$ROOT_104" show origin/main:agents/orchestrator.md | grep '^| `\[product-manager\] READY FOR ENGINEERING` |')
+  local got
   got=$(grep '^| `\[product-manager\] READY FOR ENGINEERING` |' "$ROOT_104/agents/orchestrator.md")
-  [ "$(printf '%s\n' "$want" | grep -c .)" = 1 ] && [ "$(printf '%s\n' "$got" | grep -c .)" = 1 ] \
-    || { fail "AC4: expected exactly one READY FOR ENGINEERING routing row on each side"; return 1; }
-  assert_eq "$got" "$want" "AC4: fast-lane dispatch routing row unchanged relative to origin/main" || return 1
+  [ "$(printf '%s\n' "$got" | grep -c .)" = 1 ] \
+    || { fail "AC4: expected exactly one READY FOR ENGINEERING routing row"; return 1; }
+  assert_contains "$got" '"fast-lane mode: no locked tests, follow the fullstack-bug-fixing process, single-loop runner: plan, write the failing regression test first, implement, run tests/tsc/lint to green, self-review your diff, then open the PR"' "AC4: fast-lane dispatch prompt unchanged" || return 1
 }
 
 # #226 — test-writer step 6 and test-reviewer entry condition ordered "the repo's
