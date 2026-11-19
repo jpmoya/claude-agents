@@ -58,6 +58,11 @@ canonicalize_repo_lists
 # because a previous one is still running.
 report_status_async "tick"
 
+# Status page auto-deploy (#778): on the one host with STATUS_PAGE_DEPLOY_ENABLED=1, deploy status-page/ when its tree on origin/main changed.
+# Backgrounded and outside the tick's lock like the push above (9>&- so it never holds the tick lock); it makes no `gh` call (a git fetch only),
+# throttles itself, never fails the tick, and is a no-op without wrangler or a Cloudflare credential.
+[ "${STATUS_PAGE_DEPLOY_ENABLED:-0}" = 1 ] && ( "$HERE/status-page-deploy.sh" >/dev/null 2>&1 & ) 9>&-
+
 # Scheduled app workflows (#769) are not fired from the tick (#783): they have their own 1-minute cron job (installed by install.sh),
 # because a tick takes 6-60 minutes and the release router must fire every 5.
 

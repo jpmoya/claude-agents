@@ -178,11 +178,15 @@ the goals-first-then-fill-with-standalone-tickets dispatch logic, `MAX_CONCURREN
 2. `wrangler secret put TOKEN_MAC` and `wrangler secret put TOKEN_VM` — one bearer token per
    host. Never pass these as CLI arguments or echo them; use the interactive prompt.
 3. `wrangler deploy` to the free `*.workers.dev` subdomain (no custom domain, no paid plan) — a
-   one-time manual deploy to get the Worker to exist. After that, `.github/workflows/deploy-status-page.yml`
-   redeploys automatically on every push to `main` that touches `status-page/`, using a
-   `CLOUDFLARE_API_TOKEN` repo secret scoped to Account → Workers Scripts:Edit and Workers KV
-   Storage:Edit only (JP, 2026-10-27 — a merged change had sat undeployed for hours because nobody
-   remembered the manual step).
+   one-time manual deploy to get the Worker to exist. After that, the supervisor redeploys it (#778):
+   on the one host with `STATUS_PAGE_DEPLOY_ENABLED=1` in `config.local.sh` (the host that holds the
+   `wrangler login` or `CLOUDFLARE_API_TOKEN`), each tick runs `skills/orchestrate/status-page-deploy.sh`,
+   which fetches `origin/main` and, when the `status-page/` tree differs from the last deployed one
+   (`$PIPE/status-page-deploy/last-deployed-tree`), runs `npm install`, `npm test` and `wrangler deploy`
+   in a throwaway worktree. Only a fully green run records the new tree; a failure alerts Slack once per
+   tree per hour and retries. Results are in `~/logs/pipeline/status-page-deploy.log`. No GitHub Actions
+   workflow and no Cloudflare Workers Builds git integration is involved (the earlier
+   GitHub Actions deploy workflow has been dead since 2026-10-28).
 4. Put the deployed URL in each host's `config.local.sh` as `STATUS_PUSH_URL`, and the matching
    token as `STATUS_PUSH_TOKEN` (host-side reporter, issue #10).
 
@@ -235,13 +239,11 @@ the deploy note at the end):
    ```
    `ALLOWED_EMAILS` is comma-separated (`you@example.com, someone-else@example.com`) — case and
    surrounding whitespace don't matter, both are normalised on every check.
-4. **Set the secrets before merging this PR to `main`.** The Worker currently redeploys
-   automatically on every push to `main` via Cloudflare's own Workers Builds git integration (not
-   a GitHub Actions workflow — see the note at the end of "Infra hand-off contract" above, which
-   still describes the older GitHub Actions deploy and is stale as of #528). Secrets persist
-   independently of a deploy, so setting them first means the human-facing routes work the moment
-   this merges; merging first would lock out `/`, `/status.json` and `/pipelines` (not `/beat`)
-   until the secrets are set.
+4. **Set the secrets before merging this PR to `main`.** The Worker is redeployed by the supervisor
+   step described in "Infra hand-off contract" above shortly after a change to `status-page/` reaches
+   `main`. Secrets persist independently of a deploy, so setting them first means the human-facing
+   routes work the moment this merges; merging first would lock out `/`, `/status.json` and
+   `/pipelines` (not `/beat`) until the secrets are set.
 5. Sign in once at `https://pipeline-status-jp.vercel.app/login` to confirm the redirect URI and
    the allowlist are both right.
 

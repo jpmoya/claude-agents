@@ -181,15 +181,18 @@ webhook_trusted() {
   _wh_age_ok "$dir/full.$(_wh_slug "$1")" $(( $(_wh_num "${WEBHOOK_FALLBACK_POLL_MINUTES:-20}" 20) * 60 ))
 }
 
-# webhook_stale_json — {"since":"<ISO>"} when the feature is on and the newest event (or, for an empty queue, the enable time) is older
-# than WEBHOOK_STALE_MINUTES; nothing otherwise. Published as the beat's webhook_stale; constant during an outage (no hash churn), the
-# status page computes the minutes itself.
-webhook_stale_json() {
+# webhook_last_event_at_json — "<ISO>" (a JSON string) on the VM only, when the feature is on and the receiver's newest event (or, for an
+# empty queue, the enable time) is older than WEBHOOK_STALE_MINUTES; nothing otherwise (#782). Published as the beat's
+# webhook_last_event_at; constant during an outage (no hash churn), the status page computes the minutes itself. The VM is the host with
+# no WEBHOOK_RECEIVER_URL: its queue file is the receiver's own. The Mac's queue is a mirror, so its age mostly says whether the Mac was
+# awake (a sleeping Mac is not a webhook outage) and it publishes nothing.
+webhook_last_event_at_json() {
   webhook_enabled || return 0
+  [ -z "${WEBHOOK_RECEIVER_URL:-}" ] || return 0
   local dir t now; dir=$(_wh_dir); now=$(date +%s)
   t=$(_wh_num "$(_wh_newest_ts)" 0)
   [ "$t" -gt 0 ] || t=$(_wh_num "$(cat "$dir/enabled-since" 2>/dev/null)" 0)
   [ "$t" -gt 0 ] || return 0
   [ $(( now - t )) -ge $(( $(_wh_num "${WEBHOOK_STALE_MINUTES:-30}" 30) * 60 )) ] || return 0
-  printf '{"since":"%s"}' "$(_wh_iso "$t")"
+  printf '"%s"' "$(_wh_iso "$t")"
 }

@@ -10,7 +10,7 @@
 //   3. paused tickets nobody is working on     (held runs: waiting on JP, answered but not relaunched, or just parked)
 //   4. a supervisor slow, or a host not reporting (tick-to-report gap > TICK_SLOW_MINUTES; heartbeat older than the stale threshold)
 //   5. the release router has not fired       (host `scheduled_triggers[]`, auto-release entries, newest fire across live hosts, #769)
-//   6. GitHub webhooks stopped arriving       (host `webhook_stale.since`, published only while the host's event queue is stale, #773)
+//   6. GitHub webhooks stopped arriving       (the VM host's `webhook_last_event_at`, the receiver's newest event, published only while stale, #773/#782)
 // A stale or offline host is reported once (family 4) and its old data raises no other alert.
 
 import { isIssueUrl } from './validate.js';
@@ -21,6 +21,7 @@ export const TICK_SLOW_MINUTES = 15;
 export const GOAL_STALL_HOURS = 6;
 export const TRIGGER_OVERDUE_FACTOR = 3; // alert when the newest fire is older than this many intervals ...
 export const TRIGGER_REPORT_LAG_MINUTES = 10; // ... plus the host's keep-alive (600 s): last_fired_at is not in the beat's change hash, so it can be that stale
+export const WEBHOOK_STALE_MINUTES = 30; // mirrors the host default WEBHOOK_STALE_MINUTES: the page computes the age itself from the VM receiver's last event
 export const ALERT_LIST_MAX = 6; // tickets shown in the unowned-tickets alert; the rest are counted
 const TITLE_WORDS = 5;
 
@@ -219,22 +220,28 @@ function releaseRouterAlerts(liveRecords, nowEpochSecs) {
   return out;
 }
 
-/** 6. a host with the webhook queue on has received no GitHub webhook for WEBHOOK_STALE_MINUTES (host `webhook_stale.since`, #773). The host publishes it only while stale, so the minutes are computed here. */
+/**
+ * 6. GitHub is not sending webhooks to the VM receiver (#782). The only signal is the VM host's `webhook_last_event_at` (its receiver's
+ * newest accepted delivery); the Mac's own apply of events says nothing about GitHub, so a sleeping or slow Mac never raises this, and a
+ * Mac's `webhook_stale` (the old per-host field) is ignored. The VM host must be live (a stale VM is reported once by family 4). The host
+ * publishes the time only while it is old, so it stays constant during an outage; the page computes the minutes and re-checks the threshold.
+ * A missing VM record or field fails quiet.
+ */
 function webhookStaleAlerts(liveRecords, nowEpochSecs) {
-  const out = [];
-  for (const { key, record } of liveRecords) {
-    const since = record.webhook_stale && typeof record.webhook_stale === 'object' ? epoch(record.webhook_stale.since) : null;
-    if (since === null) continue;
-    const mins = Math.max(0, Math.floor((nowEpochSecs - since) / 60));
-    out.push({
-      id: `webhook-stale-${key}`,
+  const vm = liveRecords.find((r) => r.key === 'vm');
+  const last = vm ? epoch(vm.record.webhook_last_event_at) : null;
+  if (last === null) return [];
+  const mins = Math.max(0, Math.floor((nowEpochSecs - last) / 60));
+  if (mins < WEBHOOK_STALE_MINUTES) return [];
+  return [
+    {
+      id: 'webhook-stale-vm',
       severity: 'amber',
-      title: `The ${HOST_LABELS[key]} is not receiving GitHub webhooks`,
-      detail: `Status: no webhook received in ${mins} minutes. The ${HOST_LABELS[key]} still polls GitHub every 20 minutes, so nothing is lost, but changes are noticed more slowly and the API budget is used faster.`,
+      title: `The ${HOST_LABELS.vm} is not receiving GitHub webhooks`,
+      detail: `Status: no webhook received in ${mins} minutes. The supervisors still poll GitHub every 20 minutes, so nothing is lost, but changes are noticed more slowly and the API budget is used faster.`,
       hint: 'Check the webhook receiver and its reverse proxy on the VM, and the hooks in GitHub (Recent Deliveries); WEBHOOK_EVENTS_ENABLED=0 returns to plain polling.',
-    });
-  }
-  return out;
+    },
+  ];
 }
 
 /**

@@ -178,9 +178,9 @@ build_payload() {
   triggers_json=$(_rs_build_scheduled_triggers_json); [ -n "$triggers_json" ] || triggers_json='[]'
   ci_queue_json=$(_rs_ci_queue_json)
   local sentry_cap_json; sentry_cap_json=$(bash "$RS_HERE/sentry-cap-status.sh" 2>/dev/null); [ -n "$sentry_cap_json" ] || sentry_cap_json='[]'   # #781
-  local webhook_stale_json; webhook_stale_json=$(webhook_stale_json 2>/dev/null)   # #773: only while enabled and the queue is stale; "" otherwise
+  local webhook_last_event_json; webhook_last_event_json=$(webhook_last_event_at_json 2>/dev/null)   # #782: VM only, while enabled and the receiver feed is stale; "" otherwise
   jq -n \
-    --argjson webhook_stale "${webhook_stale_json:-null}" \
+    --argjson webhook_last_event_at "${webhook_last_event_json:-null}" \
     --argjson triggers "$triggers_json" \
     --argjson sentry_cap "$sentry_cap_json" \
     --argjson cron "${CRON_JSON:-null}" \
@@ -203,7 +203,7 @@ build_payload() {
       + (if ($goals | length) > 0 then {goals: $goals} else {} end)
       + (if ($goal_stall | length) > 0 then {goal_stall: $goal_stall} else {} end)
       + (if ($triggers | length) > 0 then {scheduled_triggers: $triggers} else {} end)
-      + (if $webhook_stale != null then {webhook_stale: $webhook_stale} else {} end)
+      + (if $webhook_last_event_at != null then {webhook_last_event_at: $webhook_last_event_at} else {} end)
       + (if ($sentry_cap | length) > 0 then {sentry_cap: $sentry_cap} else {} end)
       + (if $ci_queue != null then {ci_queue: $ci_queue} else {} end)
       + (if $cron != null then {cron: $cron} else {} end)'

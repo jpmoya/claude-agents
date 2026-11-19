@@ -25,9 +25,13 @@ to start and no status banner is published. Setting it back to `0` returns to fu
   while the supervisor's last apply is under `WEBHOOK_TRUST_SECS` (600) old and the repo's fallback poll is not overdue.
 - Only repos whose owner is in `WEBHOOK_OWNERS` (default `Benjis-Plants`, the owners that have a hook) are served from events; a repo of
   any other owner keeps the plain per-tick since-sync.
-- Status page banner: while on, if the newest event (or, for an empty queue, the time the switch was turned on) is older than
-  `WEBHOOK_STALE_MINUTES` (30), the host publishes `webhook_stale: {since}` and the page shows "no webhook received in N minutes".
-  Quiet hours with no GitHub activity at all will also raise it (amber, informational: the fallback poll keeps working).
+- Status page banner (#782): the only signal is the VM receiver's own newest event. On the VM (no `WEBHOOK_RECEIVER_URL`), while on, if
+  the newest event (or, for an empty queue, the time the switch was turned on) is older than `WEBHOOK_STALE_MINUTES` (30), the VM
+  publishes `webhook_last_event_at` and the page shows an amber "The VM is not receiving GitHub webhooks: no webhook received in N
+  minutes" (id `webhook-stale-vm`; the page re-checks the same 30 minutes and computes N itself). The Mac publishes nothing: its queue is
+  a mirror, so a sleeping, offline or slow Mac is not a webhook outage (a Mac that stops reporting already raises the host alert). No VM
+  record or no field means no banner. Quiet hours with no GitHub activity at all will also raise it (amber, informational: the fallback
+  poll keeps working).
 
 Not covered yet (follow-up): issue/PR GraphQL reads (`gh issue list`, `gh pr list`, `gh repo view`) and the goal-project GraphQL
 reads still use their own TTLs; they are the bulk of the remaining idle calls.
