@@ -177,6 +177,19 @@ def check_supervisor():
             drift("sched:supervisor", "no active cron line for supervisor.sh")
 
 
+def check_scheduled_triggers():
+    """#783: a host that enables scheduled triggers needs its own 1-minute cron line (install.sh adds it; this only reports it missing)."""
+    try:
+        cfg = open(os.path.join(PIPE_CFG, "config.local.sh")).read()
+    except OSError:
+        return
+    if not re.search(r"^\s*(export\s+)?SCHEDULED_TRIGGERS_ENABLED=1(\s|$)", cfg, re.M):
+        return
+    rc, out = run(["crontab", "-l"])
+    if not re.search(r"^\s*[^#\s].*scheduled-triggers\.sh", out, re.M):
+        drift("sched:scheduled-triggers", "SCHEDULED_TRIGGERS_ENABLED=1 but no active cron line for scheduled-triggers.sh (re-run install.sh)")
+
+
 def git(repo, *a):
     return run(["git", "-C", repo] + list(a))
 
@@ -328,6 +341,7 @@ def main():
     check_tools(man, env)
     check_config(man)
     check_supervisor()
+    check_scheduled_triggers()
     check_repos(man, a.fix)
     check_auth(man, env)
     check_memory()

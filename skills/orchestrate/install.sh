@@ -65,14 +65,19 @@ SUP="$M * * * * $CL/skills/orchestrate/supervisor.sh >> $LOGS/supervisor.log 2>&
 SCN="0 * * * * $CL/skills/orchestrate/scan-backlog.sh >> $LOGS/scan.log 2>&1"
 BKF="23 13 * * * $CL/skills/orchestrate/session-backfill.sh >> $LOGS/session-backfill.log 2>&1"
 ROT="41 13 * * * $CL/skills/orchestrate/rotate-logs.sh >> $LOGS/rotate-logs.log 2>&1"
+# #783: scheduled triggers get their own 1-minute job (a supervisor tick takes 6-60 min), only where config.local.sh enables them (the VM).
+# The script logs to ~/logs/pipeline/scheduled-triggers.log itself and alerts on its own failures, so cron output is discarded.
+STG="* * * * * $CL/skills/orchestrate/scheduled-triggers.sh run >/dev/null 2>&1"
+STG_ON=0; grep -q -E '^[[:space:]]*(export[[:space:]]+)?SCHEDULED_TRIGGERS_ENABLED=1([[:space:]]|$)' "$PIPE_CFG/config.local.sh" 2>/dev/null && STG_ON=1
 cur=$(crontab -l 2>/dev/null || true)
-new=$(printf '%s\n' "$cur" | grep -v -E 'orchestrate/supervisor\.sh|scan-backlog\.sh|pipeline/dispatch\.sh|orchestrate/session-backfill\.sh|orchestrate/rotate-logs\.sh')
+new=$(printf '%s\n' "$cur" | grep -v -E 'orchestrate/supervisor\.sh|scan-backlog\.sh|pipeline/dispatch\.sh|orchestrate/session-backfill\.sh|orchestrate/rotate-logs\.sh|orchestrate/scheduled-triggers\.sh')
 if [ "$OS" != Darwin ]; then new="$new"$'\n'"# Agent pipeline supervisor (installed by claude-agents install.sh)"$'\n'"$SUP"; fi
 new="$new"$'\n'"# Agent pipeline session backfill (installed by claude-agents install.sh)"$'\n'"$BKF"
 new="$new"$'\n'"# Agent pipeline log rotation (installed by claude-agents install.sh)"$'\n'"$ROT"
 [ "$SCAN" = 1 ] && new="$new"$'\n'"# Agent pipeline hourly backlog scan"$'\n'"$SCN"
-if { { [ "$OS" = Darwin ] && ! printf '%s\n' "$cur" | grep -q 'orchestrate/supervisor\.sh'; } || { [ "$OS" != Darwin ] && [ "$(printf '%s\n' "$cur" | grep -c -F "$SUP")" = 1 ]; }; } && [ "$(printf '%s\n' "$cur" | grep -c -F "$BKF")" = 1 ] && [ "$(printf '%s\n' "$cur" | grep -c 'orchestrate/session-backfill\.sh')" = 1 ] && [ "$(printf '%s\n' "$cur" | grep -c -F "$ROT")" = 1 ] && [ "$(printf '%s\n' "$cur" | grep -c 'orchestrate/rotate-logs\.sh')" = 1 ] && { [ "$SCAN" = 0 ] || [ "$(printf '%s\n' "$cur" | grep -c -F "$SCN")" = 1 ]; } && ! printf '%s\n' "$cur" | grep -q 'pipeline/dispatch\.sh'; then ok "crontab already correct"
-else printf '%s\n' "$new" | sed '/^$/N;/^\n$/D' | crontab - && ok "crontab updated: $([ "$OS" = Darwin ] && echo 'no supervisor line (launchd)' || echo "supervisor on $MINUTE minutes")$([ "$SCAN" = 1 ] && echo ', hourly scan')"; fi
+[ "$STG_ON" = 1 ] && new="$new"$'\n'"# Agent pipeline scheduled triggers, every minute (installed by claude-agents install.sh; SCHEDULED_TRIGGERS_ENABLED=1)"$'\n'"$STG"
+if { { [ "$OS" = Darwin ] && ! printf '%s\n' "$cur" | grep -q 'orchestrate/supervisor\.sh'; } || { [ "$OS" != Darwin ] && [ "$(printf '%s\n' "$cur" | grep -c -F "$SUP")" = 1 ]; }; } && [ "$(printf '%s\n' "$cur" | grep -c -F "$BKF")" = 1 ] && [ "$(printf '%s\n' "$cur" | grep -c 'orchestrate/session-backfill\.sh')" = 1 ] && [ "$(printf '%s\n' "$cur" | grep -c -F "$ROT")" = 1 ] && [ "$(printf '%s\n' "$cur" | grep -c 'orchestrate/rotate-logs\.sh')" = 1 ] && { [ "$SCAN" = 0 ] || [ "$(printf '%s\n' "$cur" | grep -c -F "$SCN")" = 1 ]; } && [ "$(printf '%s\n' "$cur" | grep -c 'orchestrate/scheduled-triggers\.sh')" = "$STG_ON" ] && { [ "$STG_ON" = 0 ] || [ "$(printf '%s\n' "$cur" | grep -c -F "$STG")" = 1 ]; } && ! printf '%s\n' "$cur" | grep -q 'pipeline/dispatch\.sh'; then ok "crontab already correct"
+else printf '%s\n' "$new" | sed '/^$/N;/^\n$/D' | crontab - && ok "crontab updated: $([ "$OS" = Darwin ] && echo 'no supervisor line (launchd)' || echo "supervisor on $MINUTE minutes")$([ "$SCAN" = 1 ] && echo ', hourly scan')$([ "$STG_ON" = 1 ] && echo ', scheduled triggers every minute')"; fi
 if [ "$OS" = Darwin ]; then
   ok "supervisor runs from the launchd agent com.jp.pipeline-supervisor (not cron: cron cannot read the keychain)"
   [ -f "$HOME/Library/LaunchAgents/com.jp.pipeline-supervisor.plist" ] || printf '  WARN %s\n' "~/Library/LaunchAgents/com.jp.pipeline-supervisor.plist is missing — the Mac supervisor will not run until it is installed (see SKILL.md)"

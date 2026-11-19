@@ -290,7 +290,9 @@ test_stt_report_status_publishes_the_heartbeat_by_alias_without_the_fire_time_in
     SCHEDULED_TRIGGERS_ENABLED=1 /bin/bash "$HERE_STT/../report-status.sh" "$@" 2>/dev/null; }
   out=$(rs --print)
   assert_eq "$(printf '%s' "$out" | jq -c '.scheduled_triggers | map({repo, workflow, interval_minutes})')" '[{"repo":"project-a","workflow":"auto-release.yml","interval_minutes":5}]' "published by alias" || return 1
-  assert_not_contains "$out" "example-owner" "no owner/repo in the payload" || return 1
+  # #783: `repo` stays the alias; owner/repo appears only as `full_repo` (the alert title names the full repo)
+  assert_not_contains "$(printf '%s' "$out" | jq -c '.scheduled_triggers | map(del(.full_repo))')" "example-owner" "no owner/repo outside full_repo" || return 1
+  assert_eq "$(printf '%s' "$out" | jq -r '.scheduled_triggers[0].full_repo')" "example-owner/project-a" "full_repo published for the aliased repo" || return 1
   # behavioural: a push happens, then a new fire time alone is "unchanged" (no second push), while a new workflow line is a change
   : > "$STT_HOME/curl.log"; rs tick >/dev/null
   assert_eq "$(grep -c 'beat' "$STT_HOME/curl.log")" "1" "first beat pushed" || return 1

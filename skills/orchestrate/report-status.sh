@@ -82,11 +82,11 @@ _rs_build_goal_stall_json() {  # the payload's goal_stall array (status-page ale
     python3 "$RS_HERE/build-runs-json.py" "$(_rs_aliases_arg)" "$HOME/.claude/pipeline/runs.jsonl" "$PIPE" goalstall </dev/null
 }
 
-_rs_build_scheduled_triggers_json() {  # the payload's scheduled_triggers array (#769): the release router heartbeat, local files only. Repo published as its alias
+_rs_build_scheduled_triggers_json() {  # the payload's scheduled_triggers array (#769): the release router heartbeat, local files only. `repo` is the alias; `full_repo` (owner/repo, aliased repos only) names it in the alert (#783)
   local aliases; aliases=$(_rs_aliases_arg)
   "$RS_HERE/scheduled-triggers.sh" status 2>/dev/null | jq -c --arg aliases "$aliases" '
     ($aliases | split("\n") | map(select(contains(":")) | {key: .[0:index(":")], value: .[index(":")+1:]}) | from_entries) as $a
-    | map(.repo = ($a[.repo] // "other"))' 2>/dev/null
+    | map((if $a[.repo] then .full_repo = .repo else . end) | .repo = ($a[.repo] // "other"))' 2>/dev/null
 }
 
 _rs_supervisor_last_tick() {  # mtime of the supervisor's own log, else "now" (no supervisor has run yet)
