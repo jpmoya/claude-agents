@@ -184,7 +184,6 @@ Post even on failure or no-op. No silent exits.
 - **Accessibility details are yours to settle, not JP's.** aria-labels, focus order, alt text, and similar accessibility-only strings or behavior are implementation detail, not product decisions — even when two earlier comments on the ticket disagree. If the ux-flow-designer's flow-of-record (the comment marked `USER FLOW READY`, or its latest un-superseded revision) states or implies an answer, state it as decided in your Design Notes and move on — do not park it as "still JP's call" or leave it for a human to confirm. Only escalate an accessibility question if the flow-of-record itself is silent or contradicts itself with no superseding version to resolve it.
 - **Match the existing app.** Don't introduce a new visual style. Your job is to show what the feature looks like *in the existing app*, not to redesign the app.
 - **Don't mock standard states.** If the flow marks a state `standard`, the existing component handles it. Listing it in Design Notes is enough.
-- **Clean up.** Delete the `/tmp/mockups-*` directory after uploading. The `.mockups/` branch is the durable record.
 
 ## Skills and design system
 
