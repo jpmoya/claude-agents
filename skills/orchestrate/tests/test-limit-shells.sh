@@ -51,7 +51,7 @@ ls_noise() {  # everything the old grep counted that is NOT a tool shell of CLI 
 
 ls_run() {  # ls_run [env assignments...] — runs the hook; sets LS_RC, LS_ERR. Hook's parent = a launcher bash (@HOOKPARENT@).
   local rc=0
-  LS_ERR=$(env -i PATH="$LS_DIR/bin:$PATH" LS_DIR="$LS_DIR" CLAUDE_CODE_SESSION_ID="$SID_LS" "$@" \
+  LS_ERR=$(env -i PATH="$LS_DIR/bin:$PATH" LS_DIR="$LS_DIR" CLAUDE_CODE_SESSION_ID="$SID_LS" LIMIT_SHELLS_LOG="$LS_DIR/log" "$@" \
     bash -c 'printf "%s" "$$" > "$LS_DIR/hookparent"; bash "$0"; echo $? > "$LS_DIR/rc"' "$HOOK_LS" 2>&1 >/dev/null)
   LS_RC=$(cat "$LS_DIR/rc")
 }
@@ -191,10 +191,41 @@ test_limit_shells_fails_open_and_logs_when_undecidable() {
   ls_run CLAUDE_PID= LIMIT_SHELLS_LOG="$LS_DIR/log"
   assert_eq "$LS_RC" "0" "CLI not found: allowed" || return 1
   assert_contains "$(cat "$LS_DIR/log")" "fail-open: claude CLI of this session not found" "one log line" || return 1
-  rm -f "$LS_DIR/log"; : > "$LS_DIR/table"
+  rm -f "$LS_DIR/log" "$LS_DIR"/log.*; : > "$LS_DIR/table"
   ls_run LIMIT_SHELLS_LOG="$LS_DIR/log"
   assert_eq "$LS_RC" "0" "empty process table: allowed" || return 1
   assert_contains "$(cat "$LS_DIR/log")" "fail-open: ps returned no process table" "logged"
+}
+
+test_limit_shells_ceiling_counts_stale_shells_and_names_them() {
+  ls_setup; ls_chain_base; ls_shells 2 9000 9300
+  local i
+  for i in $(seq 1 37); do ls_rowx $((9400 + i)) 9000 S 02:00:00 "${TOOL_LS}'leaked $i'"; done
+  ls_run LIMIT_SHELLS_MAX_GLOBAL=100
+  assert_eq "$LS_RC" "0" "2 live + 37 stale = 39 < 40: stale exempt from the per-session cap, allowed" || return 1
+  ls_rowx 9500 9000 S 03:00:00 "${TOOL_LS}'leaked 38'"
+  ls_run LIMIT_SHELLS_MAX_GLOBAL=100
+  assert_eq "$LS_RC" "2" "2 live + 38 stale = 40: ceiling blocks" || return 1
+  assert_contains "$LS_ERR" "BLOCKED: 40 shells in total (38 stale" "message gives total and stale count" || return 1
+  assert_contains "$LS_ERR" "kill 9401 9402" "message lists the stale pids to reap" || return 1
+  ls_run LIMIT_SHELLS_MAX_GLOBAL=100 LIMIT_SHELLS_MAX_TOTAL=100
+  assert_eq "$LS_RC" "0" "ceiling is configurable" || return 1
+}
+
+test_limit_shells_fail_open_log_is_throttled() {
+  ls_setup; ls_row 9000 1 "node /opt/cli/cli.js"; ls_row @HOOKPARENT@ 9000 "bash -c hook-launcher"
+  ls_run CLAUDE_PID=; ls_run CLAUDE_PID=; ls_run CLAUDE_PID=
+  assert_eq "$(wc -l < "$LS_DIR/log" | tr -d ' ')" "1" "three fail-opens inside 10 minutes: one log line" || return 1
+  touch -t 200001010000 "$LS_DIR/log.failopen"
+  ls_run CLAUDE_PID=
+  assert_eq "$(wc -l < "$LS_DIR/log" | tr -d ' ')" "2" "after 10 minutes: logged again"
+}
+
+test_limit_shells_logs_once_when_no_claude_parent_matches() {
+  ls_setup; ls_chain_base; ls_row 9700 4242 "${TOOL_LS}'orphan-ish'"   # tool shell whose parent is not a claude CLI
+  ls_run; ls_run
+  assert_eq "$LS_RC" "0" "allowed" || return 1
+  assert_eq "$(grep -c 'none has a claude CLI parent' "$LS_DIR/log")" "1" "logged once across two runs"
 }
 
 run_test test_limit_shells_non_shell_session_processes_do_not_block
@@ -211,3 +242,6 @@ run_test test_limit_shells_zombie_and_stale_shells_do_not_count
 run_test test_limit_shells_stale_bound_is_configurable
 run_test test_limit_shells_cap_is_configurable
 run_test test_limit_shells_fails_open_and_logs_when_undecidable
+run_test test_limit_shells_ceiling_counts_stale_shells_and_names_them
+run_test test_limit_shells_fail_open_log_is_throttled
+run_test test_limit_shells_logs_once_when_no_claude_parent_matches
