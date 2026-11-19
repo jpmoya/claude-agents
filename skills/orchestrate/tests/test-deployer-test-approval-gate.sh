@@ -160,6 +160,36 @@ test_da_ac4_deployer_md_has_no_marker_check_of_its_own() {
   assert_not_contains "$l" 'latest `TESTS WRITTEN`' "AC4: deployer does not resolve the latest TESTS WRITTEN itself" || return 1
 }
 
+test_da_ac4_deployer_md_scopes_test_approval_to_full_lane() {
+  # #668: the fast lane has no test lock, so no TESTS APPROVED ever exists; deployer.md must exempt it
+  local l; l=$(grep -n 'Validate inputs' "$DEPL_DA")
+  assert_contains "$l" 'full lane only' "#668: deployer.md scopes TESTS APPROVED to the full lane" || return 1
+  assert_contains "$l" 'Lane: fast' "#668: deployer.md reads the lane from the prompt's Lane: line" || return 1
+  echo "$l" | grep -qiE 'fast-lane dispatch[^.]*no `TESTS APPROVED`' || { fail "#668: deployer.md must say a fast-lane dispatch has no TESTS APPROVED"; return 1; }
+  assert_contains "$l" 'needs only the code-reviewer' "#668: fast lane needs only the code-reviewer PASS" || return 1
+}
+
+test_da_ac4_orchestrator_deployer_prompt_states_the_lane() {
+  # #668: every deployer prompt carries Lane: fast|full (routing row and validation row)
+  assert_contains "$(da_routing_row)" 'Lane: fast' "#668: routing row states the lane in the deployer prompt" || return 1
+  assert_contains "$(da_validation_row)" 'Lane: full' "#668: validation row requires the lane in the deployer prompt" || return 1
+  assert_not_contains "$(da_validation_row)" 'gh issue view' "#668: no marker query added to the row" || return 1
+}
+
+test_da_668_validation_row_scopes_test_lock_pass_to_full_lane() {
+  # the fast lane never writes a test-lock validate line (orchestrator.md fast-lane IMPLEMENTED row), so the row must not demand one there
+  local v; v=$(da_validation_row)
+  assert_contains "$v" 'on the full lane the last test-lock validate line' "#668: validate-line requirement is full-lane scoped" || return 1
+  assert_contains "$v" 'fast lane never writes one' "#668: fast lane named as needing no validate line" || return 1
+}
+
+test_da_668_deployer_md_cross_checks_fast_lane_against_pm_ready() {
+  local l; l=$(grep -n 'Validate inputs' "$DEPL_DA")
+  assert_contains "$l" 'does not say `Lane: full`' "#668: Lane: fast honoured only when the PM READY comment does not say Lane: full" || return 1
+  assert_contains "$l" 'no `Lane:` line is the full lane' "#668: missing lane defaults to full" || return 1
+  assert_not_contains "$l" 'gh issue view' "#668: still no query command in the inputs line" || return 1
+}
+
 # ------------------------------------------------------------------ AC5 (characterisation)
 
 test_da_ac5_developer_still_starts_in_parallel_on_tests_written() {
@@ -261,6 +291,10 @@ run_test test_da_ac3_tests_written_row_reviews_a_commit_with_no_verdict
 run_test test_da_ac4_deployer_prompt_names_the_approval_url
 run_test test_da_ac4_deployer_md_input_wording_names_the_test_approval
 run_test test_da_ac4_deployer_md_has_no_marker_check_of_its_own
+run_test test_da_ac4_deployer_md_scopes_test_approval_to_full_lane
+run_test test_da_ac4_orchestrator_deployer_prompt_states_the_lane
+run_test test_da_668_validation_row_scopes_test_lock_pass_to_full_lane
+run_test test_da_668_deployer_md_cross_checks_fast_lane_against_pm_ready
 run_test test_da_ac5_developer_still_starts_in_parallel_on_tests_written
 run_test test_da_ac5_first_dispatch_row_does_not_require_approval
 run_test test_da_ac5_postmerge_route_to_deployer_unchanged
