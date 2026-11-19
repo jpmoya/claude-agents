@@ -22,7 +22,10 @@
 #   deliver.sh stop <goal|id>             label goal-stopped, close the registry issue, kill the local cycle (idempotent);
 #                                         its open tickets stay out of the feedback goal until `release` (#527)
 #   deliver.sh release <goal|id>          hand a stopped goal's held tickets back to the feedback goal (#527)
-#   deliver.sh resume <goal|id> [--here]  reopen a stopped/held goal; --here re-pins it to this host
+#   deliver.sh resume <goal|id> [--here] [--now]  reopen a stopped/held goal; --here re-pins it to this host;
+#                                         --now also launches one cycle here at once, and is the way to force an already-queued goal
+#                                         (it stays queued, keeps its place; under GOAL_SERIAL=1 it returns to the queue after that cycle;
+#                                         an active or waiting-on-JP goal is left alone)
 #   deliver.sh priority <goal|id> <n> | --after <goal> | --before <goal>   move a goal in the start order
 set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -707,9 +710,35 @@ fb_yield_here() {
   return 0
 }
 
+# _resume_queued_now <id> <issue> <host> <block> <spec> (#784): `resume <queued goal> --now` forces one cycle here beside the slot holder. The goal
+# is not reopened or re-labelled: it stays queued, keeps its place and priority, and under GOAL_SERIAL=1 goal sync drops the local cache and
+# returns it to the queue once the cycle ends (the extra-active-goal rule, as for register --now). A failed launch leaves it queued.
+_resume_queued_now() {
+  local id=$1 issue=$2 host=$3 block=$4 spec=$5 pid
+  if [ -n "$host" ] && [ "$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$THIS_HOST" | tr '[:upper:]' '[:lower:]')" ]; then
+    echo "pinned to $host; run 'deliver.sh resume $id --now' on that host"; return 0
+  fi
+  check_overlap "$spec" "$id" "$issue"   # as the reopen path: its tickets may since have been taken by a live goal
+  # check-then-act on the lead's pid: an atomic mkdir lock makes the liveness check and the launch one step against a second --now
+  mkdir -p "$PIPE" "$LOGDIR/goals"
+  find "$PIPE/goal-$id.resume-lock" -maxdepth 0 -mmin +1 -exec rmdir {} + 2>/dev/null || true   # a killed run's stale lock
+  if ! mkdir "$PIPE/goal-$id.resume-lock" 2>/dev/null; then echo "$id is being launched by another resume --now"; return 0; fi
+  pid=$(cat "$PIPE/goal-$id.pid" 2>/dev/null || true)
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then rmdir "$PIPE/goal-$id.resume-lock"; echo "$id already has a cycle running here"; return 0; fi
+  write_cache "$id" "$(printf '%s' "$block" | jq -c --arg h "$THIS_HOST" '.host = $h')" "$issue"
+  if ! goal_launch "$id"; then
+    rm -f "$PIPE/goal-$id.json"; rmdir "$PIPE/goal-$id.resume-lock"
+    launch_alert "$id" "$issue" resume-now "left queued"
+    die "$id launch failed"
+  fi
+  rmdir "$PIPE/goal-$id.resume-lock"
+  echo "launched $id (issue #$issue), still queued"
+  echo "log=$PIPE/goal-$id.log"
+}
+
 cmd_resume() {
-  local arg="" here=0 a id g issue st host spec block
-  for a in "$@"; do if [ "$a" = "--here" ]; then here=1; else arg="$a"; fi; done
+  local arg="" here=0 now=0 a id g issue st host spec block
+  for a in "$@"; do case "$a" in --here) here=1 ;; --now) now=1 ;; *) arg="$a" ;; esac; done
   [ -n "$arg" ] || die "goal or id required"
   id=$(_goal_resolve "$arg") || die "goal not found: $arg"
   g=$(_goal_find "$id") || die "goal not found: $id"
@@ -718,7 +747,9 @@ cmd_resume() {
   case "$st" in
     delivered) die "$id is delivered; register a new goal instead" ;;
     unreadable) die "cannot read the registry block of $id; fix or close its issue by hand" ;;
-    queued|active|waiting_jp) echo "$id is already $st"; return 0 ;;
+    queued) if [ "$now" = 1 ]; then _resume_queued_now "$id" "$issue" "$host" "$block" "$spec"; return $?; fi
+            echo "$id is already $st"; return 0 ;;
+    active|waiting_jp) echo "$id is already $st"; return 0 ;;
   esac
   # #419: the label is stripped only when a goal closes, so only a stopped (closed) label goal is unresumable; a held one is open
   case "$spec" in label:*) [ "$st" = stopped ] && die "$id is a label goal: its label was stripped at close; register a new goal instead" ;; esac
@@ -770,6 +801,6 @@ case "${1:-}" in
   stop) shift; cmd_stop "$@" ;;
   release) shift; cmd_release "$@" ;;
   resume) shift; cmd_resume "$@" ;;
-  ''|-h|--help) sed -n '2,24p' "$0"; exit 2 ;;
+  ''|-h|--help) sed -n '2,28p' "$0"; exit 2 ;;
   *) cmd_register_args "$@" ;;
 esac

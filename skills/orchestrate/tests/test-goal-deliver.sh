@@ -225,6 +225,7 @@ dg_goal() {
   block=$(jq -nc --arg id "$id" --arg spec "$spec" --arg host "$host" --arg ins "$instr" --arg c "$DG_NOW" \
     '{v:1,id:$id,spec:$spec,host:$host,created:$c,instructions:$ins}')
   case "$st" in
+    queued)        labels='["delivery-goal","goal-queued"]' ;;
     held)          labels='["delivery-goal","goal-held"]' ;;
     waiting)       labels='["delivery-goal","goal-waiting-jp"]' ;;
     stopped)       labels='["delivery-goal","goal-stopped"]'; state=closed; closed="\"$DG_NOW\"" ;;
@@ -835,6 +836,137 @@ test_dg_resume_refused_when_tickets_now_overlap_a_live_goal() {
   dg_teardown; return $rc
 }
 
+# ---------------------------------------------------------------- #784: resume --now ---------------------------
+
+dg_labels_of() { jq -r '[.labels[].name] | sort | join(",")' "$DG_ST/issues/$DG_REG/$1.json"; }
+
+test_dg_784_resume_now_queued_goal_launches_once_and_stays_queued() {
+  dg_setup
+  local f before rc=0
+  DG_GOAL_ID=$DG_ID_T7; dg_goal 501 "$DG_SPEC_T7" "" queued
+  f="$DG_ST/issues/$DG_REG/501.json"; before=$(jq -S '{state,labels,body}' "$f")
+  dg_run resume "$DG_SPEC_T7" --now
+  assert_eq "$DG_RC" "0" "784 AC1: exits 0 (stderr: $DG_ERR)" || rc=1
+  dg_wait_claude 1 || { fail "784 AC1: one cycle launched"; rc=1; }
+  sleep 0.3
+  assert_eq "$(dg_claude_count)" "1" "784 AC1: launched exactly once" || rc=1
+  assert_eq "$(jq -S '{state,labels,body}' "$f")" "$before" "784 AC1: registry issue unchanged (still queued, same place)" || rc=1
+  assert_eq "$(jq -r .host "$DG_PIPE/goal-$DG_ID_T7.json" 2>/dev/null)" "host-a" "784: local cache pinned here so goal sync returns it to the queue after the cycle" || rc=1
+  echo $$ > "$DG_PIPE/goal-$DG_ID_T7.pid"   # the fake claude exits at once: stand in a live lead
+  dg_run resume "$DG_ID_T7" --now
+  assert_contains "$DG_OUT" "already has a cycle running" "784: a second --now while its cycle runs does not launch again" || rc=1
+  sleep 0.3
+  assert_eq "$(dg_claude_count)" "1" "784: still one launch" || rc=1
+  dg_teardown; return $rc
+}
+
+test_dg_784_resume_without_now_queued_goal_does_not_launch() {
+  dg_setup
+  local rc=0
+  DG_GOAL_ID=$DG_ID_T7; dg_goal 501 "$DG_SPEC_T7" "" queued
+  dg_run resume "$DG_SPEC_T7"
+  assert_eq "$DG_RC" "0" "784 AC2: exits 0" \
+    && assert_contains "$DG_OUT" "already queued" "784 AC2: says already queued" || rc=1
+  sleep 0.3
+  assert_eq "$(dg_claude_count)" "0" "784 AC2: nothing launched" || rc=1
+  dg_teardown; return $rc
+}
+
+test_dg_784_resume_now_active_goal_does_not_launch() {
+  dg_setup
+  local rc=0
+  DG_GOAL_ID=$DG_ID_T7; dg_goal 501 "$DG_SPEC_T7" host-a active
+  dg_run resume "$DG_SPEC_T7" --now
+  assert_eq "$DG_RC" "0" "784 AC3: exits 0" \
+    && assert_contains "$DG_OUT" "already active" "784 AC3: says already active" || rc=1
+  sleep 0.3
+  assert_eq "$(dg_claude_count)" "0" "784 AC3: no second launch" || rc=1
+  dg_teardown; return $rc
+}
+
+test_dg_784_resume_now_delivered_and_unknown_goals_refused() {
+  dg_setup
+  local rc=0
+  DG_GOAL_ID=$DG_ID_T7; dg_goal 501 "$DG_SPEC_T7" host-a delivered
+  dg_run resume "$DG_SPEC_T7" --now
+  assert_eq "$DG_RC" "1" "784 AC4: delivered exits 1" \
+    && assert_contains "$DG_ERR" "is delivered" "784 AC4: existing delivered error" || rc=1
+  dg_run resume "example-owner/project-a#99" --now
+  assert_eq "$DG_RC" "1" "784 AC4: unknown exits 1" \
+    && assert_contains "$DG_ERR" "goal not found" "784 AC4: goal not found" || rc=1
+  sleep 0.3
+  assert_eq "$(dg_claude_count)" "0" "784 AC4: nothing launched" || rc=1
+  dg_teardown; return $rc
+}
+
+test_dg_784_resume_now_held_goal_reopens_and_launches_once() {
+  dg_setup
+  local f rc=0
+  DG_GOAL_ID=$DG_ID_T7; dg_goal 501 "$DG_SPEC_T7" host-a held
+  dg_run resume "$DG_ID_T7" --now
+  assert_eq "$DG_RC" "0" "784 AC5: exits 0 (stderr: $DG_ERR)" || rc=1
+  f="$DG_ST/issues/$DG_REG/501.json"
+  dg_has_label "$f" goal-held && { fail "784 AC5: goal-held removed"; rc=1; }
+  dg_wait_claude 1 || { fail "784 AC5: launched"; rc=1; }
+  sleep 0.3
+  assert_eq "$(dg_claude_count)" "1" "784 AC5: launched exactly once" || rc=1
+  dg_teardown; return $rc
+}
+
+test_dg_784_resume_now_launch_failure_leaves_queued_and_alerts() {
+  DG_EXTRA_CFG='SLACK_WEBHOOK_URL=https://hooks.example.invalid/x'
+  dg_setup
+  local f rc=0
+  printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "$(dirname "$0")/curl.log"\n' > "$DG_BIN/curl"
+  chmod +x "$DG_BIN/curl"
+  DG_GOAL_ID=$DG_ID_T7; dg_goal 501 "$DG_SPEC_T7" "" queued
+  rm -rf "$DG_CK_A"   # goal_launch cannot cd into the checkout
+  f="$DG_ST/issues/$DG_REG/501.json"
+  dg_run resume "$DG_SPEC_T7" --now
+  assert_eq "$DG_RC" "1" "784 AC6: exits non-zero" \
+    && assert_contains "$DG_ERR" "launch failed" "784 AC6: launch failed on stderr" || rc=1
+  assert_eq "$(jq -r .state "$f")" "open" "784 AC6: not closed" || rc=1
+  assert_eq "$(dg_labels_of 501)" "delivery-goal,goal-queued" "784 AC6: still queued, no goal-stopped" || rc=1
+  assert_file_absent "$DG_PIPE/goal-$DG_ID_T7.json" "784: failed launch leaves no local cache" || rc=1
+  assert_contains "$(cat "$DG_BIN/curl.log" 2>/dev/null)" "launch failed for goal $DG_ID_T7" "784 AC9: Slack alert sent on the existing webhook" || rc=1
+  assert_contains "$(cat "$DG_BIN/curl.log" 2>/dev/null)" "route resume-now, release " "784 AC9: alert carries route and release" || rc=1
+  assert_contains "$(cat "$DG_BIN/curl.log" 2>/dev/null)" "left queued" "784 AC9: alert says left queued" || rc=1
+  DG_EXTRA_CFG=""
+  dg_teardown; return $rc
+}
+
+test_dg_784_resume_now_queued_goal_refused_when_tickets_overlap_a_live_goal() {
+  dg_setup
+  local rc=0
+  DG_GOAL_ID=$DG_ID_MS; dg_goal 501 "$DG_SPEC_MS" "" queued
+  DG_GOAL_ID="example-owner_project-a-t-101"; dg_goal 502 "example-owner/project-a#101" "" queued
+  dg_run resume "$DG_SPEC_MS" --now
+  assert_eq "$DG_RC" "1" "784 overlap: exits 1" \
+    && assert_contains "$DG_ERR" "example-owner_project-a-t-101" "784 overlap: names the conflicting goal" || rc=1
+  sleep 0.3
+  assert_eq "$(dg_claude_count)" "0" "784 overlap: nothing launched" || rc=1
+  assert_eq "$(dg_labels_of 501)" "delivery-goal,goal-queued" "784 overlap: still queued" || rc=1
+  dg_teardown; return $rc
+}
+
+test_dg_784_resume_now_launch_lock_blocks_a_concurrent_launch() {
+  dg_setup
+  local rc=0
+  DG_GOAL_ID=$DG_ID_T7; dg_goal 501 "$DG_SPEC_T7" "" queued
+  mkdir -p "$DG_PIPE/goal-$DG_ID_T7.resume-lock"   # another resume --now is between its liveness check and its launch
+  dg_run resume "$DG_SPEC_T7" --now
+  assert_eq "$DG_RC" "0" "784 lock: exits 0" \
+    && assert_contains "$DG_OUT" "being launched by another" "784 lock: says another launch is in progress" || rc=1
+  sleep 0.3
+  assert_eq "$(dg_claude_count)" "0" "784 lock: no second launch" || rc=1
+  rmdir "$DG_PIPE/goal-$DG_ID_T7.resume-lock"
+  dg_run resume "$DG_SPEC_T7" --now
+  assert_eq "$DG_RC" "0" "784 lock: free lock launches" || rc=1
+  dg_wait_claude 1 || { fail "784 lock: launched once the lock is free"; rc=1; }
+  assert_file_absent "$DG_PIPE/goal-$DG_ID_T7.resume-lock" "784 lock: released after launch" || rc=1
+  dg_teardown; return $rc
+}
+
 # ---------------------------------------------------------------- AC9: library contract ----------------------
 
 test_dg_goal_parse_valid_specs() {
@@ -996,6 +1128,10 @@ for t in \
   test_dg_resume_stopped_goal_pinned_here_reopens_and_launches test_dg_resume_held_goal_removes_held_label test_dg_419_resume_held_label_goal_clears_held test_dg_419_resume_stopped_label_goal_still_refused \
   test_dg_resume_pinned_elsewhere_without_here_does_not_launch test_dg_resume_here_repins_host_and_launches \
   test_dg_resume_delivered_goal_refused test_dg_resume_refused_when_tickets_now_overlap_a_live_goal \
+  test_dg_784_resume_now_queued_goal_launches_once_and_stays_queued test_dg_784_resume_without_now_queued_goal_does_not_launch \
+  test_dg_784_resume_now_active_goal_does_not_launch test_dg_784_resume_now_delivered_and_unknown_goals_refused \
+  test_dg_784_resume_now_held_goal_reopens_and_launches_once test_dg_784_resume_now_launch_failure_leaves_queued_and_alerts \
+  test_dg_784_resume_now_queued_goal_refused_when_tickets_overlap_a_live_goal test_dg_784_resume_now_launch_lock_blocks_a_concurrent_launch \
   test_dg_goal_parse_valid_specs test_dg_goal_parse_malformed_exit_1 \
   test_dg_goal_id_pinned_rule test_dg_goal_scope_issues_only_and_live \
   test_dg_goal_scope_milestones_all_covers_open_milestones test_dg_goal_registry_list_format \
