@@ -248,7 +248,7 @@ function sanitiseGoal(raw) {
   return goal;
 }
 
-// ---- goal_stall[] (status-page alert banner): why goals wait in the queue and none starts. By reconstruction: a closed
+// ---- goal_stall[] (status-page alert banner): goals the queue skips because they cannot be read (they block nothing else). By reconstruction: a closed
 // `kind` enum, short plain-text fields (no markup characters), at most MAX_GOAL_STALL items and MAX_GOAL_STALL_BLOCKED names each.
 const GOAL_STALL_KINDS = ['unreadable', 'project_error'];
 const MAX_GOAL_STALL = 5;
@@ -259,10 +259,11 @@ function sanitiseGoalStall(raw) {
   const goal = sanitiseGoalText(raw.goal);
   const reason = sanitiseGoalText(raw.reason);
   const hint = sanitiseGoalText(raw.hint);
-  if (goal === null || reason === null || hint === null || !Array.isArray(raw.blocked)) return null;
-  const blocked = raw.blocked.slice(0, MAX_GOAL_STALL_BLOCKED).map(sanitiseGoalText).filter((b) => b !== null);
-  if (blocked.length === 0) return null;
-  return { kind: raw.kind, goal, reason, hint, blocked };
+  if (goal === null || reason === null || hint === null) return null;
+  // `blocked` is optional since 2026-11-19: a goal that cannot be read is skipped and blocks nothing but itself, so a current reporter sends none.
+  // An older reporter's names are still kept (cleaned), but never required.
+  const blocked = Array.isArray(raw.blocked) ? raw.blocked.slice(0, MAX_GOAL_STALL_BLOCKED).map(sanitiseGoalText).filter((b) => b !== null) : [];
+  return blocked.length > 0 ? { kind: raw.kind, goal, reason, hint, blocked } : { kind: raw.kind, goal, reason, hint };
 }
 
 function sanitiseList(raw, max = Infinity) {

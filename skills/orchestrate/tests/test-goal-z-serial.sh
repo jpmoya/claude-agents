@@ -1,6 +1,6 @@
 # One goal at a time across both hosts (GOAL_SERIAL, JP 2026-10-30).
 #   S1 queue admission (pure jq): any active goal holds the one slot, wherever it sits in the order; a running feedback goal
-#      does not hold it unless GOAL_SERIAL_FEEDBACK=1 (a queued one still waits its turn); an unreadable entry fails closed; GOAL_SERIAL=0 gives byte-identical queue output.
+#      does not hold it unless GOAL_SERIAL_FEEDBACK=1 (a queued one still waits its turn); an unreadable entry is skipped and blocks nothing else (#793); GOAL_SERIAL=0 gives byte-identical queue output.
 #   S2 supervisor ticks: two queued goals, both hosts ticking -> exactly one lead; a later-priority active goal elsewhere
 #      blocks an earlier queued one (serial) but not with GOAL_SERIAL=0 (today's rule).
 #   S3 an extra active goal (hand launch / already running) is returned to the queue at the end of its cycle, never killed;
@@ -74,13 +74,19 @@ test_zs_s1_feedback_goals_exempt_by_default() {
   assert_eq "$c" "null" "S1 GOAL_SERIAL_FEEDBACK=1: an active feedback goal holds the slot" || return 1
 }
 
-test_zs_s1_unreadable_entry_fails_closed() {
+test_zs_s1_unreadable_entry_blocks_nothing_but_itself() {   # JP, 2026-11-19 (#793): was "fails closed"
   local c
-  # unreadable sorts by its issue number 60, after the queued goal at priority 1: today it does not block; serial: it does
+  # unreadable sorts by its issue number 60, after the queued goal at priority 1: it never blocked there
   c=$(zs_q 0 0 candidate "$(zs_goal 50 goal-a queued 1)" "$(zs_unreadable 60)")
-  assert_eq "$c" "goal-a" "S1 off: an unreadable entry behind the queued goal does not block (today)" || return 1
+  assert_eq "$c" "goal-a" "S1 off: an unreadable entry behind the queued goal does not block" || return 1
   c=$(zs_q 1 0 candidate "$(zs_goal 50 goal-a queued 1)" "$(zs_unreadable 60)")
-  assert_eq "$c" "null" "S1 serial: an unreadable entry anywhere may be an active goal -> nothing starts" || return 1
+  assert_eq "$c" "goal-a" "S1 serial: an unreadable entry anywhere is skipped; the queued goal starts" || return 1
+  c=$(zs_q 1 0 candidate "$(zs_unreadable 10)" "$(zs_goal 50 goal-a queued 1)")
+  assert_eq "$c" "goal-a" "S1 serial: an unreadable entry that sorts FIRST is skipped too" || return 1
+  c=$(zs_q 1 0 unreadable "$(zs_unreadable 10)" "$(zs_goal 50 goal-a queued 1)")
+  assert_eq "$c" "registry-issue-10" "S1 serial: it is still listed (display only) for the status page" || return 1
+  c=$(zs_q 1 0 candidate "$(zs_goal 50 goal-a active 1)" "$(zs_goal 51 goal-b queued 2)" "$(zs_unreadable 60)")
+  assert_eq "$c" "null" "S1 serial: a readable ACTIVE goal still holds the one slot" || return 1
 }
 
 test_zs_s1_off_output_is_byte_identical_to_the_old_jq() {
@@ -383,7 +389,7 @@ test_zs_s6_slot_taken_during_the_settle_wait() {
 echo "-- one goal at a time (GOAL_SERIAL)"
 run_test test_zs_s1_any_active_goal_holds_the_slot
 run_test test_zs_s1_feedback_goals_exempt_by_default
-run_test test_zs_s1_unreadable_entry_fails_closed
+run_test test_zs_s1_unreadable_entry_blocks_nothing_but_itself
 run_test test_zs_s1_off_output_is_byte_identical_to_the_old_jq
 run_test test_zs_s2_two_queued_goals_two_hosts_one_lead
 run_test test_zs_s2_two_hosts_later_active_goal

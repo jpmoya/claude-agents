@@ -108,16 +108,23 @@ _gp_items_pages() {
     cur="$more"
   done
 }
-_gp_items() {
-  local dir nodes rc
-  dir=$(mktemp -d "${TMPDIR:-/tmp}/gp-items.XXXXXX") || return 1
-  if _gp_items_pages "$1" "$2" "$dir" && nodes=$(_gp_pages_nodes "$dir"); then
-    jq -c '{items: [.[] | select((.content.number? // null) != null) | {id, status: (.fieldValueByName.name? // null), closed: (.content.state? == "CLOSED"), labels: [.content.labels.nodes[]?.name],
-      content: {repository: .content.repository.nameWithOwner, number: .content.number}}]}' <<< "$nodes"
-    rc=$?
-  else rc=1; fi
-  rm -rf "$dir"
-  return "$rc"
+# _gp_in_tmp <prefix> <function> [args...] — runs <function> with a private mktemp -d dir as its first argument, in a SUBSHELL whose EXIT, INT and
+# TERM traps remove the dir (it holds ticket text), so a signal cannot leave it behind and the caller's own traps are never touched.
+_gp_in_tmp() {
+  local prefix="$1" fn="$2"; shift 2
+  (
+    dir=$(mktemp -d "${TMPDIR:-/tmp}/$prefix.XXXXXX") || { echo "cannot create a temp dir" >&2; exit 1; }
+    trap 'rm -rf "$dir"' EXIT
+    trap 'exit 130' INT; trap 'exit 143' TERM
+    "$fn" "$dir" "$@"
+  )
+}
+_gp_items() { _gp_in_tmp gp-items _gp_items_in "$@"; }
+_gp_items_in() {
+  local dir="$1" nodes
+  _gp_items_pages "$2" "$3" "$dir" && nodes=$(_gp_pages_nodes "$dir") || return 1
+  jq -c '{items: [.[] | select((.content.number? // null) != null) | {id, status: (.fieldValueByName.name? // null), closed: (.content.state? == "CLOSED"), labels: [.content.labels.nodes[]?.name],
+    content: {repository: .content.repository.nameWithOwner, number: .content.number}}]}' <<< "$nodes"
 }
 
 # goal_project_read <owner> <number> [--meta] -> {"title","url","issues":[...]} (#736): the project that IS a goal's scope. The ONE reader of
@@ -146,7 +153,7 @@ _gp_read_pages() {
       meta=$(jq -c '.data.repositoryOwner.projectV2 | select(. != null) | {title, url, closed}' <<< "$page" 2>/dev/null)
       [ -n "$meta" ] || { echo "the project does not exist or the token cannot read it" >&2; return 1; }
       [ "$(jq -r '.closed' <<< "$meta")" != true ] || { echo "the project is closed" >&2; return 1; }
-      printf '%s' "$meta" > "$dir/meta.json"
+      printf '%s' "$meta" > "$dir/meta.json" || { echo "cannot write to the temp dir" >&2; return 1; }
     fi
     _gp_page_save "$dir" "$i" <<< "$page" || { echo "an items page does not parse" >&2; return 1; }
     i=$((i + 1))
@@ -157,13 +164,12 @@ _gp_read_pages() {
     cur="$more"
   done
 }
-goal_project_read() {
-  local o="$1" n="$2" first=100 dir nodes meta rc
-  [ "${3:-}" != --meta ] || first=1
-  dir=$(mktemp -d "${TMPDIR:-/tmp}/gp-read.XXXXXX") || { echo "cannot create a temp dir" >&2; return 1; }
-  if ! _gp_read_pages "$o" "$n" "$first" "$dir"; then rm -rf "$dir"; return 1; fi
-  meta=$(cat "$dir/meta.json") && nodes=$(_gp_pages_nodes "$dir") || { rm -rf "$dir"; echo "an items page does not parse" >&2; return 1; }
-  rm -rf "$dir"
+goal_project_read() { _gp_in_tmp gp-read _gp_read_in "$@"; }
+_gp_read_in() {
+  local dir="$1" o="$2" n="$3" first=100 nodes meta
+  [ "${4:-}" != --meta ] || first=1
+  _gp_read_pages "$o" "$n" "$first" "$dir" || return 1
+  meta=$(cat "$dir/meta.json") && nodes=$(_gp_pages_nodes "$dir") || { echo "an items page does not parse" >&2; return 1; }
   jq -c --argjson m "$meta" '
     if any(.[]; (.type == "ISSUE" and .content.number == null) or (.type != "ISSUE" and .type != "PULL_REQUEST" and .type != "DRAFT_ISSUE")) then error("unreadable item") else . end
     | $m + {issues: [.[] | select(.type == "ISSUE") | .content | {repo: .repository.nameWithOwner, number, state: (.state | ascii_downcase),
@@ -376,8 +382,17 @@ goal_project_sync_all() {
 # owner, open and closed, so the status page lists each one as a goal row with no registry edit (build-runs-json.py reads it).
 # closed_seen = when this cache first saw the project closed (gh gives no close time); it keeps the "recently closed" window honest.
 # Calls report_status_async when the list changed, so the page picks a new project up at once.
+# _gp_list_merge_in <dir> <list> <prev> <owner> <now> — the fresh project list merged with the cached one. Both lists go through files, never
+# argv (#793: one argument is capped at 128KB on Linux and 200 projects can pass it); a failed write fails the merge.
+_gp_list_merge_in() {
+  local dir="$1"
+  printf '%s' "$2" > "$dir/l.json" && printf '%s' "$3" > "$dir/p.json" || return 1
+  jq -nc --slurpfile l "$dir/l.json" --slurpfile p "$dir/p.json" --arg o "$4" --arg now "$5" \
+    '{owner:$o, projects: [$l[0][] | . as $x | {number, title, url, closed: (.closed // false),
+        closed_seen: (if (.closed // false) then (([$p[0][] | select(.number == $x.number) | .closed_seen] | first) // $now) else null end)}]}'
+}
 goal_project_refresh_list() {
-  local f="$PIPE/goalprojects.json" o list prev new now rc
+  local f="$PIPE/goalprojects.json" o list prev new now
   if ! goal_project_enabled; then   # no project scope in THIS process (the VM, or a session holding the bot token): never touch a list that exists,
     # or one such process blanks the Mac's goal rows for everyone. A host that never had a list gets an empty one once, so it lists no rows of its own.
     [ -f "$f" ] || { mkdir -p "$PIPE" 2>/dev/null; echo '{"projects":[]}' > "$f.tmp" 2>/dev/null && mv "$f.tmp" "$f"; }
@@ -388,13 +403,7 @@ goal_project_refresh_list() {
   [ -n "$list" ] || { _gp_log "cannot list the projects of $o"; return 1; }
   prev=$(jq -c '.projects // []' "$f" 2>/dev/null) || prev='[]'
   [ -n "$prev" ] || prev='[]'
-  # the two lists go through files, never argv (#793: one argument is capped at 128KB on Linux and 200 projects can pass it)
-  local d; d=$(mktemp -d "${TMPDIR:-/tmp}/gp-list.XXXXXX") || return 1
-  printf '%s' "$list" > "$d/l.json"; printf '%s' "$prev" > "$d/p.json"
-  new=$(jq -nc --slurpfile l "$d/l.json" --slurpfile p "$d/p.json" --arg o "$o" --arg now "$now" \
-    '{owner:$o, projects: [$l[0][] | . as $x | {number, title, url, closed: (.closed // false),
-        closed_seen: (if (.closed // false) then (([$p[0][] | select(.number == $x.number) | .closed_seen] | first) // $now) else null end)}]}'); rc=$?
-  rm -rf "$d"; [ "$rc" -eq 0 ] || return 1
+  new=$(_gp_in_tmp gp-list _gp_list_merge_in "$list" "$prev" "$o" "$now") || return 1
   if [ "$(printf '%s' "$new" | jq -c .projects)" != "$(printf '%s' "$prev")" ]; then
     printf '%s' "$new" | jq -c --arg now "$now" '. + {at:$now}' > "$f.tmp" 2>/dev/null && mv "$f.tmp" "$f" || { rm -f "$f.tmp"; return 1; }
     type report_status_async >/dev/null 2>&1 && report_status_async "goal-projects"

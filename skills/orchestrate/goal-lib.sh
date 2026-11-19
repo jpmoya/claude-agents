@@ -262,13 +262,49 @@ _goal_proj_err() {
     --arg message "project goal $1: $2" || true
 }
 
-# _goal_proj_read <owner/number> [--meta] -> goal_project_read's JSON (goal-project.sh); exit 1, logged, when it cannot be read
+# A project goal whose scope cannot be read is SKIPPED, never a blocker (JP, 2026-11-19): the read failure leaves a marker
+# $PIPE/goal-proj-err-<owner>_<number> ("<epoch>\t<one line reason>"), the queue computation (_goal_queue_jq) leaves that goal out of the slot
+# and the candidate choice for GOAL_SCOPE_ERR_SECS (default 600) and every other goal goes on in the same priority order; a good read clears it.
+_goal_scope_err_file() { printf '%s/goal-proj-err-%s_%s' "$PIPE" "$(printf '%s' "${1%%/*}" | tr '[:upper:]' '[:lower:]')" "${1##*/}"; }
+_goal_scope_err_set() {   # <owner/number> <reason>: one line, no tab, capped
+  mkdir -p "$PIPE" 2>/dev/null
+  printf '%s\t%s\n' "$(date +%s)" "$(printf '%s' "$2" | tr '\t\r\n' '   ' | cut -c1-160)" > "$(_goal_scope_err_file "$1")" 2>/dev/null || true
+}
+_goal_scope_err_clear() { rm -f "$(_goal_scope_err_file "$1")" 2>/dev/null || true; }
+# _goal_errored_json -> [{key: "<owner lowercase>_<number>", why}] of the project scopes whose last read failed less than GOAL_SCOPE_ERR_SECS ago
+_goal_errored_json() {
+  local f ts why now ttl="${GOAL_SCOPE_ERR_SECS:-600}" rows=""
+  case "$ttl" in ''|*[!0-9]*) ttl=600 ;; esac
+  now=$(date +%s)
+  for f in "$PIPE"/goal-proj-err-*; do
+    [ -f "$f" ] || continue
+    IFS=$'\t' read -r ts why < "$f" || true
+    case "$ts" in ''|*[!0-9]*) continue ;; esac
+    [ $((now - ts)) -le "$ttl" ] || continue
+    rows="$rows$(printf '%s\n' "${f##*/goal-proj-err-}")"$'\t'"$why"$'\n'
+  done
+  printf '%s' "$rows" | jq -Rsc '[split("\n")[] | select(. != "") | split("\t") | {key: .[0], why: (.[1] // "")}]' 2>/dev/null || echo '[]'
+}
+
+# _goal_proj_read <owner/number> [--meta] -> goal_project_read's JSON (goal-project.sh); exit 1, logged, when it cannot be read.
+# A failed `gh` call (the reader's reason starts "gh exit") is retried up to GOAL_PROJ_RETRIES (2) times, GOAL_PROJ_RETRY_SECS (2) apart, before
+# anything is logged: a transient GitHub error must not mark the goal. A parse, closed or missing-project answer is final: no retry.
 _goal_proj_read() {
-  local out err
+  local out err why tries=0
   err=$(mktemp "${TMPDIR:-/tmp}/goal-proj-err.XXXXXX") || err=/dev/null
-  out=$(goal_project_read "${1%%/*}" "${1##*/}" "${2:-}" 2>"$err") || { _goal_proj_err "$1" "cannot read the project scope: $(head -1 "$err" 2>/dev/null)"; rm -f "$err"; return 1; }
+  while :; do
+    if out=$(goal_project_read "${1%%/*}" "${1##*/}" "${2:-}" 2>"$err"); then
+      # only a FULL read clears the marker: a --meta read (the goal's name, the start probe) sees the first item only, and a failure that only a
+      # later page or a redacted item hits must not be wiped by it every sync
+      rm -f "$err"; [ "${2:-}" = --meta ] || _goal_scope_err_clear "$1"; printf '%s\n' "$out"; return 0
+    fi
+    why=$(head -1 "$err" 2>/dev/null)
+    case "$why" in "gh exit "*) [ "$tries" -lt "${GOAL_PROJ_RETRIES:-2}" ] || break; tries=$((tries + 1)); sleep "${GOAL_PROJ_RETRY_SECS:-2}" ;; *) break ;; esac
+  done
   rm -f "$err"
-  printf '%s\n' "$out"
+  _goal_proj_err "$1" "cannot read the project scope: $why"
+  _goal_scope_err_set "$1" "$why"
+  return 1
 }
 
 # _goal_same_repo <a> <b> -> exit 0 same repo, 1 different, 2 cannot tell. A goal registered before a GitHub rename still
@@ -1161,7 +1197,7 @@ goal_sync() {  # registry -> local: rebuild missing caches, propagate stop/close
   goal_names_fill "$reg"
   if goal_serial; then
     for cur in $(printf '%s' "$reg" | jq -r '.[] | select(.st == "unreadable") | .issue' 2>/dev/null); do
-      goal_err "registry issue #$cur has no readable goal block: no goal starts from the queue until it is fixed or closed (GOAL_SERIAL=1)"
+      goal_err "registry issue #$cur has no readable goal block: it is skipped (it blocks no other goal); fix or close it"
     done
     goal_slot_scope_save "$reg"
     cur=$(jq -r '.slot // "free"' "$PIPE/$GOAL_QUEUE_FILE_NAME" 2>/dev/null) || cur=""
@@ -1679,38 +1715,46 @@ GOAL_QUEUE_FILE_NAME=goalqueue.json
 
 # _GOAL_QUEUE_JQ: registry goals (array) -> {queued: [goals in queue order], candidate: goal | null}. Goals sort by the
 # block's `order` (the registry issue number when absent), then by registry issue number. The candidate is the FIRST goal
-# in that order that is not delivered / stopped / waiting on JP / held, provided it is queued: any earlier goal that is
-# active, queued or unreadable holds the line. A held goal does not (#514): it is parked with no lead running, so letting
-# it hold the line stopped every approved goal behind it (~36 h with no delivery lead on either host).
+# in that order that is not delivered / stopped / waiting on JP / held / skipped, provided it is queued: any earlier goal that is
+# active or queued holds the line. A held goal does not (#514): it is parked with no lead running, so letting
+# it hold the line stopped every approved goal behind it (~36 h with no delivery lead on either host). A skipped goal (unreadable
+# registry entry, or a project scope that cannot be read) does not either (JP, 2026-11-19): it blocks nothing but itself.
 _GOAL_QUEUE_JQ='def okey: [((.block.priority? // .block.order? // .issue) | if type == "number" then . else 1e12 end), .issue];
+  def ekey: (.block.scope_project? // null) as $p | if ($p | type) == "object" then (((($p.owner // "") | tostring | ascii_downcase) + "_" + (($p.number // "") | tostring))) else null end;
+  def errored: ekey as $k | $k != null and any(($ARGS.named.errored // [])[]; .key == $k);
+  def skipped: .st == "unreadable" or errored;
   sort_by(okey) as $all
   | ($all | map(select(.st == "queued"))) as $q
-  | ($all | map(select((.st == "delivered" or .st == "stopped" or .st == "waiting_jp" or .st == "held") | not)) | first // null) as $f
+  | ($all | map(select((.st == "delivered" or .st == "stopped" or .st == "waiting_jp" or .st == "held" or skipped) | not)) | first // null) as $f
   | {queued: $q, candidate: (if $f != null and $f.st == "queued" then $f else null end),
+     errored: ($all | map(select(errored)) | map(ekey as $k | {id, issue, why: ([($ARGS.named.errored // [])[] | select(.key == $k) | .why][0] // "")})),
      recent: ($all | map(select(.st == "delivered" or .st == "stopped")) | sort_by(.closed_at // "") | reverse | .[:5]),
      open: ($all | map(select(.st == "active" or .st == "held" or .st == "waiting_jp")))}'
 
 # _GOAL_QUEUE_SERIAL_JQ (GOAL_SERIAL=1): the same order and output, plus `slot` = the goal holding the one system-wide goal
-# slot (the FIRST active goal in queue order, whatever host runs it) and `serial: true`. A queued goal is the candidate only
-# while no goal holds the slot and no registry entry is unreadable ANYWHERE in the order (fail closed: an unreadable entry
-# could be an active goal; goal_sync logs an error for each one so it gets fixed). With $fbfree (GOAL_SERIAL_FEEDBACK=0)
-# a running feedback goal never holds the slot, but a queued one still waits for its turn like any goal. Needs --argjson fbfree.
+# slot (the FIRST active goal in queue order, whatever host runs it) and `serial: true`. The candidate is the first queued goal
+# (not cooling) while no goal holds the slot. A goal that cannot be read blocks NOTHING but itself (JP, 2026-11-19): a registry entry whose block
+# cannot be read (`unreadable`) and a project goal whose scope read failed (`errored`, from the markers of _goal_scope_err_set) are skipped:
+# they neither hold the slot nor stand in front of the candidate, every other goal goes on in the same order; both are listed (display only: the
+# status page names them and the reason). Overlap safety between two LIVE goals sharing tickets is unchanged (deliver.sh check_overlap).
+# With $fbfree (GOAL_SERIAL_FEEDBACK=0) a running feedback goal never holds the slot, but a queued one still waits for its turn like any goal.
+# Needs --argjson fbfree and --argjson errored.
 # #627: a goal that handed the slot off (block.deferred_at) sorts behind every other queued goal and is not a candidate
 # again within $cool seconds (GOAL_CYCLE_SECS) of the hand-off: several idle goals cost one lead cycle each per cycle
 # instead of rotating back-to-back. Needs --argjson now (epoch seconds) and --argjson cool.
-# `unreadable` = [{id, issue}] of the registry entries whose block cannot be read (display only: goalqueue.json carries it so the status page
-# can name what blocks the queue; candidate / slot / queued are not derived from it).
 _GOAL_QUEUE_SERIAL_JQ='def okey: [(if (.block.deferred_at? // "") != "" then 1 else 0 end), ((.block.priority? // .block.order? // .issue) | if type == "number" then . else 1e12 end), .issue];
   def exempt: $fbfree and (((.spec // "") | test(":feedback$")));
   def cooling: .st == "queued" and ((.block.deferred_at? // "") != "") and (((.block.deferred_at | try fromdateiso8601 catch 0) + $cool) > $now);
+  def ekey: (.block.scope_project? // null) as $p | if ($p | type) == "object" then (((($p.owner // "") | tostring | ascii_downcase) + "_" + (($p.number // "") | tostring))) else null end;
+  def errored: ekey as $k | $k != null and any(($ARGS.named.errored // [])[]; .key == $k);
   sort_by(okey) as $all
   | ($all | map(select(.st == "queued"))) as $q
-  | ($all | map(select(.st == "active" and (exempt | not))) | first // null) as $h
-  | (($h != null) or any($all[]; .st == "unreadable")) as $busy
-  | ($all | map(select(.st == "unreadable" or (.st == "queued" and (cooling | not)))) | first // null) as $f
-  | {queued: $q, candidate: (if ($busy | not) and $f != null and $f.st == "queued" then $f else null end), serial: true, slot: ($h.id // null),
+  | ($all | map(select(.st == "active" and (exempt | not) and (errored | not))) | first // null) as $h
+  | ($all | map(select(.st == "queued" and (cooling | not) and (errored | not))) | first // null) as $f
+  | {queued: $q, candidate: (if $h == null then $f else null end), serial: true, slot: ($h.id // null),
      exempt: ($all | map(select(exempt)) | map(.id)),
      unreadable: ($all | map(select(.st == "unreadable")) | map({id, issue})),
+     errored: ($all | map(select(errored)) | map(ekey as $k | {id, issue, why: ([($ARGS.named.errored // [])[] | select(.key == $k) | .why][0] // "")})),
      recent: ($all | map(select(.st == "delivered" or .st == "stopped")) | sort_by(.closed_at // "") | reverse | .[:5]),
      open: ($all | map(select(.st == "active" or .st == "held" or .st == "waiting_jp")))}'
 
@@ -1722,8 +1766,9 @@ _goal_queue_jq() {
   local fbfree=true cool=${GOAL_CYCLE_SECS:-1200}
   [ "${GOAL_SERIAL_FEEDBACK:-0}" = 1 ] && fbfree=false
   case "$cool" in ''|*[!0-9]*) cool=1200 ;; esac
-  if goal_serial; then jq -c --argjson fbfree "$fbfree" --argjson now "$(date +%s)" --argjson cool "$cool" "$_GOAL_QUEUE_SERIAL_JQ$1"
-  else jq -c "$_GOAL_QUEUE_JQ$1"; fi
+  local errored; errored=$(_goal_errored_json)
+  if goal_serial; then jq -c --argjson fbfree "$fbfree" --argjson now "$(date +%s)" --argjson cool "$cool" --argjson errored "$errored" "$_GOAL_QUEUE_SERIAL_JQ$1"
+  else jq -c --argjson errored "$errored" "$_GOAL_QUEUE_JQ$1"; fi
 }
 
 # goal_slot_exempt <spec> — a goal that never holds or waits for the slot (a feedback goal while GOAL_SERIAL_FEEDBACK=0)
@@ -1833,7 +1878,7 @@ goal_slot_spread_nums() {
 goal_queue_save() {
   local f="$PIPE/$GOAL_QUEUE_FILE_NAME" v
   v=$(printf '%s' "$1" | _goal_queue_jq '
-    | (if .serial then {serial: true, slot: .slot, exempt: (.exempt // []), unreadable: (.unreadable // [])} else {} end) + {at: (now | floor),
+    | (if .serial then {serial: true, slot: .slot, exempt: (.exempt // []), unreadable: (.unreadable // [])} else {} end) + {at: (now | floor), errored: (.errored // []),
        candidate: (.candidate.id // null),
        recent: (.recent | map({id, issue, spec, name: (.name // ""), title: (.block.title // ""), label: (.block.label // ""), repos: (.block.repos // []), st, closed_at, priority: (.block.priority? // null), project_url: (.block.project?.url? // .block.scope_project?.url? // "")})),
        open: (.open | map({id, issue, spec, name: (.name // ""), title: (.block.title // ""), label: (.block.label // ""), repos: (.block.repos // []),
@@ -1983,7 +2028,7 @@ _goal_queue_unhold() {
 
 # goal_queue_step — called from goal_step once per tick, after the live goals were ticked.
 goal_queue_step() {
-  local qf="$PIPE/$GOAL_QUEUE_FILE_NAME" cand pin hosts n fresh g id issue winner rc ts lost now g2 body why
+  local qf="$PIPE/$GOAL_QUEUE_FILE_NAME" cand pin hosts n fresh g id issue winner rc ts lost now g2 body why ref
   rm -f "$PIPE/goal-paused"
   [ -f "$qf" ] || return 0
   _goal_queue_unhold
@@ -2024,6 +2069,13 @@ goal_queue_step() {
   fi
   id=$cand; issue=$(printf '%s' "$g" | jq -r .issue)
   [ -f "$PIPE/goal-$id.stopped" ] && return 0
+  # a project goal whose scope cannot be read is skipped, not started and not allowed to hold the line: the read leaves its marker, the queue is
+  # recomputed without it and the next queued goal is the candidate on the next tick (JP, 2026-11-19). --meta reads one item only.
+  ref=$(printf '%s' "$g" | jq -r '(.block.scope_project? // empty) | select(type == "object") | "\(.owner)/\(.number)"' 2>/dev/null)
+  if [ -n "$ref" ] && ! _goal_proj_read "$ref" --meta >/dev/null 2>&1; then
+    slog "[goal] $id — its project scope cannot be read; skipped, other queued goals go on (see the error above)"
+    goal_queue_save "$fresh"; _goal_queue_wait_reset; return 0
+  fi
   # GOAL_SERIAL=1: never a second lead for one goal (its lead is already alive here)
   if goal_serial && kill -0 "$(cat "$PIPE/goal-$id.pid" 2>/dev/null)" 2>/dev/null; then
     goal_err "$id is queued in the registry but its lead is alive here; not starting a second one"; return 0

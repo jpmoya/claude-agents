@@ -3,7 +3,7 @@
 #   AC3 delivered / stopped / waiting_jp exclusions unchanged; active still holds the line
 #   AC4 three launch failures park via GOAL_MAX_LAUNCH_FAILS ("could not launch"), never via GOAL_MAX_NO_PROGRESS
 #   AC5 a stalled cycle that ran >= MIN_RUN_SECS still parks via the np path ("no progress")
-#   AC6 an attempt that ran resets .launchfails to 0                AC7 an unreadable registry goal still holds the line
+#   AC6 an attempt that ran resets .launchfails to 0                AC7 an unreadable registry goal is skipped, no longer holds the line (#793)
 #   Observability: the launch-failure park logs release / host / route=goal-queue and posts one #engineering alert.
 #   Review fixes (PR #526): a resume run on the other host clears the owner's streaks at its next sync; an unconfirmed
 #   local park is lifted without clearing them; an unhold does not re-judge the parked attempt; waiting on JP ends the
@@ -76,16 +76,18 @@ test_t514_ac3_other_exclusions_unchanged_and_active_still_blocks() {
 }
 
 # An unreadable goal has no block, so it sorts by its registry issue number (50) in the same key space as priority.
-# Priority 60 sorts after it (60 > 50): the unreadable goal is first and must hold the line (fail closed).
-# Control: priority 40 sorts before it (40 < 50) and is the candidate — proves the fixture order is what the test says.
-test_t514_ac7_unreadable_goal_still_holds_the_line() {
+# Priority 60 sorts after it (60 > 50): the unreadable goal is first. JP, 2026-11-19 (#793): it blocks nothing but itself, so it no longer holds the line.
+# Control: priority 40 sorts before it (40 < 50) and is the candidate either way.
+test_t514_ac7_unreadable_goal_no_longer_holds_the_line() {
   local c
   c=$(t514_candidate "$(t514_unreadable 50)" "$(t514_goal 51 goal-b queued 60)")
-  assert_eq "$c" "null" "AC7: an unreadable registry goal ahead in the queue still holds the line" || return 1
+  assert_eq "$c" "goal-b" "AC7: an unreadable registry goal ahead in the queue is skipped, the queued goal behind it is the candidate" || return 1
   c=$(t514_candidate "$(t514_unreadable 50)" "$(t514_goal 51 goal-b held 45)" "$(t514_goal 52 goal-c queued 60)")
-  assert_eq "$c" "null" "AC7: still held by the unreadable goal when a held goal sits in between" || return 1
+  assert_eq "$c" "goal-c" "AC7: a held goal in between does not change that" || return 1
   c=$(t514_candidate "$(t514_unreadable 50)" "$(t514_goal 51 goal-b queued 40)")
   assert_eq "$c" "goal-b" "AC7 control: a queued goal sorting before the unreadable one is the candidate" || return 1
+  c=$(t514_candidate "$(t514_unreadable 50)" "$(t514_goal 51 goal-b active 55)" "$(t514_goal 52 goal-c queued 60)")
+  assert_eq "$c" "null" "AC7: an ACTIVE goal still holds the line next to an unreadable one" || return 1
 }
 
 # ---------------------------------------------------------------- queue admission (supervisor tick) -------------
@@ -438,7 +440,7 @@ echo "-- goal queue held / launch failures (#514)"
 run_test test_t514_ac1_held_goal_does_not_hold_the_line
 run_test test_t514_ac2_two_held_goals_do_not_hold_the_line
 run_test test_t514_ac3_other_exclusions_unchanged_and_active_still_blocks
-run_test test_t514_ac7_unreadable_goal_still_holds_the_line
+run_test test_t514_ac7_unreadable_goal_no_longer_holds_the_line
 run_test test_t514_ac1_supervisor_starts_the_goal_behind_a_held_one
 run_test test_t514_ac4_fast_exits_park_as_could_not_launch
 run_test test_t514_ac4_goal_launch_errors_park_as_could_not_launch
