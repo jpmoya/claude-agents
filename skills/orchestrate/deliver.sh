@@ -710,23 +710,28 @@ fb_yield_here() {
   return 0
 }
 
-# _resume_queued_now <id> <issue> <host> <block> (#784): `resume <queued goal> --now` forces one cycle here beside the slot holder. The goal
+# _resume_queued_now <id> <issue> <host> <block> <spec> (#784): `resume <queued goal> --now` forces one cycle here beside the slot holder. The goal
 # is not reopened or re-labelled: it stays queued, keeps its place and priority, and under GOAL_SERIAL=1 goal sync drops the local cache and
 # returns it to the queue once the cycle ends (the extra-active-goal rule, as for register --now). A failed launch leaves it queued.
 _resume_queued_now() {
-  local id=$1 issue=$2 host=$3 block=$4 pid
+  local id=$1 issue=$2 host=$3 block=$4 spec=$5 pid
   if [ -n "$host" ] && [ "$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$THIS_HOST" | tr '[:upper:]' '[:lower:]')" ]; then
     echo "pinned to $host; run 'deliver.sh resume $id --now' on that host"; return 0
   fi
+  check_overlap "$spec" "$id" "$issue"   # as the reopen path: its tickets may since have been taken by a live goal
+  # check-then-act on the lead's pid: an atomic mkdir lock makes the liveness check and the launch one step against a second --now
+  mkdir -p "$PIPE" "$LOGDIR/goals"
+  find "$PIPE/goal-$id.resume-lock" -maxdepth 0 -mmin +1 -exec rmdir {} + 2>/dev/null || true   # a killed run's stale lock
+  if ! mkdir "$PIPE/goal-$id.resume-lock" 2>/dev/null; then echo "$id is being launched by another resume --now"; return 0; fi
   pid=$(cat "$PIPE/goal-$id.pid" 2>/dev/null || true)
-  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then echo "$id already has a cycle running here"; return 0; fi
-  mkdir -p "$LOGDIR/goals"
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then rmdir "$PIPE/goal-$id.resume-lock"; echo "$id already has a cycle running here"; return 0; fi
   write_cache "$id" "$(printf '%s' "$block" | jq -c --arg h "$THIS_HOST" '.host = $h')" "$issue"
   if ! goal_launch "$id"; then
-    rm -f "$PIPE/goal-$id.json"
+    rm -f "$PIPE/goal-$id.json"; rmdir "$PIPE/goal-$id.resume-lock"
     launch_alert "$id" "$issue" resume-now "left queued"
     die "$id launch failed"
   fi
+  rmdir "$PIPE/goal-$id.resume-lock"
   echo "launched $id (issue #$issue), still queued"
   echo "log=$PIPE/goal-$id.log"
 }
@@ -742,7 +747,7 @@ cmd_resume() {
   case "$st" in
     delivered) die "$id is delivered; register a new goal instead" ;;
     unreadable) die "cannot read the registry block of $id; fix or close its issue by hand" ;;
-    queued) if [ "$now" = 1 ]; then _resume_queued_now "$id" "$issue" "$host" "$block"; return $?; fi
+    queued) if [ "$now" = 1 ]; then _resume_queued_now "$id" "$issue" "$host" "$block" "$spec"; return $?; fi
             echo "$id is already $st"; return 0 ;;
     active|waiting_jp) echo "$id is already $st"; return 0 ;;
   esac

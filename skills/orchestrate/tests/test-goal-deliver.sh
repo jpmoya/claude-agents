@@ -935,6 +935,38 @@ test_dg_784_resume_now_launch_failure_leaves_queued_and_alerts() {
   dg_teardown; return $rc
 }
 
+test_dg_784_resume_now_queued_goal_refused_when_tickets_overlap_a_live_goal() {
+  dg_setup
+  local rc=0
+  DG_GOAL_ID=$DG_ID_MS; dg_goal 501 "$DG_SPEC_MS" "" queued
+  DG_GOAL_ID="example-owner_project-a-t-101"; dg_goal 502 "example-owner/project-a#101" "" queued
+  dg_run resume "$DG_SPEC_MS" --now
+  assert_eq "$DG_RC" "1" "784 overlap: exits 1" \
+    && assert_contains "$DG_ERR" "example-owner_project-a-t-101" "784 overlap: names the conflicting goal" || rc=1
+  sleep 0.3
+  assert_eq "$(dg_claude_count)" "0" "784 overlap: nothing launched" || rc=1
+  assert_eq "$(dg_labels_of 501)" "delivery-goal,goal-queued" "784 overlap: still queued" || rc=1
+  dg_teardown; return $rc
+}
+
+test_dg_784_resume_now_launch_lock_blocks_a_concurrent_launch() {
+  dg_setup
+  local rc=0
+  DG_GOAL_ID=$DG_ID_T7; dg_goal 501 "$DG_SPEC_T7" "" queued
+  mkdir -p "$DG_PIPE/goal-$DG_ID_T7.resume-lock"   # another resume --now is between its liveness check and its launch
+  dg_run resume "$DG_SPEC_T7" --now
+  assert_eq "$DG_RC" "0" "784 lock: exits 0" \
+    && assert_contains "$DG_OUT" "being launched by another" "784 lock: says another launch is in progress" || rc=1
+  sleep 0.3
+  assert_eq "$(dg_claude_count)" "0" "784 lock: no second launch" || rc=1
+  rmdir "$DG_PIPE/goal-$DG_ID_T7.resume-lock"
+  dg_run resume "$DG_SPEC_T7" --now
+  assert_eq "$DG_RC" "0" "784 lock: free lock launches" || rc=1
+  dg_wait_claude 1 || { fail "784 lock: launched once the lock is free"; rc=1; }
+  assert_file_absent "$DG_PIPE/goal-$DG_ID_T7.resume-lock" "784 lock: released after launch" || rc=1
+  dg_teardown; return $rc
+}
+
 # ---------------------------------------------------------------- AC9: library contract ----------------------
 
 test_dg_goal_parse_valid_specs() {
@@ -1099,6 +1131,7 @@ for t in \
   test_dg_784_resume_now_queued_goal_launches_once_and_stays_queued test_dg_784_resume_without_now_queued_goal_does_not_launch \
   test_dg_784_resume_now_active_goal_does_not_launch test_dg_784_resume_now_delivered_and_unknown_goals_refused \
   test_dg_784_resume_now_held_goal_reopens_and_launches_once test_dg_784_resume_now_launch_failure_leaves_queued_and_alerts \
+  test_dg_784_resume_now_queued_goal_refused_when_tickets_overlap_a_live_goal test_dg_784_resume_now_launch_lock_blocks_a_concurrent_launch \
   test_dg_goal_parse_valid_specs test_dg_goal_parse_malformed_exit_1 \
   test_dg_goal_id_pinned_rule test_dg_goal_scope_issues_only_and_live \
   test_dg_goal_scope_milestones_all_covers_open_milestones test_dg_goal_registry_list_format \
