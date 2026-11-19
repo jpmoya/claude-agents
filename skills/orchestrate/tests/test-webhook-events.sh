@@ -510,6 +510,49 @@ test_wh_ac9_switch_defaults_to_off_inside_the_library_files_themselves() {
   assert_eq "$after" "$before" "unset switch: webhook_tick_prepare wrote no state" || return 1
 }
 
+# ---- code-review follow-ups ---------------------------------------------------------------------------------------------------
+test_wh_runbook_never_puts_the_secret_on_an_argv() {
+  local doc; doc=$(cat "$WH_RS/../../docs/webhook-events.md"); local unit; unit=$(cat "$WH_RS/../../infra/webhook/webhook-receiver.service")
+  assert_not_contains "$doc" '--arg secret' "runbook: jq --arg would put the HMAC key in ps" || return 1
+  assert_not_contains "$doc" 'config[secret]' "runbook: gh -f config[secret]= would put it in argv" || return 1
+  assert_contains "$doc" 'secret:env.WEBHOOK_SECRET' "runbook: the secret reaches jq through the environment" || return 1
+  assert_contains "$doc" 'export WEBHOOK_SECRET' "runbook: the variable is exported before jq reads env" || return 1
+  assert_contains "$doc" 'chmod 600 ~/.claude/pipeline/config.local.sh' "runbook: an existing secrets file is tightened" || return 1
+  assert_contains "$unit" 'RestartPreventExitStatus=2' "unit: a missing-secrets exit does not restart-loop" || return 1
+}
+
+test_wh_ac6_a_cursor_further_back_than_the_read_window_forces_a_full_sync() {
+  we_setup; mkdir -p "$WE/pipe/webhook"
+  awk -v t="$(date +%s)" 'BEGIN{for(i=1;i<=5100;i++) printf "{\"seq\":%d,\"ts\":%d,\"delivery\":\"d-%d\",\"event\":\"issues\",\"repo\":\"example-owner/project-a\",\"number\":1}\n", i, t, i}' > "$WE/pipe/webhook/events.jsonl"
+  echo 1 > "$WE/pipe/webhook/consumer.cursor"; date +%s > "$WE/pipe/webhook/full.example-owner_project-a"
+  we_tick 1 'webhook_tick_prepare'
+  local stamp=kept; [ -f "$WE/pipe/webhook/full.example-owner_project-a" ] || stamp=dropped
+  # a cursor inside the window is not a gap
+  echo 4000 > "$WE/pipe/webhook/consumer.cursor"; date +%s > "$WE/pipe/webhook/full.example-owner_project-a"
+  we_tick 1 'webhook_tick_prepare'
+  local inside=kept; [ -f "$WE/pipe/webhook/full.example-owner_project-a" ] || inside=dropped
+  we_teardown
+  assert_eq "$stamp" "dropped" "AC6: 5099 events behind (more than the 5000-line window) = gap, every repo full-syncs" || return 1
+  assert_eq "$inside" "kept" "AC6: 1100 events behind is read normally" || return 1
+}
+
+test_wh_ac6_other_processes_do_not_trust_the_cache_while_an_event_is_unapplied() {
+  we_setup; mkdir -p "$WE/pipe/webhook"
+  we_event 1 99
+  we_tick 1 "$WE_SYNC"                                   # tick: applied-ref + applied + full stamp are fresh
+  local fresh unapplied
+  fresh=$(we_tick 1 'webhook_trusted example-owner/project-a; echo $?')
+  touch -t 202001010000 "$WE/pipe/webhook/applied-ref"   # the queue is now newer than the last apply = an event arrived since
+  unapplied=$(we_tick 1 'webhook_trusted example-owner/project-a; echo $?')
+  we_tick 1 "$WE_SYNC"                                   # the next tick applies it
+  local applied; applied=$(we_tick 1 'webhook_trusted example-owner/project-a; echo $?')
+  we_teardown
+  assert_eq "$fresh $unapplied $applied" "0 1 0" "AC6: trusted after an apply, not trusted while a newer event is unapplied, trusted again after the next tick" || return 1
+}
+
+run_test test_wh_runbook_never_puts_the_secret_on_an_argv
+run_test test_wh_ac6_a_cursor_further_back_than_the_read_window_forces_a_full_sync
+run_test test_wh_ac6_other_processes_do_not_trust_the_cache_while_an_event_is_unapplied
 run_test test_wh_ac1_bad_signatures_are_401_and_queue_nothing
 run_test test_wh_ac3_signature_and_token_use_hmac_compare_digest_never_equality
 run_test test_wh_ac9_launcher_does_not_start_with_the_switch_unset_or_zero

@@ -13,6 +13,8 @@ User=@VM_USER@
 ExecStart=/bin/bash @REPO_DIR@/skills/orchestrate/webhook-receiver.sh
 # webhook-receiver.sh exits 0 while WEBHOOK_EVENTS_ENABLED is not 1 (kill switch), so on-failure leaves it down then.
 Restart=on-failure
+# exit 2 = secrets missing or invalid while enabled: fix config.local.sh instead of retrying every 5 s
+RestartPreventExitStatus=2
 RestartSec=5
 # The receiver binds 127.0.0.1 only; Caddy is the single public listener.
 NoNewPrivileges=true

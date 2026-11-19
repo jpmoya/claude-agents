@@ -60,6 +60,7 @@ inbound (80 is needed for the ACME challenge); the receiver stays on 127.0.0.1:8
    ```bash
    umask 077
    printf 'WEBHOOK_SECRET="%s"\nWEBHOOK_PULL_TOKEN="%s"\n' "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" >> ~/.claude/pipeline/config.local.sh
+   chmod 600 ~/.claude/pipeline/config.local.sh   # umask does not tighten a file that already exists
    ```
    Copy only `WEBHOOK_PULL_TOKEN` to the Mac's `config.local.sh`, together with `WEBHOOK_RECEIVER_URL="https://hooks.moyadigital.com"`.
    Leave `WEBHOOK_EVENTS_ENABLED` unset for now.
@@ -72,26 +73,29 @@ inbound (80 is needed for the ACME challenge); the receiver stays on 127.0.0.1:8
    ```
 4. systemd unit (set the account and checkout path):
    ```bash
-   sed -e "s#@VM_USER@#$USER#g" -e "s#@REPO_DIR@#$HOME/dev/claude-agents#" -e "s#@STATE_DIR@#$HOME/.claude/pipeline/state#" infra/webhook/webhook-receiver.service | sudo tee /etc/systemd/system/webhook-receiver.service >/dev/null
+   REPO_DIR=$HOME/dev/claude-agents   # CHECK: the VM's actual claude-agents checkout (docs/host-sync.md lists ~/claude-agents as another possibility)
+   test -f "$REPO_DIR/skills/orchestrate/webhook-receiver.sh" || echo "wrong REPO_DIR"
+   sed -e "s#@VM_USER@#$USER#g" -e "s#@REPO_DIR@#$REPO_DIR#" -e "s#@STATE_DIR@#$HOME/.claude/pipeline/state#" infra/webhook/webhook-receiver.service | sudo tee /etc/systemd/system/webhook-receiver.service >/dev/null
    sudo systemctl daemon-reload
    ```
    The unit exits quietly while the kill switch is off. Turn the switch on for the VM (`WEBHOOK_EVENTS_ENABLED=1` in
    `config.local.sh`), then `sudo systemctl enable --now webhook-receiver` and check `curl -s https://hooks.moyadigital.com/health`
    returns `{"ok":true}` and `curl -s -o /dev/null -w '%{http_code}' https://hooks.moyadigital.com/events` returns 401.
 5. Create the webhooks only now (needs a token with `admin:org_hook`: `gh auth refresh -h github.com -s admin:org_hook`). The secret is
-   piped to `gh` on stdin so it never appears in argv or shell history; run on the VM (it has the secret):
+   handed to `jq` through the environment (`env.WEBHOOK_SECRET`, never `--arg`, which would show in `ps`) and to `gh` on stdin, so it
+   never appears in argv or shell history; run on the VM (it has the secret):
    ```bash
-   . ~/.claude/pipeline/config.local.sh
+   . ~/.claude/pipeline/config.local.sh; export WEBHOOK_SECRET
    EV='"issues","issue_comment","pull_request","check_run","check_suite","workflow_run"'
-   jq -n --arg secret "$WEBHOOK_SECRET" --arg url "https://hooks.moyadigital.com/webhook" "{name:\"web\",active:true,events:[$EV,\"projects_v2_item\"],config:{url:\$url,content_type:\"json\",secret:\$secret,insecure_ssl:\"0\"}}" \
+   jq -n --arg url "https://hooks.moyadigital.com/webhook" "{name:\"web\",active:true,events:[$EV,\"projects_v2_item\"],config:{url:\$url,content_type:\"json\",secret:env.WEBHOOK_SECRET,insecure_ssl:\"0\"}}" \
      | gh api -X POST orgs/Benjis-Plants/hooks --input - --jq '.id'
-   jq -n --arg secret "$WEBHOOK_SECRET" --arg url "https://hooks.moyadigital.com/webhook" "{name:\"web\",active:true,events:[$EV],config:{url:\$url,content_type:\"json\",secret:\$secret,insecure_ssl:\"0\"}}" \
+   jq -n --arg url "https://hooks.moyadigital.com/webhook" "{name:\"web\",active:true,events:[$EV],config:{url:\$url,content_type:\"json\",secret:env.WEBHOOK_SECRET,insecure_ssl:\"0\"}}" \
      | gh api -X POST repos/jpmoya/claude-agents/hooks --input - --jq '.id'
    ```
    `projects_v2_item` is an organization-level event, so it is left off the user-owned repo's hook. Record both ids in the PR.
    Verify each: `gh api -X POST orgs/Benjis-Plants/hooks/<id>/pings` then `gh api orgs/Benjis-Plants/hooks/<id>/deliveries --jq '.[0].status_code'` (expect 200).
 6. Mac: set `WEBHOOK_EVENTS_ENABLED=1` in its `config.local.sh`. The next tick pulls and applies events.
-7. Check: `tail ~/logs/pipeline/supervisor.log | grep '\[webhook\]'` shows `applied events=N gap=0`; the status page shows no webhook banner.
+7. Check: `grep '\[webhook\]' ~/logs/pipeline/supervisor.log | tail -n 3` shows `applied events=N gap=0`; the status page shows no webhook banner.
 
 Roll back at any time with `WEBHOOK_EVENTS_ENABLED=0` on either host (the VM's receiver then stops being restarted; `systemctl stop
 webhook-receiver` to stop it now). Delete the hooks with `gh api -X DELETE orgs/Benjis-Plants/hooks/<id>`.

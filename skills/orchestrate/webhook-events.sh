@@ -119,10 +119,12 @@ webhook_tick_prepare() {
   now=$(date +%s)
   [ -f "$dir/enabled-since" ] || echo "$now" > "$dir/enabled-since"
   webhook_pull || true   # a failed pull is alerted inside; the fallback poll covers the gap
+  touch "$dir/applied-ref" 2>/dev/null   # before the queue is read: an event that lands later makes the queue newer than this (webhook_trusted)
   latest=$(_wh_num "$(_wh_latest_seq)" 0); oldest=$(_wh_num "$(_wh_oldest_seq)" 0)
   if [ -f "$dir/consumer.cursor" ]; then cur=$(_wh_num "$(cat "$dir/consumer.cursor" 2>/dev/null)" 0); else cur=$latest; gap=1; fi
   [ -f "$dir/gap" ] && { gap=1; rm -f "$dir/gap"; }
   [ "$cur" -gt "$latest" ] && gap=1
+  [ $(( latest - cur )) -gt 5000 ] && gap=1   # webhook_events_since reads the last 5000 lines only: a cursor further back would silently skip the middle
   [ "$cur" -gt 0 ] && [ "$oldest" -gt $(( cur + 1 )) ] && gap=1
   if [ "$gap" = 1 ]; then
     rm -f "$dir"/full.* 2>/dev/null
@@ -174,6 +176,7 @@ webhook_trusted() {
   _wh_owner_ok "$1" || return 1
   local dir; dir=$(_wh_dir)
   [ ! -f "$dir/gap" ] || return 1
+  [ ! "$dir/events.jsonl" -nt "$dir/applied-ref" ] || return 1   # an event arrived since the supervisor last applied the queue: not trusted until its next tick
   _wh_age_ok "$dir/applied" "$(_wh_num "${WEBHOOK_TRUST_SECS:-600}" 600)" || return 1
   _wh_age_ok "$dir/full.$(_wh_slug "$1")" $(( $(_wh_num "${WEBHOOK_FALLBACK_POLL_MINUTES:-20}" 20) * 60 ))
 }
