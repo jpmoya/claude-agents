@@ -8,6 +8,7 @@
 import { isIssueUrl, isPrUrl } from "./validate.js";
 import { groupTickets, buildBacklog } from "./group.js";
 import { deriveAlerts } from "./alerts.js";
+import { selectGoalSnapshot, formatAge } from "./goal-snapshot.js";
 import { PIPELINES } from "./pipelines.js";
 import { CI_QUEUE_CATEGORY_VOCAB } from "./vocab.js";
 
@@ -588,12 +589,16 @@ function mergeGoals(hosts) {
       if (!cur || beats(cand, cur)) winners.set(g.id, cand);
     }
   }
+  return sortGoals([...winners.values()].map((w) => w.goal));
+}
+
+/** The registry's own order (see mergeGoals), shared by the old per-host merge and the one-snapshot list. */
+function sortGoals(list) {
   const rank = (g) => {
     const i = GOAL_STATE_ORDER.indexOf(g.state);
     return i === -1 ? GOAL_STATE_ORDER.length : i;
   };
-  return [...winners.values()]
-    .map((w) => w.goal)
+  return [...list]
     .sort(
       (a, b) =>
         (Number.isInteger(a.priority) ? a.priority : 1e9) -
@@ -671,13 +676,24 @@ function renderClosedGoals(closed) {
   return `<div class="goals-closed"><h3>Recently closed</h3><ul>${items}</ul></div>`;
 }
 
-function renderGoalsSection(hosts) {
-  const all = mergeGoals(hosts);
+/** Under the Goals heading (#795): which host's goal list this is and how old, or why there is none. Nothing for old beats. */
+function goalsSourceLine(sel) {
+  if (sel.mode === "snapshot")
+    return `<p class="goals-source" style="font-size:0.8rem;color:var(--muted);margin:0 0 0.75rem">From the ${esc(HOST_LABELS[sel.key])} · registry read ${esc(formatAge(sel.ageSecs))} ago</p>`;
+  if (sel.mode === "stale")
+    return `<p class="goals-source goals-source-stale" style="font-size:0.8rem;color:var(--amber);margin:0 0 0.75rem">No host has a current goal list${sel.key ? ` (the newest, from the ${esc(HOST_LABELS[sel.key])}, is ${esc(formatAge(sel.ageSecs))} old)` : ""}, so no goals are shown.</p>`;
+  return "";
+}
+
+function renderGoalsSection(hosts, thresholds, nowEpochSecs) {
+  // #795: the goal list comes from ONE host's fresh snapshot; beats from old reporters (no goals_as_of anywhere) keep the per-host merge
+  const sel = selectGoalSnapshot(hosts, thresholds, nowEpochSecs);
+  const all = sel.mode === "legacy" ? mergeGoals(hosts) : sel.mode === "snapshot" ? sortGoals(sel.goals) : [];
   const closed = all.filter((g) => g.state in GOAL_CLOSED_LABELS);
   // a slot-exempt (standing feedback) goal runs alongside the queue: it is listed after the priority-ordered goals, with no priority number
   const live = all.filter((g) => !(g.state in GOAL_CLOSED_LABELS));
   const goals = [...live.filter((g) => g.slot !== "alongside"), ...live.filter((g) => g.slot === "alongside")];
-  if (all.length === 0) return "";
+  if (all.length === 0 && sel.mode !== "stale") return "";
   const delivered = (g) =>
     Number.isInteger(g.scope_delivered) && Number.isInteger(g.scope_total)
       ? `${g.scope_delivered}/${g.scope_total}`
@@ -708,7 +724,7 @@ function renderGoalsSection(hosts) {
     </table></div>`;
   return `<section class="group">
     <h2>Goals</h2>
-    ${slotLegend(goals)}${table}${renderClosedGoals(closed)}
+    ${goalsSourceLine(sel)}${slotLegend(goals)}${table}${renderClosedGoals(closed)}
   </section>`;
 }
 
@@ -1127,7 +1143,7 @@ export function renderPage(hosts, thresholds, nowEpochSecs) {
 
   const body = bothEmpty
     ? '<p class="empty">no data from either host yet</p>'
-    : `${renderHostSection("mac", hosts.mac, thresholds, nowEpochSecs)}${renderHostSection("vm", hosts.vm, thresholds, nowEpochSecs)}${renderGoalsSection(hosts)}${renderSentryCapSection(hosts)}${renderBacklogSection(hosts)}${renderGroupSections(hosts, nowEpochSecs)}`;
+    : `${renderHostSection("mac", hosts.mac, thresholds, nowEpochSecs)}${renderHostSection("vm", hosts.vm, thresholds, nowEpochSecs)}${renderGoalsSection(hosts, thresholds, nowEpochSecs)}${renderSentryCapSection(hosts)}${renderBacklogSection(hosts)}${renderGroupSections(hosts, nowEpochSecs)}`;
 
   return `<!doctype html>
 <html lang="en">

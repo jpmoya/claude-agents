@@ -77,6 +77,10 @@ _rs_build_goals_json() {  # the payload's goals array (issue #197), local goal-<
   python3 "$RS_HERE/build-runs-json.py" "$(_rs_aliases_arg)" "$HOME/.claude/pipeline/runs.jsonl" "$PIPE" goals </dev/null
 }
 
+_rs_build_goals_as_of() {  # the payload's goals_as_of (#795): when this host's goal queue was last synced from the registry, "" without a queue file
+  python3 "$RS_HERE/build-runs-json.py" "$(_rs_aliases_arg)" "$HOME/.claude/pipeline/runs.jsonl" "$PIPE" goalasof </dev/null
+}
+
 _rs_build_goal_stall_json() {  # the payload's goal_stall array (status-page alert banner): goalqueue.json + a bounded tail of events.jsonl, local only
   STATUS_EVENTS_FILE="${STATUS_EVENTS_FILE:-$LOGDIR/events.jsonl}" \
     python3 "$RS_HERE/build-runs-json.py" "$(_rs_aliases_arg)" "$HOME/.claude/pipeline/runs.jsonl" "$PIPE" goalstall </dev/null
@@ -162,7 +166,7 @@ _rs_cron_collect() {
 }
 
 build_payload() {
-  local runs_tsv running queued runs_json completed_json staging_json approved_json goals_json backlog_json ci_queue_json goal_stall_json triggers_json
+  local runs_tsv running queued runs_json completed_json staging_json approved_json goals_json backlog_json ci_queue_json goal_stall_json triggers_json goals_as_of
   runs_tsv=$(derive_runs)
   running=$(printf '%s\n' "$runs_tsv" | awk -F'\t' '$3=="running"{c++} END{print c+0}')
   queued=$(printf '%s\n' "$runs_tsv" | awk -F'\t' '$3=="queued"{c++} END{print c+0}')
@@ -175,6 +179,7 @@ build_payload() {
   goals_json=$(_rs_build_goals_json); [ -n "$goals_json" ] || goals_json='[]'
   backlog_json=$(_rs_build_backlog_json); [ -n "$backlog_json" ] || backlog_json='[]'
   goal_stall_json=$(_rs_build_goal_stall_json); [ -n "$goal_stall_json" ] || goal_stall_json='[]'
+  goals_as_of=$(_rs_build_goals_as_of)
   triggers_json=$(_rs_build_scheduled_triggers_json); [ -n "$triggers_json" ] || triggers_json='[]'
   ci_queue_json=$(_rs_ci_queue_json)
   local sentry_cap_json; sentry_cap_json=$(bash "$RS_HERE/sentry-cap-status.sh" 2>/dev/null); [ -n "$sentry_cap_json" ] || sentry_cap_json='[]'   # #781
@@ -186,6 +191,7 @@ build_payload() {
     --argjson cron "${CRON_JSON:-null}" \
     --argjson goals "$goals_json" \
     --argjson goal_stall "$goal_stall_json" \
+    --arg goals_as_of "$goals_as_of" \
     --argjson ci_queue "${ci_queue_json:-null}" \
     --arg sent_at "$SENT_AT" \
     --arg tick "$SUPERVISOR_LAST_TICK" \
@@ -202,6 +208,7 @@ build_payload() {
       staging: $staging, approved: $approved, backlog: $backlog}
       + (if ($goals | length) > 0 then {goals: $goals} else {} end)
       + (if ($goal_stall | length) > 0 then {goal_stall: $goal_stall} else {} end)
+      + (if $goals_as_of != "" then {goals_as_of: $goals_as_of} else {} end)
       + (if ($triggers | length) > 0 then {scheduled_triggers: $triggers} else {} end)
       + (if $webhook_last_event_at != null then {webhook_last_event_at: $webhook_last_event_at} else {} end)
       + (if ($sentry_cap | length) > 0 then {sentry_cap: $sentry_cap} else {} end)
@@ -271,7 +278,7 @@ _rs_cron_alert() {
 }
 _rs_cron_alert
 
-hash_payload() {  # hash the payload minus sent_at/supervisor_last_tick/ci_queue.as_of/cron[].last_run+next_run (else every
+hash_payload() {  # hash the payload minus sent_at/supervisor_last_tick/goals_as_of/ci_queue.as_of/cron[].last_run+next_run (else every
                    # tick, or every collector cycle with identical counts, looks like a change)
   python3 -c "
 import json, hashlib, sys
@@ -281,6 +288,7 @@ except Exception:
     print(''); raise SystemExit
 d.pop('sent_at', None)
 d.pop('supervisor_last_tick', None)
+d.pop('goals_as_of', None)   # #795: moves on every registry sync (~5 min) while nothing else changed; the keep-alive push carries the fresh value
 # scheduled_triggers (#769): last_fired_at moves on every dispatch (every 5 min for the release router); a workflow appearing or vanishing still pushes
 st = d.get('scheduled_triggers')
 if isinstance(st, list):
@@ -362,6 +370,21 @@ if { [ "$hash" != "$last_hash" ] && [ $((now_epoch - last_attempt_epoch)) -ge "$
    || [ $((now_epoch - last_push_epoch)) -ge "$KEEPALIVE_SECS" ]; then
   should_push=1
 fi
+# #795: the VM saw a webhook that can change the goal list (webhook_tick_prepare drops goal-push-pending after it queues an early registry
+# sync). Push the changed goal rows after WEBHOOK_GOAL_PUSH_MIN_SECS (30) instead of the usual spacing. Still under the daily cap below, and the
+# periodic push stays the fallback. No GitHub call: the rows come from the goalqueue.json that sync wrote.
+GOAL_PENDING="${WEBHOOK_STATE_DIR:-$PIPE/webhook}/goal-push-pending"
+GOAL_HASH_FILE="$PIPE/status-goal-push.hash"
+goal_hash=$(printf '%s' "$PAYLOAD" | jq -c '[.goals, .goal_stall]' 2>/dev/null | python3 -c "import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())" 2>/dev/null)
+if [ "$should_push" -eq 0 ] && [ -f "$GOAL_PENDING" ]; then
+  _gp_t=$(cat "$GOAL_PENDING" 2>/dev/null); case "$_gp_t" in ''|*[!0-9]*) _gp_t=0 ;; esac
+  if [ $((now_epoch - _gp_t)) -gt "${WEBHOOK_GOAL_PUSH_WINDOW_SECS:-600}" ]; then
+    rm -f "$GOAL_PENDING" 2>/dev/null   # nothing changed within the window: the event did not move the goal list
+  elif [ -n "$goal_hash" ] && [ "$goal_hash" != "$(cat "$GOAL_HASH_FILE" 2>/dev/null)" ] \
+       && [ $((now_epoch - last_attempt_epoch)) -ge "${WEBHOOK_GOAL_PUSH_MIN_SECS:-30}" ]; then
+    should_push=1
+  fi
+fi
 [ "$count" -ge "$MAX_PUSHES_PER_DAY" ] && should_push=0
 
 if [ "$should_push" -eq 0 ]; then
@@ -387,6 +410,8 @@ if [ "$push_ok" -eq 1 ]; then
   last_hash="$hash"; last_push_epoch=$now_epoch; last_attempt_epoch=$now_epoch
   count=$((count + 1)); fails=0
   rs_log "$EVENT push ok status=$http_code count=$count"
+  [ -n "$goal_hash" ] && printf '%s' "$goal_hash" > "$GOAL_HASH_FILE" 2>/dev/null
+  rm -f "$GOAL_PENDING" 2>/dev/null
 else
   last_attempt_epoch=$now_epoch
   fails=$((fails + 1))

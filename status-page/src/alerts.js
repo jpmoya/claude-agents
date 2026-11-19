@@ -15,6 +15,7 @@
 
 import { isIssueUrl } from './validate.js';
 import { groupTickets, keyOf, liveTicketKeys } from './group.js';
+import { selectGoalSnapshot, goalAlertSources, goalSnapshotAlerts } from './goal-snapshot.js';
 
 export const IDLE_SLOT_MINUTES = 10;
 export const TICK_SLOW_MINUTES = 15;
@@ -145,7 +146,7 @@ function goalStallAlerts(liveRecords, nowEpochSecs) {
       severity: 'red',
       title: `Goal queue stalled by ${goalName(holder)}`,
       detail: `It holds the goal slot but its delivery lead has not cycled for ${formatDuration(age)}. Waiting behind it: ${queued.map(goalName).join(', ')}.`,
-      hint: `Check its delivery lead on the ${HOST_LABELS[key]}, or stop the goal (deliver.sh stop) so the queue can move.`,
+      hint: `Check its delivery lead on the ${HOST_LABELS[holder.host] || HOST_LABELS[key]}, or stop the goal (deliver.sh stop) so the queue can move.`,
     });
   }
   return out;
@@ -281,7 +282,8 @@ export function deriveAlerts(hosts, thresholds, nowEpochSecs) {
       stale.push(...alerts);
     }
   }
-  const out = [...goalStallAlerts(liveRecords, nowEpochSecs), ...releaseRouterAlerts(liveRecords, nowEpochSecs), ...webhookStaleAlerts(liveRecords, nowEpochSecs), ...stale];
+  const goalSel = selectGoalSnapshot(hosts, thresholds, nowEpochSecs); // #795: goal alerts read the one fresh snapshot, not every live host
+  const out = [...goalStallAlerts(goalAlertSources(goalSel, liveRecords), nowEpochSecs), ...goalSnapshotAlerts(goalSel, HOST_LABELS), ...releaseRouterAlerts(liveRecords, nowEpochSecs), ...webhookStaleAlerts(liveRecords, nowEpochSecs), ...stale];
   const unowned = unownedAlert(liveHosts, nowEpochSecs);
   const rank = (a) => (a.severity === 'red' ? 0 : 1);
   return [...out, ...perHost, ...(unowned ? [unowned] : [])].sort((a, b) => rank(a) - rank(b));
