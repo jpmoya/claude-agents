@@ -1,6 +1,9 @@
 #!/bin/bash
 # Stateless supervisor tick — cron runs it every 2 min (VM even minutes, Mac odd minutes). One tick does, in order:
-#   0b. worktree sweep (time-gated to once per 30 min): remove merged, clean-enough ad hoc worktrees under DISPATCH_REPOS
+#   0a. goal step (#195, moved first in #796): registry sync + goal keep-alive, right after the since-sync, before any slow stage
+#   0b. worktree sweep (time-gated to once per 30 min; a bounded background job since #796): remove merged, clean-enough ad hoc worktrees under DISPATCH_REPOS
+#   Timing and budget (#796): `[tick-timing] stage=<n> secs=<s>` for stages over 5 s and a total line; TICK_BUDGET_SECS (soft, skips only label
+#   reconcile and the stale digest) and TICK_HARD_SECS (hard, stops the tick cleanly) in config.sh
 #   1. restart exited non-terminal local orchestrators with backoff; 1b: requeue held runs whose machine-clearable cause
 #      (CI, merge conflict, dependency, start-gate #677) has cleared, remind JP once of a run waiting on him (#677)
 #   2. drain the local launch queue (up to DRAIN_MAX_PER_TICK launches, slots and memory re-checked before each)
@@ -44,6 +47,68 @@ PY
   return 1
 }
 slog() { printf '[%s] %s\n' "$(date -u +%FT%TZ)" "$*" >> "$SLOG"; }
+# --- Tick timing and wall budget (#796) ------------------------------------------------------------------------------------
+# bash's $SECONDS clock only: no `date` fork and no GitHub call per stage. tick_mark <stage> closes a stage and logs it when it
+# took more than 5 s; the total line is written by the EXIT handler (_tick_exit) on every exit path of a tick that got the lock.
+_TT_LAST=$SECONDS; _TT_STAGE=start
+tick_mark() { local d=$(( SECONDS - _TT_LAST )); _TT_LAST=$SECONDS; _TT_STAGE=$1; [ "$d" -gt 5 ] && slog "[tick-timing] stage=$1 secs=$d"; return 0; }
+# Soft budget: tick_soft_over <stage> succeeds (and logs once per stage) when the tick is past TICK_BUDGET_SECS, so the caller skips
+# that optional stage. Only housekeeping stages ask; restart, drain and dispatch never do.
+tick_soft_over() {
+  [ "${TICK_BUDGET_SECS:-0}" -gt 0 ] && [ "$SECONDS" -ge "$TICK_BUDGET_SECS" ] || return 1
+  slog "[tick-watchdog] soft budget ${TICK_BUDGET_SECS}s passed at ${SECONDS}s (last stage: $_TT_STAGE): skipping $1 this tick"
+  return 0
+}
+# Hard budget: a background watcher (own copy of this function, fd 9 closed by the caller) signals the tick with USR1 once it is
+# TICK_HARD_SECS old; _tick_hard_stop logs and exits 0 so the EXIT handler releases the lock. Bash runs the handler between
+# commands, so a hung foreground command is ended by the watcher (see below) for the handler to run.
+_tick_descendants() {  # <pid> <skip pid> <skip pid> — every process below <pid>, except the two skipped ones and what runs under them
+  local k
+  for k in $(pgrep -P "$1" 2>/dev/null); do
+    { [ "$k" = "$2" ] || [ "$k" = "$3" ]; } && continue
+    printf '%s\n' "$k"; _tick_descendants "$k" "$2" "$3"
+  done
+}
+# Only the tick's own short-lived foreground tools are ever ended by the hard stop: gh, git, curl, jq, python3, sleep (and the test stubs'
+# `nap`), found by argv[0] or, for a script run through its interpreter, argv[1]. Agent and orchestrator runs (claude, bash -c wrappers, caffeinate)
+# are never on the list, and are launched detached anyway.
+_tick_is_hung_tool() {  # <pid>
+  local c; c=$(ps -o command= -p "$1" 2>/dev/null) || return 1
+  set -- $c
+  case "${1##*/}" in gh|git|curl|jq|python3|sleep|nap) return 0 ;; esac
+  case "${1##*/}" in bash|sh|env|zsh) case "${2##*/}" in gh|git|curl|jq|nap) return 0 ;; esac ;; esac
+  return 1
+}
+tick_hard_watchdog() {  # <tick pid>
+  trap - EXIT USR1
+  local pid=$1 start=$SECONDS
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ $(( SECONDS - start )) -ge "$TICK_HARD_SECS" ]; then
+      slog "[tick-watchdog] hard budget ${TICK_HARD_SECS}s passed: stopping tick pid=$pid"
+      kill -USR1 "$pid" 2>/dev/null
+      # bash runs the USR1 handler only between commands: a foreground command that is hung (a gh call) must be ended for the handler to run.
+      # Only the tick's own hung tool processes are ended (allow-list below); agent runs are never on it and are launched detached. The
+      # background worktree sweep has its own lock and time budget, so its pid (recorded in its lock dir) and what runs under it are skipped.
+      sleep 3
+      if kill -0 "$pid" 2>/dev/null; then
+        local sweep c me; sweep=$(cat "$PIPE/worktree-sweep.lockdir/pid" 2>/dev/null); me=$(sh -c 'echo $PPID')   # me = this watcher (no $BASHPID on bash 3.2)
+        # the tick's hung tool processes (see _tick_is_hung_tool), at any depth under it: the command-substitution subshell around a hung gh
+        # then returns, and the tick can run its stop handler. The leaf must die too, or it would keep the lock fd open.
+        for c in $(_tick_descendants "$pid" "$sweep" "$me"); do _tick_is_hung_tool "$c" && kill -TERM "$c" 2>/dev/null; done
+      fi
+      return 0
+    fi
+    sleep 1
+  done
+}
+_tick_hard_stop() { slog "[tick-watchdog] tick stopped at ${SECONDS}s during stage after: $_TT_STAGE; the next tick starts clean"; exit 0; }
+# The single EXIT handler of a tick: total line, then the code-sync fast-forward (which also drops the Mac lock dir) when enabled.
+_tick_exit() {
+  local rc=$?
+  slog "[tick-timing] stage=total secs=$SECONDS"
+  if type _cs_exit >/dev/null 2>&1; then _cs_exit; elif [ -n "${LOCKDIR:-}" ]; then rmdir "$LOCKDIR" 2>/dev/null; fi
+  return $rc
+}
 # #341: every .held creation logs its path and caller (log line only, no behaviour change)
 # #677: a new hold never inherits an earlier hold's start-gate file (step 1 writes a fresh one right after, when it applies)
 touch_held() { touch "$1"; rm -f "${1%.held}.startgate"; slog "[held-touch] path=$1 caller=${FUNCNAME[1]:-main}:${BASH_LINENO[0]}"; }
@@ -71,14 +136,20 @@ if command -v flock >/dev/null 2>&1; then
   exec 9>"$PIPE/supervisor.lock"
   flock -n 9 || exit 0
 else
-  # macOS has no flock: mkdir is atomic; a lock older than 10 min is a dead tick, reclaim it
+  # macOS has no flock: mkdir is atomic; a lock older than the limit below is a dead tick, reclaim it
   LOCKDIR="$PIPE/supervisor.lockdir"
   if ! mkdir "$LOCKDIR" 2>/dev/null; then
-    if [ -n "$(find "$LOCKDIR" -maxdepth 0 -mmin +10 2>/dev/null)" ]; then rmdir "$LOCKDIR" 2>/dev/null; mkdir "$LOCKDIR" 2>/dev/null || exit 0
+    # a lock older than max(10 min, hard tick budget + 2 min) is a dead tick (#796: a live tick is stopped by TICK_HARD_SECS, so it is never older)
+    _lock_min=$(( ${TICK_HARD_SECS:-0} / 60 + 2 )); [ "$_lock_min" -ge 10 ] || _lock_min=10
+    if [ -n "$(find "$LOCKDIR" -maxdepth 0 -mmin +"$_lock_min" 2>/dev/null)" ]; then rmdir "$LOCKDIR" 2>/dev/null; mkdir "$LOCKDIR" 2>/dev/null || exit 0
     else exit 0; fi
   fi
-  trap 'rmdir "$LOCKDIR" 2>/dev/null' EXIT
 fi
+# One EXIT handler for the whole tick (#796): total timing line, then the Mac lock dir drop and the code-sync fast-forward below.
+trap _tick_exit EXIT
+trap _tick_hard_stop USR1
+# Hard wall budget (#796): the watcher is backgrounded with fd 9 closed so it never holds the tick lock.
+if [ "${TICK_HARD_SECS:-0}" -gt 0 ]; then tick_hard_watchdog "$$" >/dev/null 2>&1 9>&- & fi
 
 # Code sync (docs/host-sync.md), inside the lock: refuse to launch on code that cannot be brought current; otherwise
 # the EXIT trap fast-forwards main after this script has finished reading itself (the next tick runs the new code).
@@ -99,7 +170,6 @@ if [ "${CODE_SYNC_ENABLED:-1}" = 1 ]; then
       code_sync_alert apply_failed "fast-forward to origin/main failed, host still on $(git -C "$HERE" rev-parse --short HEAD 2>/dev/null)"
     fi
   }
-  trap _cs_exit EXIT
   if [ "$CS_STATE" = stale ]; then
     CS_WHY=$(code_sync_why 2>/dev/null); CS_TAB=$(printf '\t')
     slog "[code-sync] STALE: checkout is behind origin/main or off main and cannot be fixed safely; refusing to launch this tick. Reason: ${CS_WHY#*$CS_TAB}"
@@ -764,14 +834,15 @@ do_launch() {  # <repo> <issue> <extra> <restart_n> <reason> <queue_wait_s> <run
   printf '\n===== [%s] LAUNCH issue=%s reason=%s restart=%s =====\n' "$(date -u +%FT%TZ)" "$issue" "$reason" "$restart_n" >> "$PIPE/orch-$rk.log"
   rm -f "$PIPE/orch-$rk.exit"   # a killed run never writes it; a stale value would be reported as this run's (#38)
   cd "$repo"
-  CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 nohup $SETSID bash -c '
+  # Double-forked (like the intake and spec launches): the run is not a child of the tick, so nothing that stops the tick (the #796 hard
+  # stop, a kill of the tick's process group) can reach it. The subshell records the run's pid.
+  ( CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 nohup $SETSID bash -c '
     echo 300 > /proc/self/oom_score_adj 2>/dev/null
     claude --dangerously-skip-permissions --agent orchestrator -p "$1"
     echo $? > "$2"
-  ' _ "$prompt" "$PIPE/orch-$rk.exit" >> "$PIPE/orch-$rk.log" 2>&1 9>&- &
+  ' _ "$prompt" "$PIPE/orch-$rk.exit" >> "$PIPE/orch-$rk.log" 2>&1 9>&- & echo $! > "$PIPE/orch-$rk.pid" ) 9>&-
 
   pid_reserve_done
-  echo $! > "$PIPE/orch-$rk.pid"
   echo "$repo" > "$PIPE/orch-$rk.repo"
   [ -f "$PIPE/orch-$rk.start" ] || date -u +%FT%TZ > "$PIPE/orch-$rk.start"
   date -u +%FT%TZ > "$PIPE/orch-$rk.launched-at"
@@ -780,7 +851,7 @@ do_launch() {  # <repo> <issue> <extra> <restart_n> <reason> <queue_wait_s> <run
   case "$reason" in auto-restart) ev_reason=auto-restart ;; queued) ev_reason=queue ;; esac
   log_run_launch "$owner_repo" "$issue" "$ev_reason" "$restart_n" "$queue_wait_s" "$rk"
 
-  slog "[launch] #$issue pid=$! reason=$reason restart=$restart_n mem=$(mem_available_mb)MB running=$(count_running)/$MAX_CONCURRENT"
+  slog "[launch] #$issue pid=$(cat "$PIPE/orch-$rk.pid" 2>/dev/null) reason=$reason restart=$restart_n mem=$(mem_available_mb)MB running=$(count_running)/$MAX_CONCURRENT"
 }
 
 file_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
@@ -1003,6 +1074,12 @@ EOF_GOALS
   fi
   return 0
 }
+# #796: a failed issue read for a held run is remembered (orch-<rk>.read-fail-<check>) so neither the answered check nor the auto-retry check
+# repeats its failing call for HELD_READ_FAIL_TTL_SECS (default 5 min).
+held_read_recent_fail() {  # <rk> <check: answered|auto-retry> — 0 while this check's last failed read of the run is younger than the TTL
+  local t; t=$(file_mtime "$PIPE/orch-$1.read-fail-$2")
+  [ -n "$t" ] && [ $(( $(date +%s) - t )) -lt "${HELD_READ_FAIL_TTL_SECS:-300}" ]
+}
 # answered_relaunch <rk> <issue> <repo dir> — 0 when the run was relaunched this call (the caller skips the auto-retry path), else 1.
 answered_relaunch() {
   local rk=$1 issue=$2 repo=$3 slug info ans id marker created guard last now qf labels why
@@ -1018,7 +1095,9 @@ answered_relaunch() {
     [ -z "$last" ] || [ $(( now - last )) -ge "$ANSWERED_CHECK_SECS" ] || return 1
     touch "$PIPE/orch-$rk.answer-check" 2>/dev/null || true
   fi
+  held_read_recent_fail "$rk" answered && return 1
   info=$(issue_info_rest "$repo" "$issue") || {
+    touch "$PIPE/orch-$rk.read-fail-answered" 2>/dev/null || true
     slog "[answered] ${slug:-$repo}#$issue — issue read failed: ${info:-no error text}; $(sw_tags supervisor/answered)"
     autoretry_alert "$issue" "issue read" answered; return 1; }
   [ "$(printf '%s' "$info" | jq -r '.state // empty' 2>/dev/null)" = "OPEN" ] || return 1
@@ -1089,21 +1168,56 @@ T_OPT=1; gh_tier_allows optional || T_OPT=0           # below GH_QUOTA_OPTIONAL_
 [ "$T_NORMAL" = 1 ] && [ "$T_OPT" = 1 ] || slog "[gh-quota] reduced tier: normal=$T_NORMAL optional=$T_OPT"
 
 launched=0
+tick_mark since-sync
+
+# 3d. Goal step (#195) runs FIRST (#796): it is cheap, throttled to GOAL_SYNC_SECS inside, and feeds the status page's goal data
+# (goalqueue.json), so a slow stage below (step 1 took 12+ min on 2026-11-19) must never delay it. Same gate and gh class as before
+# (steps 3-5 are `if T_NORMAL`, class normal); goal pids are coordinators: not in count_running, never set `launched`.
+if [ "$T_NORMAL" = 1 ]; then
+  gh_class normal
+  goal_step
+  gh_class essential
+fi
+tick_mark goal-step
 
 # 0. One-time legacy migration (#318): orch-<N>.* sets whose .repo names a known checkout move to orch-<run_key>.*
 migrate_legacy_runs
 
 # 0b. Worktree sweep (every 30 min): cleanup_finished_worktree only clears issue-<N>-* worktrees on ticket-terminal
 # events, so ad hoc release/promo/review worktrees pile up — sweep DISPATCH_REPOS for merged, clean-enough ones.
+# #796: it takes minutes (a gh call per worktree), so it runs as a background job with its own lock and time budget
+# (WORKTREE_SWEEP_BUDGET_SECS) and never delays the tick. The 30-min stamp is written at launch.
 WORKTREE_SWEEP_INTERVAL_SECS=1800
 _wts_last="$PIPE/worktree-sweep.last"
+_wts_lock="$PIPE/worktree-sweep.lockdir"
+worktree_sweep_bg() {
+  local old_pid
+  if ! mkdir "$_wts_lock" 2>/dev/null; then
+    old_pid=$(cat "$_wts_lock/pid" 2>/dev/null)
+    # a live sweep younger than its budget (+ slack) owns the lock; a dead or overrun one is reclaimed
+    if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null && [ -z "$(find "$_wts_lock" -maxdepth 0 -mmin +$(( WORKTREE_SWEEP_BUDGET_SECS / 60 + 5 )) 2>/dev/null)" ]; then
+      slog "[worktree-sweep] previous sweep still running (pid $old_pid); not starting another"
+      return 0
+    fi
+    rm -rf "$_wts_lock"; mkdir "$_wts_lock" 2>/dev/null || return 0
+  fi
+  date +%s > "$_wts_last"
+  (
+    trap - EXIT USR1
+    WORKTREE_SWEEP_DEADLINE=$(( $(date +%s) + WORKTREE_SWEEP_BUDGET_SECS ))
+    GH_CLASS=optional sweep_stale_worktrees
+    slog "[worktree-sweep] background pass finished"
+    rm -rf "$_wts_lock"
+  ) >/dev/null 2>&1 9>&- &
+  echo $! > "$_wts_lock/pid" 2>/dev/null   # a pass that already finished removed the lock dir: nothing to record
+}
 _wts_prev=$(cat "$_wts_last" 2>/dev/null) || _wts_prev=
 case "$_wts_prev" in ''|*[!0-9]*) _wts_prev=0 ;; esac   # missing/empty/corrupt stamp: treat as never run, don't let arithmetic choke on it
 if [ "$T_OPT" = 1 ] && [ $(( $(date +%s) - _wts_prev )) -ge "$WORKTREE_SWEEP_INTERVAL_SECS" ]; then
-  GH_CLASS=optional sweep_stale_worktrees
-  date +%s > "$_wts_last"
+  worktree_sweep_bg
 fi
 unset _wts_prev
+tick_mark housekeeping-launch
 
 keep_awake   # Mac: hold the machine awake while runs exist (stall cause A)
 
@@ -1409,6 +1523,7 @@ json.dump(d, open('$restarts_file','w'))
 done
 _RS_PS_CACHED=0; _RS_PS_CACHE=""   # step 1 scan done (#624): later steps scan fresh
 
+tick_mark step1-restarts
 # 1b. Auto-retry (#250): a .held run whose latest gate is a BLOCKED of a machine-clearable class
 # (autoretry_classes in hooks/pipeline-markers.sh) is requeued once the cause has cleared. At most
 # AUTORETRY_MAX per run, one cause-check per AUTORETRY_THROTTLE_SECS per run. Never touches JP gates
@@ -1599,6 +1714,7 @@ PY
 }
 LOOPCAP_THROTTLE_SECS=300
 
+held_nocheckout=""; held_nocheckout_n=0
 for f in "$PIPE"/orch-*.held; do
   [ -e "$f" ] || break
   rk=$(basename "$f" .held); rk=${rk#orch-}; issue=${rk##*-}
@@ -1607,7 +1723,11 @@ for f in "$PIPE"/orch-*.held; do
   [ -f "$PIPE/orch-$rk.stopped" ] || [ -f "$PIPE/orch-$rk.done" ] && continue
   jp_gate_remind "$rk" "$issue" "$repo"   # #677: one reminder per JP-gate hold
   if [ -f "$PIPE/orch-$rk.startgate" ]; then startgate_resume "$rk" "$issue" "$repo"; continue; fi   # #677: held on a start-gate
+  # #796: a run whose repo path is still not a directory after #792's old-name mapping (repo_dir_current) can never resolve its repo name, so its
+  # [answered] and [auto-retry] reads always failed, one logged failure per run per tick. Skip it here and say so once, summarised.
+  if [ ! -d "$repo" ]; then held_nocheckout="$held_nocheckout #$issue"; held_nocheckout_n=$((held_nocheckout_n + 1)); continue; fi
   answered_relaunch "$rk" "$issue" "$repo" && continue   # #780: JP answered the question that paused it: relaunch (one per answer id)
+  held_read_recent_fail "$rk" auto-retry && continue   # #796: this check's read of the run failed a moment ago: no repeat call
   n=$(tr -dc '0-9' 2>/dev/null < "$PIPE/orch-$rk.autoretry"); n=${n:-0}
   is_lc=0; held_by_loopcap "$rk" "$issue" && is_lc=1
   [ "$n" -lt "$AUTORETRY_MAX" ] || [ "$is_lc" -eq 1 ] || continue
@@ -1627,7 +1747,7 @@ for f in "$PIPE"/orch-*.held; do
   if [ -s "$PIPE/orch-$rk.alert" ] && grep -q 'finished red (real failure)' "$PIPE/orch-$rk.alert" 2>/dev/null; then continue; fi
 
   info=$(issue_info_rest "$repo" "$issue") \
-    || { slog "[auto-retry] #$issue — issue read failed: ${info:-no error text}"; autoretry_alert "$issue" "issue read"; continue; }
+    || { touch "$PIPE/orch-$rk.read-fail-auto-retry" 2>/dev/null || true; slog "[auto-retry] #$issue — issue read failed: ${info:-no error text}"; autoretry_alert "$issue" "issue read"; continue; }
   [ "$(printf '%s' "$info" | jq -r '.state // empty')" = "OPEN" ] || continue
   if [ "$is_lc" -eq 1 ]; then
     # Resume only on a delegated decision ([delivery-lead] DECISION / JP CONFIRMED, legacy [project-manager] spelling) with a higher
@@ -1705,7 +1825,17 @@ PY
   slog "[auto-retry] #$issue — $cls cleared, relaunching ($n/$AUTORETRY_MAX)"
   report_status_async "auto-retry"
 done
+# #796: one summary for the held runs skipped above (at most every HELD_SKIP_LOG_SECS, so a standing condition is not a line per tick)
+if [ "$held_nocheckout_n" -gt 0 ]; then
+  _hs_last=$(file_mtime "$PIPE/held-nocheckout.logged")
+  if [ -z "$_hs_last" ] || [ $(( $(date +%s) - _hs_last )) -ge "${HELD_SKIP_LOG_SECS:-600}" ]; then
+    slog "[held-skip] $held_nocheckout_n held run(s) skipped: their recorded repo directory no longer exists, so the answered and auto-retry reads cannot resolve a repo name:$held_nocheckout"
+    touch "$PIPE/held-nocheckout.logged" 2>/dev/null || true
+  fi
+  unset _hs_last
+fi
 
+tick_mark step1b-autoretry
 # 2. Drain queue (up to DRAIN_MAX_PER_TICK items per tick, oldest queued_at first)
 # Capacity is decided once per tick; the drain and the dispatch step (5) share the result. A slot freed mid-tick is
 # never launched into by step 5 on this decision; when the drain took the slot or none is free, step 5 still claims its
@@ -1814,6 +1944,7 @@ except Exception:
   fi
 done
 
+tick_mark step2-drain
 gh_class normal   # steps 3-5 and the goal step: not run below GH_QUOTA_ESSENTIAL_BELOW
 if [ "$T_NORMAL" = 1 ]; then
 # 3. Label lifecycle — agent-in-progress means "an orchestrator owns this somewhere"; drop it once this machine
@@ -1938,6 +2069,7 @@ fb_claimable() {
   [ "$now" -ge "$ra" ]
 }
 
+tick_mark step3-label-lifecycle
 # 3b. Intake — triage raw staff feedback (#114): one `user-feedback-intake` issue per tick from DISPATCH_REPOS, claimed like
 #     step 5, label swapped to agent-in-progress, `claude --agent intake -p` launched detached. State is separate from the
 #     orchestrator's (PIPE/intake-<owner_repo>-<n>.*) but counts against MAX_CONCURRENT. A run that exits with no [intake]
@@ -2274,6 +2406,7 @@ if [ "$launched" -eq 0 ] && [ "$HAS_CAP" -eq 1 ] && [ "${#DISPATCH_REPOS[@]}" -g
   done
 fi
 
+tick_mark step3b-intake
 # 3c. Spec — PM-only run (#115) for one `user-feedback-needs-spec` idea: claim, swap in agent-in-progress, launch `claude --agent product-manager -p`.
 #     Never adds agent-go and never starts an orchestrator. When the PM exits, drop agent-in-progress + needs-spec and add agent-proposed (JP's digest).
 #     Any PM routing marker except REJECTED blocks a launch, as do two REJECTED needs-spec (a PM REJECTED needs-spec is how a fix reaches here). State: PIPE/spec-<owner_repo>-<n>.* A run that exits with no PM marker is classified like an intake run (#676, fb_* above): limit / transient exits are released without counting; two failed runs give up, with a NOTE, for 6h (4 cycles at most).
@@ -2335,11 +2468,11 @@ if [ "$launched" -eq 0 ] && [ "$HAS_CAP" -eq 1 ] && [ "${#DISPATCH_REPOS[@]}" -g
   done
 fi
 
-# 3d. Goal step (#195) — goal pids are coordinators: not in count_running, never set the orchestrator `launched` flag.
-goal_step
+# 3d. Goal step (#195) — moved to the top of the tick (#796), right after the since-sync; only blocker adoption stays here.
 # 3d-2. Blocker adoption (#566): the staff-feedback goal's scope takes in a goal-less agent-go blocker of an in-scope ticket by label, no LLM (goal_fb_adopt_blockers). Every 5 min, gh class normal.
 if [ "${T_NORMAL:-1}" = 1 ] && gh_tick_due adopt-blockers "${GOAL_ADOPT_SECS:-300}"; then GH_CLASS=normal goal_fb_adopt_blockers >/dev/null 2>&1 || true; fi
 
+tick_mark step3c-spec
 # 3e. Promote deferred children (#315) — a ticket filed with the PM deferral NOTE ("approval inherited from <ref> — agent-go deferred:
 #     start-gate #N open") gets agent-go once every start-gate is CLOSED as completed or, still open, shipped to the integration branch (#677). Launch permission only: no JP-only gate is answered here.
 #     Only deferral NOTEs from OWNER/MEMBER/COLLABORATOR comments count (public repos: outsiders cannot trigger a launch).
@@ -2407,10 +2540,11 @@ promote_deferred() {
 }
 if [ "${#DISPATCH_REPOS[@]}" -gt 0 ] && gh_tick_due promote-deferred "${GH_PROMOTE_DEFERRED_SECS:-300}"; then promote_deferred; fi
 
+tick_mark step3e-promote-deferred
 # 4. Label reconciliation — catch orphaned agent-in-progress labels that have no local state at all
 #    (e.g. /tmp was cleared, or a run from another machine died). Only clear if no marker movement for 30+ min.
 STALE_LABEL_SECS=1800
-if [ "${#DISPATCH_REPOS[@]}" -gt 0 ] && gh_tick_due label-reconcile "${GH_LABEL_RECONCILE_SECS:-600}"; then   # gh-budget: 30-min staleness window, so every 10 min is enough
+if [ "${#DISPATCH_REPOS[@]}" -gt 0 ] && ! tick_soft_over label-reconcile && gh_tick_due label-reconcile "${GH_LABEL_RECONCILE_SECS:-600}"; then   # gh-budget: 30-min staleness window, so every 10 min is enough
   for entry in "${DISPATCH_REPOS[@]}"; do
     owner_repo="${entry%%:*}"; local_path="${entry#*:}"; local_path="${local_path/#\~/$HOME}"
     [ -d "$local_path/.git" ] || continue
@@ -2440,6 +2574,7 @@ if [ "${#DISPATCH_REPOS[@]}" -gt 0 ] && gh_tick_due label-reconcile "${GH_LABEL_
   done
 fi
 
+tick_mark step4-label-reconcile
 # 5 (was 4). Shared dispatch — one agent-go issue per tick, claimed before launch so two machines never take the same one.
 # JP (2026-10-18): only the goal-based pipeline launches work; SHARED_DISPATCH_ENABLED=0 turns this whole step off for
 # ordinary agent-go tickets. Exception (JP 2026-10-19): a ticket labeled user-feedback (staff-reported bug/idea) still
@@ -2601,6 +2736,7 @@ fi   # T_NORMAL (gh-budget)
 #    skills/orchestrate/pipeline-bridge-prompt.md (the relay's instructions — manually installed to
 #    ~/.openclaw/agents/pipeline-bridge/agent/IDENTITY.md, outside this repo; see README.md).
 
+tick_mark step5-dispatch
 gh_class optional
 # 7. Status reconcile (issue #51) — refresh every listed ticket from GitHub (closed -> Completed, latest marker).
 #    Throttled inside the script (600 s/host); backgrounded with fd 9 closed like report_status_async, so a slow
@@ -2615,7 +2751,7 @@ gh_class optional
 #    feedback tickets with no owner (#676, plus one #engineering message per repo per day).
 #    Read-only observability, logged (never acted on); throttled internally to once per 600 s. Runs last, after
 #    dispatch, so it never delays or blocks a launch decision made earlier in this tick.
-[ "$T_OPT" = 1 ] && { stale_work_digest || true; }
+[ "$T_OPT" = 1 ] && ! tick_soft_over stale-digest && { stale_work_digest || true; }
 
 # #773 AC8: what this tick cost in GitHub calls (call-log delta since gh_tick_mark; background reconcile / PM poll calls land in the next one)
 [ "$GH_BUDGET_ENABLED" = 1 ] && slog "[gh-calls] tick $(gh_tick_summary)"

@@ -2263,8 +2263,10 @@ goal_step() {
   last=$(cat "$PIPE/goal-sync.last" 2>/dev/null); case "$last" in ''|*[!0-9]*) last=0 ;; esac
   if [ $((now - last)) -ge "$GOAL_SYNC_SECS" ]; then
     GOAL_SYNC_DUE=1
-    echo "$now" > "$PIPE/goal-sync.last"
     goal_sync
+    # #796: stamped AFTER the sync, not before: a tick stopped mid-sync (the watchdog's hard stop) must leave the stamp old so the next
+    # tick syncs again, instead of a fresh stamp over a stale goalqueue.json. A sync that fails normally still stamps (throttled as before).
+    echo "$now" > "$PIPE/goal-sync.last"
   fi
   GOAL_OWNED=""
   for f in "$PIPE"/goal-*.json; do

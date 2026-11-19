@@ -383,6 +383,7 @@ _issue_num_from() {
 # worktree_sweep_alert, so a rate-limit blip on one worktree does not page anyone but a real pattern still
 # surfaces. Every decision below is tagged release=<HEAD sha> environment=<host> route=worktree-sweep, same
 # substitute-for-Sentry observability pattern as the rest of skills/orchestrate/*.sh (migrate_legacy_runs above).
+_sweep_over_budget() { [ -n "${WORKTREE_SWEEP_DEADLINE:-}" ] && [ "$(date +%s)" -ge "$WORKTREE_SWEEP_DEADLINE" ]; }
 sweep_stale_worktrees() {
   type slog >/dev/null 2>&1 || slog() { echo "$*" >&2; }
   [ "${#DISPATCH_REPOS[@]}" -gt 0 ] || return 0   # bash 3.2 (macOS) + `set -u` errors on an empty array's "${arr[@]}"
@@ -420,6 +421,9 @@ sweep_stale_worktrees() {
             *) path=""; continue ;;   # the main worktree itself (repo root) — never swept
           esac
           wt="$path"; path=""
+          # #796: the sweep runs as a bounded background job; past WORKTREE_SWEEP_DEADLINE (epoch, set by the caller) it stops
+          # and leaves the rest to the next pass. Unset = no limit (a direct call, the tests).
+          if _sweep_over_budget; then slog "[worktree-sweep] time budget reached; the remaining worktrees are swept on the next pass ($tags)"; break 2; fi
           skip_word="skipped"; [ "${WORKTREE_SWEEP_DRY_RUN:-0}" = 1 ] && skip_word="would-skip"
           if [ "$detached" = 1 ]; then
             slog "[worktree-sweep] skipped $wt: detached HEAD (review/scratch, not swept) ($tags)"
