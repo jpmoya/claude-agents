@@ -1,4 +1,5 @@
 {
+  "cleanupPeriodDays": 180,
   "permissions": {
     "allow": [
       "Bash",
@@ -29,7 +30,6 @@
     ],
     "defaultMode": "default"
   },
-  "cleanupPeriodDays": 180,
   "model": "sonnet",
   "skillOverrides": {
     "agents-sdk": "name-only",
@@ -233,6 +233,7 @@
       }
     }
   },
+  "outputStyle": "Concise",
   "effortLevel": "high",
   "modelSettings": {
     "claude-fable-5-1": {
@@ -246,5 +247,6 @@
   "skipDangerousModePermissionPrompt": true,
   "skipWorkflowUsageWarning": true,
   "agentPushNotifEnabled": true,
-  "outputStyle": "Concise"
+  "theme": "light-ansi",
+  "remoteControlAtStartup": true
 }
