@@ -47,7 +47,7 @@ _gh_madrid() {
 # _gh_scan <gh args...> — classify one call into globals (no subshell, so it is cheap):
 #   _GH_SUB (log text), _GH_BUCKET (core|graphql|none), _GH_WRITE (0|1), _GH_CACHEABLE (0|1)
 _gh_scan() {
-  _GH_SUB=""; _GH_BUCKET=graphql; _GH_WRITE=0; _GH_CACHEABLE=0; _GH_ISSUE_REPO=""; _GH_ISSUE_NUM=""; _GH_LIST_REPO=""
+  _GH_SUB=""; _GH_BUCKET=graphql; _GH_WRITE=0; _GH_CACHEABLE=0; _GH_ISSUE_REPO=""; _GH_ISSUE_NUM=""; _GH_LIST_REPO=""; _GH_WH_REPO=""; _GH_WH_NUM=""
   local first="${1:-}" second="${2:-}" a prev="" method=GET payload=0 path=""
   case "$first" in
     api)
@@ -107,9 +107,40 @@ _gh_scan() {
       esac
       if [ "$_GH_WRITE" = 0 ]; then
         case "$first $second" in "issue view"|"issue list"|"repo view") _GH_CACHEABLE=1 ;; esac
+        # #773 AC8: with the webhook queue on, these reads (and `pr list`, never cached otherwise) may be served from the cache for up to
+        # WEBHOOK_LIST_MAX_AGE_SECS while the repo is webhook_trusted; any event for the repo drops them (see _gh_wh_classify).
+        if [ "${WEBHOOK_EVENTS_ENABLED:-0}" = 1 ]; then
+          case "$first $second" in "issue view"|"issue list"|"repo view"|"pr list") _gh_wh_classify "$@" ;; esac
+        fi
       fi ;;
   esac
   return 0
+}
+
+# _gh_wh_classify <gh args...> — sets _GH_WH_REPO (the repo the read is about: -R/--repo, else the checkout's origin, read locally with
+# no API call), _GH_WH_NUM (the issue number of `issue view <n>`), and makes `pr list` cacheable. Unknown repo = not event-trusted.
+_gh_wh_classify() {
+  local first="$1" second="$2" a prev="" repo="" num="" url
+  shift 2
+  for a in "$@"; do
+    if [ -n "$prev" ]; then repo="$a"; prev=""; continue; fi
+    case "$a" in
+      -R|--repo) prev=1 ;;
+      --repo=*) repo="${a#--repo=}" ;;
+      -*) ;;
+      *) [ -n "$num" ] || num="$a" ;;
+    esac
+  done
+  if [ -z "$repo" ]; then
+    url=$(git config --get remote.origin.url 2>/dev/null) || url=""
+    repo=$(printf '%s' "$url" | sed -E -e 's#^.*github\.com[:/]+##' -e 's#\.git$##' -e 's#/+$##')
+  fi
+  case "$repo" in */*/*|''|*[!A-Za-z0-9._/-]*) return 0 ;; */*) ;; *) return 0 ;; esac
+  _GH_WH_REPO="$repo"
+  case "$first $second" in
+    "issue view") case "$num" in ''|*[!0-9]*) _GH_WH_NUM="" ;; *) _GH_WH_NUM="$num" ;; esac ;;
+    "pr list") _GH_CACHEABLE=1 ;;
+  esac
 }
 
 _gh_log() {  # _gh_log <class> <call|hit|skip> — fixed-format line; never fails the caller
@@ -229,8 +260,9 @@ _gh_since_synced() {  # <owner/repo> — 0 if this process has successfully sync
   return 1
 }
 
-_gh_since_idx_dir() { printf '%s/.since-idx/%s\n' "$GH_CACHE_DIR" "$(printf '%s' "$1" | tr '/' '_')"; }
-_gh_since_list_idx_file() { printf '%s/.since-list-idx.%s\n' "$GH_CACHE_DIR" "$(printf '%s' "$1" | tr '/' '_')"; }
+# lower-cased: a read classified from a checkout's origin URL (#773 AC8) and an event's full_name may spell the repo differently
+_gh_since_idx_dir() { printf '%s/.since-idx/%s\n' "$GH_CACHE_DIR" "$(printf '%s' "$1" | tr 'A-Z/' 'a-z_')"; }
+_gh_since_list_idx_file() { printf '%s/.since-list-idx.%s\n' "$GH_CACHE_DIR" "$(printf '%s' "$1" | tr 'A-Z/' 'a-z_')"; }
 
 _gh_since_index_add() {  # <owner/repo> <issue> <cache key>
   local f; f="$(_gh_since_idx_dir "$1")/$2"
@@ -345,6 +377,13 @@ gh() {
       IFS= read -r t < "$cf" 2>/dev/null || t=0
       case "$t" in ''|*[!0-9]*) t=0 ;; esac
       now=$(date +%s)
+      # #773 AC8: `issue view|list`, `repo view`, `pr list`: served for up to WEBHOOK_LIST_MAX_AGE_SECS (default = the fallback poll interval)
+      # while the repo is webhook_trusted. The age cap bounds what a dropped delivery can leave stale (check state is not covered by the
+      # fallback's issues?since= sync); an event for the repo drops the entry sooner (webhook_tick_prepare -> the list / issue index).
+      if [ -n "$_GH_WH_REPO" ] && type webhook_trusted >/dev/null 2>&1 && webhook_trusted "$_GH_WH_REPO" \
+         && [ $(( now - t )) -lt "$(_gh_wh_max_age)" ]; then
+        _gh_log "$class" hit; tail -n +2 "$cf"; return 0
+      fi
       if [ $(( now - t )) -lt "$GH_CACHE_TTL_SECS" ]; then
         _gh_log "$class" hit; tail -n +2 "$cf"; return 0
       fi
@@ -370,6 +409,9 @@ gh() {
       { date +%s; cat "$tmp"; } > "$cf.w$$" 2>/dev/null && mv "$cf.w$$" "$cf" 2>/dev/null
       [ -n "$_GH_ISSUE_REPO" ] && _gh_since_index_add "$_GH_ISSUE_REPO" "$_GH_ISSUE_NUM" "$key"
       [ -n "$_GH_LIST_REPO" ] && _gh_since_list_index_add "$_GH_LIST_REPO" "$key"
+      if [ -n "$_GH_WH_REPO" ]; then   # #773 AC8: indexed so a queue event for the repo (or the issue) drops it
+        if [ -n "$_GH_WH_NUM" ]; then _gh_since_index_add "$_GH_WH_REPO" "$_GH_WH_NUM" "$key"; else _gh_since_list_index_add "$_GH_WH_REPO" "$key"; fi
+      fi
     fi
     cat "$tmp" 2>/dev/null; rm -f "$tmp" "$cf.w$$" 2>/dev/null
     return $rc
@@ -377,6 +419,31 @@ gh() {
   command gh "$@"; rc=$?
   [ "$_GH_WRITE" = 1 ] && gh_cache_clear
   return $rc
+}
+
+_gh_wh_max_age() {
+  local m="${WEBHOOK_LIST_MAX_AGE_SECS:-}"
+  case "$m" in ''|*[!0-9]*) m=$(( ${WEBHOOK_FALLBACK_POLL_MINUTES:-20} * 60 )) ;; esac
+  printf '%s' "$m"
+}
+
+# gh_tick_mark / gh_tick_summary — #773 AC8 counter: how many GitHub calls one supervisor tick cost, from this call log (all callers in
+# the tick's window: the supervisor, reconcile, goal sync). gh_tick_mark remembers the log's byte offset at tick start; gh_tick_summary
+# prints "calls=N hits=H skips=S webhook=on|off" for what was appended since (a rotated log counts from its start). Prints nothing with the
+# budget guard off. Measure idle before/after the switch: grep '[gh-calls]' supervisor.log, average calls= over >= 30 idle ticks.
+gh_tick_mark() {
+  [ "$GH_BUDGET_ENABLED" = 1 ] || return 0
+  _gh_budget_paths
+  _GH_TICK_OFF=$(wc -c < "$GH_CALL_LOG" 2>/dev/null | tr -d ' '); _GH_TICK_OFF=${_GH_TICK_OFF:-0}
+}
+gh_tick_summary() {
+  [ "$GH_BUDGET_ENABLED" = 1 ] || return 0
+  _gh_budget_paths
+  local size off="${_GH_TICK_OFF:-0}" wh=off
+  size=$(wc -c < "$GH_CALL_LOG" 2>/dev/null | tr -d ' '); size=${size:-0}
+  [ "$size" -ge "$off" ] || off=0
+  [ "${WEBHOOK_EVENTS_ENABLED:-0}" = 1 ] && wh=on
+  tail -c +$(( off + 1 )) "$GH_CALL_LOG" 2>/dev/null | awk -v wh="$wh" '$4=="call"{c++} $4=="hit"{h++} $4=="skip"{s++} END{printf "calls=%d hits=%d skips=%d webhook=%s", c, h, s, wh}'
 }
 
 # gh_tick_due <name> <secs> — 0 when work <name> has not run for <secs> (and stamps it now), else 1. For GitHub-only reconciliation that

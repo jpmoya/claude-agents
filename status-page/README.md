@@ -85,7 +85,7 @@ Payload (`v` stays 1, every new key optional; the host half is #65):
   `updated_at` ISO-8601 Z else omitted). Absent or non-array → `[]`.
 - `runs[].needs` (one of `mockups skipped (default or JP)` (display only, not a gate), `Approve mockups`, `Say go`, `Approve effort`, `Missing credential`,
   `Decision needed`; `BLOCKED` → `Missing credential` when its `Blocked on:` line matches
-  `credential|token|secret|api key|password|access`), `runs[].gate_at` (ISO-8601 Z) and
+  `credential|token|secret|api key|password|access`), `runs[].gate_at` (ISO-8601 Z), `runs[].answered_at` (ISO-8601 Z, #780: JP's answer is on the issue and no relaunch has used it yet; the unowned-tickets alert treats it as owned for 10 minutes) and
   `runs[].parked_reason` (`answered` | `out_of_scope` | `auto_retry`) and `runs[].block_class` (fixed class, shown on
   Parked rows as `CI/billing`, `merge conflict`, `waiting on dependency` or `other` in the Marker cell): all optional, unknown values dropped, no
   comment text is ever published. An old payload without them renders an empty `Needs` cell.

@@ -227,7 +227,7 @@ fi
 # The secrets (WEBHOOK_SECRET, WEBHOOK_PULL_TOKEN) and, on the Mac, WEBHOOK_RECEIVER_URL live in config.local.sh only (see config.local.example.sh).
 WEBHOOK_EVENTS_ENABLED="${WEBHOOK_EVENTS_ENABLED:-0}"
 WEBHOOK_FALLBACK_POLL_MINUTES="${WEBHOOK_FALLBACK_POLL_MINUTES:-20}"   # full since-sync per repo at most this often while enabled
-WEBHOOK_OWNERS="${WEBHOOK_OWNERS:-Benjis-Plants}"                     # owners that have a webhook; repos of any other owner keep the plain since-sync
+WEBHOOK_OWNERS="${WEBHOOK_OWNERS:-Benjis-Plants jpmoya/claude-agents}"   # owners (or owner/repo, for a user account) that have a webhook; any other repo keeps the plain since-sync
 WEBHOOK_STALE_MINUTES="${WEBHOOK_STALE_MINUTES:-30}"                  # status banner "no webhook received in N minutes" past this age
 WEBHOOK_TRUST_SECS="${WEBHOOK_TRUST_SECS:-600}"                        # other processes trust the event-applied cache while the supervisor's last apply is this fresh
 if [ -f "$(dirname "${BASH_SOURCE[0]}")/webhook-events.sh" ]; then . "$(dirname "${BASH_SOURCE[0]}")/webhook-events.sh"

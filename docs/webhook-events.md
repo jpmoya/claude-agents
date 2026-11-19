@@ -23,7 +23,7 @@ to start and no status banner is published. Setting it back to `0` returns to fu
   (`gap`) forces a full sync for every repo on the next call.
 - Other processes (goal sync, reconcile-status) trust the same cached single-issue / issues-list reads without a wall-clock expiry
   while the supervisor's last apply is under `WEBHOOK_TRUST_SECS` (600) old and the repo's fallback poll is not overdue.
-- Only repos whose owner is in `WEBHOOK_OWNERS` (default `Benjis-Plants`, the owners that have a hook) are served from events; a repo of
+- Only repos whose owner is in `WEBHOOK_OWNERS` (default `Benjis-Plants jpmoya/claude-agents`: an owner, or a full `owner/repo` for a user account with a per-repo hook) are served from events; a repo of
   any other owner keeps the plain per-tick since-sync.
 - Status page banner (#782): the only signal is the VM receiver's own newest event. On the VM (no `WEBHOOK_RECEIVER_URL`), while on, if
   the newest event (or, for an empty queue, the time the switch was turned on) is older than `WEBHOOK_STALE_MINUTES` (30), the VM
@@ -33,8 +33,15 @@ to start and no status banner is published. Setting it back to `0` returns to fu
   record or no field means no banner. Quiet hours with no GitHub activity at all will also raise it (amber, informational: the fallback
   poll keeps working).
 
-Not covered yet (follow-up): issue/PR GraphQL reads (`gh issue list`, `gh pr list`, `gh repo view`) and the goal-project GraphQL
-reads still use their own TTLs; they are the bulk of the remaining idle calls.
+- `gh issue view`, `gh issue list`, `gh pr list` and `gh repo view` (reconcile, worktree sweep, repo_canon, the supervisor's own lists) are
+  served from the read cache for up to `WEBHOOK_LIST_MAX_AGE_SECS` (default = the fallback interval, 20 min) while the repo is trusted
+  (read from `-R/--repo`, else the checkout's origin, no API call). Any event for the repo drops them; a dropped check/PR delivery can
+  therefore leave one stale for at most that cap. With the switch off `pr list` is not cached at all (unchanged).
+- Per-tick counter (AC8): with the budget guard on, every supervisor tick logs `[gh-calls] tick calls=N hits=H skips=S webhook=on|off`, the
+  call-log delta since the tick started (all callers in that window).
+
+Not covered yet: the goal-project GraphQL reads (`goal_project_read`, `_gp_items`, `project view`) still use their own TTLs; with
+`projects_v2_item` events they are the next candidate. The live before/after average (>= 30 idle ticks each) is measured after go-live.
 
 ## Receiver security
 
@@ -112,4 +119,6 @@ Per-tick GitHub calls from the call log (idle ticks only, same host, before vs a
 awk '$4=="call"{n++} END{print n}' ~/logs/pipeline/gh-calls.log   # total calls in the window
 grep -c 'gh-quota remaining' ~/logs/pipeline/supervisor.log        # ticks in the same window (one quota line per tick)
 ```
-Divide the first by the second over at least 30 idle ticks, before and after.
+Divide the first by the second over at least 30 idle ticks, before and after; or average `calls=` over the `[gh-calls] tick` lines in
+`supervisor.log` (the counter above). Modelled idle read set in `tests/test-webhook-call-reduction.sh`: 7 calls per tick with the switch off, 0 with an
+empty queue on.

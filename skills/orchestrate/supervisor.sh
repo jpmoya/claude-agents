@@ -1066,6 +1066,7 @@ PY
 # failing hundreds of calls (2026-10-29..11-03: 550-2753 "API rate limit exceeded" lines a day).
 if [ "$GH_BUDGET_ENABLED" = 1 ]; then
   slog "$(gh_quota_line)"
+  gh_tick_mark   # #773 AC8: the per-tick call counter, summarised at the end of the tick
   if ! gh_tier_allows essential; then
     slog "[gh-quota] REST quota exhausted — no GitHub work this tick, resuming after the reset"
     exit 0
@@ -2613,4 +2614,6 @@ gh_class optional
 #    dispatch, so it never delays or blocks a launch decision made earlier in this tick.
 [ "$T_OPT" = 1 ] && { stale_work_digest || true; }
 
+# #773 AC8: what this tick cost in GitHub calls (call-log delta since gh_tick_mark; background reconcile / PM poll calls land in the next one)
+[ "$GH_BUDGET_ENABLED" = 1 ] && slog "[gh-calls] tick $(gh_tick_summary)"
 exec 9>&- 2>/dev/null
