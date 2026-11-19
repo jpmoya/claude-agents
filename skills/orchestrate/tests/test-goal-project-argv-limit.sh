@@ -135,9 +135,41 @@ test_av_no_accumulated_json_is_passed_as_an_argument() {
   return $rc
 }
 
+test_av_every_temp_dir_is_removed_on_signals_too() {   # reviewer MEDIUM on #794: a signal must not leave ticket text in /tmp
+  local rc=0 gp rs
+  gp=$(grep -vE '^[[:space:]]*#' "$AV_SRC_DIR/goal-project.sh"); rs=$(grep -vE '^[[:space:]]*#' "$AV_SRC_DIR/report-status.sh")
+  assert_eq "$(printf '%s' "$gp" | grep -c 'mktemp -d')" "1" "goal-project.sh makes its temp dirs in ONE helper (_gp_in_tmp)" || rc=1
+  assert_contains "$gp" "trap 'rm -rf \"\$dir\"' EXIT" "the helper removes the dir on exit" || rc=1
+  assert_contains "$gp" "trap 'exit 130' INT; trap 'exit 143' TERM" "and on INT and TERM (the exit fires the EXIT trap)" || rc=1
+  assert_contains "$rs" "trap 'rm -rf \"\$d\"' EXIT; trap 'exit 130' INT; trap 'exit 143' TERM" "report-status.sh does the same for its payload dir" || rc=1
+  return $rc
+}
+
+test_av_a_signalled_read_leaves_no_temp_dir_behind() {
+  av_setup
+  av_page "$AV_DIR/pages/1.json" 1 100 c1 scope
+  cat > "$AV_DIR/bin/gh" <<'AV_SLOW_EOF'
+#!/bin/bash
+D=$(cd "$(dirname "$0")/.." && pwd)
+case "$*" in *cursor=c1*) : > "$D/second-call"; exec sleep 30 ;; esac
+cat "$D/pages/1.json"
+AV_SLOW_EOF
+  chmod +x "$AV_DIR/bin/gh"
+  ( cd "$AV_DIR" && PATH="$AV_DIR/bin:$PATH" TMPDIR="$AV_DIR/tmp" PIPE="$AV_DIR/pipe" bash -c '. "$1/goal-project.sh"; goal_project_read example-owner 41' _ "$AV_SRC_DIR" >/dev/null 2>&1 ) &
+  local bg=$! i=0 rc=0
+  while [ ! -e "$AV_DIR/second-call" ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+  # TERM every shell of the read (the one that owns the dir is a fork of it), then end the blocked gh so the deferred trap can run
+  pkill -TERM -f "goal_project_read example-owner 41" 2>/dev/null
+  sleep 0.3; pkill -f "sleep 30" 2>/dev/null; wait "$bg" 2>/dev/null
+  i=0; while [ -n "$(ls -A "$AV_DIR/tmp" 2>/dev/null)" ] && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
+  assert_eq "$(ls -A "$AV_DIR/tmp")" "" "no temp dir left after the reader was terminated mid-read" || rc=1
+  rm -rf "$AV_DIR"; return $rc
+}
+
 for t in test_av_the_fake_jq_really_refuses_a_large_argument test_av_project_read_survives_the_linux_argument_cap_over_three_pages \
          test_av_project_items_survive_the_linux_argument_cap_over_three_pages test_av_a_bad_page_two_still_fails_closed_and_leaves_nothing_behind \
          test_av_a_failing_gh_on_page_two_leaves_nothing_behind test_av_status_payload_survives_the_linux_argument_cap \
-         test_av_no_accumulated_json_is_passed_as_an_argument; do
+         test_av_no_accumulated_json_is_passed_as_an_argument test_av_every_temp_dir_is_removed_on_signals_too \
+         test_av_a_signalled_read_leaves_no_temp_dir_behind; do
   run_test "$t"
 done

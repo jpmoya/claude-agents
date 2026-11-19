@@ -184,26 +184,40 @@ build_payload() {
   ci_queue_json=$(_rs_ci_queue_json)
   local sentry_cap_json; sentry_cap_json=$(bash "$RS_HERE/sentry-cap-status.sh" 2>/dev/null); [ -n "$sentry_cap_json" ] || sentry_cap_json='[]'   # #781
   local webhook_last_event_json; webhook_last_event_json=$(webhook_last_event_at_json 2>/dev/null)   # #782: VM only, while enabled and the receiver feed is stale; "" otherwise
+  # Every JSON part reaches jq through a file (--slurpfile), never as a --argjson argument (#793): Linux caps ONE argument at 128KB
+  # (MAX_ARG_STRLEN; macOS does not) and goals/backlog/runs grow past it. The 0700 dir is removed on every exit path.
+  local d rc; d=$(mktemp -d "${TMPDIR:-/tmp}/rs-payload.XXXXXX") || return 1
+  trap 'rm -rf "$d"' EXIT; trap 'exit 130' INT; trap 'exit 143' TERM   # runs in PAYLOAD=$(build_payload): a signal must not leave ticket text behind
+  { printf '%s' "${webhook_last_event_json:-null}" > "$d/webhook" && printf '%s' "$triggers_json" > "$d/triggers" \
+    && printf '%s' "$sentry_cap_json" > "$d/sentry_cap" && printf '%s' "${CRON_JSON:-null}" > "$d/cron" \
+    && printf '%s' "$goals_json" > "$d/goals" && printf '%s' "$goal_stall_json" > "$d/goal_stall" \
+    && printf '%s' "${ci_queue_json:-null}" > "$d/ci_queue" && printf '%s' "$runs_json" > "$d/runs" \
+    && printf '%s' "$completed_json" > "$d/completed" && printf '%s' "$staging_json" > "$d/staging" \
+    && printf '%s' "$approved_json" > "$d/approved" && printf '%s' "$backlog_json" > "$d/backlog"; } \
+    || { rm -rf "$d"; trap - EXIT INT TERM; return 1; }
   jq -n \
-    --argjson webhook_last_event_at "${webhook_last_event_json:-null}" \
-    --argjson triggers "$triggers_json" \
-    --argjson sentry_cap "$sentry_cap_json" \
-    --argjson cron "${CRON_JSON:-null}" \
-    --argjson goals "$goals_json" \
-    --argjson goal_stall "$goal_stall_json" \
+    --slurpfile webhook_last_event_at "$d/webhook" \
+    --slurpfile triggers "$d/triggers" \
+    --slurpfile sentry_cap "$d/sentry_cap" \
+    --slurpfile cron "$d/cron" \
+    --slurpfile goals "$d/goals" \
+    --slurpfile goal_stall "$d/goal_stall" \
     --arg goals_as_of "$goals_as_of" \
-    --argjson ci_queue "${ci_queue_json:-null}" \
+    --slurpfile ci_queue "$d/ci_queue" \
     --arg sent_at "$SENT_AT" \
     --arg tick "$SUPERVISOR_LAST_TICK" \
     --argjson running "$running" \
     --argjson max "${MAX_CONCURRENT:-3}" \
     --argjson queued "$queued" \
-    --argjson runs "$runs_json" \
-    --argjson completed "$completed_json" \
-    --argjson staging "$staging_json" \
-    --argjson approved "$approved_json" \
-    --argjson backlog "$backlog_json" \
-    '{v: 1, sent_at: $sent_at, supervisor_last_tick: $tick,
+    --slurpfile runs "$d/runs" \
+    --slurpfile completed "$d/completed" \
+    --slurpfile staging "$d/staging" \
+    --slurpfile approved "$d/approved" \
+    --slurpfile backlog "$d/backlog" \
+    '$webhook_last_event_at[0] as $webhook_last_event_at | $triggers[0] as $triggers | $sentry_cap[0] as $sentry_cap | $cron[0] as $cron
+      | $goals[0] as $goals | $goal_stall[0] as $goal_stall | $ci_queue[0] as $ci_queue | $runs[0] as $runs | $completed[0] as $completed
+      | $staging[0] as $staging | $approved[0] as $approved | $backlog[0] as $backlog
+      | {v: 1, sent_at: $sent_at, supervisor_last_tick: $tick,
       capacity: {running: $running, max: $max, queued: $queued}, runs: $runs, completed: $completed,
       staging: $staging, approved: $approved, backlog: $backlog}
       + (if ($goals | length) > 0 then {goals: $goals} else {} end)
@@ -214,6 +228,9 @@ build_payload() {
       + (if ($sentry_cap | length) > 0 then {sentry_cap: $sentry_cap} else {} end)
       + (if $ci_queue != null then {ci_queue: $ci_queue} else {} end)
       + (if $cron != null then {cron: $cron} else {} end)'
+  rc=$?
+  rm -rf "$d"; trap - EXIT INT TERM
+  return "$rc"
 }
 
 SENT_AT=$(python3 -c "import datetime; print(datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))")
