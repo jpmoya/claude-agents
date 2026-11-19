@@ -72,12 +72,17 @@ code_sync_why() {  # -> "<class>\t<detail>": dirty | unpushed | dirty+unpushed |
   printf '%s\t%s (checkout %s)\n' "$cls" "$detail" "$repo"
 }
 
-_cs_ff() {  # _cs_ff <repo> : switch to main and fast-forward; git's first error line on stderr
+# _cs_gitwhy <git stderr> : git's first error line plus the paths it lists under it (tab-indented), on one line,
+# comma-separated, so the log and the alert say WHICH files block (#696: only line 1 was kept, the paths were lost).
+_cs_gitwhy() {
+  printf '%s\n' "$1" | awk 'NR==1{l=$0; next} /^\t/{sub(/^\t+/,""); p=p (p==""?"":", ") $0} END{print l (p==""?"":" " p)}'
+}
+_cs_ff() {  # _cs_ff <repo> : switch to main and fast-forward; git's reason (first line + blocking paths) on stderr
   local repo=$1 err
   if [ "$(git -C "$repo" symbolic-ref -q --short HEAD 2>/dev/null)" != main ]; then
-    err=$(git -C "$repo" checkout -q main 2>&1) || { echo "code-sync: checkout main failed: $(printf '%s' "$err" | head -1)" >&2; return 1; }
+    err=$(git -C "$repo" checkout -q main 2>&1) || { echo "code-sync: checkout main failed: $(_cs_gitwhy "$err")" >&2; return 1; }
   fi
-  err=$(git -C "$repo" merge --ff-only -q origin/main 2>&1) || { echo "code-sync: fast-forward failed: $(printf '%s' "$err" | head -1)" >&2; return 1; }
+  err=$(git -C "$repo" merge --ff-only -q origin/main 2>&1) || { echo "code-sync: fast-forward failed: $(_cs_gitwhy "$err")" >&2; return 1; }
 }
 
 code_sync_apply() {
@@ -118,33 +123,55 @@ _cs_tags() {
 # code_sync_alert <class> <detail> — called on every refused tick (and on a failed apply). Keeps a streak in
 # $PIPE/code-sync.alert-state ("<since epoch> <ticks> <last slack epoch>"), rewrites the human-readable
 # $PIPE/code-sync.alert, and posts to Slack on the first refusal and then at most once per CODE_SYNC_ALERT_REPEAT_SECS.
+# Wording follows the class (#696): a stale class refuses to launch; apply_failed (a `fixable` checkout git would not
+# fast-forward) keeps launching, on old code, so it must never say "refused" — and its fix hint follows git's reason.
 code_sync_alert() {
-  local cls=$1 detail=$2 pipe=${PIPE:-} st now since=0 n=0 last=0 host
+  local cls=$1 detail=$2 pipe=${PIPE:-} st now since=0 n=0 last=0 host sha state fix
   [ -n "$pipe" ] || return 0
   mkdir -p "$pipe" 2>/dev/null; st="$pipe/code-sync.alert-state"; now=$(date +%s); host=$(hostname -s 2>/dev/null || echo unknown)
   [ -s "$st" ] && read -r since n last < "$st"
   case "$since" in ''|*[!0-9]*) since=0 ;; esac; case "$n" in ''|*[!0-9]*) n=0 ;; esac; case "$last" in ''|*[!0-9]*) last=0 ;; esac
   [ "$since" -gt 0 ] || since=$now
   n=$((n + 1))
-  printf '%s code-sync: supervisor on %s has refused to launch since %s (%s ticks) - %s: %s. Fix: commit the edits through a PR or discard them (git checkout -- <file>), push or move unpushed commits to a worktree; the next tick then fast-forwards and clears this alert.\n' \
-    "$(date -u +%FT%TZ)" "$host" "$(_cs_iso "$since")" "$n" "$cls" "$detail" > "$pipe/code-sync.alert"
+  if [ "$cls" = apply_failed ]; then
+    sha=$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --short HEAD 2>/dev/null || echo unknown)
+    state="is still launching on old code $sha"
+    case "$detail" in
+      *"untracked working tree files would be overwritten"*)
+        fix="untracked files in the checkout block the fast-forward (listed above): move them aside out of the checkout, or commit them through a PR; the next tick then fast-forwards and clears this alert." ;;
+      *) fix="git would not fast-forward main (reason above, also in supervisor.log); fix that cause in the checkout; the next tick then fast-forwards and clears this alert." ;;
+    esac
+  else
+    state="has refused to launch"
+    fix="commit the edits through a PR or discard them (git checkout -- <file>), push or move unpushed commits to a worktree; the next tick then fast-forwards and clears this alert."
+  fi
+  printf '%s code-sync: supervisor on %s %s since %s (%s ticks) - %s: %s. Fix: %s\n' \
+    "$(date -u +%FT%TZ)" "$host" "$state" "$(_cs_iso "$since")" "$n" "$cls" "$detail" "$fix" > "$pipe/code-sync.alert"
   if [ "$last" -eq 0 ] || [ $((now - last)) -ge "$CODE_SYNC_ALERT_REPEAT_SECS" ]; then
-    _cs_slack "code-sync: supervisor refusing to launch on stale pipeline code: $(_cs_tags) reason=$cls refused_since=$(_cs_iso "$since") ticks=$n"
+    if [ "$cls" = apply_failed ]; then
+      _cs_slack "code-sync: supervisor still launching on old code $sha, fast-forward to origin/main failing: $(_cs_tags) reason=$cls failing_since=$(_cs_iso "$since") ticks=$n"
+    else
+      _cs_slack "code-sync: supervisor refusing to launch on stale pipeline code: $(_cs_tags) reason=$cls refused_since=$(_cs_iso "$since") ticks=$n"
+    fi
     last=$now
   fi
   printf '%s %s %s\n' "$since" "$n" "$last" > "$st"
 }
 
 # code_sync_clear_alert — the guard is open again: drop the alert, post one "recovered" if a streak was alerted.
+# An apply_failed streak never stopped launches (#696), so its recovery says the host is on current code instead;
+# the class is read from the alert file before it is removed.
 code_sync_clear_alert() {
-  local pipe=${PIPE:-} st since=0 n=0 last=0
+  local pipe=${PIPE:-} st since=0 n=0 last=0 at msg="supervisor launching again" key=refused_since
   [ -n "$pipe" ] || return 0
   st="$pipe/code-sync.alert-state"
   [ -e "$st" ] || [ -e "$pipe/code-sync.alert" ] || return 0
   [ -s "$st" ] && read -r since n last < "$st"
   case "$since" in ''|*[!0-9]*) since=0 ;; esac
+  at=$( [ "$since" -gt 0 ] && _cs_iso "$since" || echo unknown)
+  grep -q ' - apply_failed: ' "$pipe/code-sync.alert" 2>/dev/null && { msg="host now on current pipeline code"; key=failing_since; }
   rm -f "$st" "$pipe/code-sync.alert"
-  _cs_slack "code-sync: recovered, supervisor launching again: $(_cs_tags) refused_since=$( [ "$since" -gt 0 ] && _cs_iso "$since" || echo unknown) ticks=${n:-0}"
+  _cs_slack "code-sync: recovered, $msg: $(_cs_tags) $key=$at ticks=${n:-0}"
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
