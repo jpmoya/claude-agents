@@ -278,7 +278,7 @@ EOF
 we_teardown() { rm -rf "$WE"; }
 # we_tick <enabled 0|1> <bash text> — a fresh process like one supervisor tick: config.sh sourced, then the text
 we_tick() {
-  PATH="$WE/bin:$PATH" PIPE="$WE/pipe" LOGDIR="$WE/log" HOME="$WE/home" GH_BUDGET_ENABLED=1 WEBHOOK_EVENTS_ENABLED="$1" \
+  PATH="$WE/bin:$PATH" PIPE="$WE/pipe" LOGDIR="$WE/log" HOME="$WE/home" GH_BUDGET_ENABLED=1 WEBHOOK_EVENTS_ENABLED="$1" WEBHOOK_OWNERS="example-owner" \
     bash -c ". '$WH_RS/config.sh'; $2" 2>"$WE/err"
 }
 we_calls() { grep -c -- "$1" "$WE/calls.log" 2>/dev/null | tr -d ' '; }
@@ -334,6 +334,17 @@ test_wh_ac6_a_gap_forces_every_repo_to_full_sync() {
   local since; since=$(we_calls 'issues?state=all')
   we_teardown
   assert_eq "$since" "1" "AC6: a reset queue drops the full-sync stamps, so the repo does a full sync" || return 1
+}
+
+test_wh_ac6_a_repo_whose_owner_has_no_webhook_keeps_the_plain_since_sync() {
+  we_setup
+  we_event 1 99
+  local both='webhook_tick_prepare; gh_since_sync example-owner/project-a; gh_since_sync zzz-owner/project-b'
+  we_tick 1 "$both"; we_tick 1 "$both"   # tick 1 cold for both; tick 2: the hooked repo is served from events, the other still syncs
+  local hooked other; hooked=$(we_calls 'example-owner/project-a/issues?state=all'); other=$(we_calls 'zzz-owner/project-b/issues?state=all')
+  we_teardown
+  assert_eq "$hooked" "0" "AC6: a repo of a hooked owner makes no list call on a covered tick" || return 1
+  assert_eq "$other" "1" "AC6: a repo with no hook still makes its since-sync call every tick" || return 1
 }
 
 test_wh_ac9_off_is_the_old_behaviour_and_writes_no_webhook_state() {
@@ -465,6 +476,7 @@ run_test test_wh_ac5_a_reset_receiver_queue_forces_a_full_sync
 run_test test_wh_ac6_only_the_touched_issue_is_re_read_and_no_list_call_is_made
 run_test test_wh_ac6_fallback_poll_runs_when_due_and_heals_a_dropped_event
 run_test test_wh_ac6_a_gap_forces_every_repo_to_full_sync
+run_test test_wh_ac6_a_repo_whose_owner_has_no_webhook_keeps_the_plain_since_sync
 run_test test_wh_ac9_off_is_the_old_behaviour_and_writes_no_webhook_state
 run_test test_wh_ac9_example_config_documents_the_switch_and_secret_placeholders_are_empty
 run_test test_wh_ac7_stale_json_only_when_enabled_and_the_newest_event_is_old

@@ -1,6 +1,7 @@
 # systemd unit for the GitHub webhook receiver (#773). Install on the VM only, see docs/webhook-events.md.
-# Replace @VM_USER@ with the account that runs the supervisor (its ~/.claude/pipeline/config.local.sh holds the secrets) and
-# @REPO_DIR@ with the claude-agents checkout path the supervisor runs from.
+# Replace @VM_USER@ with the account that runs the supervisor (its ~/.claude/pipeline/config.local.sh holds the secrets),
+# @REPO_DIR@ with the claude-agents checkout path the supervisor runs from and @STATE_DIR@ with that account's pipeline state dir
+# ($HOME/.claude/pipeline/state). The runbook has the sed line.
 [Unit]
 Description=GitHub webhook receiver for the pipeline supervisor
 After=network-online.target
@@ -18,7 +19,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/home/@VM_USER@/.claude/pipeline/state
+ReadWritePaths=@STATE_DIR@
 ProtectKernelTunables=true
 ProtectControlGroups=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX

@@ -23,6 +23,15 @@ _wh_slug() { printf '%s' "$1" | tr 'A-Z/' 'a-z_'; }
 _wh_iso() {
   TZ=UTC date -u -d "@$1" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || TZ=UTC date -u -r "$1" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null
 }
+# _wh_owner_ok <owner/repo> — only repos whose owner has a webhook (WEBHOOK_OWNERS, space separated, case-insensitive) are served from
+# events; any other repo keeps the plain 2-minute since-sync, so a repo with no hook never silently drops to 20-minute freshness.
+_wh_owner_ok() {
+  local o w owner; owner=$(printf '%s' "${1%%/*}" | tr 'A-Z' 'a-z')
+  for w in ${WEBHOOK_OWNERS:-Benjis-Plants}; do
+    o=$(printf '%s' "$w" | tr 'A-Z' 'a-z'); [ "$o" = "$owner" ] && return 0
+  done
+  return 1
+}
 _wh_valid_repo() { case "$1" in */*/*|*[!A-Za-z0-9._/-]*|''|/*|*/) return 1 ;; */*) return 0 ;; esac; return 1; }
 
 # _wh_alert <what> — error on the changed path: a log line plus at most one Slack post per hour through the existing
@@ -144,6 +153,7 @@ _wh_age_ok() {  # <file> <max secs> — exists and is younger than that
 webhook_sync_repo() {
   webhook_enabled || return 1
   [ "${WEBHOOK_TICK_READY:-0}" = 1 ] || return 1
+  _wh_owner_ok "$1" || return 1
   local dir; dir=$(_wh_dir)
   _wh_age_ok "$dir/full.$(_wh_slug "$1")" $(( $(_wh_num "${WEBHOOK_FALLBACK_POLL_MINUTES:-20}" 20) * 60 )) || return 1
   type _gh_since_mark_synced >/dev/null 2>&1 && _gh_since_mark_synced "$1"
@@ -161,6 +171,7 @@ webhook_full_done() {
 # served with no wall-clock expiry? Only while the supervisor applied the queue recently and this repo's fallback poll is not overdue.
 webhook_trusted() {
   webhook_enabled || return 1
+  _wh_owner_ok "$1" || return 1
   local dir; dir=$(_wh_dir)
   [ ! -f "$dir/gap" ] || return 1
   _wh_age_ok "$dir/applied" "$(_wh_num "${WEBHOOK_TRUST_SECS:-600}" 600)" || return 1

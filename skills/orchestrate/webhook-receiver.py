@@ -26,7 +26,7 @@ import threading
 import time
 import urllib.request
 from collections import deque
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
 ALLOWED_EVENTS = (
@@ -417,7 +417,8 @@ def main():
     if cfg.secret == cfg.token:
         sys.stderr.write("webhook-receiver: WEBHOOK_SECRET and WEBHOOK_PULL_TOKEN must differ; refusing to start\n")
         return 2
-    server = HTTPServer((cfg.bind, cfg.port), Handler)
+    server = ThreadingHTTPServer((cfg.bind, cfg.port), Handler)  # one slow client must not hold the only handler; shared state is locked
+    server.daemon_threads = True
     server.cfg = cfg
     server.alerter = Alerter(cfg)
     try:

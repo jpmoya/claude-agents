@@ -23,6 +23,8 @@ to start and no status banner is published. Setting it back to `0` returns to fu
   (`gap`) forces a full sync for every repo on the next call.
 - Other processes (goal sync, reconcile-status) trust the same cached single-issue / issues-list reads without a wall-clock expiry
   while the supervisor's last apply is under `WEBHOOK_TRUST_SECS` (600) old and the repo's fallback poll is not overdue.
+- Only repos whose owner is in `WEBHOOK_OWNERS` (default `Benjis-Plants`, the owners that have a hook) are served from events; a repo of
+  any other owner keeps the plain per-tick since-sync.
 - Status page banner: while on, if the newest event (or, for an empty queue, the time the switch was turned on) is older than
   `WEBHOOK_STALE_MINUTES` (30), the host publishes `webhook_stale: {since}` and the page shows "no webhook received in N minutes".
   Quiet hours with no GitHub activity at all will also raise it (amber, informational: the fallback poll keeps working).
@@ -64,12 +66,13 @@ inbound (80 is needed for the ACME challenge); the receiver stays on 127.0.0.1:8
 3. Install Caddy (`apt install caddy`), then:
    ```bash
    sed 's/hooks.example.com/hooks.moyadigital.com/' infra/webhook/Caddyfile | sudo tee /etc/caddy/Caddyfile >/dev/null
-   sudo mkdir -p /var/log/caddy && sudo chown caddy /var/log/caddy && sudo systemctl reload caddy
+   sudo mkdir -p /var/log/caddy && sudo chown caddy /var/log/caddy
+   sudo caddy validate --config /etc/caddy/Caddyfile && sudo systemctl reload caddy   # the log `format filter` syntax varies by Caddy version
    sudo ufw allow 80,443/tcp   # or the VM provider's firewall; do NOT open 8787
    ```
 4. systemd unit (set the account and checkout path):
    ```bash
-   sed -e "s#@VM_USER@#$USER#g" -e "s#@REPO_DIR@#$HOME/dev/claude-agents#" infra/webhook/webhook-receiver.service | sudo tee /etc/systemd/system/webhook-receiver.service >/dev/null
+   sed -e "s#@VM_USER@#$USER#g" -e "s#@REPO_DIR@#$HOME/dev/claude-agents#" -e "s#@STATE_DIR@#$HOME/.claude/pipeline/state#" infra/webhook/webhook-receiver.service | sudo tee /etc/systemd/system/webhook-receiver.service >/dev/null
    sudo systemctl daemon-reload
    ```
    The unit exits quietly while the kill switch is off. Turn the switch on for the VM (`WEBHOOK_EVENTS_ENABLED=1` in
