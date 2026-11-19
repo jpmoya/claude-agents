@@ -9,10 +9,10 @@ built by `step_image`/`dockerfile_text`) includes the `gh` CLI.
   `CI_RUNNER_JSON` is the switch: `"benjis-ci"` sends the job to any of our self-hosted slots, unset sends it to GitHub-hosted.
   Nothing in the agent pipeline chooses a runner; GitHub hands each job to whichever `benjis-ci` slot is free, on any host.
 - Hosts (each runs `setup.sh`; slots from every host share the one `benjis-ci` label):
-  - Clog VM (`claude@178.156.187.130`, Hetzner, 8 vCPU / 16 GB, also runs the agent pipeline): 1 slot.
+  - Clog VM (`claude@178.156.187.130`, Hetzner, 8 vCPU / 16 GB, also runs the agent pipeline): 2 slots at last check (2026-11-19).
   - CI host `CI-ubuntu-8gb-ash-2` (`root@178.156.204.167`, Hetzner CPX31-class, 4 vCPU / 16 GB, CI only): 3 slots.
-- Today the variable is scoped to the scheduler repo only; the quoting tool stays on GitHub-hosted until its container-mode
-  workflow is on its `main` branch (#205).
+- Which repos use the pool, how many slots each host has and what is online change: do not read them from this file. Run
+  `skills/orchestrate/where-things-run.sh` (live) and see `docs/where-things-run.md` (#770).
 - `setup.sh` is installed from one pinned commit into `/opt/gha-ci` (SHA in `/opt/gha-ci/SHA`); update by re-extracting
   `infra/ci-runners` from the new commit and re-running `setup.sh --slots N` with the host's same `--reserve-slots` (see Usage).
 
