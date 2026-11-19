@@ -70,9 +70,10 @@ inbound (80 is needed for the ACME challenge); the receiver stays on 127.0.0.1:8
    Leave `WEBHOOK_EVENTS_ENABLED` unset for now.
 3. Install Caddy (`apt install caddy`), then:
    ```bash
-   sed 's/hooks.example.com/hooks.moyadigital.com/' infra/webhook/Caddyfile | sudo tee /etc/caddy/Caddyfile >/dev/null
+   VM_IP=$(curl -s https://ifconfig.me)   # CHECK: the VM's public address (Caddy binds only to it); the file in the repo carries a placeholder
+   sed -e 's/hooks.example.com/hooks.moyadigital.com/' -e "s/@VM_PUBLIC_IP@/$VM_IP/" infra/webhook/Caddyfile | sudo tee /etc/caddy/Caddyfile >/dev/null
    sudo mkdir -p /var/log/caddy && sudo chown caddy /var/log/caddy
-   sudo caddy validate --config /etc/caddy/Caddyfile && sudo systemctl reload caddy   # the log `format filter` syntax varies by Caddy version
+   sudo caddy validate --config /etc/caddy/Caddyfile && sudo systemctl reload caddy   # the live VM runs exactly this file (checked 2026-11-19: `bind` + `fields { }`)
    sudo ufw allow 80,443/tcp   # or the VM provider's firewall; do NOT open 8787
    ```
 4. systemd unit (set the account and checkout path):
