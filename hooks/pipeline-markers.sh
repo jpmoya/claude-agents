@@ -140,3 +140,73 @@ decision_resolves_id() {
   esac
   return 1
 }
+
+# held_answer <issue json> → one TSV line `<comment id>\t<marker>\t<createdAt>` for the newest ANSWER to the ticket's gate, exit 0;
+# prints nothing and exits 1 when the gate is not one a supervisor may relaunch on, or nothing valid was posted after it (#780).
+# The single answer detector: supervisor.sh (relaunch) and reconcile-status.sh (answered_at on the status page) both call it.
+# Input: {author: {login}, comments: [{id | url, body, createdAt, author: {login}}]} (issue_info_rest's shape, or `gh issue view --json
+# author,comments` whose ids are read from the comment url's `issuecomment-<n>`).
+#   gate    = the newest routing-marker comment whose agent is not jp / delivery-lead / project-manager (those answer, they never gate).
+#   kinds   = AWAITING GO and MOCKUPS PENDING APPROVAL and a BLOCKED of any class that is not machine-clearable (auto-retry owns ci_pending,
+#             ci_red, merge_conflict, dependency) -> JP's own approval only; a BLOCKED of class `other` -> JP's approval or a delegate DECISION.
+#             Everything else (PASS, FAIL, TEST DEFECT, IMPLEMENTED, EFFORT APPROVAL NEEDED, ...) is not a gate this answers.
+#   JP's    = a comment by the issue author, id higher than the gate's (never createdAt, #560), whose first line is not an agent marker
+#   answer    other than `**[jp] GO|MOCKUPS APPROVED|SKIP MOCKUPS**` and which carries an approval phrase (jp_approval_re). SKIP MOCKUPS
+#             counts only on a mockup gate. A chatty comment, or the same words from another account, is not an answer.
+#   DECISION= `**[delivery-lead] DECISION|JP CONFIRMED**` (legacy [project-manager] spelling too) with one `Resolves:` that names the gate
+#             comment (decision_resolves_id), id higher than the gate's, from the issue author or the gate's own author. Never on a JP-only gate.
+# Bash 3.2 / zsh safe: all parsing is jq; no eval, no unquoted expansion of comment text.
+held_answer() {
+  local rows kind gate_id line id cb
+  rows=$(printf '%s' "$1" | jq -r --arg re "$(marker_re)" --arg appr "$(jp_approval_re)" '
+    def cid: if (.id | type) == "number" then .id
+             else ((.url // "") | capture("issuecomment-(?<i>[0-9]+)")? | .i | tonumber? ) // null end;
+    def l1: ((.body // "") | select(type == "string") | split("\n")[0] | rtrimstr("\r")) // "";
+    def agent: ((l1 | capture("^\\*\\*\\[(?<a>[a-z-]+)\\]")? | .a) // "");
+    def who: (.author.login // .user.login // null);
+    (.author.login // .user.login // null) as $ia
+    | [.comments[]? | . + {cid: cid} | select(.cid != null and ((.body // "") | type) == "string")] as $cs
+    | ([$cs[] | select((l1 | test($re)) and ((agent) as $a | ["jp", "delivery-lead", "project-manager"] | index($a) | not))] | last) as $g
+    | if $g == null then empty else
+        ($g | l1) as $gl
+        | ((($g.body | split("\n")[1]) // "" | rtrimstr("\r") | capture("^Blocked on: (?<w>[a-z_]+)( |$)")? | .w) // "") as $cls
+        | (if ($gl | test("\\] (AWAITING GO|MOCKUPS PENDING APPROVAL)(\\*\\*|:| |$)")) then "jp"
+           elif ($gl | test("\\] BLOCKED(\\*\\*|:| |$)")) then
+             (if (["ci_pending", "ci_red", "merge_conflict", "dependency"] | index($cls)) then "skip"
+              elif ($cls == "other" and (($g | agent) | startswith("infra-") | not)) then "any"
+              else "jp" end)
+           else "skip" end) as $kind
+        | if $kind == "skip" then empty else
+            "G\t\($g.cid)\t\($kind)\t\($g | who // "")\t\($gl | test("MOCKUPS PENDING APPROVAL"))",
+            ($cs[] | select(.cid > $g.cid)
+              | select($ia != null and who == $ia)
+              | select((agent == "") or (l1 | test("^\\*\\*\\[jp\\] (GO|MOCKUPS APPROVED|SKIP MOCKUPS)\\*\\*[[:space:]]*$")))
+              | select((l1 | test("^\\*\\*\\[jp\\] SKIP MOCKUPS\\*\\*[[:space:]]*$")) as $skip | if $skip then ($gl | test("MOCKUPS PENDING APPROVAL")) else (.body | test($appr)) end)
+              | "J\t\(.cid)\t\(if (agent == "jp") then (l1 | capture("^\\*\\*\\[jp\\] (?<m>[A-Z ]+)\\*\\*") | .m) else "JP reply" end)\t\(.createdAt // "")"),
+            ($cs[] | select(.cid > $g.cid)
+              | select(l1 | test("^\\*\\*\\[(delivery-lead|project-manager)\\] (DECISION|JP CONFIRMED)\\*\\*[[:space:]]*$"))
+              | select(who != null and (who == $ia or who == ($g | who)))
+              | "D\t\(.cid)\t\(l1 | capture("\\] (?<m>DECISION|JP CONFIRMED)") | .m)\t\(.createdAt // "")")
+          end
+      end' 2>/dev/null) || return 1
+  [ -n "$rows" ] || return 1
+  best="" ; best_id=0
+  gate_id=$(printf '%s\n' "$rows" | awk -F'\t' '$1 == "G" {print $2; exit}')
+  kind=$(printf '%s\n' "$rows" | awk -F'\t' '$1 == "G" {print $3; exit}')
+  [ -n "$gate_id" ] || return 1
+  while IFS=$'\t' read -r tag id marker created; do
+    case "$tag" in
+      J) ;;
+      D) [ "$kind" = any ] || continue
+         cb=$(printf '%s' "$1" | jq -r --argjson i "$id" '[.comments[]? | select(.id == $i or ((.url // "") | endswith("issuecomment-\($i)")))] | first | .body // ""' 2>/dev/null)
+         [ "$(decision_resolves_id "$cb")" = "$gate_id" ] || continue ;;
+      *) continue ;;
+    esac
+    case "$id" in ''|*[!0-9]*) continue ;; esac
+    if [ "$id" -gt "$best_id" ]; then best_id=$id; best=$(printf '%s\t%s\t%s' "$id" "$marker" "$created"); fi
+  done <<EOF_ROWS
+$rows
+EOF_ROWS
+  [ -n "$best" ] || return 1
+  printf '%s\n' "$best"
+}
