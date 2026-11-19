@@ -97,7 +97,9 @@ case "$session_count$global_count$total_count$stale_count$loose_count" in ''|*[!
 
 # Ceiling: every tool shell of every CLI, stale included. Stale shells are exempt from the caps below, never from this.
 if [ "$total_count" -ge "$MAX_TOTAL" ] 2>/dev/null; then
-  echo "BLOCKED: $total_count shells in total ($stale_count stale, running > ${STALE}s; max $MAX_TOTAL). Reap the stale ones yourself if they are leaked: kill ${stale_pids//,/ }" >&2
+  hint="Wait for existing commands to finish."
+  [ "$stale_count" -gt 0 ] && hint="Reap the stale ones yourself if they are leaked: kill ${stale_pids//,/ }"
+  echo "BLOCKED: $total_count shells in total ($stale_count stale, running > ${STALE}s; max $MAX_TOTAL). $hint" >&2
   exit 2
 fi
 
