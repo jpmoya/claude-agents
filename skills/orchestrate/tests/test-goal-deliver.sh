@@ -997,8 +997,8 @@ test_dg_goal_id_pinned_rule() {
   dg_setup
   local rc=0
   # ticket's own example, numeric milestone → no title lookup involved
-  dg_lib "goal_id Benjis-Plants/scheduler:milestone:12"
-  assert_eq "$DG_OUT" "Benjis-Plants_scheduler-ms-12" "AC1/AC9: pinned example id" || rc=1
+  dg_lib "goal_id Benjis-Plants/benjis-ops-tool:milestone:12"
+  assert_eq "$DG_OUT" "Benjis-Plants_benjis-ops-tool-ms-12" "AC1/AC9: pinned example id (#792: an old-name spec maps to the current id in test-goal-repo-rename.sh)" || rc=1
   dg_lib "goal_id example-owner/project-a:milestones:all"; assert_eq "$DG_OUT" "$DG_ID_ALL" "AC9: msall id" || rc=1
   dg_lib "goal_id example-owner/project-a#7"; assert_eq "$DG_OUT" "$DG_ID_T7" "AC9: ticket id" || rc=1
   dg_lib "goal_id 'example-owner/project-a:milestone:$DG_TITLE'"
