@@ -458,7 +458,62 @@ test_wh_ac12_a_failed_pull_is_captured_with_tags_and_no_token() {
   assert_eq "$again" "1" "AC12: at most one Slack post per hour while the pull keeps failing" || return 1
 }
 
+# ---- constant-time compares, launcher kill switch, the :-0 fallback ---------------------------------------------------------------
+test_wh_ac3_signature_and_token_use_hmac_compare_digest_never_equality() {
+  local py="$WH_RS/webhook-receiver.py" code n sig_line tok_line bad
+  code=$(grep -v '^[[:space:]]*#' "$py")
+  n=$(printf '%s\n' "$code" | grep -c 'hmac\.compare_digest(')
+  sig_line=$(printf '%s\n' "$code" | grep 'hmac\.compare_digest(expected')
+  tok_line=$(printf '%s\n' "$code" | grep 'hmac\.compare_digest(got')
+  # any == / != / in involving the computed digest, the presented signature, the bearer token or the configured secrets
+  bad=$(printf '%s\n' "$code" | grep -nE '(expected|got|cfg\.token|cfg\.secret|match\.group\(1\)|hexdigest\(\))[^#]*(==|!=)|(==|!=)[^#]*(expected|got\b|cfg\.token|cfg\.secret|match\.group\(1\)|hexdigest\(\))')
+  [ "$n" -ge 2 ] || { fail "expected at least 2 hmac.compare_digest calls, found $n"; return 1; }
+  assert_ne "$sig_line" "" "the signature is compared with hmac.compare_digest(expected, ...)" || return 1
+  assert_ne "$tok_line" "" "the /events bearer token is compared with hmac.compare_digest(got, ...)" || return 1
+  assert_eq "$bad" "" "neither the signature nor the token is compared with == or !=" || return 1
+}
+
+test_wh_ac9_launcher_does_not_start_with_the_switch_unset_or_zero() {
+  wh_setup; mkdir -p "$WH_DIR/home/.claude/pipeline"
+  local port; port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
+  local rc_unset rc_zero err_unset err_zero listening
+  err_unset=$(env -u WEBHOOK_EVENTS_ENABLED HOME="$WH_DIR/home" PIPE="$WH_DIR/pipe" WEBHOOK_SECRET="$WH_SECRET" WEBHOOK_PULL_TOKEN="$WH_TOKEN" WEBHOOK_PORT="$port" \
+    bash "$WH_RS/webhook-receiver.sh" 2>&1 >/dev/null); rc_unset=$?
+  err_zero=$(HOME="$WH_DIR/home" PIPE="$WH_DIR/pipe" WEBHOOK_EVENTS_ENABLED=0 WEBHOOK_SECRET="$WH_SECRET" WEBHOOK_PULL_TOKEN="$WH_TOKEN" WEBHOOK_PORT="$port" \
+    bash "$WH_RS/webhook-receiver.sh" 2>&1 >/dev/null); rc_zero=$?
+  curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$port/health" && listening=yes || listening=no
+  wh_teardown
+  assert_eq "$rc_unset $rc_zero" "0 0" "launcher exits 0 (so Restart=on-failure leaves it down) with the switch unset and 0" || return 1
+  assert_contains "$err_unset" "not starting" "unset: says it is not starting" || return 1
+  assert_contains "$err_zero" "not starting" "0: says it is not starting" || return 1
+  assert_eq "$listening" "no" "nothing is listening on the configured port" || return 1
+  assert_not_contains "$err_unset$err_zero" "$WH_SECRET" "the secret is not echoed" || return 1
+}
+
+test_wh_ac9_switch_defaults_to_off_inside_the_library_files_themselves() {
+  we_setup; mkdir -p "$WE/pipe/webhook"
+  local now; now=$(date +%s)
+  printf '{"seq":1,"ts":%s,"delivery":"d-1","event":"issues","repo":"example-owner/project-a","number":5}\n' "$((now - 31 * 60))" > "$WE/pipe/webhook/events.jsonl"
+  echo 1 > "$WE/pipe/webhook/consumer.cursor"; echo "$now" > "$WE/pipe/webhook/applied"; echo "$now" > "$WE/pipe/webhook/full.example-owner_project-a"
+  local before after calls trusted stale
+  before=$(ls "$WE/pipe/webhook" | tr '\n' ' ')
+  # gh-budget.sh and webhook-events.sh sourced alone (no config.sh default), the runner's export removed: only their own ${WEBHOOK_EVENTS_ENABLED:-0} decides
+  stale=$(env -u WEBHOOK_EVENTS_ENABLED PATH="$WE/bin:$PATH" PIPE="$WE/pipe" LOGDIR="$WE/log" HOME="$WE/home" GH_BUDGET_ENABLED=1 \
+    bash -c ". '$WH_RS/gh-budget.sh'; . '$WH_RS/webhook-events.sh'
+      webhook_tick_prepare; gh_since_sync example-owner/project-a; gh_since_sync example-owner/project-a
+      webhook_trusted example-owner/project-a && echo TRUSTED
+      webhook_stale_json" 2>/dev/null)
+  calls=$(we_calls 'issues?state=all'); after=$(ls "$WE/pipe/webhook" | tr '\n' ' ')
+  we_teardown
+  assert_eq "$calls" "1" "unset switch: the second since-sync still makes its API call (cold, then one list call)" || return 1
+  assert_eq "$stale" "" "unset switch: not trusted, no stale banner field" || return 1
+  assert_eq "$after" "$before" "unset switch: webhook_tick_prepare wrote no state" || return 1
+}
+
 run_test test_wh_ac1_bad_signatures_are_401_and_queue_nothing
+run_test test_wh_ac3_signature_and_token_use_hmac_compare_digest_never_equality
+run_test test_wh_ac9_launcher_does_not_start_with_the_switch_unset_or_zero
+run_test test_wh_ac9_switch_defaults_to_off_inside_the_library_files_themselves
 run_test test_wh_ac1_valid_signed_issue_is_202_and_stores_tags_only
 run_test test_wh_ac1_ping_and_unlisted_events_are_not_queued
 run_test test_wh_ac2_replayed_delivery_is_queued_once_across_restart

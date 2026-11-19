@@ -414,7 +414,7 @@ def main():
     if len(cfg.secret) < MIN_SECRET_LEN or len(cfg.token) < MIN_SECRET_LEN:
         sys.stderr.write("webhook-receiver: WEBHOOK_SECRET and WEBHOOK_PULL_TOKEN must each be set (>= %d chars); refusing to start\n" % MIN_SECRET_LEN)
         return 2
-    if cfg.secret == cfg.token:
+    if hmac.compare_digest(cfg.secret.encode(), cfg.token.encode()):
         sys.stderr.write("webhook-receiver: WEBHOOK_SECRET and WEBHOOK_PULL_TOKEN must differ; refusing to start\n")
         return 2
     server = ThreadingHTTPServer((cfg.bind, cfg.port), Handler)  # one slow client must not hold the only handler; shared state is locked
