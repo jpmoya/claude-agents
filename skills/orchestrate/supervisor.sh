@@ -62,6 +62,10 @@ tick_soft_over() {
 # Hard budget: a background watcher (own copy of this function, fd 9 closed by the caller) signals the tick with USR1 once it is
 # TICK_HARD_SECS old; _tick_hard_stop logs and exits 0 so the EXIT handler releases the lock. Bash runs the handler between
 # commands, so a hung foreground command is ended by the watcher (see below) for the handler to run.
+_tick_kill_tree() {  # <pid> — TERM the process and everything below it
+  local k; for k in $(pgrep -P "$1" 2>/dev/null); do _tick_kill_tree "$k"; done
+  kill -TERM "$1" 2>/dev/null
+}
 tick_hard_watchdog() {  # <tick pid>
   trap - EXIT USR1
   local pid=$1 start=$SECONDS
@@ -70,8 +74,16 @@ tick_hard_watchdog() {  # <tick pid>
       slog "[tick-watchdog] hard budget ${TICK_HARD_SECS}s passed: stopping tick pid=$pid"
       kill -USR1 "$pid" 2>/dev/null
       # bash runs the USR1 handler only between commands: a foreground command that is hung (a gh call) must be ended for the handler to run.
-      # Direct children of the tick only: launches are double-forked, so a started orchestrator is not touched.
-      sleep 3; kill -0 "$pid" 2>/dev/null && pkill -TERM -P "$pid" 2>/dev/null
+      # Direct children of the tick only: launches are double-forked, so a started orchestrator is not touched. The background worktree
+      # sweep is also a direct child but has its own lock and time budget, so its pid (recorded in its lock dir) is skipped.
+      sleep 3
+      if kill -0 "$pid" 2>/dev/null; then
+        local sweep c me; sweep=$(cat "$PIPE/worktree-sweep.lockdir/pid" 2>/dev/null); me=$(sh -c 'echo $PPID')   # me = this watcher (no $BASHPID on bash 3.2)
+        # whole subtrees (a hung gh under a command-substitution subshell would otherwise outlive it and keep holding the tick lock fd)
+        for c in $(pgrep -P "$pid" 2>/dev/null); do
+          [ "$c" = "$sweep" ] || [ "$c" = "$me" ] || { _tick_kill_tree "$c"; }
+        done
+      fi
       return 0
     fi
     sleep 1

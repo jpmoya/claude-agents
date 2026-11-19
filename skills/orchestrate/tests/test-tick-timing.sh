@@ -17,12 +17,25 @@ gs_tree_cleanup   # a tree left by an earlier file in the shared shell must not 
 
 HERE_TT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
-# tt_slow_gh — wrap the sandbox's fake gh: `gh pr list --head` (the sweep's per-worktree lookup; the goal code's own pr lists stay fast) sleeps $1 seconds
+# tt_nap — install $GS_BIN/nap <secs>: sleeps in 1 s steps and ends early once $GS_BIN/stop-naps exists, so no test leaves a long sleep behind
+# (tt_stop_naps before gs_cleanup). Fake-gh wrappers call it instead of `sleep`.
+tt_nap() {
+  cat > "$GS_BIN/nap" <<'NAPEOF'
+#!/bin/bash
+d=$(dirname "$0"); i=0
+while [ "$i" -lt "$1" ] && [ ! -f "$d/stop-naps" ]; do sleep 1; i=$((i + 1)); done
+NAPEOF
+  chmod +x "$GS_BIN/nap"
+}
+tt_stop_naps() { touch "$GS_BIN/stop-naps"; pkill -f "$GS_BIN/gh" 2>/dev/null; sleep 1.2; }   # the 1 s steps notice the stop file
+
+# tt_slow_gh <secs> — wrap the sandbox's fake gh: `gh pr list --head` (the sweep's per-worktree lookup; the goal code's own pr lists stay fast) naps <secs>
 tt_slow_gh() {
+  tt_nap
   mv "$GS_BIN/gh" "$GS_BIN/gh.real"
   cat > "$GS_BIN/gh" <<EOF
 #!/bin/bash
-case "\$*" in "pr list --head "*) sleep $1 ;; esac
+case "\$*" in "pr list --head "*) "\$(dirname "\$0")/nap" $1 ;; esac
 exec "\$(dirname "\$0")/gh.real" "\$@"
 EOF
   chmod +x "$GS_BIN/gh"
@@ -90,7 +103,7 @@ test_tt_ac2_slow_sweep_does_not_delay_the_tick_or_goal_sync() {
   local rc=$GS_RC timing running=no; timing=$(gs_log | grep -F '[tick-timing]' | tr '\n' ' ')
   [ -d "$GS_PIPE/worktree-sweep.lockdir" ] && running=yes
   kill "$(cat "$GS_PIPE/worktree-sweep.lockdir/pid" 2>/dev/null)" 2>/dev/null
-  gs_cleanup
+  tt_stop_naps; gs_cleanup
   [ "$took" -lt 15 ] || { fail "AC2: the tick took ${took}s while the sweep sleeps 20 s; it must not wait for it ($timing)"; return 1; }
   assert_eq "$rc" "0" "AC2: tick exit code" || return 1
   assert_eq "$q" "yes" "AC2: goalqueue.json written by the tick" || return 1
@@ -109,7 +122,7 @@ test_tt_ac3_second_sweep_launch_is_refused_while_one_runs() {
   gs_tick
   local log; log=$(gs_log)
   kill "$(cat "$GS_PIPE/worktree-sweep.lockdir/pid" 2>/dev/null)" 2>/dev/null
-  gs_cleanup
+  tt_stop_naps; gs_cleanup
   assert_contains "$log" "previous sweep still running" "AC3: second sweep refused while the first runs" || return 1
 }
 
@@ -121,7 +134,7 @@ test_tt_ac3_stamp_written_at_launch() {
   gs_tick
   local st=no; [ -s "$GS_PIPE/worktree-sweep.last" ] && st=yes
   tt_wait_log "[worktree-sweep] background pass finished" 15
-  gs_cleanup
+  tt_stop_naps; gs_cleanup
   assert_eq "$st" "yes" "AC3: worktree-sweep.last exists as soon as the tick ends" || return 1
 }
 
@@ -158,43 +171,91 @@ test_tt_ac4_soft_budget_skips_optional_late_stages_and_logs_them() {
   assert_contains "$log" "[tick-timing] stage=total" "AC4: total line on the way out" || return 1
 }
 
-# Hard budget 2 s with a tick that takes longer (hostname 1 s per call): the watcher stops it cleanly; the lock is free afterwards.
-test_tt_ac4_hard_budget_stops_the_tick_cleanly_and_frees_the_lock() {
+# tt_hang_gh <bash case pattern over "$*"> — fake gh whose matching calls nap 60 s (a hung GitHub call); other calls pass through.
+# Optional second argument: a directory that must exist for the hang to apply (e.g. the sweep's lock dir).
+tt_hang_gh() {
+  tt_nap
+  mv "$GS_BIN/gh" "$GS_BIN/gh.real"
+  cat > "$GS_BIN/gh" <<EOF
+#!/bin/bash
+case "\$*" in $1) [ -z "${2:-}" ] || [ -d "${2:-}" ] && "\$(dirname "\$0")/nap" 60 ;; esac
+case "\$*" in "pr list --head "*) [ -n "${2:-}" ] && "\$(dirname "\$0")/nap" 60 ;; esac
+exec "\$(dirname "\$0")/gh.real" "\$@"
+EOF
+  chmod +x "$GS_BIN/gh"
+}
+
+# A hung `gh api` call (the goal registry read, after the tick lock is held) must not keep the tick past its hard budget (6 s): the watcher
+# signals the tick, then ends the foreground child; the tick exits 0 with the lock released and its total line written.
+test_tt_ac4_hard_budget_ends_a_tick_stuck_in_a_hung_gh_call() {
   gs_env
-  tt_slow_hostname 1
-  export TICK_HARD_SECS=2 TICK_BUDGET_SECS=0
+  tt_hang_gh 'api*'
+  export TICK_HARD_SECS=6 TICK_BUDGET_SECS=0
+  local t0=$SECONDS
   gs_tick
+  local took=$(( SECONDS - t0 ))
   unset TICK_HARD_SECS TICK_BUDGET_SECS
   local log rc free=no; log=$(gs_log); rc=$GS_RC
   flock -n "$GS_PIPE/supervisor.lock" true 2>/dev/null && free=yes
-  gs_cleanup
-  assert_eq "$rc" "0" "AC4: a hard-stopped tick exits 0" || return 1
-  assert_contains "$log" "[tick-watchdog] hard budget 2s passed" "AC4: the watcher logged the hard budget" || return 1
+  tt_stop_naps; gs_cleanup
+  [ "$took" -lt 40 ] || { fail "AC4: the tick ran ${took}s with a gh call hung for 60 s; the hard budget (6 s) must end it: $(printf '%s' "$log" | grep -F '[tick-' | tr '\n' ' ')"; return 1; }
+  assert_eq "$rc" "0" "AC4: exit 0" || return 1
+  assert_contains "$log" "[tick-watchdog] hard budget 6s passed" "AC4: watcher logged" || return 1
   assert_contains "$log" "the next tick starts clean" "AC4: the tick logged its own stop" || return 1
   assert_contains "$log" "[tick-timing] stage=total" "AC4: total line written by the EXIT handler" || return 1
   assert_eq "$free" "yes" "AC4: the tick lock is released" || return 1
 }
 
-# A hung `gh api` call (30 s; the goal registry read, after the tick lock is held) must not keep the tick past its hard budget: the watcher signals the tick, then ends the foreground child.
-test_tt_ac4_hard_budget_ends_a_tick_stuck_in_a_hung_gh_call() {
+# The hard stop ends the tick's own hung child but not the background worktree sweep (own lock and budget). One tick: the sweep is launched
+# early (its gh pr list naps), and every `gh api` made after that point hangs, so the watcher must end the tick's own child while the
+# sweep, also a direct child of the tick, stays alive.
+test_tt_ac4_hard_stop_leaves_the_background_sweep_running() {
   gs_env
-  mv "$GS_BIN/gh" "$GS_BIN/gh.real"
-  cat > "$GS_BIN/gh" <<'GHEOF'
-#!/bin/bash
-[ "$1" = api ] && sleep 30
-exec "$(dirname "$0")/gh.real" "$@"
-GHEOF
-  chmod +x "$GS_BIN/gh"
-  export TICK_HARD_SECS=3 TICK_BUDGET_SECS=0
-  local t0=$SECONDS
+  tt_worktree
+  tt_hang_gh 'api*' "$GS_PIPE/worktree-sweep.lockdir"
+  export TICK_HARD_SECS=6 TICK_BUDGET_SECS=0
   gs_tick
-  local took=$(( SECONDS - t0 ))
   unset TICK_HARD_SECS TICK_BUDGET_SECS
-  local log rc; log=$(gs_log); rc=$GS_RC
-  pkill -f "$GS_BIN/gh" 2>/dev/null; gs_cleanup
-  [ "$took" -lt 20 ] || { fail "AC4: the tick ran ${took}s with a gh call hung for 30 s; the hard budget (3 s) must end it: $(printf '%s' "$log" | grep -F '[tick-' | tr '\n' ' ')"; return 1; }
-  assert_eq "$rc" "0" "AC4: exit 0" || return 1
-  assert_contains "$log" "[tick-watchdog] hard budget 3s passed" "AC4: watcher logged" || return 1
+  local spid; spid=$(cat "$GS_PIPE/worktree-sweep.lockdir/pid" 2>/dev/null)
+  local alive=no; [ -n "$spid" ] && kill -0 "$spid" 2>/dev/null && alive=yes
+  local log; log=$(gs_log)
+  kill "$spid" 2>/dev/null; tt_stop_naps; gs_cleanup
+  assert_contains "$log" "[tick-watchdog] hard budget 6s passed" "AC4: the hard stop fired" || return 1
+  [ -n "$spid" ] || { fail "AC4: no sweep pid recorded"; return 1; }
+  assert_eq "$alive" "yes" "AC4: the background sweep survived the hard stop" || return 1
+}
+
+# The goal-sync stamp is written after the sync: a tick stopped mid-sync (the registry read hangs) leaves it unwritten, so the next tick syncs again.
+test_tt_ac2_goal_sync_stamp_is_written_after_the_sync_not_before() {
+  gs_env
+  tt_hang_gh 'api*'
+  export TICK_HARD_SECS=6 TICK_BUDGET_SECS=0
+  gs_tick
+  unset TICK_HARD_SECS TICK_BUDGET_SECS
+  local stamp="MISSING"; [ -s "$GS_PIPE/goal-sync.last" ] && stamp=$(cat "$GS_PIPE/goal-sync.last")
+  local log; log=$(gs_log)
+  tt_stop_naps; gs_cleanup
+  assert_contains "$log" "[tick-watchdog] hard budget 6s passed" "AC2: the tick was stopped mid-sync" || return 1
+  assert_eq "$stamp" "MISSING" "AC2: no goal-sync.last was written for a sync that never finished" || return 1
+}
+
+# goal_step runs BEFORE the earlier stages' slow work (#796 AC2), not just before the sweep: a held run's issue read (step 1) hangs, the hard
+# stop fires at 6 s, and the goal data (goalqueue.json, goal-sync.last) was already written. With goal_step back in its old late position the
+# tick dies in step 1 first and neither file exists.
+test_tt_ac2_goal_sync_is_written_before_a_hung_foreground_stage() {
+  gs_env
+  local rk="example-owner_project-a-77"
+  echo "$GS_CK_A" > "$GS_PIPE/orch-$rk.repo"; touch "$GS_PIPE/orch-$rk.held"
+  tt_hang_gh '*issues/77*'
+  export TICK_HARD_SECS=6 TICK_BUDGET_SECS=0
+  gs_tick
+  unset TICK_HARD_SECS TICK_BUDGET_SECS
+  local q=no s=no; [ -f "$GS_PIPE/goalqueue.json" ] && q=yes; [ -s "$GS_PIPE/goal-sync.last" ] && s=yes
+  local log; log=$(gs_log)
+  tt_stop_naps; gs_cleanup
+  assert_contains "$log" "[tick-watchdog] hard budget 6s passed" "AC2: the tick really was stuck in the held-run read" || return 1
+  assert_eq "$q" "yes" "AC2: goalqueue.json written before the hung stage" || return 1
+  assert_eq "$s" "yes" "AC2: goal-sync.last written before the hung stage" || return 1
 }
 
 # ---------------------------------------------------------------- AC5: held runs with no checkout ---------------
@@ -232,8 +293,10 @@ run_test test_tt_ac3_second_sweep_launch_is_refused_while_one_runs
 run_test test_tt_ac3_stamp_written_at_launch
 run_test test_tt_ac3_sweep_stops_at_its_deadline
 run_test test_tt_ac4_soft_budget_skips_optional_late_stages_and_logs_them
-run_test test_tt_ac4_hard_budget_stops_the_tick_cleanly_and_frees_the_lock
 run_test test_tt_ac4_hard_budget_ends_a_tick_stuck_in_a_hung_gh_call
+run_test test_tt_ac4_hard_stop_leaves_the_background_sweep_running
+run_test test_tt_ac2_goal_sync_stamp_is_written_after_the_sync_not_before
+run_test test_tt_ac2_goal_sync_is_written_before_a_hung_foreground_stage
 run_test test_tt_ac5_held_run_without_a_checkout_is_one_summary_line_not_a_failed_read
 run_test test_tt_ac5_failed_read_is_remembered_for_a_few_minutes
 gs_tree_cleanup
