@@ -114,6 +114,24 @@ Completed-ticket source (issue #51):
   than 10 items keep the first 10, a non-array becomes `[]`). Payload `v` stays 1: an older Worker
   drops the key, a newer Worker renders a payload without it as an empty Done group.
 
+## Alert banner (2026-11-19; part of #762)
+
+One banner area at the top of `/`: the active pipeline alerts, each with a plain-language reason and a fix hint, or a small green
+"All clear" line. Nothing shows before a host has reported. `src/alerts.js` (`deriveAlerts`, pure) computes them at render time from the
+two stored host records, so there is no new GitHub call and no host-side age (a published age would change the heartbeat hash every tick
+and use up the KV write budget). Tunables are constants at the top of `alerts.js`.
+
+| Alert | Fires when | Data |
+|---|---|---|
+| Goal queue stalled (red) | a host publishes `goal_stall[]` (an unreadable registry entry, or a project goal whose scope cannot be read, such as a closed project) while goals are queued; or the goal-slot holder's `last_cycle_at` is older than `GOAL_STALL_HOURS` (6) with a goal queued | `goal_stall[]` (new optional key, `build-runs-json.py goalstall`: `goalqueue.json` + a bounded tail of `events.jsonl`), `goals[]` |
+| Free slots while work waits (amber, per host) | `capacity.running < max` and the oldest `queued` run is older than `IDLE_SLOT_MINUTES` (10); approved tickets do not count | `capacity`, `runs[].started_at` (= queued_at) |
+| Paused tickets nobody works on (amber) | held tickets that are waiting on JP, answered but not relaunched (`parked_reason: answered`, marker `DECISION`/`JP CONFIRMED`) or parked; not auto-retry, out-of-scope or finished ones. Count plus the first 6, each `#n first five words (why)` linked to the issue | `runs[]`, same winner and group rules as the status groups |
+| Supervisor slow (amber, per host) | `sent_at - supervisor_last_tick` is over `TICK_SLOW_MINUTES` (15): the gap measured at report time, not `now - tick` (keep-alive lag would raise false alarms) | `sent_at`, `supervisor_last_tick` |
+| Host not reporting (amber stale, red offline) | `received_at` older than the existing stale / offline thresholds | `received_at` |
+
+A stale or offline host is reported once and its old data raises no other alert. The reporter publishes `goal_stall` only when non-empty;
+`validate.js` rebuilds it (closed `kind` enum, plain-text fields, max 5 entries and 10 blocked names) and drops anything malformed.
+
 ## Backlog priority (reorder view)
 
 JP's priority order for standalone (non-goal) open `agent-go` tickets across both hosts'

@@ -247,6 +247,23 @@ function sanitiseGoal(raw) {
   return goal;
 }
 
+// ---- goal_stall[] (status-page alert banner): why goals wait in the queue and none starts. By reconstruction: a closed
+// `kind` enum, short plain-text fields (no markup characters), at most MAX_GOAL_STALL items and MAX_GOAL_STALL_BLOCKED names each.
+const GOAL_STALL_KINDS = ['unreadable', 'project_error'];
+const MAX_GOAL_STALL = 5;
+const MAX_GOAL_STALL_BLOCKED = 10;
+
+function sanitiseGoalStall(raw) {
+  if (!isPlainObject(raw) || !GOAL_STALL_KINDS.includes(raw.kind)) return null;
+  const goal = sanitiseGoalText(raw.goal);
+  const reason = sanitiseGoalText(raw.reason);
+  const hint = sanitiseGoalText(raw.hint);
+  if (goal === null || reason === null || hint === null || !Array.isArray(raw.blocked)) return null;
+  const blocked = raw.blocked.slice(0, MAX_GOAL_STALL_BLOCKED).map(sanitiseGoalText).filter((b) => b !== null);
+  if (blocked.length === 0) return null;
+  return { kind: raw.kind, goal, reason, hint, blocked };
+}
+
 function sanitiseList(raw, max = Infinity) {
   return Array.isArray(raw) ? raw.map(sanitiseListItem).filter((item) => item !== null).slice(0, max) : [];
 }
@@ -727,6 +744,12 @@ export function validateBeatPayload(parsedBody) {
   if (Array.isArray(parsedBody.goals)) {
     const goals = parsedBody.goals.slice(0, MAX_GOALS).map(sanitiseGoal).filter((g) => g !== null);
     if (goals.length > 0) value.goals = goals;
+  }
+
+  // Optional (alert banner): absent or non-array -> no key. First MAX_GOAL_STALL entries, then filtered.
+  if (Array.isArray(parsedBody.goal_stall)) {
+    const stalls = parsedBody.goal_stall.slice(0, MAX_GOAL_STALL).map(sanitiseGoalStall).filter((x) => x !== null);
+    if (stalls.length > 0) value.goal_stall = stalls;
   }
 
   // Optional (issue #756): absent -> no key (an older host); present but not an array -> [].

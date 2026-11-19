@@ -1698,6 +1698,8 @@ _GOAL_QUEUE_JQ='def okey: [((.block.priority? // .block.order? // .issue) | if t
 # #627: a goal that handed the slot off (block.deferred_at) sorts behind every other queued goal and is not a candidate
 # again within $cool seconds (GOAL_CYCLE_SECS) of the hand-off: several idle goals cost one lead cycle each per cycle
 # instead of rotating back-to-back. Needs --argjson now (epoch seconds) and --argjson cool.
+# `unreadable` = [{id, issue}] of the registry entries whose block cannot be read (display only: goalqueue.json carries it so the status page
+# can name what blocks the queue; candidate / slot / queued are not derived from it).
 _GOAL_QUEUE_SERIAL_JQ='def okey: [(if (.block.deferred_at? // "") != "" then 1 else 0 end), ((.block.priority? // .block.order? // .issue) | if type == "number" then . else 1e12 end), .issue];
   def exempt: $fbfree and (((.spec // "") | test(":feedback$")));
   def cooling: .st == "queued" and ((.block.deferred_at? // "") != "") and (((.block.deferred_at | try fromdateiso8601 catch 0) + $cool) > $now);
@@ -1708,6 +1710,7 @@ _GOAL_QUEUE_SERIAL_JQ='def okey: [(if (.block.deferred_at? // "") != "" then 1 e
   | ($all | map(select(.st == "unreadable" or (.st == "queued" and (cooling | not)))) | first // null) as $f
   | {queued: $q, candidate: (if ($busy | not) and $f != null and $f.st == "queued" then $f else null end), serial: true, slot: ($h.id // null),
      exempt: ($all | map(select(exempt)) | map(.id)),
+     unreadable: ($all | map(select(.st == "unreadable")) | map({id, issue})),
      recent: ($all | map(select(.st == "delivered" or .st == "stopped")) | sort_by(.closed_at // "") | reverse | .[:5]),
      open: ($all | map(select(.st == "active" or .st == "held" or .st == "waiting_jp")))}'
 
@@ -1830,7 +1833,7 @@ goal_slot_spread_nums() {
 goal_queue_save() {
   local f="$PIPE/$GOAL_QUEUE_FILE_NAME" v
   v=$(printf '%s' "$1" | _goal_queue_jq '
-    | (if .serial then {serial: true, slot: .slot, exempt: (.exempt // [])} else {} end) + {at: (now | floor),
+    | (if .serial then {serial: true, slot: .slot, exempt: (.exempt // []), unreadable: (.unreadable // [])} else {} end) + {at: (now | floor),
        candidate: (.candidate.id // null),
        recent: (.recent | map({id, issue, spec, name: (.name // ""), title: (.block.title // ""), label: (.block.label // ""), repos: (.block.repos // []), st, closed_at, priority: (.block.priority? // null), project_url: (.block.project?.url? // .block.scope_project?.url? // "")})),
        open: (.open | map({id, issue, spec, name: (.name // ""), title: (.block.title // ""), label: (.block.label // ""), repos: (.block.repos // []),

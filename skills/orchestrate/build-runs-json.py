@@ -18,6 +18,11 @@
 #   goals:      emit the payload's "goals" array (issue #197) from <pipe-dir>/goal-<id>.json (+ .pid,
 #               .held, .stopped); no stdin, `[]` when none. Local files only; spec is NOT sanitised
 #               here (validate.js does that).
+#   goalstall:  emit the payload's optional "goal_stall" array (status-page alert banner): why the goal queue is not moving while goals
+#               wait in it. Local files only: goalqueue.json (`unreadable` registry entries, `queued`) and a bounded tail of the
+#               supervisor's events.jsonl (STATUS_EVENTS_FILE; `error` events on route goal-project-scope, e.g. "the project is closed",
+#               younger than GOAL_STALL_ERR_SECS). No stdin, `[]` when nothing stalls or no goal is queued. Facts only, no ages
+#               (the heartbeat hash must not change every tick). The reason is the recorded text, redacted and capped.
 #   cron:       emit the payload's optional "cron" array (issue #756) from the crontab text on stdin
 #               (report-status.sh runs `crontab -l`) plus ~/logs/<job>/ for last run/result. On macOS it
 #               also lists the user's launchd jobs (~/Library/LaunchAgents, source "launchd") and Claude
@@ -1313,6 +1318,106 @@ def _registry_names(q):
                 names[d["id"]] = nm.strip()
     return names, ids
 
+
+GOAL_STALL_ERR_SECS = 900          # a project-scope error older than this has stopped repeating (the sync runs every GOAL_SYNC_SECS=300)
+GOAL_STALL_TAIL_BYTES = 262144     # events.jsonl is megabytes: only its tail is read
+GOAL_STALL_MAX = 5
+GOAL_STALL_BLOCKED_MAX = 10
+_STALL_TEXT_UNSAFE = re.compile(r"[^A-Za-z0-9 .,:;/_()#'\-]")
+_PROJ_ERR_RE = re.compile(r"^project goal ([A-Za-z0-9_.-]+)/([0-9]+): (?:cannot read the project scope: )?(.*)$")
+
+
+def _stall_text(value, cap):
+    """Plain text only: unsafe characters become spaces, whitespace collapses, capped. Repo slugs, ids and gh's redacted first line pass."""
+    return re.sub(r"\s+", " ", _STALL_TEXT_UNSAFE.sub(" ", str(value))).strip()[:cap]
+
+
+def _stall_hint(reason):
+    r = reason.lower()
+    if "is closed" in r:
+        return "reopen the project, or stop the goal bound to it (deliver.sh stop)"
+    if "does not exist" in r or "cannot read it" in r:
+        return "check the project still exists and this host's gh token can read it, or stop the goal (deliver.sh stop)"
+    if "token" in r and "scope" in r:
+        return "run gh auth refresh -s project on the host that reports this"
+    if "overlap" in r:
+        return "two goals cover the same tickets: stop one of them (deliver.sh status)"
+    return "see the [goal] error lines in the supervisor log, then fix or stop the goal"
+
+
+def _recent_project_errors(now_epoch):
+    """{owner/number: reason} newest per project from the tail of events.jsonl, error events on route goal-project-scope younger than the window."""
+    path = os.environ.get("STATUS_EVENTS_FILE") or os.path.expanduser("~/logs/pipeline/events.jsonl")
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - GOAL_STALL_TAIL_BYTES))
+            raw = f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return {}
+    out = {}
+    for line in raw.splitlines():
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(ev, dict) or ev.get("event") != "error" or ev.get("route") != "goal-project-scope":
+            continue
+        ts = ev.get("ts")
+        if not (isinstance(ts, str) and ISO_Z_RE.match(ts)):
+            continue
+        try:
+            age = now_epoch - datetime.datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc).timestamp()
+        except ValueError:
+            continue
+        m = _PROJ_ERR_RE.match(ev.get("message") if isinstance(ev.get("message"), str) else "")
+        if m and -60 <= age <= GOAL_STALL_ERR_SECS:
+            out["%s/%s" % (m.group(1), m.group(2))] = m.group(3)   # later lines overwrite: newest wins
+    return out
+
+
+def build_goal_stall():
+    """Why goals wait in the queue and nothing starts: an unreadable registry entry (it blocks every queued goal while GOAL_SERIAL=1) or a project
+    goal whose scope cannot be read (closed project, missing token scope). Nothing when no goal is queued (nothing is blocked)."""
+    if not pipe_dir:
+        return []
+    try:
+        with open(os.path.join(pipe_dir, "goalqueue.json"), encoding="utf-8") as f:
+            q = json.load(f)
+    except (OSError, ValueError):
+        return []
+    if not isinstance(q, dict) or q.get("serial") is not True or not isinstance(q.get("queued"), list):
+        return []
+    goals = build_goals()
+    name_of = {}
+    for e in goals:
+        name_of[e["id"]] = (e.get("title") or e.get("spec") or e["id"])
+    queued = [d["id"] for d in q["queued"] if isinstance(d, dict) and isinstance(d.get("id"), str) and d["id"]]
+    if not queued:
+        return []
+    out = []
+
+    def blocked_for(own_id):
+        names = [_stall_text(name_of.get(i) or i, 80) for i in queued if i != own_id]
+        return [n for n in names if n][:GOAL_STALL_BLOCKED_MAX]
+
+    for d in q.get("unreadable") or []:
+        if isinstance(d, dict) and isinstance(d.get("issue"), int) and not isinstance(d.get("issue"), bool):
+            out.append({"kind": "unreadable", "goal": "registry issue #%d" % d["issue"],
+                        "reason": "its goal block cannot be read, so no queued goal may start",
+                        "hint": "fix or close registry issue #%d" % d["issue"], "blocked": blocked_for(None)})
+    for ref, why in sorted(_recent_project_errors(time.time()).items()):
+        gid = "proj-%s_%s" % tuple(ref.split("/", 1))
+        reason = _stall_text(why, 120) or "the project cannot be read"
+        out.append({"kind": "project_error", "goal": _stall_text(name_of.get(gid) or "project " + ref, 80),
+                    "reason": reason, "hint": _stall_hint(reason), "blocked": blocked_for(gid)})
+    return [x for x in out if x["blocked"]][:GOAL_STALL_MAX]
+
+
+if mode == "goalstall":
+    print(json.dumps(build_goal_stall()))
+    sys.exit(0)
 
 if mode == "goals":
     print(json.dumps(build_goals()))

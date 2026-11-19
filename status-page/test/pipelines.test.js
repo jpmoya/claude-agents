@@ -423,6 +423,17 @@ describe("existing status view unchanged (AC3)", () => {
   .slot-icon { flex: none; vertical-align: -2px; }
   .slot-legend { display: flex; flex-wrap: wrap; gap: 0.35rem 1rem; margin: 0 0 0.6rem; font-size: 0.8rem; color: var(--muted); }
   .slot-key { display: inline-flex; align-items: center; gap: 0.3rem; }
+  .alerts { margin-bottom: 1.25rem; padding: 1rem 1.25rem; border-radius: 0.75rem; background: var(--surface); border: 1px solid var(--red); }
+  .alerts h2 { color: var(--red); margin-bottom: 0.6rem; }
+  .alerts ul { list-style: none; margin: 0; padding: 0; }
+  .alerts li.alert { display: flex; flex-direction: column; gap: 0.2rem; padding: 0.6rem 0.8rem; margin-bottom: 0.5rem; border-radius: 0.5rem;
+    border-left: 4px solid var(--amber); background: var(--amber-soft); font-size: 0.85rem; }
+  .alerts li.alert:last-child { margin-bottom: 0; }
+  .alerts li.alert-red { border-left-color: var(--red); background: var(--red-soft); }
+  .alerts li.alert ul { list-style: disc; padding-left: 1.2rem; margin: 0.2rem 0; }
+  .alerts li.alert li { font-size: 0.8rem; }
+  .alert-hint { color: var(--muted); }
+  .alerts-clear { margin: 0 0 1.25rem; font-size: 0.8rem; font-weight: 600; color: var(--green); }
   .backlog-help { font-size: 0.85rem; color: var(--muted); margin: 0 0 0.75rem; }
   .bp-controls { white-space: nowrap; text-align: center; }
   tr[draggable="true"] { cursor: grab; }
