@@ -172,14 +172,14 @@ test_tt_ac4_soft_budget_skips_optional_late_stages_and_logs_them() {
 }
 
 # tt_hang_gh <bash case pattern over "$*"> — fake gh whose matching calls nap 60 s (a hung GitHub call); other calls pass through.
-# Optional second argument: a path (glob allowed) that must exist for the hang to apply (e.g. the sweep's lock dir, or the fake claude's call dir).
+# Hung calls are recorded in $GS_BIN/hang-calls.log. Optional second argument: a path (glob allowed) that must exist for the hang to apply (e.g. the sweep's lock dir, or the fake claude's call dir).
 tt_hang_gh() {
   tt_nap
   mv "$GS_BIN/gh" "$GS_BIN/gh.real"
   cat > "$GS_BIN/gh" <<EOF
 #!/bin/bash
 case "\$*" in "api repos/{owner}/{repo}"*) echo example-owner/project-a; exit 0 ;; esac   # the checkout-relative repo name lookup the fake gh does not know
-case "\$*" in $1) [ -z "${2:-}" ] || ls -d ${2:-} >/dev/null 2>&1 && "\$(dirname "\$0")/nap" 60 ;; esac
+case "\$*" in $1) [ -z "${2:-}" ] || ls -d ${2:-} >/dev/null 2>&1 && { echo "\$*" >> "\$(dirname "\$0")/hang-calls.log"; "\$(dirname "\$0")/nap" 60; } ;; esac
 case "\$*" in "pr list --head "*) [ -n "${2:-}" ] && "\$(dirname "\$0")/nap" 60 ;; esac
 exec "\$(dirname "\$0")/gh.real" "\$@"
 EOF
@@ -252,17 +252,24 @@ test_tt_ac4_hard_stop_kills_the_hung_gh_but_not_a_launched_run() {
   assert_eq "$alive" "yes" "AC4: the launched orchestrator run survived the hard stop" || return 1
 }
 
-# The goal-sync stamp is written after the sync: a tick stopped mid-sync (the registry read hangs) leaves it unwritten, so the next tick syncs again.
+# The goal-sync stamp is written after the sync: a tick stopped mid-sync leaves it unwritten, so the next tick syncs again. ONLY the goal registry
+# read hangs (every other gh call, and so every earlier stage, succeeds), so the tick is stopped inside goal_sync itself; the control assertions
+# prove that: the hang was reached (a call was logged to the registry repo) and no goal data was saved either. Mutation check (done by hand): move
+# the `echo "$now" > "$PIPE/goal-sync.last"` line in goal_step back above `goal_sync` and this test fails on the stamp assertion.
 test_tt_ac2_goal_sync_stamp_is_written_after_the_sync_not_before() {
   gs_env
-  tt_hang_gh 'api*'
+  tt_hang_gh '*example-owner/registry/issues*'
   export TICK_HARD_SECS=6 TICK_BUDGET_SECS=0
   gs_tick
   unset TICK_HARD_SECS TICK_BUDGET_SECS
   local stamp="MISSING"; [ -s "$GS_PIPE/goal-sync.last" ] && stamp=$(cat "$GS_PIPE/goal-sync.last")
+  local q=no; [ -f "$GS_PIPE/goalqueue.json" ] && q=yes
+  local reached=no; grep -aq "example-owner/registry/issues" "$GS_BIN/hang-calls.log" 2>/dev/null && reached=yes
   local log; log=$(gs_log)
   tt_stop_naps; gs_cleanup
-  assert_contains "$log" "[tick-watchdog] hard budget 6s passed" "AC2: the tick was stopped mid-sync" || return 1
+  assert_contains "$log" "[tick-watchdog] hard budget 6s passed" "AC2: the tick was stopped by the hard budget" || return 1
+  assert_eq "$reached" "yes" "AC2: the tick reached the goal registry read (goal_sync started)" || return 1
+  assert_eq "$q" "no" "AC2: no goal queue was saved: the stop came inside the sync" || return 1
   assert_eq "$stamp" "MISSING" "AC2: no goal-sync.last was written for a sync that never finished" || return 1
 }
 
