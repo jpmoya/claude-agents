@@ -17,28 +17,47 @@ while IFS= read -r line; do
   fi
 done < <(ps -eo pid,etimes,command 2>/dev/null | grep -E "claude.*bash|claude.*Bash" | grep -v grep | grep -v "limit-shells" | awk '{print $1, $2}')
 
-# Global cap — all Claude sessions combined
-global_count=$(ps -eo pid,command 2>/dev/null | grep -E "[/]tmp/claude-" | grep -v grep | grep -v "limit-shells" | wc -l | tr -d ' ')
-
-if [ "$global_count" -ge "$MAX_GLOBAL" ]; then
-  echo "BLOCKED: $global_count background shells globally (max $MAX_GLOBAL). Kill stale orchestrators or wait." >&2
-  exit 2
-fi
-
-# Per-session cap — only real tool shells of this session's claude CLI (#729).
-# A tool shell is "<shell> -c source …/.claude/shell-snapshots/snapshot-…" whose parent is the CLI.
-# Not counted: the app's --resume processes, detached scripts, children and forked subshells of a
-# tool shell (their parent is a shell, not the CLI). Main session and Agent-tool helpers share the
-# CLI process, so they share this one budget. The CLI is the nearest claude ancestor of this hook
-# (falling back to $CLAUDE_PID only when that really is an ancestor: a nested `claude -p` stage inherits
-# its parent CLI's CLAUDE_PID, so the env var alone could name the wrong CLI). Only `ps -axo pid=,ppid=,command=` is used
-# (valid on macOS and Linux; macOS ps has no etimes).
+# What counts as a shell (#803, #729): only a real tool shell, i.e. "<shell> -c source …/.claude/shell-snapshots/snapshot-…",
+# whose parent is a claude CLI. Not counted: the app's --resume processes, scripts started from a scratchpad, forked subshells of a
+# tool shell (their parent is a shell, not the CLI), orphans (ppid 1), zombies (stat Z) and stale shells (running longer than
+# LIMIT_SHELLS_STALE_SECONDS: a leaked or long-finished run is not fan-out; 0 disables the bound). One `ps` snapshot feeds both caps
+# (`ps -axo pid=,ppid=,stat=,etime=,command=` is valid on macOS and Linux; macOS ps has no etimes).
+# Caps and the stale bound are configurable via LIMIT_SHELLS_MAX_PER_SESSION, LIMIT_SHELLS_MAX_GLOBAL, LIMIT_SHELLS_STALE_SECONDS.
+# This is a resource guard, not a security check: when the count cannot be decided it fails open (exit 0) and logs one line.
 TOOL_SHELL_RE='(^|/)(zsh|bash|sh) -c ([-][a-zA-Z]+ )*source [^ ]*/[.]claude/shell-snapshots/snapshot-'
-session_count=$(RE="$TOOL_SHELL_RE" CLI="${CLAUDE_PID:-}" SID="${CLAUDE_CODE_SESSION_ID:-}" START="$PPID" \
+LOG="${LIMIT_SHELLS_LOG:-$HOME/logs/pipeline/limit-shells.log}"
+fail_open() {
+  mkdir -p "$(dirname "$LOG")" 2>/dev/null
+  printf '%s limit-shells: fail-open: %s\n' "$(date -u +%FT%TZ 2>/dev/null)" "$1" >> "$LOG" 2>/dev/null
+  exit 0
+}
+num() { case "$1" in ''|*[!0-9]*) echo "$2" ;; *) echo "$1" ;; esac; }
+MAX_PER_SESSION=$(num "${LIMIT_SHELLS_MAX_PER_SESSION:-}" "$MAX_PER_SESSION")
+MAX_GLOBAL=$(num "${LIMIT_SHELLS_MAX_GLOBAL:-}" "$MAX_GLOBAL")
+STALE=$(num "${LIMIT_SHELLS_STALE_SECONDS:-}" 1800)
+
+# The CLI of this session is the nearest claude ancestor of this hook (falling back to $CLAUDE_PID only when that really is an
+# ancestor: a nested `claude -p` stage inherits its parent CLI's CLAUDE_PID, so the env var alone could name the wrong CLI).
+# Main session and Agent-tool helpers share the CLI process, so they share the per-session budget.
+PS_TABLE=$(ps -axo pid=,ppid=,stat=,etime=,command= 2>/dev/null)
+[ -n "$PS_TABLE" ] || fail_open "ps returned no process table"
+counts=$(RE="$TOOL_SHELL_RE" CLI="${CLAUDE_PID:-}" SID="${CLAUDE_CODE_SESSION_ID:-}" START="$PPID" STALE="$STALE" \
   awk '
-    { p = $1; c = $0; sub(/^ *[0-9]+ +[0-9]+ */, "", c); par[p] = $2; cmd[p] = c; pids[n++] = p }
+    function secs(e,   d, t, n, a) {   # [[dd-]hh:]mm:ss -> seconds (-1 if unparseable)
+      d = 0
+      if (e ~ /-/) { split(e, a, "-"); d = a[1]; e = a[2] }
+      n = split(e, t, ":")
+      if (n == 3) return d * 86400 + t[1] * 3600 + t[2] * 60 + t[3]
+      if (n == 2) return d * 86400 + t[1] * 60 + t[2]
+      return -1
+    }
+    {
+      p = $1; par[p] = $2; st[p] = $3; el[p] = $4
+      c = $0; sub(/^ *[0-9]+ +[0-9]+ +[^ ]+ +[^ ]+ */, "", c)
+      cmd[p] = c; pids[n++] = p
+    }
     END {
-      re = ENVIRON["RE"]; sid = ENVIRON["SID"]
+      re = ENVIRON["RE"]; sid = ENVIRON["SID"]; stale = ENVIRON["STALE"] + 0
       want = ENVIRON["CLI"]; cli = ""; env_hit = 0
       p = ENVIRON["START"]
       for (d = 0; p != "" && p + 0 > 1 && d < 30; d++) {
@@ -49,13 +68,30 @@ session_count=$(RE="$TOOL_SHELL_RE" CLI="${CLAUDE_PID:-}" SID="${CLAUDE_CODE_SES
         p = par[p]
       }
       if (cli == "" && env_hit) cli = want
-      if (cli == "") { print -1; exit }
-      k = 0
-      for (i = 0; i < n; i++) { p = pids[i]; if (par[p] == cli && cmd[p] ~ re) k++ }
-      print k
-    }' <<< "$(ps -axo pid=,ppid=,command= 2>/dev/null)")
-# -1 = CLI not found: fail open (this is a resource guard, not a security check).
-if [ "${session_count:--1}" -ge "$MAX_PER_SESSION" ] 2>/dev/null; then
+      k = 0; g = 0
+      for (i = 0; i < n; i++) {
+        p = pids[i]
+        if (cmd[p] !~ re || st[p] ~ /^Z/) continue
+        if (stale > 0 && (s = secs(el[p])) > stale) continue
+        q = par[p]
+        if (q in cmd && cmd[q] ~ /(^|\/)claude( |$)/ && cmd[q] !~ re) g++
+        if (cli != "" && q == cli) k++
+      }
+      print (cli == "" ? -1 : k), g
+    }' <<< "$PS_TABLE")
+session_count=${counts%% *}
+global_count=${counts##* }
+case "$session_count$global_count" in ''|*[!0-9-]*) fail_open "could not parse process table (got: $counts)" ;; esac
+
+# Global cap: tool shells of every claude CLI combined.
+if [ "$global_count" -ge "$MAX_GLOBAL" ] 2>/dev/null; then
+  echo "BLOCKED: $global_count background shells globally (max $MAX_GLOBAL). Kill stale orchestrators or wait." >&2
+  exit 2
+fi
+
+# Per-session cap. -1 = this session's CLI not found: fail open and say so.
+[ "$session_count" = "-1" ] && fail_open "claude CLI of this session not found in the parent chain (hook pid $$)"
+if [ "$session_count" -ge "$MAX_PER_SESSION" ] 2>/dev/null; then
   echo "BLOCKED: $session_count shells in this session (max $MAX_PER_SESSION). Wait for existing commands to finish." >&2
   exit 2
 fi
