@@ -14,6 +14,7 @@ LABEL_GO="agent-go"                 # JP: launch this anywhere — consumed at l
 LABEL_IN_PROGRESS="agent-in-progress"  # an orchestrator owns this issue on some machine; removed when terminal/held
 LABEL_FEEDBACK="user-feedback"      # a bug/idea that started as staff feedback — always auto-dispatched, even when SHARED_DISPATCH_ENABLED=0 (JP 2026-10-19)
 LABEL_SENTRY_GO="sentry-auto-go"    # a Sentry bug released automatically (SENTRY_AUTO_GO=1) — counted against SENTRY_AUTO_GO_DAILY_CAP (#182); never on a hand-released ticket
+LABEL_CI_CRITICAL="ci-critical"     # a CI/release-pipeline fix that must not queue behind error triage (#781): a sentry-auto-go ticket carrying it is exempt from SENTRY_AUTO_GO_DAILY_CAP; on any other ticket it changes nothing
 # sentry_goal_label <owner/repo> -> the Sentry goal label a triaged Sentry bug is added to in that repo (prints nothing for
 # any other repo). Intake adds it so new Sentry tickets join the Sentry goal automatically, and no other goal.
 sentry_goal_label() {
@@ -64,7 +65,9 @@ SENTRY_AUTO_GO=1
 # intake is done) never carries the label and is never throttled; SENTRY_CAP_BYPASS=1 in the environment lets one hand
 # launch through. The cap bounds new tickets: any relaunch of a ticket that already launched in the window (an
 # automatic restart, a queue drain, or a hand / delivery-lead relaunch through orchestrate.sh) is neither refused nor counted
-# again (COST_CEILING_USD bounds what one ticket can spend across its restarts).
+# again (COST_CEILING_USD bounds what one ticket can spend across its restarts). A ticket that also carries
+# LABEL_CI_CRITICAL (#781) is exempt: it launches with the cap full, is not counted (its log line ends in `exempt`), and an
+# unreadable launch log does not block it; the label is the only test, and only on a sentry-auto-go ticket.
 SENTRY_AUTO_GO_DAILY_CAP=3
 
 # Shared dispatch: "owner/repo:/local/checkout" entries. Empty = this machine never dispatches from labels.
