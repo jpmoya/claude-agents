@@ -676,7 +676,8 @@ function renderAlertsBanner(hosts, thresholds, nowEpochSecs) {
   if (!hosts.mac && !hosts.vm) return "";
   const alerts = deriveAlerts(hosts, thresholds, nowEpochSecs);
   if (alerts.length === 0) return `<p class="alerts-clear" data-testid="alerts-clear">All clear: no pipeline alerts.</p>`;
-  return `<section class="alerts" data-testid="pipeline-alerts" aria-label="Pipeline alerts">
+  const tone = alerts.some((a) => a.severity === "red") ? " alerts-red" : "";
+  return `<section class="alerts${tone}" data-testid="pipeline-alerts" aria-label="Pipeline alerts">
     <h2>${esc(alerts.length)} pipeline ${alerts.length === 1 ? "alert" : "alerts"}</h2>
     <ul>${alerts.map(renderAlert).join("")}</ul>
   </section>`;
@@ -1104,8 +1105,10 @@ ${ROOT_VARS_CSS}
   .slot-icon { flex: none; vertical-align: -2px; }
   .slot-legend { display: flex; flex-wrap: wrap; gap: 0.35rem 1rem; margin: 0 0 0.6rem; font-size: 0.8rem; color: var(--muted); }
   .slot-key { display: inline-flex; align-items: center; gap: 0.3rem; }
-  .alerts { margin-bottom: 1.25rem; padding: 1rem 1.25rem; border-radius: 0.75rem; background: var(--surface); border: 1px solid var(--red); }
-  .alerts h2 { color: var(--red); margin-bottom: 0.6rem; }
+  .alerts { margin-bottom: 1.25rem; padding: 1rem 1.25rem; border-radius: 0.75rem; background: var(--surface); border: 1px solid var(--amber); }
+  .alerts h2 { color: var(--amber); margin-bottom: 0.6rem; }
+  .alerts.alerts-red { border-color: var(--red); }
+  .alerts.alerts-red h2 { color: var(--red); }
   .alerts ul { list-style: none; margin: 0; padding: 0; }
   .alerts li.alert { display: flex; flex-direction: column; gap: 0.2rem; padding: 0.6rem 0.8rem; margin-bottom: 0.5rem; border-radius: 0.5rem;
     border-left: 4px solid var(--amber); background: var(--amber-soft); font-size: 0.85rem; }

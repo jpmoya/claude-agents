@@ -218,6 +218,10 @@ describe('render.js - banner', () => {
     expect(html).toContain('Fix: Check the Mac supervisor log');
     expect(html).toContain(`<a href="${urlOf(7)}"`);
   });
+  it('the banner is amber unless an alert is red', () => {
+    expect(render(host({ tickGapMins: 20 }))).toContain('<section class="alerts" data-testid');
+    expect(render(host({ reportedMinsAgo: 80 }))).toContain('<section class="alerts alerts-red" data-testid');
+  });
   it('escapes every alert value (a stall reason containing a script tag renders inert)', () => {
     const evil = { kind: 'project_error', goal: '<img src=x onerror=1>', reason: '<script>alert(1)</script>', hint: '"><b>', blocked: ['<i>x</i>'] };
     const html = render(host({ goal_stall: [evil] }));

@@ -423,8 +423,10 @@ describe("existing status view unchanged (AC3)", () => {
   .slot-icon { flex: none; vertical-align: -2px; }
   .slot-legend { display: flex; flex-wrap: wrap; gap: 0.35rem 1rem; margin: 0 0 0.6rem; font-size: 0.8rem; color: var(--muted); }
   .slot-key { display: inline-flex; align-items: center; gap: 0.3rem; }
-  .alerts { margin-bottom: 1.25rem; padding: 1rem 1.25rem; border-radius: 0.75rem; background: var(--surface); border: 1px solid var(--red); }
-  .alerts h2 { color: var(--red); margin-bottom: 0.6rem; }
+  .alerts { margin-bottom: 1.25rem; padding: 1rem 1.25rem; border-radius: 0.75rem; background: var(--surface); border: 1px solid var(--amber); }
+  .alerts h2 { color: var(--amber); margin-bottom: 0.6rem; }
+  .alerts.alerts-red { border-color: var(--red); }
+  .alerts.alerts-red h2 { color: var(--red); }
   .alerts ul { list-style: none; margin: 0; padding: 0; }
   .alerts li.alert { display: flex; flex-direction: column; gap: 0.2rem; padding: 0.6rem 0.8rem; margin-bottom: 0.5rem; border-radius: 0.5rem;
     border-left: 4px solid var(--amber); background: var(--amber-soft); font-size: 0.85rem; }
