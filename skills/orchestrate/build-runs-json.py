@@ -1415,6 +1415,36 @@ def build_goal_stall():
     return [x for x in out if x["blocked"]][:GOAL_STALL_MAX]
 
 
+def build_goals_as_of():
+    """When this host's goal queue (goalqueue.json, the supervisor sync's copy of the registry) was last synced: its own `at` (epoch seconds,
+    written on every sync), else the file's mtime, as an ISO UTC string. "" when the host has no queue file. The status page ranks hosts by
+    this, so a host whose sync stopped (or that stopped ticking) cannot pass its old queue off as current."""
+    if not pipe_dir:
+        return ""
+    path = os.path.join(pipe_dir, "goalqueue.json")
+    at = None
+    try:
+        with open(path, encoding="utf-8") as f:
+            q = json.load(f)
+        v = q.get("at") if isinstance(q, dict) else None
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
+            at = float(v)
+    except ValueError:
+        pass   # unreadable: fall back to the mtime below
+    except OSError:
+        return ""
+    if at is None:
+        try:
+            at = os.path.getmtime(path)
+        except OSError:
+            return ""
+    return datetime.datetime.fromtimestamp(int(at), tz=datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+if mode == "goalasof":
+    print(build_goals_as_of())
+    sys.exit(0)
+
 if mode == "goalstall":
     print(json.dumps(build_goal_stall()))
     sys.exit(0)

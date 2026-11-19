@@ -33,6 +33,16 @@ to start and no status banner is published. Setting it back to `0` returns to fu
   record or no field means no banner. Quiet hours with no GitHub activity at all will also raise it (amber, informational: the fallback
   poll keeps working).
 
+- Goal list on the status page (#795): the page takes the Goals section and the goal alerts from ONE host, the freshest beat `goals_as_of`
+  (when that host's `goalqueue.json` was last synced from the registry; live hosts only, ignored once 30 min old; ties prefer the VM).
+  `webhook_tick_prepare` also brings that sync forward on the VM: when the applied events include a registry issue (a number in the local
+  `goalqueue.json`, or a newly opened issue of `GOAL_REGISTRY_REPO`), any `projects_v2_item`, a closed or merged pull request, or a gap, it
+  resets `goal-sync.last` (one early sync per `WEBHOOK_GOAL_PUSH_MIN_SECS`, 30) and writes `webhook/goal-push-pending`. The sync re-reads only
+  the objects those events invalidated, so it adds no call beyond the supervisor's own next sync. `report-status.sh` then pushes the changed
+  goal rows 30 s after the previous attempt instead of the usual spacing (still under `MAX_PUSHES_PER_DAY`; the marker expires after
+  `WEBHOOK_GOAL_PUSH_WINDOW_SECS`, 600). The sync runs in the same tick as the event; the push goes out with the next report, so the page
+  moves within about one supervisor tick of the webhook. The periodic sync (`GOAL_SYNC_SECS`) and keep-alive push are the fallback. The
+  Worker never calls a host or GitHub on a page refresh.
 - `gh issue view`, `gh issue list`, `gh pr list` and `gh repo view` (reconcile, worktree sweep, repo_canon, the supervisor's own lists) are
   served from the read cache for up to `WEBHOOK_LIST_MAX_AGE_SECS` (default = the fallback interval, 20 min) while the repo is trusted
   (read from `-R/--repo`, else the checkout's origin, no API call). Any event for the repo drops them; a dropped check/PR delivery can

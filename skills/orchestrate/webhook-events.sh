@@ -109,6 +109,39 @@ _wh_canon_repo() {
   printf '%s' "$1"
 }
 
+# _wh_goals_relevant <gap 0|1> <events jsonl> — can one of these events change the status page's goal list (#795)? A registry issue (a
+# number listed in the local goalqueue.json, or a newly opened issue of the registry repo) changing, any projects_v2_item event, a closed or
+# merged pull request, or a gap (events were lost). Local file and jq only: no GitHub call.
+_wh_goals_relevant() {
+  [ "$1" = 1 ] && return 0
+  local reg="${GOAL_REGISTRY_REPO:-jpmoya/claude-agents}" qf="${PIPE:-}/goalqueue.json" nums='[]'
+  [ -f "$qf" ] && nums=$(jq -c '[(.open[]?, .queued[]?, .recent[]?) | .issue | numbers]' "$qf" 2>/dev/null)
+  [ -n "$nums" ] || nums='[]'
+  printf '%s\n' "$2" | jq -e -s --arg reg "$reg" --argjson nums "$nums" '
+    any(.[]; type == "object" and (
+      .event == "projects_v2_item"
+      or (.event == "pull_request" and .action == "closed")
+      or (.event == "issues" and ((.repo // "") | ascii_downcase) == ($reg | ascii_downcase)
+          and (.action == "opened" or ((.number | tonumber? // -1) as $n | $nums | index($n) != null)))))' >/dev/null 2>&1
+}
+
+# _wh_goal_nudge <gap> <events> — VM only (the host with no WEBHOOK_RECEIVER_URL: it holds the receiver's own queue). When a relevant event
+# arrived, make this tick's goal step run the registry sync now instead of up to GOAL_SYNC_SECS (300) later: reset goal-sync.last (read by
+# goal_step) and leave goal-push-pending for report-status.sh, which then pushes the changed goal rows after WEBHOOK_GOAL_PUSH_MIN_SECS
+# (30) rather than the usual spacing. The sync re-reads only the registry objects the applied events invalidated, so it adds no calls beyond
+# the supervisor's own next sync. The periodic sync and push stay the fallback.
+_wh_goal_nudge() {
+  [ -z "${WEBHOOK_RECEIVER_URL:-}" ] || return 0
+  _wh_goals_relevant "$1" "$2" || return 0
+  local dir last now; dir=$(_wh_dir); now=$(date +%s)
+  last=$(_wh_num "$(cat "${PIPE:-}/goal-sync.last" 2>/dev/null)" 0)
+  [ $(( now - last )) -ge "$(_wh_num "${WEBHOOK_GOAL_PUSH_MIN_SECS:-30}" 30)" ] || return 0   # coalesce: one early sync per 30 s
+  echo 0 > "${PIPE:-}/goal-sync.last" 2>/dev/null || return 0
+  mkdir -p "$dir" 2>/dev/null; echo "$now" > "$dir/goal-push-pending" 2>/dev/null
+  type slog >/dev/null 2>&1 && slog "[webhook] goal list may have changed: registry sync brought forward"
+  return 0
+}
+
 # webhook_tick_prepare — once per supervisor tick, before the gh_since_sync loop: pull (Mac), then apply every event since the consumer
 # cursor to the read cache (invalidate the touched issue / PR and the repo's list entries). Sets WEBHOOK_TICK_READY=1 only on success.
 webhook_tick_prepare() {
@@ -141,6 +174,7 @@ webhook_tick_prepare() {
       type _gh_since_invalidate_lists >/dev/null 2>&1 && _gh_since_invalidate_lists "$repo"
     done <<< "$(printf '%s\n' "$events" | jq -r 'select(type=="object") | [.repo // "", (.number // "" | tostring), .event // ""] | join("|")' 2>/dev/null)"
   fi
+  _wh_goal_nudge "$gap" "$events"
   _wh_write "$dir/consumer.cursor" "$latest" || { _wh_alert "cannot write the consumer cursor"; return 0; }
   _wh_write "$dir/applied" "$now"
   WEBHOOK_TICK_READY=1

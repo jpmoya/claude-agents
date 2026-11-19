@@ -796,6 +796,9 @@ export function validateBeatPayload(parsedBody) {
     if (stalls.length > 0) value.goal_stall = stalls;
   }
 
+  // Optional (#795): when this host's goal queue was last synced from the registry. Absent or not an ISO timestamp -> no key.
+  if (isIsoTimestamp(parsedBody.goals_as_of)) value.goals_as_of = parsedBody.goals_as_of;
+
   // Optional (#769): absent or non-array -> no key. First 50 entries, then filtered.
   if (Array.isArray(parsedBody.scheduled_triggers)) {
     const triggers = parsedBody.scheduled_triggers.slice(0, MAX_SCHEDULED_TRIGGERS).map(sanitiseScheduledTrigger).filter((t) => t !== null);
