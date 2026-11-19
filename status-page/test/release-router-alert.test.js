@@ -31,7 +31,12 @@ describe('release router alert', () => {
   });
   it('is quiet when no fire was ever reported (just enabled), and for workflows that are not the release router', () => {
     expect(router(derive(host([trigger(null)])))).toEqual([]);
-    expect(router(derive(host([trigger(600, { workflow: 'stale-prs.yml', interval_minutes: 1440 })])))).toEqual([]);
+    // same 5-minute interval and an age far past the threshold: only the workflow name keeps it quiet
+    expect(router(derive(host([trigger(60, { workflow: 'stale-prs.yml', interval_minutes: 5 })])))).toEqual([]);
+  });
+  it('scales with the interval: 10 minutes gives 3 x 10 + 10 = 40 quiet, 41 red', () => {
+    expect(router(derive(host([trigger(40, { interval_minutes: 10 })])))).toEqual([]);
+    expect(router(derive(host([trigger(41, { interval_minutes: 10 })])))).toHaveLength(1);
   });
   it('uses the newest fire across both hosts: one host dispatching keeps it quiet', () => {
     expect(router(derive(host([trigger(120)]), host([trigger(3)])))).toEqual([]);

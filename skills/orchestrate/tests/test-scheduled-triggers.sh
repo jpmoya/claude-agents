@@ -162,9 +162,24 @@ test_stt_low_budget_makes_no_github_call() {
   stt_conf 'example-owner/project-a a.yml 5'
   # a fresh quota reading: core exhausted until an hour from now (gh-budget.sh: "<read at> <core> <core reset> <graphql> <graphql reset>")
   printf '%s 0 %s 4000 %s\n' "$(date +%s)" "$(( $(date +%s) + 3600 ))" "$(( $(date +%s) + 3600 ))" > "$STT_HOME/pipe/gh-quota"
-  STT_BUDGET=1 stt_run
-  assert_eq "$(wc -c < "$STT_HOME/gh.log" | tr -d ' ')" "0" "nothing called" || return 1
+  # _GH_INNER=1 makes gh-budget.sh's gh() wrapper pass every call straight through, so only the script's own
+  # `gh_tier_allows normal` gate can keep the stub from being called: deleting that gate fails this test.
+  _GH_INNER=1 STT_BUDGET=1 stt_run
+  assert_eq "$(wc -c < "$STT_HOME/gh.log" | tr -d ' ')" "0" "nothing called (wrapper bypassed)" || return 1
   assert_file_absent "$STT_STATE/example-owner_project-a__a.yml.last" "nothing stamped" || return 1
+  # control: the same pass with a healthy quota does call gh
+  printf '%s 4000 %s 4000 %s\n' "$(date +%s)" "$(( $(date +%s) + 3600 ))" "$(( $(date +%s) + 3600 ))" > "$STT_HOME/pipe/gh-quota"
+  _GH_INNER=1 STT_BUDGET=1 stt_run
+  assert_eq "$(stt_calls '^workflow run')" "1" "control: healthy quota dispatches" || return 1
+}
+
+test_stt_a_malformed_run_list_is_captured_and_never_dispatches() {
+  stt_home
+  stt_conf 'example-owner/project-a a.yml 5'
+  echo '{"message":"Not Found"}' > "$STT_HOME/runs-a.yml.json"   # valid JSON, not an array
+  stt_run
+  assert_eq "$(stt_calls '^workflow run')" "0" "no dispatch on an unreadable run list" || return 1
+  assert_contains "$(cat "$STT_HOME/curl.log")" "run list failed" "captured" || return 1
 }
 
 test_stt_an_unwritable_state_dir_is_captured_once_and_dispatches_nothing() {
@@ -211,13 +226,22 @@ test_stt_report_status_publishes_the_heartbeat_by_alias_without_the_fire_time_in
   stt_home
   stt_conf 'example-owner/project-a auto-release.yml 5'
   stt_stamp example-owner/project-a auto-release.yml 60
-  printf 'STATUS_REPO_ALIASES=("example-owner/project-a:project-a")\nSCHEDULED_TRIGGERS_ENABLED=1\nSCHEDULED_TRIGGERS_CONF="%s"\n' "$STT_CONF" >> "$STT_HOME/.claude/pipeline/config.local.sh"
-  local out
-  out=$(HOME="$STT_HOME" PATH="$STT_HOME/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$STT_HOME/pipe" LOGDIR="$STT_HOME/logs/pipeline" STATUS_CRON_CMD=true \
-    SCHEDULED_TRIGGERS_ENABLED=1 /bin/bash "$HERE_STT/../report-status.sh" --print 2>/dev/null)
+  printf 'STATUS_REPO_ALIASES=("example-owner/project-a:project-a")\nSCHEDULED_TRIGGERS_ENABLED=1\nSCHEDULED_TRIGGERS_CONF="%s"\nSTATUS_PUSH_URL=https://example.invalid/beat\nSTATUS_PUSH_TOKEN=t\nMAX_PUSHES_PER_DAY=8640\n' "$STT_CONF" >> "$STT_HOME/.claude/pipeline/config.local.sh"
+  printf '#!/bin/bash\necho "curl $*" >> "$HOME/curl.log"; printf 200\n' > "$STT_HOME/bin/curl"
+  local out rs; rs() { HOME="$STT_HOME" PATH="$STT_HOME/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$STT_HOME/pipe" LOGDIR="$STT_HOME/logs/pipeline" STATUS_CRON_CMD=true \
+    SCHEDULED_TRIGGERS_ENABLED=1 /bin/bash "$HERE_STT/../report-status.sh" "$@" 2>/dev/null; }
+  out=$(rs --print)
   assert_eq "$(printf '%s' "$out" | jq -c '.scheduled_triggers | map({repo, workflow, interval_minutes})')" '[{"repo":"project-a","workflow":"auto-release.yml","interval_minutes":5}]' "published by alias" || return 1
   assert_not_contains "$out" "example-owner" "no owner/repo in the payload" || return 1
-  grep -q "last_fired_at" "$HERE_STT/../report-status.sh" || { fail "hash_payload must pop last_fired_at"; return 1; }
+  # behavioural: a push happens, then a new fire time alone is "unchanged" (no second push), while a new workflow line is a change
+  : > "$STT_HOME/curl.log"; rs tick >/dev/null
+  assert_eq "$(grep -c 'beat' "$STT_HOME/curl.log")" "1" "first beat pushed" || return 1
+  stt_stamp example-owner/project-a auto-release.yml 1   # the router fired again: only last_fired_at moves
+  sleep 11; rs tick >/dev/null
+  assert_eq "$(grep -c 'beat' "$STT_HOME/curl.log")" "1" "a new fire time alone does not push" || return 1
+  stt_conf 'example-owner/project-a stale-prs.yml 1440'
+  sleep 11; rs tick >/dev/null
+  assert_eq "$(grep -c 'beat' "$STT_HOME/curl.log")" "2" "a new workflow line does push" || return 1
 }
 
 test_stt_the_shipped_conf_parses_and_lists_the_release_routers() {
@@ -239,6 +263,7 @@ run_test test_stt_a_queued_or_in_progress_run_blocks_the_dispatch
 run_test test_stt_a_run_started_within_the_interval_stamps_the_timestamp_and_skips
 run_test test_stt_a_failed_dispatch_is_isolated_logged_once_and_never_stamped
 run_test test_stt_a_failed_run_list_is_captured_and_skips_only_that_workflow
+run_test test_stt_a_malformed_run_list_is_captured_and_never_dispatches
 run_test test_stt_two_instances_at_once_dispatch_once
 run_test test_stt_low_budget_makes_no_github_call
 run_test test_stt_an_unwritable_state_dir_is_captured_once_and_dispatches_nothing
