@@ -176,7 +176,7 @@ test_i129_deployer_row_names_main_base_exception() {
   row=$(grep -F 'Dispatch the deployer (the repo-local' "$ROOT_I129/agents/orchestrator.md" | head -1)
   assert_contains "$row" "hand-to-jp" "#129: row names the hand-to-jp log line (exception rule lives in this row)" || return 1
   assert_contains "$row" 'base is `main`' "#129: row names main as the PR base for the exception" || return 1
-  assert_contains "$row" "quoting tool" "#129: row names the scheduler/quoting-tool main-base exception" || return 1
+  assert_contains "$row" "sales tool" "#129: row names the ops-tool/sales-tool main-base exception" || return 1
   assert_contains "$row" "to JP directly" "#129: handed to JP directly, no deployer dispatch" || return 1
 }
 

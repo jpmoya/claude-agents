@@ -52,9 +52,9 @@
     },
     {
       "name": "scheduler",
-      "github": "Benjis-Plants/scheduler",
-      "mac": "~/dev/scheduler",
-      "vm": "~/scheduler",
+      "github": "Benjis-Plants/benjis-ops-tool",
+      "mac": "~/dev/benjis-ops-tool",
+      "vm": "~/benjis-ops-tool",
       "required": [
         "mac",
         "vm"
@@ -76,7 +76,7 @@
       "name": "benjis-quoting-tool",
       "github": "Benjis-Plants/benjis-sales-tool",
       "mac": "~/dev/benjis-sales-tool",
-      "vm": "~/benjis-quoting-tool",
+      "vm": "~/benjis-sales-tool",
       "required": [
         "mac",
         "vm"

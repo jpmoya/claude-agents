@@ -1421,7 +1421,7 @@ ci_infra_gate() {
   printf '%s' "$checks" | jq -e 'any(.[]; .bucket == "pending")' >/dev/null 2>&1 && return 1   # still running: wait
   rows=$(printf '%s' "$checks" | jq -r '.[] | select(.bucket == "fail") | [.name, (.link // "")] | @tsv' 2>/dev/null)
   [ -n "$rows" ] || return 1
-  # #725: agents/deployer.md (JP 2026-09-22) keeps the quoting tool's `Playwright E2E` job (job `e2e` of
+  # #725: agents/deployer.md (JP 2026-09-22) keeps the sales tool's `Playwright E2E` job (job `e2e` of
   # .github/workflows/e2e-tests.yml) out of the merge gate on STAGING, so it is neither re-run nor classified here (it is
   # only dropped from the failing set; the deployer re-applies its own merge-base job-key rule before merging). Matched
   # by workflow file, not display name alone: the check must be named `Playwright E2E` and its run must be the

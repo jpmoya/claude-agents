@@ -175,10 +175,10 @@ test_so_skill_md_and_readme_describe_dispatch_eligibility_and_scan_coverage_sepa
     printf '%s\n' "$flat" | grep -qiE 'Business-Intelligence[^.]*(neither|not in|nor )|(neither|nor )[^.]*Business-Intelligence' \
       || { fail "$(basename "$f"): no sentence saying Business-Intelligence is in neither the scan nor any automatic queue"; return 1; }
     # the quoting-tool split: scanned on the VM, dispatched only from the Mac (line breaks flattened)
-    printf '%s\n' "$flat" | grep -qiE 'quoting tool[^.]*scan[^.]*vm|scan[^.]*quoting tool[^.]*vm' \
-      || { fail "$(basename "$f"): no statement that the quoting tool is scanned on the VM"; return 1; }
-    printf '%s\n' "$flat" | grep -qiE 'quoting tool[^.]*only[^.]*mac|only[^.]*mac[^.]*quoting tool|mac only[^.]*quoting tool' \
-      || { fail "$(basename "$f"): no statement that the quoting tool is dispatched only from the Mac"; return 1; }
+    printf '%s\n' "$flat" | grep -qiE 'sales tool[^.]*scan[^.]*vm|scan[^.]*sales tool[^.]*vm' \
+      || { fail "$(basename "$f"): no statement that the sales tool is scanned on the VM"; return 1; }
+    printf '%s\n' "$flat" | grep -qiE 'sales tool[^.]*only[^.]*mac|only[^.]*mac[^.]*sales tool|mac only[^.]*sales tool' \
+      || { fail "$(basename "$f"): no statement that the sales tool is dispatched only from the Mac"; return 1; }
   done
 }
 
