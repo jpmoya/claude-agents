@@ -161,7 +161,7 @@ autoretry_alert() {  # <issue> <what> [step, default auto-retry] — Slack webho
 # state,body,comments` shape, #388). On failure returns 1 and prints a one-line, token-free reason instead.
 issue_info_rest() {
   local repo=$1 issue=$2 slug errf iss com rc=0
-  repo=$(repo_dir_current "$repo")   # #792: a state file written before the rename names the old checkout directory
+  ! type repo_dir_current >/dev/null 2>&1 || repo=$(repo_dir_current "$repo")   # #792: a state file written before the rename names the old checkout directory
   slug=$(repo_slug "$repo"); errf=$(mktemp "${TMPDIR:-/tmp}/iir-err.XXXXXX")
   if [ -z "$slug" ]; then rm -f "$errf"; echo "rc=1: repo name not resolvable"; return 1; fi
   iss=$({ cd "$repo" 2>/dev/null || true; } && gh api "repos/$slug/issues/$issue" 2>"$errf" </dev/null) || rc=$?
@@ -200,7 +200,7 @@ latest_marker() {  # the GATE marker: newest real routing marker whose agent is 
   # A failed read is "?" — callers must treat it as unknown, never as "no progress" (#387) — and is logged with rc + gh's first error line.
   # One comments call per read; the issue author (SKIP MOCKUPS check, #272) is fetched only when such a comment exists.
   local slug errf raw out rc=0 author=""
-  repo=$(repo_dir_current "$repo")   # #792: old checkout directory name from a pre-rename state file
+  ! type repo_dir_current >/dev/null 2>&1 || repo=$(repo_dir_current "$repo")   # #792: old checkout directory name from a pre-rename state file
   slug=$(repo_slug "$repo"); errf=$(mktemp "${TMPDIR:-/tmp}/lm-err.XXXXXX")
   if [ -n "$pre" ]; then   # #548: the caller already fetched the comments (one merged JSON array): no gh call
     raw=$pre; author=$pre_author
