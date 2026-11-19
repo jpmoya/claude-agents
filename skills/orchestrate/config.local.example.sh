@@ -48,3 +48,7 @@ DISPATCH_REPOS=(
 # Mac power (stall fix 2026-10-19): dispatch on battery while charge >= BATTERY_MIN_PCT (default 30; 0 = AC only; ALLOW_BATTERY=1 ignores charge).
 # While any run is live the supervisor holds `caffeinate -i` so the lid-open Mac does not idle-sleep; KEEP_AWAKE=0 turns that off.
 # BATTERY_MIN_PCT=30
+
+# Scheduled triggers (#769): fire the app repos' schedule-only workflows (scheduled-triggers.conf) from the supervisor tick instead of
+# GitHub's unreliable cron. Exactly ONE machine should set this (the VM); the dedupe read also stops a second host double-firing.
+# SCHEDULED_TRIGGERS_ENABLED=1

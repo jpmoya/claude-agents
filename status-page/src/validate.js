@@ -361,6 +361,27 @@ function sanitiseCron(raw) {
   return raw.slice(0, MAX_CRON).map(sanitiseCronItem).filter((item) => item !== null);
 }
 
+// ---- scheduled_triggers[] (#769): the heartbeat of the workflows the supervisor fires in place of GitHub's cron (the release router above all).
+// By reconstruction: a repo alias and a workflow file name held to a strict character set, a whole-minute interval and an ISO time or null.
+const MAX_SCHEDULED_TRIGGERS = 50;
+const TRIGGER_REPO = /^[A-Za-z0-9._-]{1,60}$/; // the host publishes the STATUS_REPO_ALIASES alias ("other" when unaliased), never owner/repo
+const TRIGGER_WORKFLOW = /^[A-Za-z0-9._-]{1,80}\.ya?ml$/;
+const MAX_TRIGGER_INTERVAL_MINUTES = 10080; // one week
+
+function sanitiseScheduledTrigger(raw) {
+  if (!isPlainObject(raw)) return null;
+  if (typeof raw.repo !== 'string' || !TRIGGER_REPO.test(raw.repo)) return null;
+  if (typeof raw.workflow !== 'string' || !TRIGGER_WORKFLOW.test(raw.workflow)) return null;
+  const interval = raw.interval_minutes;
+  if (!Number.isInteger(interval) || interval < 1 || interval > MAX_TRIGGER_INTERVAL_MINUTES) return null;
+  return {
+    repo: raw.repo,
+    workflow: raw.workflow,
+    interval_minutes: interval,
+    last_fired_at: sanitiseCronDate(raw.last_fired_at),
+  };
+}
+
 // #657: tracks CI_QUEUE_CATEGORY_VOCAB's length (not hand-picked) so adding/removing a vocab
 // key never silently desyncs this cap.
 const MAX_CI_QUEUE_CATEGORIES = CI_QUEUE_CATEGORY_VOCAB.length;
@@ -750,6 +771,12 @@ export function validateBeatPayload(parsedBody) {
   if (Array.isArray(parsedBody.goal_stall)) {
     const stalls = parsedBody.goal_stall.slice(0, MAX_GOAL_STALL).map(sanitiseGoalStall).filter((x) => x !== null);
     if (stalls.length > 0) value.goal_stall = stalls;
+  }
+
+  // Optional (#769): absent or non-array -> no key. First 50 entries, then filtered.
+  if (Array.isArray(parsedBody.scheduled_triggers)) {
+    const triggers = parsedBody.scheduled_triggers.slice(0, MAX_SCHEDULED_TRIGGERS).map(sanitiseScheduledTrigger).filter((t) => t !== null);
+    if (triggers.length > 0) value.scheduled_triggers = triggers;
   }
 
   // Optional (issue #756): absent -> no key (an older host); present but not an array -> [].
