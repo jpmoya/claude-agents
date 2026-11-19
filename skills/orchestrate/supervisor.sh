@@ -980,7 +980,7 @@ jp_gate_remind() {
 # the run exactly like the other resumes: a queue entry, which step 2's do_launch turns into claim + settle + launch when a slot and
 # memory allow (a busy slot leaves it queued, which the status page counts as owned). Loop guard: orch-<rk>.answered holds the last answer
 # comment id acted on; one relaunch per answer id, so a run that parks again on the same gate waits for a NEW answer.
-#   orch-<rk>.answered-at   createdAt of an answer found but not yet relaunched (the status page's "pending within grace" clock)
+#   orch-<rk>.answered_at   createdAt of an answer found but not yet relaunched (the status page's "pending within grace" clock)
 #   orch-<rk>.answer-check  throttle stamp for a repo this process has not synced (a synced repo is read every tick, for free)
 ANSWERED_CHECK_SECS=${ANSWERED_CHECK_SECS:-300}
 # answered_dispatch_ok <slug> <issue> <labels, one per line> — the step-5 rules for a ticket this host may start: a goal whose lead is
@@ -1020,13 +1020,13 @@ answered_relaunch() {
     slog "[answered] ${slug:-$repo}#$issue — issue read failed: ${info:-no error text}; $(sw_tags supervisor/answered)"
     autoretry_alert "$issue" "issue read" answered; return 1; }
   [ "$(printf '%s' "$info" | jq -r '.state // empty' 2>/dev/null)" = "OPEN" ] || return 1
-  ans=$(held_answer "$info") || { rm -f "$PIPE/orch-$rk.answered-at"; return 1; }
+  ans=$(held_answer "$info") || { rm -f "$PIPE/orch-$rk.answered_at"; return 1; }
   IFS=$'\t' read -r id marker created <<EOF_ANS
 $ans
 EOF_ANS
   guard=$(tr -dc '0-9' 2>/dev/null < "$PIPE/orch-$rk.answered"); guard=${guard:-0}
   [ "$id" -gt "$guard" ] || return 1                                      # this answer was already acted on
-  case "$created" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) printf '%s\n' "$created" > "$PIPE/orch-$rk.answered-at" ;; esac
+  case "$created" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) printf '%s\n' "$created" > "$PIPE/orch-$rk.answered_at" ;; esac
   # the stops that already end a run on purpose: too many restarts without progress (escalate), or the counters at their ceiling
   why=""
   grep -q 'manual relaunch after investigation' "$PIPE/orch-$rk.alert" 2>/dev/null && why="escalated after repeated restarts"
@@ -1054,7 +1054,7 @@ PY
     return 1
   fi
   echo "$id" > "$PIPE/orch-$rk.answered"
-  rm -f "$PIPE/orch-$rk.held" "$PIPE/orch-$rk.alert" "$PIPE/orch-$rk.answered-at" "$PIPE/orch-$rk.answered-skip"
+  rm -f "$PIPE/orch-$rk.held" "$PIPE/orch-$rk.alert" "$PIPE/orch-$rk.answered_at" "$PIPE/orch-$rk.answered-skip"
   slog "[answered] ${slug:-$repo}#$issue — relaunched after $marker $id"
   report_status_async "answered"
   return 0

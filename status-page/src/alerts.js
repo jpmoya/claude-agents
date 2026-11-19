@@ -14,11 +14,12 @@
 // A stale or offline host is reported once (family 4) and its old data raises no other alert.
 
 import { isIssueUrl } from './validate.js';
-import { groupTickets } from './group.js';
+import { groupTickets, keyOf, liveTicketKeys } from './group.js';
 
 export const IDLE_SLOT_MINUTES = 10;
 export const TICK_SLOW_MINUTES = 15;
 export const GOAL_STALL_HOURS = 6;
+export const ANSWER_GRACE_MINUTES = 10; // an answered ticket may wait this long (2 supervisor ticks) for its relaunch before it counts as stuck (#780)
 export const TRIGGER_OVERDUE_FACTOR = 3; // alert when the newest fire is older than this many intervals ...
 export const TRIGGER_REPORT_LAG_MINUTES = 10; // ... plus the host's keep-alive (600 s): last_fired_at is not in the beat's change hash, so it can be that stale
 export const WEBHOOK_STALE_MINUTES = 30; // mirrors the host default WEBHOOK_STALE_MINUTES: the page computes the age itself from the VM receiver's last event
@@ -156,11 +157,23 @@ function unownedAlert(liveHosts, nowEpochSecs) {
   const needsJp = groups[3].rows;
   const parked = groups[5].rows;
   const rank = { answered: 0, jp: 1, paused: 2 };
+  // #780: a ticket is owned (not unowned) while a run on ANY host holds it (running, restarting, queued), or while JP's answer is
+  // fresh enough (answered_at within ANSWER_GRACE_MINUTES) that the supervisor's next tick will relaunch it.
+  const live = liveTicketKeys(liveHosts);
+  const pending = (run) => {
+    const at = epoch(run.answered_at);
+    return at !== null && nowEpochSecs - at <= ANSWER_GRACE_MINUTES * 60;
+  };
+  const stuck = (run) => epoch(run.answered_at) !== null; // answered, and past the grace (the pending ones were dropped above)
   const rows = [];
-  for (const run of needsJp) rows.push({ run, kind: 'jp' });
+  for (const run of needsJp) {
+    if (live.has(keyOf(run)) || pending(run)) continue;
+    rows.push({ run, kind: stuck(run) ? 'answered' : 'jp' });
+  }
   for (const run of parked) {
     if (run.state !== 'held' || FINISHED_PARKED.includes(run.parked_reason)) continue;
-    const answered = run.parked_reason === 'answered' || ANSWER_MARKERS.includes(run.marker);
+    if (live.has(keyOf(run)) || pending(run)) continue;
+    const answered = run.parked_reason === 'answered' || ANSWER_MARKERS.includes(run.marker) || stuck(run);
     rows.push({ run, kind: answered ? 'answered' : 'paused' });
   }
   if (rows.length === 0) return null;

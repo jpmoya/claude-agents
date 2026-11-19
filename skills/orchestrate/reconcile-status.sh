@@ -290,6 +290,18 @@ RCFACTS
         fi
       fi
     fi
+    # #780: when JP's answer to the gate is on the issue and the supervisor has not relaunched on it yet (its loop-guard id in
+    # orch-<rk>.answered is lower), the answer's createdAt: the status page's "answered, pending within grace" clock. Same detector
+    # as the supervisor's relaunch (held_answer). A fixed-format timestamp only, never comment text.
+    ans_at=""
+    if [ "$state" = "held" ] && ans=$(held_answer "$info" 2>/dev/null) && [ -n "$ans" ]; then
+      IFS=$'\t' read -r a_id a_marker a_created <<RCANS
+$ans
+RCANS
+      a_guard=$(tr -dc '0-9' 2>/dev/null < "$PIPE/orch-$rk.answered"); a_guard=${a_guard:-0}
+      case "$a_created" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) [ "$a_id" -gt "$a_guard" ] && ans_at=$a_created ;; esac
+    fi
+    rc_set "$PIPE/orch-$rk.answered_at" "$ans_at"
     rc_set "$PIPE/orch-$rk.gate_at" "$gate_at"
     rc_set "$PIPE/orch-$rk.needs" "$needs"
     rc_set "$PIPE/orch-$rk.parked_reason" "$reason"

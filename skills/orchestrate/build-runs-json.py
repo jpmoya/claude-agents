@@ -1469,6 +1469,9 @@ for raw in sys.stdin:
     gate_at = state_file_for(issue, "gate_at")
     if ISO_Z_RE.match(gate_at):
         run["gate_at"] = gate_at
+    answered_at = state_file_for(issue, "answered_at")  # #780: JP's answer is on the issue and no relaunch has used it yet
+    if ISO_Z_RE.match(answered_at):
+        run["answered_at"] = answered_at
     parked_reason = state_file_for(issue, "parked_reason")
     if parked_reason in PARKED_REASONS:
         run["parked_reason"] = parked_reason

@@ -25,7 +25,18 @@ const HEADINGS = {
 
 const CAPS = { done: 20, staging: 60 }; // Needs JP, Approved and Parked are never truncated: a silent cap hid #892
 
-const keyOf = (item) => (isIssueUrl(item.url) ? item.url : `${item.repo}#${item.issue}`);
+export const keyOf = (item) => (isIssueUrl(item.url) ? item.url : `${item.repo}#${item.issue}`);
+
+const LIVE_RUN_STATES = ['running', 'restarting', 'queued'];
+
+/** Keys of tickets that have a live run (running, restarting or waiting in the queue) on ANY host: someone owns them (#780). */
+export function liveTicketKeys(hosts) {
+  const keys = new Set();
+  for (const hostKey of HOST_ORDER) {
+    for (const run of listOf(hosts[hostKey], 'runs')) if (LIVE_RUN_STATES.includes(run.state)) keys.add(keyOf(run));
+  }
+  return keys;
+}
 
 function epoch(iso) {
   const ms = typeof iso === 'string' ? Date.parse(iso) : NaN;
