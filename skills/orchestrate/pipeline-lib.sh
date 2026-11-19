@@ -14,9 +14,40 @@ run_key() {
   printf '%s-%s\n' "${1//\//_}" "$2"
 }
 
-# repo_slug <local checkout> — prints owner/repo from the checkout's origin (local, no network); falls back to gh.
+# Renamed repos (#792): state files and queue entries written before the rename still name the old local checkout directory
+# (~/dev/scheduler, ~/dev/benjis-quoting-tool). skills/ticket-intake/repo-aliases.txt ("<old owner/repo> <new owner/repo>") is the
+# one alias list; the checkout directory is named after the repo, so a missing old directory is read as its renamed sibling.
+PIPELINE_REPO_ALIASES_FILE="${PIPELINE_REPO_ALIASES_FILE:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../ticket-intake/repo-aliases.txt}"
+
+# repo_alias_new <repo name, no owner> -> the current repo name (stdout, empty when the name is not a listed old name; case-insensitive)
+repo_alias_new() {
+  awk -v w="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" '/^[[:space:]]*#/ { next } NF == 2 { o=$1; sub(/^.*\//, "", o); if (tolower(o) == w) { print $2; exit } }' "$PIPELINE_REPO_ALIASES_FILE" 2>/dev/null
+}
+
+# repo_dir_current <checkout path> -> the path to use: itself when it exists; else the renamed sibling directory (same parent, the old
+# directory name mapped through the alias list, or the new repo name) when that exists; else the input unchanged. No network, no writes.
+repo_dir_current() {
+  local p="${1%/}" base new
+  if [ -z "$p" ] || [ -d "$p" ]; then printf '%s\n' "$1"; return 0; fi
+  base=${p##*/}; new=$(repo_alias_new "$base")
+  if [ -n "$new" ] && [ -d "${p%/*}/${new##*/}" ]; then printf '%s\n' "${p%/*}/${new##*/}"; return 0; fi
+  printf '%s\n' "$1"
+}
+
+# repo_slug <local checkout> — prints owner/repo from the checkout's origin (local, no network); falls back to gh. A checkout
+# directory that no longer exists under its old name (#792) is read through repo_dir_current; when no sibling exists either, the old
+# directory name itself is mapped through the alias list to the current owner/repo. A slug read from a live origin URL is never rewritten
+# (run keys of runs already on disk are built from it).
 repo_slug() {
-  local u slug
+  local u slug dir base
+  dir=$1
+  # the `type` guards keep a harness that extracts repo_slug alone (tests eval single functions) on the old behaviour
+  ! type repo_dir_current >/dev/null 2>&1 || dir=$(repo_dir_current "$1")
+  if [ -n "$1" ] && [ ! -d "$dir" ] && type repo_alias_new >/dev/null 2>&1; then   # an empty path keeps its old meaning (git -C "" = the current directory)
+    base=${dir%/}; base=${base##*/}
+    printf '%s' "$(repo_alias_new "$base")"; return 0
+  fi
+  set -- "$dir"
   u=$(git -C "$1" config --get remote.origin.url 2>/dev/null) || u=""
   slug=$(printf '%s' "$u" | sed -E -e 's#^.*github\.com[:/]+##' -e 's#\.git$##' -e 's#/+$##')
   case "$slug" in */*) ;; *) slug="" ;; esac
@@ -303,6 +334,17 @@ _remote_owner_repo() {
   case "$url" in */*) printf '%s' "$url" ;; *) return 1 ;; esac
 }
 
+# integration_branch_for <repo name, no owner> -> the branch PRs land on: staging for the ops tool and the sales tool, else main.
+# scheduler and benjis-quoting-tool are the pre-rename names (benjis-ops-tool, benjis-sales-tool; #109, #792); all four are kept so
+# a host whose DISPATCH_REPOS/cache has not re-resolved yet still maps correctly, and canonicalize_repo_lists's rewrite to
+# benjis-ops-tool keeps the staging branch (it fell through to main before #792).
+integration_branch_for() {
+  case "$1" in
+    scheduler|benjis-ops-tool|benjis-quoting-tool|benjis-sales-tool) echo staging ;;
+    *) echo main ;;
+  esac
+}
+
 # _issue_num_from <string> — the digits of an `issue-<N>` segment in <string>, matching `issue-<N>`, `issue-<N>-*`,
 # and a prefixed form `<anything>/issue-<N>[-*]` (so a branch like `fix/issue-492-retry` resolves too, not only a
 # bare `issue-492-retry`). Empty when no such segment is present, or when the captured run of characters up to the
@@ -353,12 +395,7 @@ sweep_stale_worktrees() {
     owner_repo="${entry%%:*}"; local_path="${entry#*:}"; local_path="${local_path/#\~/$HOME}"
     [ -d "$local_path/.git" ] || continue
     repo_name="${owner_repo##*/}"
-    case "$repo_name" in
-      # benjis-quoting-tool is the pre-rename name (#109, 2026-10-18 -> benjis-sales-tool); keep both so a host
-      # whose DISPATCH_REPOS/cache has not re-resolved yet still maps correctly.
-      scheduler|benjis-quoting-tool|benjis-sales-tool) integration_branch=staging ;;
-      *) integration_branch=main ;;
-    esac
+    integration_branch=$(integration_branch_for "$repo_name")
     # owner/repo for `gh pr list --repo` — from the checkout's own remote, not the (possibly stale) config slug.
     # Falls back to the config slug when the remote URL can't be parsed (gh pr lookup then falls back too, below).
     remote_repo=$(_remote_owner_repo "$local_path") || remote_repo="$owner_repo"

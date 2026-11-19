@@ -161,11 +161,12 @@ autoretry_alert() {  # <issue> <what> [step, default auto-retry] — Slack webho
 # state,body,comments` shape, #388). On failure returns 1 and prints a one-line, token-free reason instead.
 issue_info_rest() {
   local repo=$1 issue=$2 slug errf iss com rc=0
+  ! type repo_dir_current >/dev/null 2>&1 || repo=$(repo_dir_current "$repo")   # #792: a state file written before the rename names the old checkout directory
   slug=$(repo_slug "$repo"); errf=$(mktemp "${TMPDIR:-/tmp}/iir-err.XXXXXX")
   if [ -z "$slug" ]; then rm -f "$errf"; echo "rc=1: repo name not resolvable"; return 1; fi
-  iss=$(cd "$repo" 2>/dev/null && gh api "repos/$slug/issues/$issue" 2>"$errf" </dev/null) || rc=$?
+  iss=$({ cd "$repo" 2>/dev/null || true; } && gh api "repos/$slug/issues/$issue" 2>"$errf" </dev/null) || rc=$?
   if [ "$rc" -eq 0 ]; then
-    com=$(cd "$repo" 2>/dev/null && gh api "repos/$slug/issues/$issue/comments?per_page=100" --paginate 2>>"$errf" </dev/null) || rc=$?
+    com=$({ cd "$repo" 2>/dev/null || true; } && gh api "repos/$slug/issues/$issue/comments?per_page=100" --paginate 2>>"$errf" </dev/null) || rc=$?
   fi
   if [ "$rc" -eq 0 ]; then
     printf '%s' "$com" | jq -s '{c: (map(if type == "array" then .[] else . end))}' 2>>"$errf" | jq -c --argjson i "$iss" \
@@ -199,16 +200,17 @@ latest_marker() {  # the GATE marker: newest real routing marker whose agent is 
   # A failed read is "?" — callers must treat it as unknown, never as "no progress" (#387) — and is logged with rc + gh's first error line.
   # One comments call per read; the issue author (SKIP MOCKUPS check, #272) is fetched only when such a comment exists.
   local slug errf raw out rc=0 author=""
+  ! type repo_dir_current >/dev/null 2>&1 || repo=$(repo_dir_current "$repo")   # #792: old checkout directory name from a pre-rename state file
   slug=$(repo_slug "$repo"); errf=$(mktemp "${TMPDIR:-/tmp}/lm-err.XXXXXX")
   if [ -n "$pre" ]; then   # #548: the caller already fetched the comments (one merged JSON array): no gh call
     raw=$pre; author=$pre_author
   elif [ -z "$slug" ]; then rc=1; echo "repo name not resolvable" > "$errf"
-  else raw=$(cd "$repo" 2>/dev/null && gh api "repos/$slug/issues/$issue/comments?per_page=100" --paginate 2>"$errf" </dev/null) || rc=$?; fi
+  else raw=$({ cd "$repo" 2>/dev/null || true; } && gh api "repos/$slug/issues/$issue/comments?per_page=100" --paginate 2>"$errf" </dev/null) || rc=$?; fi
   if [ "$rc" -eq 0 ]; then
     raw=$(printf '%s' "$raw" | jq -s '{comments: (map(if type == "array" then .[] else . end))}' 2>>"$errf") || rc=1
   fi
   if [ "$rc" -eq 0 ] && printf '%s' "$raw" | grep -qE 'SKIP MOCKUPS|\[jp\] (MOCKUPS APPROVED|GO)'; then
-    [ -n "$author" ] || author=$(cd "$repo" 2>/dev/null && gh api "repos/$slug/issues/$issue" 2>/dev/null </dev/null | jq -r '.user.login // empty' 2>/dev/null) || author=""   # failure => no author => the skip is ignored, the gate stays
+    [ -n "$author" ] || author=$({ cd "$repo" 2>/dev/null || true; } && gh api "repos/$slug/issues/$issue" 2>/dev/null </dev/null | jq -r '.user.login // empty' 2>/dev/null) || author=""   # failure => no author => the skip is ignored, the gate stays
     [ -z "$author" ] || raw=$(printf '%s' "$raw" | jq -c --arg a "$author" '. + {author: {login: $a}}')
   fi
   if [ "$rc" -eq 0 ] && out=$(printf '%s' "$raw" | jq -r "$prog" 2>>"$errf") && [ -n "$out" ]; then
@@ -382,7 +384,7 @@ sw_stuck_holds() {
   for f in "$PIPE"/orch-*.held; do
     [ -e "$f" ] || break
     rk=$(basename "$f" .held); rk=${rk#orch-}; issue=${rk##*-}
-    repo=$(cat "$PIPE/orch-$rk.repo" 2>/dev/null || echo "")
+    repo=$(repo_dir_current "$(cat "$PIPE/orch-$rk.repo" 2>/dev/null || echo "")")   # #792: old checkout dir names map to the renamed sibling
     [ -n "$repo" ] || continue
     held_at=$(_rs_mtime "$f")
     [ -n "$held_at" ] || continue
@@ -1119,7 +1121,7 @@ for f in "$PIPE"/orch-*.pid; do
   [ -e "$f" ] || break
   rk=$(basename "$f" .pid); rk=${rk#orch-}; issue=${rk##*-}   # <owner>_<repo>-<N>; an unmigrated legacy bare <N> reads as is
   pid=$(cat "$f")
-  repo=$(cat "$PIPE/orch-$rk.repo" 2>/dev/null || echo "")
+  repo=$(repo_dir_current "$(cat "$PIPE/orch-$rk.repo" 2>/dev/null || echo "")")   # #792: old checkout dir names map to the renamed sibling
   [ -z "$repo" ] && continue
 
   # Skip if alive
@@ -1600,7 +1602,7 @@ LOOPCAP_THROTTLE_SECS=300
 for f in "$PIPE"/orch-*.held; do
   [ -e "$f" ] || break
   rk=$(basename "$f" .held); rk=${rk#orch-}; issue=${rk##*-}
-  repo=$(cat "$PIPE/orch-$rk.repo" 2>/dev/null || echo "")
+  repo=$(repo_dir_current "$(cat "$PIPE/orch-$rk.repo" 2>/dev/null || echo "")")   # #792: old checkout dir names map to the renamed sibling
   [ -n "$repo" ] || continue
   [ -f "$PIPE/orch-$rk.stopped" ] || [ -f "$PIPE/orch-$rk.done" ] && continue
   jp_gate_remind "$rk" "$issue" "$repo"   # #677: one reminder per JP-gate hold
@@ -1783,6 +1785,7 @@ print('%d %d' % (int(t), int('$q_issue')))
 
   if [ -n "$best_qf" ]; then
     q_repo=$(python3 -c "import json; print(json.load(open('$best_qf'))['repo'])" 2>/dev/null)
+    q_repo=$(repo_dir_current "$q_repo")   # #792: a queue entry written before the rename names the old checkout directory
     q_extra=$(python3 -c "import json; print(json.load(open('$best_qf')).get('extra',''))" 2>/dev/null)
     q_reason=$(python3 -c "import json; print(json.load(open('$best_qf')).get('reason','queued'))" 2>/dev/null)
     restart_n=0
@@ -1818,7 +1821,7 @@ if [ "$T_NORMAL" = 1 ]; then
 for f in "$PIPE"/orch-*.pid; do
   [ -e "$f" ] || break
   rk=$(basename "$f" .pid); rk=${rk#orch-}; issue=${rk##*-}   # <owner>_<repo>-<N>; an unmigrated legacy bare <N> reads as is
-  repo=$(cat "$PIPE/orch-$rk.repo" 2>/dev/null || echo "")
+  repo=$(repo_dir_current "$(cat "$PIPE/orch-$rk.repo" 2>/dev/null || echo "")")   # #792: old checkout dir names map to the renamed sibling
   [ -z "$repo" ] && continue
   kill -0 "$(cat "$f")" 2>/dev/null && continue
   if   [ -f "$PIPE/orch-$rk.done" ];    then clear_in_progress "$repo" "$issue" done "$rk"

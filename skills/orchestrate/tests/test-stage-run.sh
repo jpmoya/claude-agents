@@ -729,7 +729,7 @@ test_sr_ac11_log_run_and_runs_jsonl_unchanged() {
   now=$(grep -c 'log_run' "$ORCH_SR")
   base=$(cd "$ROOT_SR" && git show origin/main:agents/orchestrator.md | grep -c 'log_run')
   assert_le "$base" "$now" "AC11: log_run count ($now) not lower than main ($base)" || return 1
-  assert_contains "$(cat "$ORCH_SR")" '"event":"dispatch","repo":"jpmoya/scheduler"' "AC11: the dispatch log_run example is still there" || return 1
+  assert_contains "$(cat "$ORCH_SR")" '"event":"dispatch","repo":"Benjis-Plants/benjis-ops-tool"' "AC11: the dispatch log_run example is still there" || return 1
   assert_contains "$(cat "$ORCH_SR")" "It is the only file you write" "AC11: 'only file you write' stays" || return 1
   assert_eq "$(cd "$ROOT_SR" && git show origin/main:agents/orchestrator.md | grep -c 'It is the only file you write')" \
             "$(grep -c 'It is the only file you write' "$ORCH_SR")" "AC11: that line is unchanged in count" || return 1

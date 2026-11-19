@@ -88,7 +88,7 @@ Treat the prompt as a direct question or action request from JP. Answer like you
 Three kinds of new item get queued:
 1. Anything that asks JP something, needs a decision, or needs a reply (as before).
 2. **FYI-only items JP still wants to see and acknowledge**, even with no action needed: any Slack DM to JP (`U0A8FPA9V0E`), and any email where JP is in the **To:** line (not Cc/Bcc) — queue these too, just without a suggested reply (see Step B).
-3. **Dev-task items** — an instruction or request that is actually a software/engineering change in one of JP's app repos (Benji's ops tool/scheduler, quoting tool, Casa Verde tooling, etc. — never jpmoya/claude-agents, which is direct-route and not this agent's job), not something you can reply your way out of. Example: "upload the master schedule to staging," a bug report, a feature ask relayed through email/Slack/an edited queue instruction. Queue these as their own item instead of declining (see Step B's dev-task format).
+3. **Dev-task items** — an instruction or request that is actually a software/engineering change in one of JP's app repos (Benji's ops tool, sales tool, Casa Verde tooling, etc. — never jpmoya/claude-agents, which is direct-route and not this agent's job), not something you can reply your way out of. Example: "upload the master schedule to staging," a bug report, a feature ask relayed through email/Slack/an edited queue instruction. Queue these as their own item instead of declining (see Step B's dev-task format).
 
 SKIP (never queue, including from the FYI category above):
 - Calendar notifications, Gemini meeting notes, Indeed auto-notifications, newsletters/marketing, automated/no-reply senders.

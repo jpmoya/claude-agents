@@ -34,7 +34,48 @@ _goal_is_bi() { case "$1" in */Business-Intelligence) return 0 ;; esac; return 1
 # direct_route_repo (#632) comes from config.sh, which every entry point sources first; a harness that sources this file alone gets the empty rule
 type direct_route_repo >/dev/null 2>&1 || direct_route_repo() { return 1; }
 
+# Renamed repos (#792). skills/ticket-intake/repo-aliases.txt ("<old owner/repo> <new owner/repo>" per line, no network) is the one
+# alias list; it is read only here for goals. New specs and ids use the current repo name; an id stored under an old name
+# (Benjis-Plants_benjis-quoting-tool-ms-112, Benjis-Plants_scheduler-fb-feedback) is the same goal as its current-name twin.
+# Nothing in the registry, in $PIPE or on the status page is rewritten: lookups match through the alias, nothing else changes.
+GOAL_REPO_ALIASES_FILE="${GOAL_REPO_ALIASES_FILE:-$_GOAL_LIB_DIR/../ticket-intake/repo-aliases.txt}"
+
+# goal_repo_current <owner/repo> -> the current name when it is a listed old name (case-insensitive), else the input unchanged
+goal_repo_current() {
+  local out
+  out=$(awk -v w="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" '/^[[:space:]]*#/ { next } NF == 2 && tolower($1) == w { print $2; exit }' "$GOAL_REPO_ALIASES_FILE" 2>/dev/null)
+  printf '%s\n' "${out:-$1}"
+}
+
+# _goal_id_alias_pairs -> JSON [[old id prefix, new id prefix], ...]; "<owner>_<repo>" with the goal_id character rule
+_goal_id_alias_pairs() {
+  awk '/^[[:space:]]*#/ { next } NF == 2 { gsub(/[^A-Za-z0-9._-]/, "_", $1); gsub(/[^A-Za-z0-9._-]/, "_", $2); print $1 "\t" $2 }' "$GOAL_REPO_ALIASES_FILE" 2>/dev/null \
+    | jq -Rsc 'split("\n") | map(select(. != "") | split("\t"))' 2>/dev/null || printf '[]\n'
+}
+
+# jq: `cur` maps an id to its current-name form through $p (_goal_id_alias_pairs): old "<owner>_<repo>" prefix, only before "-<ms|msall|t|fb>-"
+_GOAL_ID_CUR_JQ='def cur: . as $i | (first($p[] | . as $q | select(($i | ascii_downcase | startswith(($q[0] | ascii_downcase) + "-")) and ($i[($q[0] | length) + 1:] | test("^(ms|msall|t|fb)-")))) as $m | $m[1] + $i[($m[0] | length):]) // $i;
+'
+# goal_id_current <id> -> the id with an old repo name replaced by the current one (only the "<owner>_<repo>-<ms|msall|t|fb>-" form
+# goal_id writes); any other id (label-, proj-, current names) is printed unchanged
+goal_id_current() {
+  local pairs
+  pairs=$(_goal_id_alias_pairs)
+  jq -rn --arg id "$1" --argjson p "$pairs" "$_GOAL_ID_CUR_JQ"'$id | cur'
+}
+
+# goal_id_audit -> "<registry issue>\t<state: open|closed>\t<id>\t<current id>" for every registry goal whose id still carries an
+# old repo name (read-only: the registry, nothing is written). Empty output = no goal depends on the alias.
+goal_id_audit() {
+  local j pairs
+  j=$(_goal_registry_json all) || { echo "cannot read the goal registry" >&2; return 1; }
+  pairs=$(_goal_id_alias_pairs)
+  printf '%s' "$j" | jq -r --argjson p "$pairs" "$_GOAL_ID_CUR_JQ"'
+    .[] | select((.id | cur) != .id) | "\(.issue)\t\(.state)\t\(.id)\t\(.id | cur)"'
+}
+
 # goal_parse <spec> -> "repo<TAB>kind<TAB>ref" (kind: ms | msall | t | fb | label | proj); exit 1 when malformed.
+# A repo named by an old (pre-rename) name is printed under its current name (#792).
 # owner/repo:feedback (kind fb) is the standing staff-feedback goal (#472): scope = the repo's user-feedback tickets that are
 # not in the scope of another live goal (#517: not "in no milestone" — the product-manager gives every ticket a milestone).
 # label:<exact label name> is the cross-repo form (#319): repo is "-" (the repos live in the registry v2 block).
@@ -54,7 +95,7 @@ goal_parse() {
       printf -- '-\tproj\t%s\n' "$ref"; return 0 ;;
   esac
   if ! [[ "$spec" =~ $re ]]; then echo "malformed goal '$spec' (want $_GOAL_FORMS)" >&2; return 1; fi
-  repo="${BASH_REMATCH[1]}"; rest="${BASH_REMATCH[2]}"
+  repo=$(goal_repo_current "${BASH_REMATCH[1]}"); rest="${BASH_REMATCH[2]}"
   case "$rest" in
     '#'*)
       ref="${rest#\#}"
@@ -124,7 +165,7 @@ goal_go_refusal() {
     "Add the flag he chose: deliver.sh project:<owner>/<n> --go|--no-go [--priority <n>] [--now] [instructions...]. Legacy tooling only: GOAL_ALLOW_LEGACY_REGISTER=1."
 }
 
-# goal_name_for <spec> -> a human-readable name for a milestone / ticket goal ("scheduler: Native 3.4", "scheduler #1345: Title");
+# goal_name_for <spec> -> a human-readable name for a milestone / ticket goal ("benjis-ops-tool: Native 3.4", "benjis-ops-tool #1345: Title");
 # empty (exit 1) when GitHub cannot say. The status page shows it instead of the raw spec.
 goal_name_for() {
   local line repo kind ref short t
@@ -540,7 +581,10 @@ goal_registry_list() {
 _goal_find() {
   local j g
   j=$(_goal_registry_json all) || return 1
-  g=$(printf '%s' "$j" | jq -c --arg id "$1" '[.[] | select(.id == $id)] | ((map(select(.state == "open")) | first) // (sort_by(.issue) | last) // empty)')
+  # #792: an old-name id and its current-name twin are one goal; the open entry wins, an exact id wins among equals
+  g=$(printf '%s' "$j" | jq -c --arg id "$1" --argjson p "$(_goal_id_alias_pairs)" "$_GOAL_ID_CUR_JQ"'
+    [.[] | select((.id | cur) == ($id | cur))]
+    | ((map(select(.state == "open")) | (map(select(.id == $id)) | first) // first) // (sort_by(.issue) | last) // empty)')
   [ -n "$g" ] || return 1
   printf '%s\n' "$g"
 }

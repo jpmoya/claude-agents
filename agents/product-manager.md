@@ -13,9 +13,9 @@ Always a GitHub issue. Specs live as issues, not markdown files.
 
 ## Duplicate check first (JP, 2026-10-31 — before you file or specify anything)
 
-JP: "every single time I request a ticket to be logged there is a check to make sure a pre-existing ticket doesn't already exist." Scheduler #2016 was specified to READY and only then rejected as a duplicate of #1840/#1841.
+JP: "every single time I request a ticket to be logged there is a check to make sure a pre-existing ticket doesn't already exist." Ops tool #2016 (then named scheduler) was specified to READY and only then rejected as a duplicate of #1840/#1841.
 
-- **Before filing any ticket** (a new request, a dependency follow-up, a split): run `~/.claude/skills/orchestrate/find-duplicates.sh <owner/repo> "<title>" "<key words, file/component names, error text>"`. It searches every open and closed issue and PR of the repo and its sibling repos (scheduler/benjis-ops-tool, quoting tool/sales tool), any label, and exits 1 when a strong candidate exists.
+- **Before filing any ticket** (a new request, a dependency follow-up, a split): run `~/.claude/skills/orchestrate/find-duplicates.sh <owner/repo> "<title>" "<key words, file/component names, error text>"`. It searches every open and closed issue and PR of the repo and its sibling repos (the ops tool with its pre-rename name `scheduler`, the sales tool with `benjis-quoting-tool`), any label, and exits 1 when a strong candidate exists.
 - **Before writing a spec on an existing ticket** (your first dispatch on it, including the supervisor's spec-only run): run it with `--exclude <N>`. If another ticket already covers the request, do not write the spec: on a `user-feedback` ticket post `**[product-manager] REJECTED**` with `Reason: duplicate of #M`; otherwise comment `**[product-manager] NOTE** duplicate of #M` and stop.
 - **A pre-existing ticket covers it** → do not file. Comment on that ticket with what is new (or extend its body/ACs if it is not yet in engineering), and if the request belongs to a goal, add the goal's `goal: ` label or milestone to that existing ticket instead of creating a new one.
 - **Every candidate is genuinely different** → file, with a body line `Dup-check: reviewed #A, #B — differs because <reason>` naming each strong candidate. `hooks/dedupe-ticket-guard.sh` blocks a `gh issue create` whose strong candidates are not named that way (a `Parent:` line counts for the parent).
@@ -99,11 +99,11 @@ JP's rule (2026-09-19): "A follow-up to a ticket that I've already approved inhe
 - **Never for `Business-Intelligence`.** JP's standing rule: no Business-Intelligence pipeline work is ever queued automatically. A child in that repo gets the `Parent:` line but never `agent-go` from you.
 - **Never for a direct-route repo** (`DIRECT_ROUTE_REPOS` in `skills/orchestrate/config.sh`, today `jpmoya/claude-agents`): file the ticket for history and the dup-check, never add `agent-go`; the interactive session implements it with subagents (JP, 2026-11-09; `launcher.sh` refuses the repo).
 
-**Worked example.** Benjis-Plants/benjis-quoting-tool#216's spec said "#216-B tracks dropping `pricing_users`" and filed nothing; #229 was hand-written two days later and reached JP as a decision request. Under this rule the PM stage of #216 files #229 itself:
+**Worked example.** Benjis-Plants/benjis-sales-tool#216's spec said "#216-B tracks dropping `pricing_users`" and filed nothing; #229 was hand-written two days later and reached JP as a decision request. Under this rule the PM stage of #216 files #229 itself:
 
-- Child body: `Parent: Benjis-Plants/benjis-quoting-tool#216` and `Depends on #216 for merging`.
-- On the child: `--add-label agent-go` and `**[product-manager] NOTE** approval inherited from Benjis-Plants/benjis-quoting-tool#216`.
-- Parent body: `Follow-up: Benjis-Plants/benjis-quoting-tool#229`.
+- Child body: `Parent: Benjis-Plants/benjis-sales-tool#216` and `Depends on #216 for merging`.
+- On the child: `--add-label agent-go` and `**[product-manager] NOTE** approval inherited from Benjis-Plants/benjis-sales-tool#216`.
+- Parent body: `Follow-up: Benjis-Plants/benjis-sales-tool#229`.
 - No blocking questions. The single `JP-only` item is where the pre-drop snapshot of `pricing_users` is stored and who gets access; everything else is decided in the ticket, with a stated default on anything left non-blocking.
 
 ## Tickets added to an approved goal (child of an approved goal)

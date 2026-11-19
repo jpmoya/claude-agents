@@ -24,7 +24,7 @@ security find-generic-password -s "supabase-pat" -w
 
 ## Hitting production vs staging
 
-Scheduler has two Supabase projects. Only production needs this special handling:
+The ops tool (`benjis-ops-tool`, formerly `scheduler`) has two Supabase projects. Only production needs this special handling:
 
 - **Production** — ref `ywwnprpncqrqfiskmoot`. **Hardcode this ref.** Do not derive it from `NEXT_PUBLIC_SUPABASE_URL` or any env var in the ops tool repo — those resolve to **staging** (ref `mjdrysyrqgfhsyakssce`), not production.
 - **Staging** — use the normal client path (`NEXT_PUBLIC_SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` from `.env.local`, or `E2E_SUPABASE_URL` / `E2E_SUPABASE_SERVICE_KEY` for e2e). No Keychain, no Management API — staging needs none of this.

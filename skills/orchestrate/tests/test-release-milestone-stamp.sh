@@ -48,7 +48,7 @@ test_rm_ac3_claude_md_promotion_rule() {
 # AC4: README paragraph, with repo-qualified references (bare #653 would link into this repo).
 test_rm_ac4_readme_paragraph() {
   local s
-  for s in '**Release tracking (issue #37' '`staging`' 'vX.Y.Z' 'Benjis-Plants/scheduler#653' 'Benjis-Plants/scheduler#655'; do
+  for s in '**Release tracking (issue #37' '`staging`' 'vX.Y.Z' 'Benjis-Plants/benjis-ops-tool#653' 'Benjis-Plants/benjis-ops-tool#655'; do
     rm_has "$ROOT_RM/README.md" "$s" || return 1
   done
 }

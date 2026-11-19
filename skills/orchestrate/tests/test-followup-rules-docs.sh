@@ -127,11 +127,11 @@ test_fu_ac3_pipeline_markers_unchanged_and_note_route_is_used() {
 
 test_fu_ac4_pm_worked_example_216_to_229() {
   local win ln
-  fu_has "$PM_FU" 'Benjis-Plants/benjis-quoting-tool#216' || return 1
-  fu_has "$PM_FU" 'Parent: Benjis-Plants/benjis-quoting-tool#216' || return 1
+  fu_has "$PM_FU" 'Benjis-Plants/benjis-sales-tool#216' || return 1
+  fu_has "$PM_FU" 'Parent: Benjis-Plants/benjis-sales-tool#216' || return 1
   fu_has "$PM_FU" 'Depends on #216 for merging' || return 1
-  fu_has "$PM_FU" 'Follow-up: Benjis-Plants/benjis-quoting-tool#229' || return 1
-  ln=$(grep -nF 'Parent: Benjis-Plants/benjis-quoting-tool#216' "$PM_FU" | head -1 | cut -d: -f1)
+  fu_has "$PM_FU" 'Follow-up: Benjis-Plants/benjis-sales-tool#229' || return 1
+  ln=$(grep -nF 'Parent: Benjis-Plants/benjis-sales-tool#216' "$PM_FU" | head -1 | cut -d: -f1)
   win=$(sed -n "$((ln > 25 ? ln - 25 : 1)),$((ln + 25))p" "$PM_FU")
   fu_text_has_i "AC4: example is filed with agent-go" "$win" 'agent-go' || return 1
   fu_text_has_i "AC4: example has no blocking questions" "$win" 'no blocking' || return 1
