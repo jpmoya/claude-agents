@@ -155,8 +155,8 @@ test_fu_ac6_no_new_hook_daemon_timer_or_state_file_and_single_config_key() {
   # goal-register-recipe.txt and goal-title-hint.txt (plain-text message bodies for deliver.sh, kept out of the .sh files: tests pin no `gh project` text there).
   # Extended 2026-11-18 (JP rule: every ticket JP asks for gets a goal project + agent-go): ticket-intake-reminder.sh (UserPromptSubmit), ticket-intake-guard.sh (PreToolUse), ticket-intent-patterns.txt (their one pattern list); skills/ticket-intake/ is a new skill dir, not under skills/orchestrate.
   # Extended 2026-11-19 (JP rule: check where a job runs before stating it): where-things-run.sh under skills/orchestrate (read-only GET calls, no daemon, timer or state file).
-  # Extended 2026-11-19 (#769, JP: shipping must not depend on GitHub's cron): scheduled-triggers.sh (stateless one-pass dispatcher run backgrounded by the
-  # supervisor tick, not a daemon or timer) and its scheduled-triggers.conf.
+  # Extended 2026-11-19 (#769, JP: shipping must not depend on GitHub's cron): scheduled-triggers.sh (stateless one-pass dispatcher run by its own
+  # 1-minute cron job since #783, not a daemon or a supervisor child) and its scheduled-triggers.conf.
   # ticket-description-check.sh removed 2026-11-07 (JP: remove this hook).
   assert_eq "$hooks" "block-nonproject-goal.sh block-orchestrator-agent.sh blocked-chain-stop.sh brevity-reminder.sh brevity-stop.sh bug-fix-skill-reminder.sh cap-heavy-commands.py dedupe-ticket-guard.sh email-send-guard.sh enforce-tests-before-commit.sh limit-shells.sh no-duplicate-stage.sh pipeline-markers.sh protect-locked-tests.sh report-status-hook.sh require-handoff-marker.sh require-question-justification.sh ship-goal-guard.sh sync-agents.sh ticket-intake-guard.sh ticket-intake-reminder.sh ticket-intent-patterns.txt " "AC6: no new hook" || return 1
   top=$(ls "$ROOT_FU/skills/orchestrate" | tr '\n' ' ')

@@ -1,10 +1,11 @@
 #!/bin/bash
-# scheduled-triggers.sh — fires schedule-only GitHub workflows from this host's supervisor instead of GitHub's `schedule:` cron
+# scheduled-triggers.sh — fires schedule-only GitHub workflows from this host's own 1-minute cron job instead of GitHub's `schedule:` cron
 # (#769: the app repos' auto-release router, cron every 5 min, went silent for ~6.5 h on 2026-11-19 and staging sat unreleased).
 # The jobs still run on the self-hosted runners; only the clock moves here. The `schedule:` triggers stay in the app repos as a fallback.
 #
 # Usage: scheduled-triggers.sh [run|status]
-#   run     (default) one pass: dispatch every workflow in scheduled-triggers.conf that is due. Called backgrounded by supervisor.sh each tick.
+#   run     (default) one pass: dispatch every workflow in scheduled-triggers.conf that is due. Run every minute by its own cron entry
+#           (install.sh adds it where SCHEDULED_TRIGGERS_ENABLED=1; #783). NOT called by supervisor.sh: a tick takes 6-60 minutes.
 #   status  print the heartbeat JSON array the status page publishes (local files only, no network):
 #           [{"repo","workflow","interval_minutes","last_fired_at"|null,"tracked_since"|null}] — one per active config line.
 #           tracked_since = when this host first saw the line, so the status page can tell "never fired" from "just enabled".
@@ -132,7 +133,7 @@ if ! mkdir -p "$ST_DIR" 2>/dev/null || [ ! -w "$ST_DIR" ]; then
   exit 0
 fi
 
-# One lock per host, separate from the supervisor's (this runs backgrounded from every tick). A busy lock is a normal skip.
+# One lock per host, separate from the supervisor's (a long tick never blocks a pass). A busy lock is a normal skip.
 if command -v flock >/dev/null 2>&1; then
   exec 8>"$PIPE/scheduled-triggers.lock"
   flock -n 8 || exit 0

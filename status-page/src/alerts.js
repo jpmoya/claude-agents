@@ -194,14 +194,15 @@ function releaseRouterAlerts(liveRecords, nowEpochSecs) {
       const key = `${t.repo}|${t.workflow}`;
       const fired = epoch(t.last_fired_at);
       const since = epoch(t.tracked_since);
-      const cur = seen.get(key) || { repo: t.repo, workflow: t.workflow, interval: t.interval_minutes, fired: null, since: null };
+      const cur = seen.get(key) || { repo: t.repo, full: null, workflow: t.workflow, interval: t.interval_minutes, fired: null, since: null };
+      if (typeof t.full_repo === 'string' && t.full_repo) cur.full = t.full_repo;
       if (fired !== null && (cur.fired === null || fired > cur.fired)) cur.fired = fired;
       if (since !== null && (cur.since === null || since < cur.since)) cur.since = since;
       seen.set(key, cur);
     }
   }
   const out = [];
-  for (const { repo, workflow, interval, fired, since } of seen.values()) {
+  for (const { repo, full, workflow, interval, fired, since } of seen.values()) {
     // a workflow that never fired (every dispatch failing) is measured from when a host first tracked it; no timestamp at all: fail quiet
     const last = fired !== null ? fired : since;
     if (last === null) continue;
@@ -210,9 +211,9 @@ function releaseRouterAlerts(liveRecords, nowEpochSecs) {
     out.push({
       id: `release-router-${repo}-${workflow.replace(/\.ya?ml$/, '')}`,
       severity: 'red',
-      title: `The ${repo} release router has not fired in ${Math.round(age / 60)} minutes`,
-      detail: `${workflow} should fire every ${interval} minutes; ${fired === null ? `it has not fired once in the ${formatDuration(age)} since a supervisor started tracking it` : `nothing has started it for ${formatDuration(age)}`}, so changes merged to staging are not being released.`,
-      hint: 'Check the supervisor on the host that fires it (scheduled-triggers.log: failed lines mean the dispatch is refused), then run the workflow by hand.',
+      title: `The release router for ${full || repo} has not fired in ${Math.round(age / 60)} minutes`,
+      detail: `${workflow} should fire every ${interval} minutes; ${fired === null ? `it has not fired once in the ${formatDuration(age)} since the host started tracking it` : `nothing has started it for ${formatDuration(age)}`}, so changes merged to staging are not being released.`,
+      hint: 'Check the scheduled-triggers cron job on the host that fires it (crontab -l; scheduled-triggers.log: failed lines mean the dispatch is refused), then run the workflow by hand.',
     });
   }
   return out;

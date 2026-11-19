@@ -364,7 +364,8 @@ function sanitiseCron(raw) {
 // ---- scheduled_triggers[] (#769): the heartbeat of the workflows the supervisor fires in place of GitHub's cron (the release router above all).
 // By reconstruction: a repo alias and a workflow file name held to a strict character set, a whole-minute interval and an ISO time or null.
 const MAX_SCHEDULED_TRIGGERS = 50;
-const TRIGGER_REPO = /^[A-Za-z0-9._-]{1,60}$/; // the host publishes the STATUS_REPO_ALIASES alias ("other" when unaliased), never owner/repo
+const TRIGGER_REPO = /^[A-Za-z0-9._-]{1,60}$/; // the host publishes the STATUS_REPO_ALIASES alias ("other" when unaliased); owner/repo travels only in full_repo below
+const TRIGGER_FULL_REPO = /^(?!\.)[A-Za-z0-9._-]{1,60}\/(?!\.)[A-Za-z0-9._-]{1,100}$/; // #783: owner/repo, published only for aliased repos, used in the alert title only
 const TRIGGER_WORKFLOW = /^[A-Za-z0-9._-]{1,80}\.ya?ml$/;
 const MAX_TRIGGER_INTERVAL_MINUTES = 10080; // one week
 
@@ -374,13 +375,15 @@ function sanitiseScheduledTrigger(raw) {
   if (typeof raw.workflow !== 'string' || !TRIGGER_WORKFLOW.test(raw.workflow)) return null;
   const interval = raw.interval_minutes;
   if (!Number.isInteger(interval) || interval < 1 || interval > MAX_TRIGGER_INTERVAL_MINUTES) return null;
-  return {
+  const out = {
     repo: raw.repo,
     workflow: raw.workflow,
     interval_minutes: interval,
     last_fired_at: sanitiseCronDate(raw.last_fired_at),
     tracked_since: sanitiseCronDate(raw.tracked_since), // when the host first saw this line: "never fired" vs "just enabled"
   };
+  if (typeof raw.full_repo === 'string' && TRIGGER_FULL_REPO.test(raw.full_repo)) out.full_repo = raw.full_repo; // additive: an older host omits it
+  return out;
 }
 
 // #657: tracks CI_QUEUE_CATEGORY_VOCAB's length (not hand-picked) so adding/removing a vocab

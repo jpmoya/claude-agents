@@ -24,7 +24,7 @@ describe('release router alert', () => {
     const a = router(derive(host([trigger(26)])));
     expect(a).toHaveLength(1);
     expect(a[0].severity).toBe('red');
-    expect(a[0].title).toBe('The ops release router has not fired in 26 minutes');
+    expect(a[0].title).toBe('The release router for ops has not fired in 26 minutes');
     expect(a[0].detail).toContain('every 5 minutes');
   });
   it('is quiet at 25 minutes and when it fired a minute ago', () => {
@@ -43,7 +43,7 @@ describe('release router alert', () => {
   it('fires for a router that never fired once it has been tracked longer than the threshold (every dispatch failing)', () => {
     const a = router(derive(host([neverFired(60)])));
     expect(a).toHaveLength(1);
-    expect(a[0].title).toBe('The ops release router has not fired in 60 minutes');
+    expect(a[0].title).toBe('The release router for ops has not fired in 60 minutes');
     expect(a[0].detail).toContain('not fired once');
   });
   it('is quiet for a never-fired router that was only just enabled (25 minutes tracked), and loud at 26', () => {
@@ -61,9 +61,17 @@ describe('release router alert', () => {
   it('one alert per repo, so two repos each get their own', () => {
     const a = router(derive(host([trigger(60), trigger(60, { repo: 'sales' }), trigger(1, { repo: 'quoting' })])));
     expect(a.map((x) => x.title)).toEqual([
-      'The ops release router has not fired in 60 minutes',
-      'The sales release router has not fired in 60 minutes',
+      'The release router for ops has not fired in 60 minutes',
+      'The release router for sales has not fired in 60 minutes',
     ]);
+  });
+  it('names the full owner/repo when the host publishes full_repo, and the alias otherwise (an older host)', () => {
+    const a = router(derive(host([trigger(60, { full_repo: 'example-owner/project-a' }), trigger(60, { repo: 'sales' })])));
+    expect(a.map((x) => x.title)).toEqual([
+      'The release router for example-owner/project-a has not fired in 60 minutes',
+      'The release router for sales has not fired in 60 minutes',
+    ]);
+    expect(a[0].hint).toContain('cron');
   });
   it('a stale host raises only the host alert, never a router alert from its old data', () => {
     const stale = { ...host([trigger(500)]), received_at: ago(30) };
@@ -85,6 +93,14 @@ describe('validate.js - scheduled_triggers', () => {
     expect(sanitised([{ ...trigger(1), last_fired_at: '2026-11-19T11:59:00Z', command: 'rm -rf /' }])).toEqual([
       { repo: 'ops', workflow: 'auto-release.yml', interval_minutes: 5, last_fired_at: '2026-11-19T11:59:00Z', tracked_since: null },
     ]);
+  });
+  it('keeps a well-formed full_repo (owner/repo) and drops a malformed one without dropping the entry', () => {
+    expect(sanitised([trigger(1, { full_repo: 'example-owner/project-a' })])[0].full_repo).toBe('example-owner/project-a');
+    for (const bad of ['project-a', 'a/b/c', 'a b/c', '../x', 42, null]) {
+      const [entry] = sanitised([trigger(1, { full_repo: bad })]);
+      expect(entry.workflow).toBe('auto-release.yml');
+      expect(entry).not.toHaveProperty('full_repo');
+    }
   });
   it('keeps tracked_since (ISO or null), dropping a malformed one to null', () => {
     expect(sanitised([trigger(null, { tracked_since: '2026-11-19T10:00:00Z' })])[0].tracked_since).toBe('2026-11-19T10:00:00Z');

@@ -49,8 +49,9 @@ DISPATCH_REPOS=(
 # While any run is live the supervisor holds `caffeinate -i` so the lid-open Mac does not idle-sleep; KEEP_AWAKE=0 turns that off.
 # BATTERY_MIN_PCT=30
 
-# Scheduled triggers (#769): fire the app repos' schedule-only workflows (scheduled-triggers.conf) from the supervisor tick instead of
-# GitHub's unreliable cron. Exactly ONE machine should set this (the VM); the dedupe read also stops a second host double-firing.
+# Scheduled triggers (#769): fire the app repos' schedule-only workflows (scheduled-triggers.conf) from its own 1-minute cron job
+# (install.sh adds the entry only where this is 1; re-run install.sh after changing it) instead of GitHub's unreliable cron. Exactly ONE machine
+# should set this (the VM); the dedupe read also stops a second host double-firing.
 # SCHEDULED_TRIGGERS_ENABLED=1
 
 # GitHub webhook events (#773, docs/webhook-events.md): the supervisor reads pushed events instead of polling. Kill switch, default 0 (off:
