@@ -213,3 +213,15 @@ if [ -f "$(dirname "${BASH_SOURCE[0]}")/gh-budget.sh" ]; then . "$(dirname "${BA
 else   # config.sh copied without its siblings (a test fixture): the budget guard is simply absent
   GH_BUDGET_ENABLED=0; gh_class() { :; }; gh_tier_allows() { return 0; }; gh_tick_due() { return 0; }; gh_cache_clear() { :; }; gh_since_sync() { return 0; }
 fi
+
+# GitHub webhook events (#773, webhook-events.sh / webhook-receiver.py). Kill switch, default OFF: 0 = the supervisor polls exactly as
+# before, the receiver launcher refuses to start and no status banner is published; 1 = the supervisor reads the local event queue and
+# does the full since-sync per repo only every WEBHOOK_FALLBACK_POLL_MINUTES (the fallback poll that heals dropped deliveries).
+# The secrets (WEBHOOK_SECRET, WEBHOOK_PULL_TOKEN) and, on the Mac, WEBHOOK_RECEIVER_URL live in config.local.sh only (see config.local.example.sh).
+WEBHOOK_EVENTS_ENABLED="${WEBHOOK_EVENTS_ENABLED:-0}"
+WEBHOOK_FALLBACK_POLL_MINUTES="${WEBHOOK_FALLBACK_POLL_MINUTES:-20}"   # full since-sync per repo at most this often while enabled
+WEBHOOK_STALE_MINUTES="${WEBHOOK_STALE_MINUTES:-30}"                   # status banner "no webhook received in N minutes" past this age
+WEBHOOK_TRUST_SECS="${WEBHOOK_TRUST_SECS:-600}"                        # other processes trust the event-applied cache while the supervisor's last apply is this fresh
+if [ -f "$(dirname "${BASH_SOURCE[0]}")/webhook-events.sh" ]; then . "$(dirname "${BASH_SOURCE[0]}")/webhook-events.sh"
+else webhook_tick_prepare() { :; }; webhook_stale_json() { :; }; WEBHOOK_EVENTS_ENABLED=0   # copied without its siblings (a test fixture): polling only
+fi

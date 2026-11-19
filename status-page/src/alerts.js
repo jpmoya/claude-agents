@@ -10,6 +10,7 @@
 //   3. paused tickets nobody is working on     (held runs: waiting on JP, answered but not relaunched, or just parked)
 //   4. a supervisor slow, or a host not reporting (tick-to-report gap > TICK_SLOW_MINUTES; heartbeat older than the stale threshold)
 //   5. the release router has not fired       (host `scheduled_triggers[]`, auto-release entries, newest fire across live hosts, #769)
+//   6. GitHub webhooks stopped arriving       (host `webhook_stale.since`, published only while the host's event queue is stale, #773)
 // A stale or offline host is reported once (family 4) and its old data raises no other alert.
 
 import { isIssueUrl } from './validate.js';
@@ -217,6 +218,24 @@ function releaseRouterAlerts(liveRecords, nowEpochSecs) {
   return out;
 }
 
+/** 6. a host with the webhook queue on has received no GitHub webhook for WEBHOOK_STALE_MINUTES (host `webhook_stale.since`, #773). The host publishes it only while stale, so the minutes are computed here. */
+function webhookStaleAlerts(liveRecords, nowEpochSecs) {
+  const out = [];
+  for (const { key, record } of liveRecords) {
+    const since = record.webhook_stale && typeof record.webhook_stale === 'object' ? epoch(record.webhook_stale.since) : null;
+    if (since === null) continue;
+    const mins = Math.max(0, Math.floor((nowEpochSecs - since) / 60));
+    out.push({
+      id: `webhook-stale-${key}`,
+      severity: 'amber',
+      title: `The ${HOST_LABELS[key]} is not receiving GitHub webhooks`,
+      detail: `Status: no webhook received in ${mins} minutes. The ${HOST_LABELS[key]} still polls GitHub every 20 minutes, so nothing is lost, but changes are noticed more slowly and the API budget is used faster.`,
+      hint: 'Check the webhook receiver and its reverse proxy on the VM, and the hooks in GitHub (Recent Deliveries); WEBHOOK_EVENTS_ENABLED=0 returns to plain polling.',
+    });
+  }
+  return out;
+}
+
 /**
  * @param {{ mac?: object|null, vm?: object|null }} hosts stored host records
  * @param {{ staleSecs: number, offlineSecs: number }} thresholds
@@ -241,7 +260,7 @@ export function deriveAlerts(hosts, thresholds, nowEpochSecs) {
       stale.push(...alerts);
     }
   }
-  const out = [...goalStallAlerts(liveRecords, nowEpochSecs), ...releaseRouterAlerts(liveRecords, nowEpochSecs), ...stale];
+  const out = [...goalStallAlerts(liveRecords, nowEpochSecs), ...releaseRouterAlerts(liveRecords, nowEpochSecs), ...webhookStaleAlerts(liveRecords, nowEpochSecs), ...stale];
   const unowned = unownedAlert(liveHosts, nowEpochSecs);
   const rank = (a) => (a.severity === 'red' ? 0 : 1);
   return [...out, ...perHost, ...(unowned ? [unowned] : [])].sort((a, b) => rank(a) - rank(b));

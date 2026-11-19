@@ -1,0 +1,28 @@
+# systemd unit for the GitHub webhook receiver (#773). Install on the VM only, see docs/webhook-events.md.
+# Replace @VM_USER@ with the account that runs the supervisor (its ~/.claude/pipeline/config.local.sh holds the secrets) and
+# @REPO_DIR@ with the claude-agents checkout path the supervisor runs from.
+[Unit]
+Description=GitHub webhook receiver for the pipeline supervisor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@VM_USER@
+ExecStart=/bin/bash @REPO_DIR@/skills/orchestrate/webhook-receiver.sh
+# webhook-receiver.sh exits 0 while WEBHOOK_EVENTS_ENABLED is not 1 (kill switch), so on-failure leaves it down then.
+Restart=on-failure
+RestartSec=5
+# The receiver binds 127.0.0.1 only; Caddy is the single public listener.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/@VM_USER@/.claude/pipeline/state
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target

@@ -52,3 +52,12 @@ DISPATCH_REPOS=(
 # Scheduled triggers (#769): fire the app repos' schedule-only workflows (scheduled-triggers.conf) from the supervisor tick instead of
 # GitHub's unreliable cron. Exactly ONE machine should set this (the VM); the dedupe read also stops a second host double-firing.
 # SCHEDULED_TRIGGERS_ENABLED=1
+
+# GitHub webhook events (#773, docs/webhook-events.md): the supervisor reads pushed events instead of polling. Kill switch, default 0 (off:
+# polling exactly as before). Secrets are generated on the VM (`openssl rand -hex 32`, one per variable), never committed.
+# WEBHOOK_EVENTS_ENABLED=1
+# WEBHOOK_SECRET=""          # VM only; secret — the HMAC key shared with the GitHub webhooks (X-Hub-Signature-256)
+# WEBHOOK_PULL_TOKEN=""      # VM and Mac; secret — bearer token for GET /events (different value from WEBHOOK_SECRET)
+# WEBHOOK_RECEIVER_URL=""    # Mac only: https://<public hostname> of the VM receiver; empty on the VM (it reads its own queue file)
+# WEBHOOK_FALLBACK_POLL_MINUTES=20   # full per-repo sync at most this often; heals dropped deliveries
+# WEBHOOK_STALE_MINUTES=30           # status banner "no webhook received in N minutes" past this age
