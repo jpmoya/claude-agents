@@ -77,6 +77,11 @@ _rs_build_goals_json() {  # the payload's goals array (issue #197), local goal-<
   python3 "$RS_HERE/build-runs-json.py" "$(_rs_aliases_arg)" "$HOME/.claude/pipeline/runs.jsonl" "$PIPE" goals </dev/null
 }
 
+_rs_build_goal_stall_json() {  # the payload's goal_stall array (status-page alert banner): goalqueue.json + a bounded tail of events.jsonl, local only
+  STATUS_EVENTS_FILE="${STATUS_EVENTS_FILE:-$LOGDIR/events.jsonl}" \
+    python3 "$RS_HERE/build-runs-json.py" "$(_rs_aliases_arg)" "$HOME/.claude/pipeline/runs.jsonl" "$PIPE" goalstall </dev/null
+}
+
 _rs_supervisor_last_tick() {  # mtime of the supervisor's own log, else "now" (no supervisor has run yet)
   local log="$LOGDIR/supervisor.log" epoch
   if [ -e "$log" ]; then
@@ -150,7 +155,7 @@ _rs_cron_collect() {
 }
 
 build_payload() {
-  local runs_tsv running queued runs_json completed_json staging_json approved_json goals_json backlog_json ci_queue_json
+  local runs_tsv running queued runs_json completed_json staging_json approved_json goals_json backlog_json ci_queue_json goal_stall_json
   runs_tsv=$(derive_runs)
   running=$(printf '%s\n' "$runs_tsv" | awk -F'\t' '$3=="running"{c++} END{print c+0}')
   queued=$(printf '%s\n' "$runs_tsv" | awk -F'\t' '$3=="queued"{c++} END{print c+0}')
@@ -162,10 +167,12 @@ build_payload() {
   approved_json=$(_rs_build_list_json approved); [ -n "$approved_json" ] || approved_json='[]'
   goals_json=$(_rs_build_goals_json); [ -n "$goals_json" ] || goals_json='[]'
   backlog_json=$(_rs_build_backlog_json); [ -n "$backlog_json" ] || backlog_json='[]'
+  goal_stall_json=$(_rs_build_goal_stall_json); [ -n "$goal_stall_json" ] || goal_stall_json='[]'
   ci_queue_json=$(_rs_ci_queue_json)
   jq -n \
     --argjson cron "${CRON_JSON:-null}" \
     --argjson goals "$goals_json" \
+    --argjson goal_stall "$goal_stall_json" \
     --argjson ci_queue "${ci_queue_json:-null}" \
     --arg sent_at "$SENT_AT" \
     --arg tick "$SUPERVISOR_LAST_TICK" \
@@ -181,6 +188,7 @@ build_payload() {
       capacity: {running: $running, max: $max, queued: $queued}, runs: $runs, completed: $completed,
       staging: $staging, approved: $approved, backlog: $backlog}
       + (if ($goals | length) > 0 then {goals: $goals} else {} end)
+      + (if ($goal_stall | length) > 0 then {goal_stall: $goal_stall} else {} end)
       + (if $ci_queue != null then {ci_queue: $ci_queue} else {} end)
       + (if $cron != null then {cron: $cron} else {} end)'
 }

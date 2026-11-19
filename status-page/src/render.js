@@ -7,6 +7,7 @@
 
 import { isIssueUrl, isPrUrl } from "./validate.js";
 import { groupTickets, buildBacklog } from "./group.js";
+import { deriveAlerts } from "./alerts.js";
 import { PIPELINES } from "./pipelines.js";
 import { CI_QUEUE_CATEGORY_VOCAB } from "./vocab.js";
 
@@ -656,6 +657,32 @@ function renderGoalsSection(hosts) {
   </section>`;
 }
 
+/** One alert: severity colour, one-line title, plain-language reason, fix hint, and (unowned tickets) a short linked list. Every value escaped. */
+function renderAlert(a) {
+  const items = Array.isArray(a.items) && a.items.length > 0
+    ? `<ul>${a.items
+        .map((it) => `<li>${isIssueUrl(it.url) ? `<a href="${esc(it.url)}" target="_blank" rel="noopener">${esc(it.text)}</a>` : esc(it.text)}</li>`)
+        .join("")}${a.more > 0 ? `<li>and ${esc(a.more)} more</li>` : ""}</ul>`
+    : "";
+  return `<li class="alert alert-${esc(a.severity)}" data-testid="alert" data-alert-id="${esc(a.id)}">
+      <strong>${esc(a.title)}</strong>
+      <span class="alert-detail">${esc(a.detail)}</span>${items}
+      <span class="alert-hint">Fix: ${esc(a.hint)}</span>
+    </li>`;
+}
+
+/** The one banner area at the top of the page: every active alert, or a small green "all clear" line. Nothing before any host has reported. */
+function renderAlertsBanner(hosts, thresholds, nowEpochSecs) {
+  if (!hosts.mac && !hosts.vm) return "";
+  const alerts = deriveAlerts(hosts, thresholds, nowEpochSecs);
+  if (alerts.length === 0) return `<p class="alerts-clear" data-testid="alerts-clear">All clear: no pipeline alerts.</p>`;
+  const tone = alerts.some((a) => a.severity === "red") ? " alerts-red" : "";
+  return `<section class="alerts${tone}" data-testid="pipeline-alerts" aria-label="Pipeline alerts">
+    <h2>${esc(alerts.length)} pipeline ${alerts.length === 1 ? "alert" : "alerts"}</h2>
+    <ul>${alerts.map(renderAlert).join("")}</ul>
+  </section>`;
+}
+
 function renderHostSection(key, host, thresholds, nowEpochSecs) {
   const label = HOST_LABELS[key] || key;
   if (!host) {
@@ -1078,6 +1105,19 @@ ${ROOT_VARS_CSS}
   .slot-icon { flex: none; vertical-align: -2px; }
   .slot-legend { display: flex; flex-wrap: wrap; gap: 0.35rem 1rem; margin: 0 0 0.6rem; font-size: 0.8rem; color: var(--muted); }
   .slot-key { display: inline-flex; align-items: center; gap: 0.3rem; }
+  .alerts { margin-bottom: 1.25rem; padding: 1rem 1.25rem; border-radius: 0.75rem; background: var(--surface); border: 1px solid var(--amber); }
+  .alerts h2 { color: var(--amber); margin-bottom: 0.6rem; }
+  .alerts.alerts-red { border-color: var(--red); }
+  .alerts.alerts-red h2 { color: var(--red); }
+  .alerts ul { list-style: none; margin: 0; padding: 0; }
+  .alerts li.alert { display: flex; flex-direction: column; gap: 0.2rem; padding: 0.6rem 0.8rem; margin-bottom: 0.5rem; border-radius: 0.5rem;
+    border-left: 4px solid var(--amber); background: var(--amber-soft); font-size: 0.85rem; }
+  .alerts li.alert:last-child { margin-bottom: 0; }
+  .alerts li.alert-red { border-left-color: var(--red); background: var(--red-soft); }
+  .alerts li.alert ul { list-style: disc; padding-left: 1.2rem; margin: 0.2rem 0; }
+  .alerts li.alert li { font-size: 0.8rem; }
+  .alert-hint { color: var(--muted); }
+  .alerts-clear { margin: 0 0 1.25rem; font-size: 0.8rem; font-weight: 600; color: var(--green); }
   .backlog-help { font-size: 0.85rem; color: var(--muted); margin: 0 0 0.75rem; }
   .bp-controls { white-space: nowrap; text-align: center; }
   tr[draggable="true"] { cursor: grab; }
@@ -1118,7 +1158,7 @@ ${NAV_CSS}
 <body>
 ${renderNav("status")}
 <h1>Pipeline status</h1>
-${body}
+${renderAlertsBanner(hosts, thresholds, nowEpochSecs)}${body}
 </body>
 </html>`;
 }
