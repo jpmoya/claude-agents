@@ -12,6 +12,8 @@
 #   3d. goal step (#195): keep-alive, pacing, parking, completion of goal-bound delivery leads pinned to this host
 #   7. status reconcile: refresh listed tickets from GitHub (backgrounded, throttled to once per 600 s; issue #51)
 #   8. PM Slack DM poll: record JP's replies to delivery-lead asks (backgrounded, no-op without PM_SLACK_BOT_TOKEN; issue #117)
+#   0. scheduled triggers (#769): fire the schedule-only app-repo workflows that are due (scheduled-triggers.sh, backgrounded,
+#      before the single-flight lock so a long previous tick never starves the release router; off unless SCHEDULED_TRIGGERS_ENABLED=1)
 #   9. stale-work digest: log (never act on) stale agent-go, stuck ci_red/ci_pending/merge_conflict holds, disk
 #      pressure >= 85%, feedback tickets with no owner (#676) (throttled to once per 600 s; issue #491)
 # One launch per tick max outside the drain (step 2 may start up to DRAIN_MAX_PER_TICK queued runs). All state is local (~/.claude/pipeline/state); the only shared state is the issue's markers and labels.
@@ -57,6 +59,10 @@ canonicalize_repo_lists
 # keep-alive + safety net (design #10 §4.4), so it must still fire even on a tick that skips
 # because a previous one is still running.
 report_status_async "tick"
+
+# #769: move the app repos' GitHub `schedule:` cron here (the release router went silent for ~6.5 h on 2026-11-19). Backgrounded with fd 9
+# closed so it never delays the tick or holds the lock; the script has its own lock and is a no-op unless SCHEDULED_TRIGGERS_ENABLED=1.
+( "$HERE/scheduled-triggers.sh" >/dev/null 2>&1 & ) 9>&- || true
 
 # Acquire lock — exit if previous tick still running
 if command -v flock >/dev/null 2>&1; then

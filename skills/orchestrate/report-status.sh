@@ -82,6 +82,13 @@ _rs_build_goal_stall_json() {  # the payload's goal_stall array (status-page ale
     python3 "$RS_HERE/build-runs-json.py" "$(_rs_aliases_arg)" "$HOME/.claude/pipeline/runs.jsonl" "$PIPE" goalstall </dev/null
 }
 
+_rs_build_scheduled_triggers_json() {  # the payload's scheduled_triggers array (#769): the release router heartbeat, local files only. Repo published as its alias
+  local aliases; aliases=$(_rs_aliases_arg)
+  "$RS_HERE/scheduled-triggers.sh" status 2>/dev/null | jq -c --arg aliases "$aliases" '
+    ($aliases | split("\n") | map(select(contains(":")) | {key: .[0:index(":")], value: .[index(":")+1:]}) | from_entries) as $a
+    | map(.repo = ($a[.repo] // "other"))' 2>/dev/null
+}
+
 _rs_supervisor_last_tick() {  # mtime of the supervisor's own log, else "now" (no supervisor has run yet)
   local log="$LOGDIR/supervisor.log" epoch
   if [ -e "$log" ]; then
@@ -155,7 +162,7 @@ _rs_cron_collect() {
 }
 
 build_payload() {
-  local runs_tsv running queued runs_json completed_json staging_json approved_json goals_json backlog_json ci_queue_json goal_stall_json
+  local runs_tsv running queued runs_json completed_json staging_json approved_json goals_json backlog_json ci_queue_json goal_stall_json triggers_json
   runs_tsv=$(derive_runs)
   running=$(printf '%s\n' "$runs_tsv" | awk -F'\t' '$3=="running"{c++} END{print c+0}')
   queued=$(printf '%s\n' "$runs_tsv" | awk -F'\t' '$3=="queued"{c++} END{print c+0}')
@@ -168,8 +175,10 @@ build_payload() {
   goals_json=$(_rs_build_goals_json); [ -n "$goals_json" ] || goals_json='[]'
   backlog_json=$(_rs_build_backlog_json); [ -n "$backlog_json" ] || backlog_json='[]'
   goal_stall_json=$(_rs_build_goal_stall_json); [ -n "$goal_stall_json" ] || goal_stall_json='[]'
+  triggers_json=$(_rs_build_scheduled_triggers_json); [ -n "$triggers_json" ] || triggers_json='[]'
   ci_queue_json=$(_rs_ci_queue_json)
   jq -n \
+    --argjson triggers "$triggers_json" \
     --argjson cron "${CRON_JSON:-null}" \
     --argjson goals "$goals_json" \
     --argjson goal_stall "$goal_stall_json" \
@@ -189,6 +198,7 @@ build_payload() {
       staging: $staging, approved: $approved, backlog: $backlog}
       + (if ($goals | length) > 0 then {goals: $goals} else {} end)
       + (if ($goal_stall | length) > 0 then {goal_stall: $goal_stall} else {} end)
+      + (if ($triggers | length) > 0 then {scheduled_triggers: $triggers} else {} end)
       + (if $ci_queue != null then {ci_queue: $ci_queue} else {} end)
       + (if $cron != null then {cron: $cron} else {} end)'
 }
@@ -265,6 +275,12 @@ except Exception:
     print(''); raise SystemExit
 d.pop('sent_at', None)
 d.pop('supervisor_last_tick', None)
+# scheduled_triggers (#769): last_fired_at moves on every dispatch (every 5 min for the release router); a workflow appearing or vanishing still pushes
+st = d.get('scheduled_triggers')
+if isinstance(st, list):
+    for item in st:
+        if isinstance(item, dict):
+            item.pop('last_fired_at', None)
 ci_queue = d.get('ci_queue')
 if isinstance(ci_queue, dict):
     ci_queue.pop('as_of', None)

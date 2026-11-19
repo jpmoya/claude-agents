@@ -4,11 +4,12 @@
 // banner adds no GitHub call and no host-side state: ages are `now` minus a published timestamp, never a published age
 // (a published age would change the heartbeat hash on every tick and burn the KV write budget).
 //
-// Four alert families (JP, 2026-11-19; pipeline-audit-2026-11-18 sections 3 and 5, #762):
+// Five alert families (JP, 2026-11-19; pipeline-audit-2026-11-18 sections 3 and 5, #762; #769 adds the fifth):
 //   1. a goal stalls the goal queue            (host `goal_stall[]`, plus a slot holder with no lead cycle for GOAL_STALL_HOURS)
 //   2. run slots idle while work waits         (free slots + a queued run older than IDLE_SLOT_MINUTES, per host)
 //   3. paused tickets nobody is working on     (held runs: waiting on JP, answered but not relaunched, or just parked)
 //   4. a supervisor slow, or a host not reporting (tick-to-report gap > TICK_SLOW_MINUTES; heartbeat older than the stale threshold)
+//   5. the release router has not fired       (host `scheduled_triggers[]`, auto-release entries, newest fire across live hosts, #769)
 // A stale or offline host is reported once (family 4) and its old data raises no other alert.
 
 import { isIssueUrl } from './validate.js';
@@ -17,6 +18,8 @@ import { groupTickets } from './group.js';
 export const IDLE_SLOT_MINUTES = 10;
 export const TICK_SLOW_MINUTES = 15;
 export const GOAL_STALL_HOURS = 6;
+export const TRIGGER_OVERDUE_FACTOR = 3; // alert when the newest fire is older than this many intervals ...
+export const TRIGGER_REPORT_LAG_MINUTES = 10; // ... plus the host's keep-alive (600 s): last_fired_at is not in the beat's change hash, so it can be that stale
 export const ALERT_LIST_MAX = 6; // tickets shown in the unowned-tickets alert; the rest are counted
 const TITLE_WORDS = 5;
 
@@ -180,6 +183,40 @@ function unownedAlert(liveHosts, nowEpochSecs) {
   };
 }
 
+/** 5. the release router (a workflow file named auto-release*) has not fired for TRIGGER_OVERDUE_FACTOR intervals; the newest fire across the live hosts counts. */
+function releaseRouterAlerts(liveRecords, nowEpochSecs) {
+  // "repo|workflow" -> { fired: newest fire on any live host | null, since: oldest tracked_since on any live host | null }
+  const seen = new Map();
+  for (const { record } of liveRecords) {
+    for (const t of Array.isArray(record.scheduled_triggers) ? record.scheduled_triggers : []) {
+      if (!t || typeof t.workflow !== 'string' || !t.workflow.startsWith('auto-release') || !Number.isInteger(t.interval_minutes)) continue;
+      const key = `${t.repo}|${t.workflow}`;
+      const fired = epoch(t.last_fired_at);
+      const since = epoch(t.tracked_since);
+      const cur = seen.get(key) || { repo: t.repo, workflow: t.workflow, interval: t.interval_minutes, fired: null, since: null };
+      if (fired !== null && (cur.fired === null || fired > cur.fired)) cur.fired = fired;
+      if (since !== null && (cur.since === null || since < cur.since)) cur.since = since;
+      seen.set(key, cur);
+    }
+  }
+  const out = [];
+  for (const { repo, workflow, interval, fired, since } of seen.values()) {
+    // a workflow that never fired (every dispatch failing) is measured from when a host first tracked it; no timestamp at all: fail quiet
+    const last = fired !== null ? fired : since;
+    if (last === null) continue;
+    const age = nowEpochSecs - last;
+    if (age <= (TRIGGER_OVERDUE_FACTOR * interval + TRIGGER_REPORT_LAG_MINUTES) * 60) continue;
+    out.push({
+      id: `release-router-${repo}-${workflow.replace(/\.ya?ml$/, '')}`,
+      severity: 'red',
+      title: `The ${repo} release router has not fired in ${Math.round(age / 60)} minutes`,
+      detail: `${workflow} should fire every ${interval} minutes; ${fired === null ? `it has not fired once in the ${formatDuration(age)} since a supervisor started tracking it` : `nothing has started it for ${formatDuration(age)}`}, so changes merged to staging are not being released.`,
+      hint: 'Check the supervisor on the host that fires it (scheduled-triggers.log: failed lines mean the dispatch is refused), then run the workflow by hand.',
+    });
+  }
+  return out;
+}
+
 /**
  * @param {{ mac?: object|null, vm?: object|null }} hosts stored host records
  * @param {{ staleSecs: number, offlineSecs: number }} thresholds
@@ -204,7 +241,7 @@ export function deriveAlerts(hosts, thresholds, nowEpochSecs) {
       stale.push(...alerts);
     }
   }
-  const out = [...goalStallAlerts(liveRecords, nowEpochSecs), ...stale];
+  const out = [...goalStallAlerts(liveRecords, nowEpochSecs), ...releaseRouterAlerts(liveRecords, nowEpochSecs), ...stale];
   const unowned = unownedAlert(liveHosts, nowEpochSecs);
   const rank = (a) => (a.severity === 'red' ? 0 : 1);
   return [...out, ...perHost, ...(unowned ? [unowned] : [])].sort((a, b) => rank(a) - rank(b));

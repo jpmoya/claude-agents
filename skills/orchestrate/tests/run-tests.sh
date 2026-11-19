@@ -39,6 +39,8 @@ export GH_BUDGET_ENABLED=0   # gh-budget.sh (call log, quota guard, read cache) 
 # against this plain export.
 export CI_QUEUE_COLLECT_ENABLED=0
 export CI_QUEUE_COLLECT_TEST_DISABLE=1
+# #769: scheduled-triggers.sh dispatches real GitHub workflows from the supervisor tick; no suite may fire it (test-scheduled-triggers.sh sets its own env).
+export SCHEDULED_TRIGGERS_ENABLED=0
 # #756: report-status.sh reads the host user's real crontab (`crontab -l`) for the payload's optional `cron[]`;
 # a suite must never publish (or depend on) whatever the machine running it happens to schedule. `true` is an empty crontab.
 # test-status-cron.sh overrides this per call with its own fixtures.
