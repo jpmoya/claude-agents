@@ -86,21 +86,38 @@ _gp_cache_set() {
 # a paginated `gh api graphql` query that asks only for what the sync uses (id, issue repo/number, label names, Status), so each page
 # costs 1 point. Exit 1 when any page fails or is unreadable.
 _GP_ITEMS_Q='query($owner:String!,$number:Int!,$cursor:String){repositoryOwner(login:$owner){... on ProjectV2Owner{projectV2(number:$number){items(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{id fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{name}} content{... on Issue{number state repository{nameWithOwner} labels(first:20){nodes{name}}}}}}}}}}'
-_gp_items() {
-  local o="$1" n="$2" cur="" page nodes="[]" more
+# Pages never travel through argv (#793): Linux caps ONE command-line argument at 128KB (MAX_ARG_STRLEN; macOS does not), and a project's
+# accumulated items outgrow that. Each page's nodes go to their own file in a private mktemp -d dir (0700, removed by the caller on every
+# exit path) and one `jq -s` over the files merges them. The page itself reaches jq on stdin.
+# _gp_page_save <dir> <index> — stdin: one items page. Saves its nodes array as <dir>/pNNNNN.json; exit 1 when the page has none.
+_gp_page_save() { jq -ce '.data.repositoryOwner.projectV2.items.nodes | select(type == "array")' > "$1/$(printf 'p%05d' "$2").json" 2>/dev/null; }
+# _gp_pages_nodes <dir> — every saved page's nodes, in page order, as one JSON array on stdout.
+_gp_pages_nodes() { jq -cs 'add // []' "$1"/p*.json; }
+_gp_items_pages() {
+  local o="$1" n="$2" dir="$3" cur="" page more i=0
   while :; do
     if [ -n "$cur" ]; then
       page=$(gh api graphql -f query="$_GP_ITEMS_Q" -f owner="$o" -F number="$n" -f cursor="$cur" 2>/dev/null) || return 1
     else
       page=$(gh api graphql -f query="$_GP_ITEMS_Q" -f owner="$o" -F number="$n" 2>/dev/null) || return 1
     fi
-    nodes=$(jq -c --argjson acc "$nodes" '$acc + (.data.repositoryOwner.projectV2.items.nodes | if type == "array" then . else error("no nodes") end)' <<< "$page" 2>/dev/null) || return 1
+    _gp_page_save "$dir" "$i" <<< "$page" || return 1
+    i=$((i + 1))
     more=$(jq -r '.data.repositoryOwner.projectV2.items.pageInfo | if .hasNextPage == true then (.endCursor // "") else "" end' <<< "$page" 2>/dev/null) || return 1
     [ -n "$more" ] || break
     cur="$more"
   done
-  jq -c '{items: [.[] | select((.content.number? // null) != null) | {id, status: (.fieldValueByName.name? // null), closed: (.content.state? == "CLOSED"), labels: [.content.labels.nodes[]?.name],
-    content: {repository: .content.repository.nameWithOwner, number: .content.number}}]}' <<< "$nodes"
+}
+_gp_items() {
+  local dir nodes rc
+  dir=$(mktemp -d "${TMPDIR:-/tmp}/gp-items.XXXXXX") || return 1
+  if _gp_items_pages "$1" "$2" "$dir" && nodes=$(_gp_pages_nodes "$dir"); then
+    jq -c '{items: [.[] | select((.content.number? // null) != null) | {id, status: (.fieldValueByName.name? // null), closed: (.content.state? == "CLOSED"), labels: [.content.labels.nodes[]?.name],
+      content: {repository: .content.repository.nameWithOwner, number: .content.number}}]}' <<< "$nodes"
+    rc=$?
+  else rc=1; fi
+  rm -rf "$dir"
+  return "$rc"
 }
 
 # goal_project_read <owner> <number> [--meta] -> {"title","url","issues":[...]} (#736): the project that IS a goal's scope. The ONE reader of
@@ -111,10 +128,10 @@ _gp_items() {
 # a failed page, a project that is missing, closed or unreadable, an item the token cannot read. Never a partial or empty scope.
 # Needs no `project`-scope pre-check and ignores GOAL_PROJECTS (that switch is the mirror's): gh itself refuses without the scope.
 _GP_SCOPE_Q='query($owner:String!,$number:Int!,$first:Int!,$cursor:String){repositoryOwner(login:$owner){... on ProjectV2Owner{projectV2(number:$number){title url closed items(first:$first,after:$cursor){pageInfo{hasNextPage endCursor} nodes{type content{... on Issue{number state stateReason body author{login} labels(first:100){nodes{name}} milestone{state title} repository{nameWithOwner}}}}}}}}}'
-goal_project_read() {
-  local o="$1" n="$2" first=100 cur="" page nodes="[]" meta="" more errf rc
-  [ "${3:-}" != --meta ] || first=1
-  errf=$(mktemp "${TMPDIR:-/tmp}/gp-read-err.XXXXXX") || errf=/dev/null
+# The pages are read by _gp_read_pages into a private temp dir (see _gp_page_save: nothing large goes through argv, #793); this wrapper owns
+# the dir and removes it on every exit path.
+_gp_read_pages() {
+  local o="$1" n="$2" first="$3" dir="$4" cur="" page meta="" more errf="$4/err" rc i=0
   while :; do
     if [ -n "$cur" ]; then
       page=$(gh api graphql -f query="$_GP_SCOPE_Q" -f owner="$o" -F number="$n" -F first="$first" -f cursor="$cur" 2>"$errf"); rc=$?
@@ -123,22 +140,30 @@ goal_project_read() {
     fi
     if [ "$rc" -ne 0 ]; then
       echo "gh exit $rc: $(head -1 "$errf" 2>/dev/null | sed -E -e 's/(gh[pousr]_|github_pat_)[A-Za-z0-9_]+/[redacted]/g' -e 's/([Bb]earer|[Tt]oken)[ =:]+[^ ]+/\1 [redacted]/g' | cut -c1-200)" >&2
-      rm -f "$errf"; return 1
+      return 1
     fi
     if [ -z "$meta" ]; then
       meta=$(jq -c '.data.repositoryOwner.projectV2 | select(. != null) | {title, url, closed}' <<< "$page" 2>/dev/null)
-      [ -n "$meta" ] || { echo "the project does not exist or the token cannot read it" >&2; rm -f "$errf"; return 1; }
-      [ "$(jq -r '.closed' <<< "$meta")" != true ] || { echo "the project is closed" >&2; rm -f "$errf"; return 1; }
+      [ -n "$meta" ] || { echo "the project does not exist or the token cannot read it" >&2; return 1; }
+      [ "$(jq -r '.closed' <<< "$meta")" != true ] || { echo "the project is closed" >&2; return 1; }
+      printf '%s' "$meta" > "$dir/meta.json"
     fi
-    nodes=$(jq -c --argjson acc "$nodes" '$acc + (.data.repositoryOwner.projectV2.items.nodes | if type == "array" then . else error("no nodes") end)' <<< "$page" 2>/dev/null) \
-      || { echo "an items page does not parse" >&2; rm -f "$errf"; return 1; }
+    _gp_page_save "$dir" "$i" <<< "$page" || { echo "an items page does not parse" >&2; return 1; }
+    i=$((i + 1))
     more=$(jq -r '.data.repositoryOwner.projectV2.items.pageInfo | if .hasNextPage == true then (.endCursor // "" | if . == "" then error("no cursor") else . end) else "" end' <<< "$page" 2>/dev/null) \
-      || { echo "an items page has no page info, or says there are more items but gives no cursor" >&2; rm -f "$errf"; return 1; }
+      || { echo "an items page has no page info, or says there are more items but gives no cursor" >&2; return 1; }
     [ "$first" = 100 ] || break
     [ -n "$more" ] || break
     cur="$more"
   done
-  rm -f "$errf"
+}
+goal_project_read() {
+  local o="$1" n="$2" first=100 dir nodes meta rc
+  [ "${3:-}" != --meta ] || first=1
+  dir=$(mktemp -d "${TMPDIR:-/tmp}/gp-read.XXXXXX") || { echo "cannot create a temp dir" >&2; return 1; }
+  if ! _gp_read_pages "$o" "$n" "$first" "$dir"; then rm -rf "$dir"; return 1; fi
+  meta=$(cat "$dir/meta.json") && nodes=$(_gp_pages_nodes "$dir") || { rm -rf "$dir"; echo "an items page does not parse" >&2; return 1; }
+  rm -rf "$dir"
   jq -c --argjson m "$meta" '
     if any(.[]; (.type == "ISSUE" and .content.number == null) or (.type != "ISSUE" and .type != "PULL_REQUEST" and .type != "DRAFT_ISSUE")) then error("unreadable item") else . end
     | $m + {issues: [.[] | select(.type == "ISSUE") | .content | {repo: .repository.nameWithOwner, number, state: (.state | ascii_downcase),
@@ -352,7 +377,7 @@ goal_project_sync_all() {
 # closed_seen = when this cache first saw the project closed (gh gives no close time); it keeps the "recently closed" window honest.
 # Calls report_status_async when the list changed, so the page picks a new project up at once.
 goal_project_refresh_list() {
-  local f="$PIPE/goalprojects.json" o list prev new now
+  local f="$PIPE/goalprojects.json" o list prev new now rc
   if ! goal_project_enabled; then   # no project scope in THIS process (the VM, or a session holding the bot token): never touch a list that exists,
     # or one such process blanks the Mac's goal rows for everyone. A host that never had a list gets an empty one once, so it lists no rows of its own.
     [ -f "$f" ] || { mkdir -p "$PIPE" 2>/dev/null; echo '{"projects":[]}' > "$f.tmp" 2>/dev/null && mv "$f.tmp" "$f"; }
@@ -363,9 +388,13 @@ goal_project_refresh_list() {
   [ -n "$list" ] || { _gp_log "cannot list the projects of $o"; return 1; }
   prev=$(jq -c '.projects // []' "$f" 2>/dev/null) || prev='[]'
   [ -n "$prev" ] || prev='[]'
-  new=$(jq -nc --argjson l "$list" --argjson p "$prev" --arg o "$o" --arg now "$now" \
-    '{owner:$o, projects: [$l[] | . as $x | {number, title, url, closed: (.closed // false),
-        closed_seen: (if (.closed // false) then (([$p[] | select(.number == $x.number) | .closed_seen] | first) // $now) else null end)}]}') || return 1
+  # the two lists go through files, never argv (#793: one argument is capped at 128KB on Linux and 200 projects can pass it)
+  local d; d=$(mktemp -d "${TMPDIR:-/tmp}/gp-list.XXXXXX") || return 1
+  printf '%s' "$list" > "$d/l.json"; printf '%s' "$prev" > "$d/p.json"
+  new=$(jq -nc --slurpfile l "$d/l.json" --slurpfile p "$d/p.json" --arg o "$o" --arg now "$now" \
+    '{owner:$o, projects: [$l[0][] | . as $x | {number, title, url, closed: (.closed // false),
+        closed_seen: (if (.closed // false) then (([$p[0][] | select(.number == $x.number) | .closed_seen] | first) // $now) else null end)}]}'); rc=$?
+  rm -rf "$d"; [ "$rc" -eq 0 ] || return 1
   if [ "$(printf '%s' "$new" | jq -c .projects)" != "$(printf '%s' "$prev")" ]; then
     printf '%s' "$new" | jq -c --arg now "$now" '. + {at:$now}' > "$f.tmp" 2>/dev/null && mv "$f.tmp" "$f" || { rm -f "$f.tmp"; return 1; }
     type report_status_async >/dev/null 2>&1 && report_status_async "goal-projects"
