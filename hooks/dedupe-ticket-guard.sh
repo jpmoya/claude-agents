@@ -1,6 +1,6 @@
 #!/bin/bash
 # PreToolUse hook on Bash: JP's hard rule (2026-10-31) — every time a ticket is about to be logged,
-# check first that no pre-existing ticket already covers it. Incident: scheduler #2016 (merge note
+# check first that no pre-existing ticket already covers it. Incident: ops tool #2016 (then named scheduler) (merge note
 # and report at checkout) was filed, had pipeline runs attached, and only then was rejected as a
 # duplicate of #1840/#1841.
 #

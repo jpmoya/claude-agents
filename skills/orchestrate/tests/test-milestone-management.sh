@@ -62,7 +62,7 @@ test_ms188_docs_claude_md_planning_vs_shipped() {
 }
 test_ms188_docs_readme_cites_children() {
   local s
-  for s in 'Benjis-Plants/scheduler#1321' 'Benjis-Plants/benjis-quoting-tool#661' 'Benjis-Plants/scheduler#653' 'issue #37'; do
+  for s in 'Benjis-Plants/benjis-ops-tool#1321' 'Benjis-Plants/benjis-sales-tool#661' 'Benjis-Plants/benjis-ops-tool#653' 'issue #37'; do
     ms188_has "$ROOT_188/README.md" "$s" || return 1
   done
 }

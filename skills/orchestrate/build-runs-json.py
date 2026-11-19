@@ -64,7 +64,36 @@ for line in aliases_raw.splitlines():
     aliases[owner_repo] = alias
 
 
+def _repo_renames():  # {old repo name, lowercase: new owner/repo}, from skills/ticket-intake/repo-aliases.txt (the one alias list, #792)
+    path = os.environ.get("PIPELINE_REPO_ALIASES_FILE") or os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", "ticket-intake", "repo-aliases.txt")
+    out = {}
+    try:
+        for line in open(path):
+            parts = line.split()
+            if len(parts) == 2 and not line.lstrip().startswith("#"):
+                out[parts[0].rsplit("/", 1)[-1].lower()] = parts[1]
+    except OSError:
+        pass
+    return out
+
+
+RENAMES = _repo_renames()
+
+
+def current_checkout(repo_path):  # a state file written before the rename names the old checkout dir (#792): use the renamed sibling
+    if not repo_path or os.path.isdir(repo_path):
+        return repo_path
+    parent, base = os.path.split(repo_path.rstrip("/"))
+    new = RENAMES.get(base.lower())
+    if new and os.path.isdir(os.path.join(parent, new.rsplit("/", 1)[-1])):
+        return os.path.join(parent, new.rsplit("/", 1)[-1])
+    return repo_path
+
+
 def owner_repo_for(repo_path):  # git -C <repo_path> config --get remote.origin.url -- local, no network
+    orig_path = repo_path
+    repo_path = current_checkout(repo_path)
     try:
         out = subprocess.run(
             ["git", "-C", repo_path, "config", "--get", "remote.origin.url"],
@@ -74,6 +103,8 @@ def owner_repo_for(repo_path):  # git -C <repo_path> config --get remote.origin.
     except Exception:
         url = ""
     if not url:
+        if orig_path and not os.path.isdir(orig_path):  # no directory at all: the old directory name still names the repo
+            return RENAMES.get(os.path.basename(orig_path.rstrip("/")).lower(), "")
         return ""
     if url.endswith("/"):
         url = url[:-1]
@@ -89,7 +120,7 @@ def alias_for(repo_path):  # -> (published repo string, owner/repo or "" for the
     owner_repo = owner_repo_for(repo_path)
     if not owner_repo:
         return "other", owner_repo
-    return aliases.get(owner_repo, "other"), owner_repo
+    return aliases.get(owner_repo) or aliases.get(RENAMES.get(owner_repo.rsplit("/", 1)[-1].lower(), ""), "other"), owner_repo
 
 
 CUR_REPO = ""  # checkout path of the row being built; set by the two row loops below

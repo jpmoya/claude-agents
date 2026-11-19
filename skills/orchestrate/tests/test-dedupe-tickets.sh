@@ -1,5 +1,5 @@
 # JP, 2026-10-31: every ticket request is checked for a pre-existing ticket BEFORE it is created.
-# Incident: scheduler #2016 (merge note and report at checkout) was filed and only later rejected as a
+# Incident: ops tool #2016 (then named scheduler) (merge note and report at checkout) was filed and only later rejected as a
 # duplicate of #1840 (checkout notes optional, shared with report) / #1841 (one shared checkout note
 # field). Covers skills/orchestrate/find-duplicates.sh (the shared search) and
 # hooks/dedupe-ticket-guard.sh (the PreToolUse block on every ticket-creating command), offline,

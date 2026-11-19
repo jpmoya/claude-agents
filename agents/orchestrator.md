@@ -295,7 +295,7 @@ Call `wait_for_capacity` before every `claude` invocation (every dispatch is det
 
 ## How to dispatch
 
-Subagents can't spawn subagents, so each stage runs as its own headless Claude Code process from the repo root, **with the stage agent as that process's main agent** (`claude --agent <agent-name> -p`). Never launch a stage as `claude -p "Use the <agent-name> subagent to …"`: that makes a generic wrapper session which has not read the agent definition, backgrounds the real agent, and — when the handoff hook stops it — posts made-up first lines like `**[deployer] MARKER** BLOCKED` that bury the real marker (claude-agents#5, 2026-09-17). **Every stage is dispatched detached** (`nohup … &`, then the bounded poll below): a stage started inside the orchestrator's own Bash call becomes a session task and is killed when the orchestrator ends its turn (scheduler#792, #882). When launching fullstack-developer, prefix the command with `PIPELINE_LOCKED_TESTS_FILE=~/.claude/pipeline/state/locked-<run_key>.txt` so the lock hook is armed in that process.
+Subagents can't spawn subagents, so each stage runs as its own headless Claude Code process from the repo root, **with the stage agent as that process's main agent** (`claude --agent <agent-name> -p`). Never launch a stage as `claude -p "Use the <agent-name> subagent to …"`: that makes a generic wrapper session which has not read the agent definition, backgrounds the real agent, and — when the handoff hook stops it — posts made-up first lines like `**[deployer] MARKER** BLOCKED` that bury the real marker (claude-agents#5, 2026-09-17). **Every stage is dispatched detached** (`nohup … &`, then the bounded poll below): a stage started inside the orchestrator's own Bash call becomes a session task and is killed when the orchestrator ends its turn (benjis-ops-tool#792, #882). When launching fullstack-developer, prefix the command with `PIPELINE_LOCKED_TESTS_FILE=~/.claude/pipeline/state/locked-<run_key>.txt` so the lock hook is armed in that process.
 
 ### Every launch: stage coordinates for the handoff hook
 
@@ -429,25 +429,25 @@ log_run() {  # usage: log_run '<json-object-fields>'  — one object per line, a
   printf '{"ts":"%s","host":"%s",%s}\n' "$(date -u +%FT%TZ)" "$(hostname -s)" "$1" >> "$f"
 }
 # examples
-log_run '"event":"validate","repo":"jpmoya/scheduler","issue":42,"stage":"fullstack-developer","result":"pass"'
-log_run '"event":"validate","repo":"jpmoya/scheduler","issue":42,"stage":"fullstack-developer","result":"fail","reason":"blocked by #40 still open"'
-log_run '"event":"validate","repo":"jpmoya/scheduler","issue":42,"stage":"test-lock","result":"pass","locked_sha":"abc123","added_tests":["tests/api/rate_limits.test.ts"]'
-log_run '"event":"dispatch","repo":"jpmoya/scheduler","issue":42,"pr":51,"agent":"fullstack-developer","lane":"full","marker_before":"[product-manager] READY FOR ENGINEERING","marker_after":"[fullstack-developer] IMPLEMENTED","duration_s":1180,"outcome":"marker","log":"~/.claude/pipeline/state/run-42-fullstack-developer.log"'
-log_run '"event":"terminal","repo":"jpmoya/scheduler","issue":42,"state":"awaiting merge","next_action":"JP merges PR #51"'
+log_run '"event":"validate","repo":"Benjis-Plants/benjis-ops-tool","issue":42,"stage":"fullstack-developer","result":"pass"'
+log_run '"event":"validate","repo":"Benjis-Plants/benjis-ops-tool","issue":42,"stage":"fullstack-developer","result":"fail","reason":"blocked by #40 still open"'
+log_run '"event":"validate","repo":"Benjis-Plants/benjis-ops-tool","issue":42,"stage":"test-lock","result":"pass","locked_sha":"abc123","added_tests":["tests/api/rate_limits.test.ts"]'
+log_run '"event":"dispatch","repo":"Benjis-Plants/benjis-ops-tool","issue":42,"pr":51,"agent":"fullstack-developer","lane":"full","marker_before":"[product-manager] READY FOR ENGINEERING","marker_after":"[fullstack-developer] IMPLEMENTED","duration_s":1180,"outcome":"marker","log":"~/.claude/pipeline/state/run-42-fullstack-developer.log"'
+log_run '"event":"terminal","repo":"Benjis-Plants/benjis-ops-tool","issue":42,"state":"awaiting merge","next_action":"JP merges PR #51"'
 # resume on a delegated decision: the check is a validate line, the resumed run an ordinary dispatch line
-log_run '"event":"validate","repo":"jpmoya/scheduler","issue":42,"stage":"delegated-decision","result":"pass"'
-log_run '"event":"validate","repo":"jpmoya/scheduler","issue":42,"stage":"delegated-decision","result":"fail","reason":"Resolves: URL is not the BLOCKED comment"'
+log_run '"event":"validate","repo":"Benjis-Plants/benjis-ops-tool","issue":42,"stage":"delegated-decision","result":"pass"'
+log_run '"event":"validate","repo":"Benjis-Plants/benjis-ops-tool","issue":42,"stage":"delegated-decision","result":"fail","reason":"Resolves: URL is not the BLOCKED comment"'
 # JP approval word check (#310): log the refusal reason, never the comment body
-log_run '"event":"validate","repo":"jpmoya/scheduler","issue":42,"stage":"jp-go","result":"fail","reason":"no approval-word comment from the issue author after the stamp"'
-log_run '"event":"validate","repo":"jpmoya/scheduler","issue":42,"stage":"jp-go","result":"fail","reason":"ignored agent marker comment (not a go)"'
+log_run '"event":"validate","repo":"Benjis-Plants/benjis-ops-tool","issue":42,"stage":"jp-go","result":"fail","reason":"no approval-word comment from the issue author after the stamp"'
+log_run '"event":"validate","repo":"Benjis-Plants/benjis-ops-tool","issue":42,"stage":"jp-go","result":"fail","reason":"ignored agent marker comment (not a go)"'
 # loop cap hit (pre-impl, post-impl, TEST DEFECT second round): logged before the terminal event
-log_run '"event":"validate","repo":"jpmoya/scheduler","issue":42,"stage":"loop-cap","result":"fail","reason":"post-impl cap: 3rd FAIL"'
+log_run '"event":"validate","repo":"Benjis-Plants/benjis-ops-tool","issue":42,"stage":"loop-cap","result":"fail","reason":"post-impl cap: 3rd FAIL"'
 # post-PASS hand to JP (main-base promotion PR, unsupported project): logged before the terminal event
-log_run '"event":"validate","repo":"jpmoya/scheduler","issue":42,"stage":"hand-to-jp","result":"fail","reason":"both PASSes; PR base is main, handed to JP"'
+log_run '"event":"validate","repo":"Benjis-Plants/benjis-ops-tool","issue":42,"stage":"hand-to-jp","result":"fail","reason":"both PASSes; PR base is main, handed to JP"'
 # mockup gate: log the marker form checked, never who posted the comment
 log_run '"event":"validate","repo":"acme/app","issue":42,"stage":"mockup-gate","result":"pass","reason":"approval word matched"'
 log_run '"event":"validate","repo":"acme/app","issue":42,"stage":"mockup-gate","result":"fail","reason":"no approval word or **[jp] MOCKUPS APPROVED** after the stamp"'
-log_run '"event":"dispatch","repo":"jpmoya/scheduler","issue":42,"pr":51,"agent":"deployer","lane":"full","marker_before":"[project-manager] DECISION","marker_after":"[deployer] DEPLOYED","duration_s":240,"outcome":"marker","log":"~/.claude/pipeline/state/run-42-deployer.log"'   # marker_before: legacy [project-manager] spelling of the delivery-lead decision
+log_run '"event":"dispatch","repo":"Benjis-Plants/benjis-ops-tool","issue":42,"pr":51,"agent":"deployer","lane":"full","marker_before":"[project-manager] DECISION","marker_after":"[deployer] DEPLOYED","duration_s":240,"outcome":"marker","log":"~/.claude/pipeline/state/run-42-deployer.log"'   # marker_before: legacy [project-manager] spelling of the delivery-lead decision
 ```
 
 The delegated-decision refusal path for a JP-only-list `BLOCKED` (the go-clearing carve-out at `:69`) writes its `"stage":"delegated-decision","result":"fail"` line before emitting a terminal event — closing the gap where a run logged a `terminal` event with no matching `validate` line. Pass lines carry a reason naming the form checked, in the `reason` field (e.g. `"reason":"approval word dated after BLOCKED"`).

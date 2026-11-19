@@ -1,6 +1,6 @@
 #!/bin/bash
 # find-duplicates.sh — search for a pre-existing ticket BEFORE a new one is filed (JP, 2026-10-31).
-# Incident: scheduler #2016 was filed, had pipeline runs attached, and only then was rejected as a
+# Incident: ops tool #2016 (then named scheduler) was filed, had pipeline runs attached, and only then was rejected as a
 # duplicate of #1840/#1841. Every path that creates a ticket runs this first (agents call it
 # directly; hooks/dedupe-ticket-guard.sh runs it on every `gh issue create` / issues POST).
 #
@@ -16,7 +16,7 @@
 set -u
 command -v python3 >/dev/null 2>&1 || { echo "find-duplicates: python3 not found" >&2; exit 3; }
 # Sibling repos of one product, ';' between groups, ',' within a group. Renamed repos resolve to
-# their canonical name at run time (scheduler -> benjis-ops-tool, quoting tool -> sales tool).
+# their canonical name at run time (scheduler -> benjis-ops-tool, benjis-quoting-tool -> benjis-sales-tool).
 : "${DEDUPE_REPO_GROUPS:=Benjis-Plants/scheduler,Benjis-Plants/benjis-ops-tool;Benjis-Plants/benjis-quoting-tool,Benjis-Plants/benjis-sales-tool}"
 export DEDUPE_REPO_GROUPS
 exec python3 -I -c '

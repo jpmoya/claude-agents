@@ -120,7 +120,7 @@ MERGE_BASE=""
 
 if [ "$VITEST_SAFE" = "yes" ] && [ -n "$REPO_ROOT" ]; then
   # Resolve the target/integration branch from local refs only — no network call in a
-  # pre-commit hook. Prefer staging (scheduler/quoting-tool convention), else main.
+  # pre-commit hook. Prefer staging (ops tool / sales tool convention), else main.
   TARGET_REF=""
   if git -C "$REPO_ROOT" rev-parse --verify -q origin/staging >/dev/null; then
     TARGET_REF="origin/staging"

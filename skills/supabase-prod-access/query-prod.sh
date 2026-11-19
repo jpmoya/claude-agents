@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Read-only query against scheduler's PRODUCTION Supabase project via the
+# Read-only query against the ops tool's (shared with the sales tool) PRODUCTION Supabase project via the
 # Management API, using the PAT stored in macOS Keychain. Never echoes the
 # token. See SKILL.md in this folder for details and the migration-ledger
 # recording flow (not covered by this script).
@@ -7,7 +7,7 @@
 # Usage: ./query-prod.sh "select count(*) from public.visits;"
 set -euo pipefail
 
-PROD_REF="ywwnprpncqrqfiskmoot"  # scheduler production — hardcoded, never derive from env vars
+PROD_REF="ywwnprpncqrqfiskmoot"  # ops tool + sales tool production — hardcoded, never derive from env vars
 
 if [ $# -lt 1 ] || [ -z "$1" ]; then
   echo "Usage: $0 \"<sql query>\"" >&2
