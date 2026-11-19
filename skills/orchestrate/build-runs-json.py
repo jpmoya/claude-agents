@@ -1322,7 +1322,6 @@ def _registry_names(q):
 GOAL_STALL_ERR_SECS = 900          # a project-scope error older than this has stopped repeating (the sync runs every GOAL_SYNC_SECS=300)
 GOAL_STALL_TAIL_BYTES = 262144     # events.jsonl is megabytes: only its tail is read
 GOAL_STALL_MAX = 5
-GOAL_STALL_BLOCKED_MAX = 10
 _STALL_TEXT_UNSAFE = re.compile(r"[^A-Za-z0-9 .,:;/_()#'\-]")
 _PROJ_ERR_RE = re.compile(r"^project goal ([A-Za-z0-9_.-]+)/([0-9]+): (?:cannot read the project scope: )?(.*)$")
 
@@ -1378,8 +1377,9 @@ def _recent_project_errors(now_epoch):
 
 
 def build_goal_stall():
-    """Why goals wait in the queue and nothing starts: an unreadable registry entry (it blocks every queued goal while GOAL_SERIAL=1) or a project
-    goal whose scope cannot be read (closed project, missing token scope). Nothing when no goal is queued (nothing is blocked)."""
+    """Goals the queue SKIPS because they cannot be read (JP, 2026-11-19): a registry entry whose goal block cannot be read, or a project goal whose
+    scope cannot be read (closed project, missing token scope, a failed read). Such a goal blocks nothing but itself, so these entries are
+    informational: the status page shows each amber as "<goal> cannot be read (reason); it is skipped, other goals unaffected"."""
     if not pipe_dir:
         return []
     try:
@@ -1387,32 +1387,23 @@ def build_goal_stall():
             q = json.load(f)
     except (OSError, ValueError):
         return []
-    if not isinstance(q, dict) or q.get("serial") is not True or not isinstance(q.get("queued"), list):
+    if not isinstance(q, dict) or q.get("serial") is not True:
         return []
     goals = build_goals()
     name_of = {}
     for e in goals:
         name_of[e["id"]] = (e.get("title") or e.get("spec") or e["id"])
-    queued = [d["id"] for d in q["queued"] if isinstance(d, dict) and isinstance(d.get("id"), str) and d["id"]]
-    if not queued:
-        return []
     out = []
-
-    def blocked_for(own_id):
-        names = [_stall_text(name_of.get(i) or i, 80) for i in queued if i != own_id]
-        return [n for n in names if n][:GOAL_STALL_BLOCKED_MAX]
-
     for d in q.get("unreadable") or []:
         if isinstance(d, dict) and isinstance(d.get("issue"), int) and not isinstance(d.get("issue"), bool):
             out.append({"kind": "unreadable", "goal": "registry issue #%d" % d["issue"],
-                        "reason": "its goal block cannot be read, so no queued goal may start",
-                        "hint": "fix or close registry issue #%d" % d["issue"], "blocked": blocked_for(None)})
+                        "reason": "its goal block cannot be read", "hint": "fix or close registry issue #%d" % d["issue"]})
     for ref, why in sorted(_recent_project_errors(time.time()).items()):
         gid = "proj-%s_%s" % tuple(ref.split("/", 1))
         reason = _stall_text(why, 120) or "the project cannot be read"
         out.append({"kind": "project_error", "goal": _stall_text(name_of.get(gid) or "project " + ref, 80),
-                    "reason": reason, "hint": _stall_hint(reason), "blocked": blocked_for(gid)})
-    return [x for x in out if x["blocked"]][:GOAL_STALL_MAX]
+                    "reason": reason, "hint": _stall_hint(reason)})
+    return out[:GOAL_STALL_MAX]
 
 
 def build_goals_as_of():

@@ -123,14 +123,15 @@ and use up the KV write budget). Tunables are constants at the top of `alerts.js
 
 | Alert | Fires when | Data |
 |---|---|---|
-| Goal queue stalled (red) | a host publishes `goal_stall[]` (an unreadable registry entry, or a project goal whose scope cannot be read, such as a closed project) while goals are queued; or the goal-slot holder's `last_cycle_at` is older than `GOAL_STALL_HOURS` (6) with a goal queued | `goal_stall[]` (new optional key, `build-runs-json.py goalstall`: `goalqueue.json` + a bounded tail of `events.jsonl`), `goals[]` |
+| Goal cannot be read (amber) | a host publishes `goal_stall[]` (a registry entry whose goal block cannot be read, or a project goal whose scope cannot be read, such as a closed project). Text: "<goal> cannot be read (reason); it is skipped, other goals unaffected". The goal blocks nothing but itself: the queue goes on without it (JP, 2026-11-19) | `goal_stall[]` (optional key, `build-runs-json.py goalstall`: `goalqueue.json` + a bounded tail of `events.jsonl`) |
+| Goal queue stalled (red) | the goal-slot holder's `last_cycle_at` is older than `GOAL_STALL_HOURS` (6) with a goal queued | `goals[]` |
 | Free slots while work waits (amber, per host) | `capacity.running < max` and the oldest `queued` run is older than `IDLE_SLOT_MINUTES` (10); approved tickets do not count | `capacity`, `runs[].started_at` (= queued_at) |
 | Paused tickets nobody works on (amber) | held tickets that are waiting on JP, answered but not relaunched (`parked_reason: answered`, marker `DECISION`/`JP CONFIRMED`) or parked; not auto-retry, out-of-scope or finished ones. Count plus the first 6, each `#n first five words (why)` linked to the issue | `runs[]`, same winner and group rules as the status groups |
 | Supervisor slow (amber, per host) | `sent_at - supervisor_last_tick` is over `TICK_SLOW_MINUTES` (15): the gap measured at report time, not `now - tick` (keep-alive lag would raise false alarms) | `sent_at`, `supervisor_last_tick` |
 | Host not reporting (amber stale, red offline) | `received_at` older than the existing stale / offline thresholds | `received_at` |
 
 A stale or offline host is reported once and its old data raises no other alert. The reporter publishes `goal_stall` only when non-empty;
-`validate.js` rebuilds it (closed `kind` enum, plain-text fields, max 5 entries and 10 blocked names) and drops anything malformed.
+`validate.js` rebuilds it (closed `kind` enum, plain-text fields, max 5 entries; `blocked` names, up to 10, are optional and no longer sent) and drops anything malformed.
 
 ## Backlog priority (reorder view)
 

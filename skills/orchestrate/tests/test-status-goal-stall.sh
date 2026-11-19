@@ -1,8 +1,9 @@
-# Status page alert banner, alert 1 (JP, 2026-11-19; #762 in part): why the goal queue is not moving.
-#   - goal_queue_save writes `unreadable` ([{id, issue}], serial mode only) into goalqueue.json; candidate / slot / queued are unchanged.
+# Status page alert banner, alert 1 (JP, 2026-11-19; #762 in part; #793: a goal that cannot be read blocks nothing but itself).
+#   - goal_queue_save writes `unreadable` ([{id, issue}], serial mode only) and `errored` into goalqueue.json; the unreadable entry no longer
+#     blocks the candidate (it is skipped, display only).
 #   - build-runs-json.py `goalstall` mode, wired by report-status.sh as the payload's `goal_stall` key only when non-empty, reports an
 #     unreadable registry entry and a project goal whose scope cannot be read (error events on route goal-project-scope in events.jsonl,
-#     younger than 15 minutes), each with the queued goals it blocks. Nothing when no goal is queued or GOAL_SERIAL is off.
+#     younger than 15 minutes), informationally: no `blocked` list. Nothing when GOAL_SERIAL is off.
 # Expected values hand-written. Prefix gst_.
 
 GST_HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -29,36 +30,36 @@ test_gst_queue_save_records_unreadable_entries() {
         {"issue":22,"id":"q2","spec":"s2","host":"","state":"open","closed_at":null,"st":"queued","block":{"title":"Q two"}}]'
   out=$(bash -c ". '$RS_GST/config.sh' >/dev/null 2>&1; PIPE='$GST_PIPE'; . '$RS_GST/pipeline-lib.sh' >/dev/null 2>&1; . '$RS_GST/goal-lib.sh' >/dev/null 2>&1; PIPE='$GST_PIPE'; GOAL_SERIAL=1; goal_queue_save \"\$1\"; jq -c '{unreadable,candidate,slot,queued:(.queued|map(.id))}' '$GST_PIPE/goalqueue.json'" _ "$reg")
   gst_cleanup
-  assert_eq "$out" '{"unreadable":[{"id":"registry-issue-9","issue":9}],"candidate":null,"slot":null,"queued":["q1","q2"]}' \
-    "the unreadable entry is listed; it still blocks the candidate (queue behaviour unchanged); queued order kept" || return 1
+  assert_eq "$out" '{"unreadable":[{"id":"registry-issue-9","issue":9}],"candidate":"q1","slot":null,"queued":["q1","q2"]}' \
+    "the unreadable entry is listed; it does NOT block the candidate (the first queued goal is); queued order kept" || return 1
 }
 
-test_gst_unreadable_entry_blocks_both_queued_goals() {
+test_gst_unreadable_entry_is_reported_as_skipped_not_blocking() {
   gst_env
   gst_queue "{\"serial\":true,\"slot\":null,\"candidate\":null,\"unreadable\":[{\"id\":\"registry-issue-9\",\"issue\":9}],\"queued\":$GST_QUEUED,\"open\":[],\"recent\":[]}"
   local j; j=$(gst_mode); gst_cleanup
-  assert_eq "$j" '[{"kind": "unreadable", "goal": "registry issue #9", "reason": "its goal block cannot be read, so no queued goal may start", "hint": "fix or close registry issue #9", "blocked": ["Sales Workflow 3.0", "Plants Goal"]}]' \
-    "kind, goal, reason, hint and both blocked goals in queue order" || return 1
+  assert_eq "$j" '[{"kind": "unreadable", "goal": "registry issue #9", "reason": "its goal block cannot be read", "hint": "fix or close registry issue #9"}]' \
+    "kind, goal, reason and hint; no blocked list (it blocks nothing)" || return 1
 }
 
-test_gst_nothing_when_no_goal_is_queued_or_serial_is_off() {
+test_gst_nothing_when_serial_is_off_and_still_reported_with_nothing_queued() {
   gst_env
   gst_queue '{"serial":true,"slot":null,"candidate":null,"unreadable":[{"id":"registry-issue-9","issue":9}],"queued":[],"open":[],"recent":[]}'
   gst_event 30 goal-project-scope "project goal jpmoya/41: cannot read the project scope: the project is closed"
-  local a; a=$(gst_mode)
+  local a; a=$(gst_mode | jq -c 'map(.kind)')
   gst_queue "{\"unreadable\":[{\"id\":\"registry-issue-9\",\"issue\":9}],\"queued\":$GST_QUEUED,\"open\":[],\"recent\":[]}"   # no "serial": GOAL_SERIAL off
   local b; b=$(gst_mode); gst_cleanup
-  assert_eq "$a" '[]' "no queued goal: nothing is blocked" || return 1
+  assert_eq "$a" '["unreadable","project_error"]' "no queued goal: the skipped goals are still reported (informational, not tied to the queue)" || return 1
   assert_eq "$b" '[]' "not serial: nothing" || return 1
 }
 
-test_gst_closed_project_names_the_goal_and_what_it_blocks() {
+test_gst_closed_project_names_the_goal_and_reason() {
   gst_env
   gst_queue "{\"serial\":true,\"slot\":null,\"candidate\":null,\"unreadable\":[],\"queued\":$GST_QUEUED,\"open\":[{\"id\":\"proj-jpmoya_41\",\"issue\":759,\"title\":\"CD hardening\",\"st\":\"active\"}],\"recent\":[]}"
   gst_event 60 goal-project-scope "project goal jpmoya/41: cannot read the project scope: the project is closed"
   gst_event 5 goal-project-scope "project goal jpmoya/41: cannot read the project scope: the project is closed"
   local j; j=$(gst_mode); gst_cleanup
-  assert_eq "$j" '[{"kind": "project_error", "goal": "CD hardening", "reason": "the project is closed", "hint": "reopen the project, or stop the goal bound to it (deliver.sh stop)", "blocked": ["Sales Workflow 3.0", "Plants Goal"]}]' \
+  assert_eq "$j" '[{"kind": "project_error", "goal": "CD hardening", "reason": "the project is closed", "hint": "reopen the project, or stop the goal bound to it (deliver.sh stop)"}]' \
     "closed project: one entry (newest event per project) named like its goals-list row, reason from the log, hint to reopen" || return 1
 }
 
@@ -86,8 +87,8 @@ test_gst_report_status_publishes_goal_stall_only_when_non_empty() {
 
 echo "-- status goal stall (alert banner)"
 run_test test_gst_queue_save_records_unreadable_entries
-run_test test_gst_unreadable_entry_blocks_both_queued_goals
-run_test test_gst_nothing_when_no_goal_is_queued_or_serial_is_off
-run_test test_gst_closed_project_names_the_goal_and_what_it_blocks
+run_test test_gst_unreadable_entry_is_reported_as_skipped_not_blocking
+run_test test_gst_nothing_when_serial_is_off_and_still_reported_with_nothing_queued
+run_test test_gst_closed_project_names_the_goal_and_reason
 run_test test_gst_old_or_foreign_events_are_ignored_and_text_is_plain
 run_test test_gst_report_status_publishes_goal_stall_only_when_non_empty

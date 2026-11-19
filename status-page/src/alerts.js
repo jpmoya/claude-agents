@@ -5,7 +5,8 @@
 // (a published age would change the heartbeat hash on every tick and burn the KV write budget).
 //
 // Five alert families (JP, 2026-11-19; pipeline-audit-2026-11-18 sections 3 and 5, #762; #769 adds the fifth):
-//   1. a goal stalls the goal queue            (host `goal_stall[]`, plus a slot holder with no lead cycle for GOAL_STALL_HOURS)
+//   1. a goal cannot be read (amber, skipped by the queue, blocks nothing else: host `goal_stall[]`) or stalls the goal queue
+//      (red: a slot holder with no lead cycle for GOAL_STALL_HOURS)
 //   2. run slots idle while work waits         (free slots + a queued run older than IDLE_SLOT_MINUTES, per host)
 //   3. paused tickets nobody is working on     (held runs: waiting on JP, answered but not relaunched, or just parked)
 //   4. a supervisor slow, or a host not reporting (tick-to-report gap > TICK_SLOW_MINUTES; heartbeat older than the stale threshold)
@@ -122,11 +123,12 @@ function goalStallAlerts(liveRecords, nowEpochSecs) {
       const key = `${s.kind}|${s.goal}`;
       if (seen.has(key)) continue;
       seen.add(key);
+      // A goal that cannot be read is skipped by the queue and blocks nothing but itself (JP, 2026-11-19): amber, not a stall.
       out.push({
         id: `goal-stall-${out.length + 1}`,
-        severity: 'red',
-        title: `Goal queue stalled by ${s.goal}`,
-        detail: `${s.reason}. Waiting behind it: ${(s.blocked || []).join(', ')}.`,
+        severity: 'amber',
+        title: `${s.goal} cannot be read (${s.reason}); it is skipped, other goals unaffected`,
+        detail: 'The goal queue goes on without it, in the same priority order.',
         hint: s.hint,
       });
     }

@@ -144,23 +144,29 @@ describe('alert 4 - supervisor slow, host not reporting', () => {
 });
 
 describe('alert 1 - a goal stalls the goal queue', () => {
-  const stall = (o = {}) => ({ kind: 'project_error', goal: 'CD hardening', reason: 'the project is closed', hint: 'reopen the project', blocked: ['Sales Workflow 3.0', 'Plants'], ...o });
+  const stall = (o = {}) => ({ kind: 'project_error', goal: 'CD hardening', reason: 'the project is closed', hint: 'reopen the project', ...o });
   const goal = (o) => ({ id: 'g', title: 'Holder', host: 'vm', state: 'running', slot: 'holds', ...o });
   const waiting = { id: 'q', title: 'Waiter', host: '', state: 'queued', queue_pos: 1, slot: 'waits' };
 
-  it('names the goal, the reason, the goals it blocks and the fix; red; first in the list', () => {
+  it('a goal that cannot be read is amber, names the goal and the reason, and says it blocks nothing else', () => {
     const a = derive(host({ goal_stall: [stall()], tickGapMins: 20 }));
     expect(a[0].id).toBe('goal-stall-1');
-    expect(a[0].severity).toBe('red');
-    expect(a[0].title).toBe('Goal queue stalled by CD hardening');
-    expect(a[0].detail).toBe('the project is closed. Waiting behind it: Sales Workflow 3.0, Plants.');
+    expect(a[0].severity).toBe('amber');
+    expect(a[0].title).toBe('CD hardening cannot be read (the project is closed); it is skipped, other goals unaffected');
+    expect(a[0].detail).toBe('The goal queue goes on without it, in the same priority order.');
     expect(a[0].hint).toBe('reopen the project');
     expect(ids(a)).toEqual(['goal-stall-1', 'slow-tick-mac']);
+  });
+  it('an older reporter that still sends blocked names gets the same amber, skipped text (the names are not shown)', () => {
+    const a = derive(host({ goal_stall: [stall({ blocked: ['Sales Workflow 3.0', 'Plants'] })] }));
+    expect(a[0].severity).toBe('amber');
+    expect(a[0].title).toBe('CD hardening cannot be read (the project is closed); it is skipped, other goals unaffected');
+    expect(a[0].detail).not.toContain('Sales Workflow');
   });
   it('the same stall reported by both hosts shows once', () => {
     expect(ids(derive(host({ goal_stall: [stall()] }), host({ goal_stall: [stall()] })))).toEqual(['goal-stall-1']);
   });
-  it('a slot holder whose lead has not cycled for 7 hours, with a goal queued, is stalling it', () => {
+  it('a slot holder whose lead has not cycled for 7 hours, with a goal queued, is stalling it (red, unchanged)', () => {
     const a = derive(host({ goals: [goal({ last_cycle_at: ago(7 * 60) }), waiting] }));
     expect(a).toHaveLength(1);
     expect(a[0].title).toBe('Goal queue stalled by Holder');
@@ -179,15 +185,16 @@ describe('validate.js - goal_stall', () => {
     expect(r.ok).toBe(true);
     return r.value.goal_stall;
   };
-  const ok = { kind: 'unreadable', goal: 'registry issue #12', reason: 'its goal block cannot be read', hint: 'fix or close registry issue #12', blocked: ['A', 'B'] };
-  it('keeps a well-formed entry', () => {
+  const ok = { kind: 'unreadable', goal: 'registry issue #12', reason: 'its goal block cannot be read', hint: 'fix or close registry issue #12' };
+  it('keeps a well-formed entry, with or without the optional blocked names of an older reporter', () => {
     expect(sanitised([ok])).toEqual([ok]);
+    expect(sanitised([{ ...ok, blocked: ['A', 'B'] }])).toEqual([{ ...ok, blocked: ['A', 'B'] }]);
   });
-  it('drops unknown kinds, markup, a missing blocked list, and non-arrays; never rejects the beat', () => {
+  it('drops unknown kinds, markup, and non-arrays; never rejects the beat; blocked is optional', () => {
     expect(sanitised([{ ...ok, kind: 'other' }])).toBeUndefined();
     expect(sanitised([{ ...ok, reason: '<script>x</script>' }])).toBeUndefined();
-    expect(sanitised([{ ...ok, blocked: [] }])).toBeUndefined();
-    expect(sanitised([{ ...ok, blocked: 'A' }])).toBeUndefined();
+    expect(sanitised([{ ...ok, blocked: [] }])).toEqual([ok]);
+    expect(sanitised([{ ...ok, blocked: 'A' }])).toEqual([ok]);
     expect(sanitised('nope')).toBeUndefined();
     expect(sanitised([ok, 7, null])).toEqual([ok]);
   });
@@ -223,7 +230,7 @@ describe('render.js - banner', () => {
     expect(render(host({ reportedMinsAgo: 80 }))).toContain('<section class="alerts alerts-red" data-testid');
   });
   it('escapes every alert value (a stall reason containing a script tag renders inert)', () => {
-    const evil = { kind: 'project_error', goal: '<img src=x onerror=1>', reason: '<script>alert(1)</script>', hint: '"><b>', blocked: ['<i>x</i>'] };
+    const evil = { kind: 'project_error', goal: '<img src=x onerror=1>', reason: '<script>alert(1)</script>', hint: '"><b>' };
     const html = render(host({ goal_stall: [evil] }));
     expect(html).not.toContain('<script>alert(1)');
     expect(html).not.toContain('<img src=x');
