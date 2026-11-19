@@ -379,6 +379,7 @@ function sanitiseScheduledTrigger(raw) {
     workflow: raw.workflow,
     interval_minutes: interval,
     last_fired_at: sanitiseCronDate(raw.last_fired_at),
+    tracked_since: sanitiseCronDate(raw.tracked_since), // when the host first saw this line: "never fired" vs "just enabled"
   };
 }
 

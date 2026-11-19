@@ -185,27 +185,32 @@ function unownedAlert(liveHosts, nowEpochSecs) {
 
 /** 5. the release router (a workflow file named auto-release*) has not fired for TRIGGER_OVERDUE_FACTOR intervals; the newest fire across the live hosts counts. */
 function releaseRouterAlerts(liveRecords, nowEpochSecs) {
-  const newest = new Map(); // "repo|workflow" -> { repo, workflow, interval, last } (last null while no host has ever reported a fire)
+  // "repo|workflow" -> { fired: newest fire on any live host | null, since: oldest tracked_since on any live host | null }
+  const seen = new Map();
   for (const { record } of liveRecords) {
     for (const t of Array.isArray(record.scheduled_triggers) ? record.scheduled_triggers : []) {
       if (!t || typeof t.workflow !== 'string' || !t.workflow.startsWith('auto-release') || !Number.isInteger(t.interval_minutes)) continue;
       const key = `${t.repo}|${t.workflow}`;
-      const at = epoch(t.last_fired_at);
-      const cur = newest.get(key);
-      if (!cur) newest.set(key, { repo: t.repo, workflow: t.workflow, interval: t.interval_minutes, last: at });
-      else if (at !== null && (cur.last === null || at > cur.last)) cur.last = at;
+      const fired = epoch(t.last_fired_at);
+      const since = epoch(t.tracked_since);
+      const cur = seen.get(key) || { repo: t.repo, workflow: t.workflow, interval: t.interval_minutes, fired: null, since: null };
+      if (fired !== null && (cur.fired === null || fired > cur.fired)) cur.fired = fired;
+      if (since !== null && (cur.since === null || since < cur.since)) cur.since = since;
+      seen.set(key, cur);
     }
   }
   const out = [];
-  for (const { repo, workflow, interval, last } of newest.values()) {
-    if (last === null) continue; // never reported a fire (just enabled): fail quiet, like the goal-slot check
+  for (const { repo, workflow, interval, fired, since } of seen.values()) {
+    // a workflow that never fired (every dispatch failing) is measured from when a host first tracked it; no timestamp at all: fail quiet
+    const last = fired !== null ? fired : since;
+    if (last === null) continue;
     const age = nowEpochSecs - last;
     if (age <= (TRIGGER_OVERDUE_FACTOR * interval + TRIGGER_REPORT_LAG_MINUTES) * 60) continue;
     out.push({
       id: `release-router-${repo}-${workflow.replace(/\.ya?ml$/, '')}`,
       severity: 'red',
       title: `The ${repo} release router has not fired in ${Math.round(age / 60)} minutes`,
-      detail: `${workflow} should fire every ${interval} minutes; nothing has started it for ${formatDuration(age)}, so changes merged to staging are not being released.`,
+      detail: `${workflow} should fire every ${interval} minutes; ${fired === null ? `it has not fired once in the ${formatDuration(age)} since a supervisor started tracking it` : `nothing has started it for ${formatDuration(age)}`}, so changes merged to staging are not being released.`,
       hint: 'Check the supervisor on the host that fires it (scheduled-triggers.log: failed lines mean the dispatch is refused), then run the workflow by hand.',
     });
   }

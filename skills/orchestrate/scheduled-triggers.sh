@@ -6,7 +6,8 @@
 # Usage: scheduled-triggers.sh [run|status]
 #   run     (default) one pass: dispatch every workflow in scheduled-triggers.conf that is due. Called backgrounded by supervisor.sh each tick.
 #   status  print the heartbeat JSON array the status page publishes (local files only, no network):
-#           [{"repo","workflow","interval_minutes","last_fired_at"|null}] — one per active config line.
+#           [{"repo","workflow","interval_minutes","last_fired_at"|null,"tracked_since"|null}] — one per active config line.
+#           tracked_since = when this host first saw the line, so the status page can tell "never fired" from "just enabled".
 #
 # Config (SCHEDULED_TRIGGERS_CONF, default scheduled-triggers.conf beside this script), one workflow per line:
 #   <owner/repo> <workflow file> <interval minutes> [<input>=<value> ...] [ref=<branch>]
@@ -18,7 +19,10 @@
 #   2. ONE `gh run list --workflow` read (cached SCHEDULED_TRIGGERS_RUNS_TTL_SECS on disk): skip when a run is queued / in progress,
 #      and skip (stamping the timestamp from that run) when the newest run, from any trigger, started less than one interval ago. That
 #      read is what keeps the VM and the Mac from double-firing (a lock is per host) and the GitHub cron fallback from doubling.
-#   3. ONE `gh workflow run` (no --ref: gh uses the repo's default branch). Success stamps the timestamp and appends
+#      An in-progress run counts as fired now (stamps the timestamp), so a long router run never looks silent.
+#   3. ONE `gh workflow run` (no --ref: gh uses the repo's default branch). Every gh call is killed after SCHEDULED_TRIGGERS_GH_TIMEOUT_SECS (30).
+#      A failed read or dispatch backs the workflow off for one interval (at most 30 min) so a workflow without workflow_dispatch is not
+#      retried every tick. Success stamps the timestamp and appends
 #      `<ts> <repo> <workflow> ok` to $SCHEDULED_TRIGGERS_LOG. A failure stamps nothing, appends `... failed`, and is captured
 #      (log + the existing SLACK_WEBHOOK_URL, tags release=<commit SHA> environment=<host> route=scheduled-triggers, never a token)
 #      once per workflow per hour; the other workflows still run.
@@ -36,6 +40,8 @@ ST_DIR="${SCHEDULED_TRIGGERS_STATE_DIR:-$PIPE/scheduled-triggers}"
 ST_LOG="${SCHEDULED_TRIGGERS_LOG:-$LOGDIR/scheduled-triggers.log}"
 ST_TTL="${SCHEDULED_TRIGGERS_RUNS_TTL_SECS:-60}"
 ST_ALERT_SECS="${SCHEDULED_TRIGGERS_ALERT_SECS:-3600}"
+ST_GH_TIMEOUT="${SCHEDULED_TRIGGERS_GH_TIMEOUT_SECS:-30}"
+ST_BACKOFF_MAX_MIN="${SCHEDULED_TRIGGERS_BACKOFF_MAX_MIN:-30}"
 
 st_tags() { printf 'release=%s environment=%s route=scheduled-triggers' "$(git -C "$HERE" rev-parse HEAD 2>/dev/null || echo unknown)" "$(hostname -s 2>/dev/null || echo unknown)"; }
 
@@ -87,9 +93,10 @@ if [ "$MODE" = status ]; then
   out=""
   while read -r repo wf iv _; do
     [ -n "${repo:-}" ] || continue
-    last=$(st_read_num "$ST_DIR/$(st_key "$repo" "$wf").last")
-    out="$out$(jq -nc --arg r "$repo" --arg w "$wf" --argjson i "$iv" --argjson l "$last" \
-      '{repo: $r, workflow: $w, interval_minutes: $i, last_fired_at: (if $l > 0 then ($l | todate) else null end)}')"$'\n'
+    last=$(st_read_num "$ST_DIR/$(st_key "$repo" "$wf").last"); since=$(st_read_num "$ST_DIR/$(st_key "$repo" "$wf").since")
+    out="$out$(jq -nc --arg r "$repo" --arg w "$wf" --argjson i "$iv" --argjson l "$last" --argjson s "$since" \
+      '{repo: $r, workflow: $w, interval_minutes: $i, last_fired_at: (if $l > 0 then ($l | todate) else null end),
+        tracked_since: (if $s > 0 then ($s | todate) else null end)}')"$'\n'
   done < <(st_config 2>/dev/null)
   printf '%s' "$out" | jq -sc '.' 2>/dev/null || echo '[]'
   exit 0
@@ -143,20 +150,36 @@ NOW=$(date +%s)
 DUE=""
 while read -r repo wf iv rest; do
   [ -n "${repo:-}" ] || continue
-  last=$(st_read_num "$ST_DIR/$(st_key "$repo" "$wf").last")
-  [ $((NOW - last)) -ge $((iv * 60)) ] && DUE="$DUE$repo $wf $iv $rest"$'\n'
+  key=$(st_key "$repo" "$wf")
+  [ -f "$ST_DIR/$key.since" ] || printf '%s\n' "$NOW" > "$ST_DIR/$key.since" 2>/dev/null   # first sighting of this line
+  last=$(st_read_num "$ST_DIR/$key.last"); failed=$(st_read_num "$ST_DIR/$key.fail")
+  # a failed attempt backs off for one interval (at most ST_BACKOFF_MAX_MIN): a workflow without workflow_dispatch is not retried every tick
+  back=$iv; [ "$back" -le "$ST_BACKOFF_MAX_MIN" ] || back=$ST_BACKOFF_MAX_MIN
+  [ $((NOW - last)) -ge $((iv * 60)) ] && [ $((NOW - failed)) -ge $((back * 60)) ] && DUE="$DUE$repo $wf $iv $rest"$'\n'
 done < <(st_config 2>/dev/null)
 [ -n "$DUE" ] || exit 0
 
 gh_class normal
 gh_tier_allows normal || exit 0   # budget low: no GitHub call this pass
 
+# st_timeout <secs> <cmd...> — run a command (a shell function such as gh() works) and kill it after <secs>; rc 124 on a timeout.
+# No `timeout` binary on macOS, and `timeout` cannot run the gh() budget wrapper anyway.
+st_timeout() {
+  local secs=$1 pid wd rc; shift
+  "$@" & pid=$!
+  ( sleep "$secs"; pkill -P "$pid" 2>/dev/null; kill "$pid" 2>/dev/null; touch "$ST_DIR/.timeout.$pid" ) >/dev/null 2>&1 & wd=$!
+  wait "$pid" 2>/dev/null; rc=$?
+  pkill -P "$wd" 2>/dev/null; kill "$wd" 2>/dev/null; wait "$wd" 2>/dev/null
+  if [ -e "$ST_DIR/.timeout.$pid" ]; then rm -f "$ST_DIR/.timeout.$pid"; return 124; fi
+  return $rc
+}
+
 # st_runs <owner/repo> <workflow> → the workflow's newest runs as JSON ([{status,createdAt}]), from the disk cache when fresh. rc 1 = unreadable.
 st_runs() {
   local cf="$ST_DIR/runs-$(st_key "$1" "$2").json" t out
   t=$(st_read_num "$cf")
   if [ "$t" -gt 0 ] && [ $((NOW - t)) -lt "$ST_TTL" ]; then tail -n +2 "$cf"; return 0; fi
-  out=$(gh run list --repo "$1" --workflow "$2" --limit 5 --json status,createdAt 2>/dev/null </dev/null) || return 1
+  out=$(st_timeout "$ST_GH_TIMEOUT" gh run list --repo "$1" --workflow "$2" --limit 5 --json status,createdAt 2>/dev/null </dev/null) || return 1
   printf '%s' "$out" | jq -e 'type == "array"' >/dev/null 2>&1 || return 1
   { printf '%s\n' "$NOW"; printf '%s\n' "$out"; } > "$cf.$$" 2>/dev/null && mv "$cf.$$" "$cf" 2>/dev/null
   printf '%s\n' "$out"
@@ -166,6 +189,7 @@ while read -r repo wf iv rest; do
   [ -n "${repo:-}" ] || continue
   key=$(st_key "$repo" "$wf")
   if ! runs=$(st_runs "$repo" "$wf"); then
+    printf '%s\n' "$NOW" > "$ST_DIR/$key.fail" 2>/dev/null
     st_capture "$key" "run list failed for $repo $wf"
     continue
   fi
@@ -175,7 +199,15 @@ while read -r repo wf iv rest; do
   newest=$(printf '%s' "$runs" | jq '[.[] | .createdAt | fromdateiso8601? // 0] | max // 0' 2>/dev/null) || newest=0
   case "$active" in ''|*[!0-9]*) active=0 ;; esac
   case "$newest" in ''|*[!0-9]*) newest=0 ;; esac
-  [ "$active" -eq 0 ] || continue
+  if [ "$active" -gt 0 ]; then
+    # never overlap, but a running router is a live one: an in-progress run counts as fired now (else a run longer than 3 intervals
+    # trips the status page alert while it works); a run still queued counts from the time it was created (a stuck queue is not a fire)
+    inprog=$(printf '%s' "$runs" | jq '[.[] | select(.status == "in_progress")] | length' 2>/dev/null) || inprog=0
+    case "$inprog" in ''|*[!0-9]*) inprog=0 ;; esac
+    stamp=$newest; [ "$inprog" -gt 0 ] && stamp=$NOW
+    [ "$stamp" -gt "$(st_read_num "$ST_DIR/$key.last")" ] && printf '%s\n' "$stamp" > "$ST_DIR/$key.last" 2>/dev/null
+    continue
+  fi
   if [ "$newest" -gt 0 ] && [ $((NOW - newest)) -lt $((iv * 60)) ]; then
     [ "$newest" -gt "$(st_read_num "$ST_DIR/$key.last")" ] && printf '%s\n' "$newest" > "$ST_DIR/$key.last" 2>/dev/null
     continue
@@ -184,11 +216,12 @@ while read -r repo wf iv rest; do
   for tok in $rest; do
     case "$tok" in ref=*) args+=(--ref "${tok#ref=}") ;; *) args+=(-f "$tok") ;; esac
   done
-  if gh workflow run "$wf" --repo "$repo" ${args[@]+"${args[@]}"} >/dev/null 2>&1 </dev/null; then
+  if st_timeout "$ST_GH_TIMEOUT" gh workflow run "$wf" --repo "$repo" ${args[@]+"${args[@]}"} >/dev/null 2>&1 </dev/null; then
     printf '%s\n' "$(date +%s)" > "$ST_DIR/$key.last" 2>/dev/null || st_capture "$key.state" "state write failed for $repo $wf"
-    rm -f "$ST_DIR/$key.alert" "$ST_DIR/runs-$key.json" 2>/dev/null   # the next read must see the run we just started
+    rm -f "$ST_DIR/$key.alert" "$ST_DIR/$key.fail" "$ST_DIR/runs-$key.json" 2>/dev/null   # the next read must see the run we just started
     st_log "$(date +%s) $repo $wf ok"
   else
+    printf '%s\n' "$(date +%s)" > "$ST_DIR/$key.fail" 2>/dev/null
     # logged once per workflow per hour, like its Slack message (a workflow that lacks workflow_dispatch fails on every pass)
     if st_throttle "$key"; then
       st_log "$(date +%s) $repo $wf failed"

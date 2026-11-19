@@ -13,6 +13,8 @@ const ago = (mins) => new Date((NOW - mins * 60) * 1000).toISOString().replace(/
 const trigger = (minsAgo, o = {}) => ({
   repo: 'ops', workflow: 'auto-release.yml', interval_minutes: 5, last_fired_at: minsAgo === null ? null : ago(minsAgo), ...o,
 });
+// a workflow that has never fired, first tracked `sinceMinsAgo` minutes ago
+const neverFired = (sinceMinsAgo, o = {}) => trigger(null, { tracked_since: ago(sinceMinsAgo), ...o });
 const host = (scheduled_triggers) => ({ ...hostRecord({ runs: [], received_at: ago(1) }), supervisor_last_tick: ago(2), capacity: { running: 0, max: 3, queued: 0 }, scheduled_triggers });
 const derive = (mac, vm = null) => deriveAlerts({ mac, vm }, thresholds, NOW);
 const router = (alerts) => alerts.filter((a) => a.id.startsWith('release-router-'));
@@ -37,6 +39,20 @@ describe('release router alert', () => {
   it('scales with the interval: 10 minutes gives 3 x 10 + 10 = 40 quiet, 41 red', () => {
     expect(router(derive(host([trigger(40, { interval_minutes: 10 })])))).toEqual([]);
     expect(router(derive(host([trigger(41, { interval_minutes: 10 })])))).toHaveLength(1);
+  });
+  it('fires for a router that never fired once it has been tracked longer than the threshold (every dispatch failing)', () => {
+    const a = router(derive(host([neverFired(60)])));
+    expect(a).toHaveLength(1);
+    expect(a[0].title).toBe('The ops release router has not fired in 60 minutes');
+    expect(a[0].detail).toContain('not fired once');
+  });
+  it('is quiet for a never-fired router that was only just enabled (25 minutes tracked), and loud at 26', () => {
+    expect(router(derive(host([neverFired(25)])))).toEqual([]);
+    expect(router(derive(host([neverFired(26)])))).toHaveLength(1);
+  });
+  it('a real fire beats tracked_since, and the oldest tracked_since across hosts is used when nothing fired', () => {
+    expect(router(derive(host([trigger(3, { tracked_since: ago(900) })])))).toEqual([]);
+    expect(router(derive(host([neverFired(5)]), host([neverFired(90)])))).toHaveLength(1);
   });
   it('uses the newest fire across both hosts: one host dispatching keeps it quiet', () => {
     expect(router(derive(host([trigger(120)]), host([trigger(3)])))).toEqual([]);
@@ -67,8 +83,13 @@ describe('validate.js - scheduled_triggers', () => {
   };
   it('keeps a valid entry by reconstruction (extra keys dropped)', () => {
     expect(sanitised([{ ...trigger(1), last_fired_at: '2026-11-19T11:59:00Z', command: 'rm -rf /' }])).toEqual([
-      { repo: 'ops', workflow: 'auto-release.yml', interval_minutes: 5, last_fired_at: '2026-11-19T11:59:00Z' },
+      { repo: 'ops', workflow: 'auto-release.yml', interval_minutes: 5, last_fired_at: '2026-11-19T11:59:00Z', tracked_since: null },
     ]);
+  });
+  it('keeps tracked_since (ISO or null), dropping a malformed one to null', () => {
+    expect(sanitised([trigger(null, { tracked_since: '2026-11-19T10:00:00Z' })])[0].tracked_since).toBe('2026-11-19T10:00:00Z');
+    expect(sanitised([trigger(null, { tracked_since: 'soon' })])[0].tracked_since).toBeNull();
+    expect(sanitised([trigger(null)])[0].tracked_since).toBeNull();
   });
   it('keeps a null fire time, drops entries with a bad repo, workflow name or interval, and omits the key when none survive', () => {
     expect(sanitised([trigger(null)])[0].last_fired_at).toBeNull();

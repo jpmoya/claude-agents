@@ -1,6 +1,7 @@
 # #769 — scheduled-triggers.sh: fires schedule-only workflows from the supervisor tick. Sandbox HOME/PIPE/LOGDIR, a stub `gh` and `curl` first on
 # PATH (nothing reaches GitHub or Slack). Fixture files in the sandbox HOME drive the stubs:
 #   runs-<workflow>.json   what `gh run list --workflow <file>` returns (default [])
+#   runs-hang              `gh run list` takes 30 s (the timeout test)
 #   runs-fail              `gh run list` exits 1          dispatch-fail   `gh workflow run` exits 1 (workflow names in it: only those fail)
 #   dispatch-sleep         seconds `gh workflow run` takes (the two-instance test)
 # Every gh call is appended to gh.log, every curl to curl.log. Expected values are hand-written from the ticket. Placeholder repo names only.
@@ -17,6 +18,7 @@ echo "$*" >> "$HOME/gh.log"
 case "$1 $2" in
   "run list")
     [ -f "$HOME/runs-fail" ] && { echo "gh: HTTP 502" >&2; exit 1; }
+    [ -f "$HOME/runs-hang" ] && sleep 30
     wf=""; prev=""; for a in "$@"; do [ "$prev" = "--workflow" ] && wf=$a; prev=$a; done
     if [ -f "$HOME/runs-$wf.json" ]; then cat "$HOME/runs-$wf.json"; else echo '[]'; fi
     exit 0 ;;
@@ -99,7 +101,8 @@ test_stt_a_queued_or_in_progress_run_blocks_the_dispatch() {
   echo "[{\"status\":\"in_progress\",\"createdAt\":\"$(stt_iso_ago 3600)\"},{\"status\":\"completed\",\"createdAt\":\"$(stt_iso_ago 7200)\"}]" > "$STT_HOME/runs-b.yml.json"
   stt_run
   assert_eq "$(stt_calls '^workflow run')" "0" "no dispatch" || return 1
-  assert_file_absent "$STT_STATE/example-owner_project-a__a.yml.last" "timestamp untouched" || return 1
+  local age; age=$(( $(date +%s) - $(cat "$STT_STATE/example-owner_project-a__a.yml.last") ))
+  [ "$age" -ge 3595 ] || { fail "a queued run is not a fresh fire: stamped from its creation (1 h ago), got age $age"; return 1; }
 }
 
 test_stt_a_run_started_within_the_interval_stamps_the_timestamp_and_skips() {
@@ -194,6 +197,61 @@ test_stt_an_unwritable_state_dir_is_captured_once_and_dispatches_nothing() {
   assert_eq "$(grep -c . "$STT_HOME/curl.log")" "1" "once per hour" || return 1
 }
 
+test_stt_an_in_progress_run_counts_as_fired_now_and_a_queued_one_from_its_creation() {
+  stt_home
+  stt_conf 'example-owner/project-a a.yml 5' 'example-owner/project-b b.yml 5'
+  echo "[{\"status\":\"in_progress\",\"createdAt\":\"$(stt_iso_ago 2400)\"}]" > "$STT_HOME/runs-a.yml.json"   # a 40-minute router run
+  echo "[{\"status\":\"queued\",\"createdAt\":\"$(stt_iso_ago 2400)\"}]" > "$STT_HOME/runs-b.yml.json"
+  stt_run
+  assert_eq "$(stt_calls '^workflow run')" "0" "never overlaps" || return 1
+  local now a b; now=$(date +%s); a=$(cat "$STT_STATE/example-owner_project-a__a.yml.last"); b=$(cat "$STT_STATE/example-owner_project-b__b.yml.last")
+  [ $((now - a)) -le 5 ] || { fail "in-progress stamps now, got age $((now - a))"; return 1; }
+  [ $((now - b)) -ge 2395 ] && [ $((now - b)) -le 2410 ] || { fail "queued stamps from its creation (40 min ago), got age $((now - b))"; return 1; }
+}
+
+test_stt_the_first_pass_records_tracked_since_and_status_publishes_it() {
+  stt_home
+  stt_conf 'example-owner/project-a a.yml 5'
+  echo 'a.yml' > "$STT_HOME/dispatch-fail"
+  stt_run
+  assert_file_exists "$STT_STATE/example-owner_project-a__a.yml.since" "since stamped on the first sighting" || return 1
+  local first; first=$(cat "$STT_STATE/example-owner_project-a__a.yml.since")
+  echo $((first - 1000)) > "$STT_STATE/example-owner_project-a__a.yml.since"; stt_run
+  assert_eq "$(cat "$STT_STATE/example-owner_project-a__a.yml.since")" "$((first - 1000))" "never rewritten" || return 1
+  stt_run status
+  assert_eq "$(printf '%s' "$STT_OUT" | jq -c '[.[0].last_fired_at, (.[0].tracked_since != null)]')" '[null,true]' "never fired, but tracked" || return 1
+}
+
+test_stt_a_failed_attempt_backs_off_for_an_interval_then_retries() {
+  stt_home
+  stt_conf 'example-owner/project-a nodispatch.yml 5'
+  echo 'nodispatch.yml' > "$STT_HOME/dispatch-fail"
+  stt_run
+  assert_eq "$(stt_calls '^workflow run')" "1" "first attempt" || return 1
+  : > "$STT_HOME/gh.log"; stt_run; stt_run
+  assert_eq "$(wc -c < "$STT_HOME/gh.log" | tr -d ' ')" "0" "next ticks: no read, no dispatch (backing off)" || return 1
+  echo $(( $(date +%s) - 301 )) > "$STT_STATE/example-owner_project-a__nodispatch.yml.fail"   # the failure is now older than the 5-minute interval
+  stt_run
+  assert_eq "$(stt_calls '^workflow run')" "1" "retried after one interval" || return 1
+}
+
+test_stt_a_hung_gh_call_is_killed_by_the_timeout() {
+  stt_home
+  stt_conf 'example-owner/project-a a.yml 5' 'example-owner/project-b b.yml 5'
+  echo 30 > "$STT_HOME/dispatch-sleep"
+  local t0 t1; t0=$(date +%s)
+  SCHEDULED_TRIGGERS_GH_TIMEOUT_SECS=1 stt_run
+  t1=$(date +%s)
+  [ $((t1 - t0)) -lt 15 ] || { fail "a hung dispatch must not hold the pass for 30 s, took $((t1 - t0))"; return 1; }
+  assert_file_absent "$STT_STATE/example-owner_project-a__a.yml.last" "a timed-out dispatch is a failure: not stamped" || return 1
+  assert_contains "$(cat "$STT_HOME/logs/pipeline/scheduled-triggers.log")" " example-owner/project-a a.yml failed" "logged as failed" || return 1
+  rm -f "$STT_HOME/dispatch-sleep"; touch "$STT_HOME/runs-hang"; rm -rf "$STT_STATE"; : > "$STT_HOME/gh.log"; : > "$STT_HOME/curl.log"
+  t0=$(date +%s); SCHEDULED_TRIGGERS_GH_TIMEOUT_SECS=1 stt_run; t1=$(date +%s)
+  [ $((t1 - t0)) -lt 15 ] || { fail "a hung run list must not hold the pass, took $((t1 - t0))"; return 1; }
+  assert_eq "$(stt_calls '^workflow run')" "0" "no blind dispatch after a timed-out read" || return 1
+  assert_contains "$(cat "$STT_HOME/curl.log")" "run list failed" "captured" || return 1
+}
+
 test_stt_off_unless_enabled() {
   stt_home
   stt_conf 'example-owner/project-a a.yml 5'
@@ -267,6 +325,10 @@ run_test test_stt_a_malformed_run_list_is_captured_and_never_dispatches
 run_test test_stt_two_instances_at_once_dispatch_once
 run_test test_stt_low_budget_makes_no_github_call
 run_test test_stt_an_unwritable_state_dir_is_captured_once_and_dispatches_nothing
+run_test test_stt_an_in_progress_run_counts_as_fired_now_and_a_queued_one_from_its_creation
+run_test test_stt_the_first_pass_records_tracked_since_and_status_publishes_it
+run_test test_stt_a_failed_attempt_backs_off_for_an_interval_then_retries
+run_test test_stt_a_hung_gh_call_is_killed_by_the_timeout
 run_test test_stt_off_unless_enabled
 run_test test_stt_bad_config_lines_are_ignored_not_fatal
 run_test test_stt_status_is_the_heartbeat_json
