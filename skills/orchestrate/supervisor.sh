@@ -2413,10 +2413,11 @@ if { [ "$launched" -eq 0 ] || { [ "$drain_launched" -eq 1 ] && [ "$dispatch_hold
         --search "$dispatch_search" --json number,labels,milestone \
         --jq "[.[] | select([.labels[].name] | index(\"$LABEL_IN_PROGRESS\") | not) | select(([.labels[].name] | map(. as \$l | $goal_skip_json | index(\$l)) | any(. != null)) | not) $spread_sel]
           | map(. as \$i | ((((\$i.milestone.title? // \"\") | tostring) | capture(\"^v(?<a>[0-9]+)\\\\.(?<b>[0-9]+)\\\\.(?<c>[0-9]+)\")) // null) as \$v
-            | {n: \$i.number, g: ((\$i.labels // []) | any(.name // \"\" | test(\"^goal: \"))), s: ((\$i.labels // []) | any(.name // \"\" | . == \"$LABEL_SENTRY_GO\")), k: (if \$v then [0, (\$v.a|tonumber), (\$v.b|tonumber), (\$v.c|tonumber), \$i.number] else [1, 0, 0, 0, \$i.number] end)})
+            | {n: \$i.number, g: ((\$i.labels // []) | any(.name // \"\" | test(\"^goal: \"))), s: ((\$i.labels // []) | any(.name // \"\" | . == \"$LABEL_SENTRY_GO\")), x: ((\$i.labels // []) | any(.name // \"\" | . == \"$LABEL_CI_CRITICAL\")), k: (if \$v then [0, (\$v.a|tonumber), (\$v.b|tonumber), (\$v.c|tonumber), \$i.number] else [1, 0, 0, 0, \$i.number] end)})
           | sort_by(.k)" 2>"$rq_err") \
         && candidates=$(printf '%s' "$cand_json" | jq --argjson prio "$prio_json" -f "$HERE/lib/backlog-sort.jq" 2>>"$rq_err") \
-        && sentry_cands=$(printf '%s' "$cand_json" | jq -r '[.[] | select(.s) | .n | tostring] | join(" ")' 2>>"$rq_err") || {
+        && sentry_cands=$(printf '%s' "$cand_json" | jq -r '[.[] | select(.s) | .n | tostring] | join(" ")' 2>>"$rq_err") \
+        && sentry_exempt=$(printf '%s' "$cand_json" | jq -r '[.[] | select(.s and .x) | .n | tostring] | join(" ")' 2>>"$rq_err") || {
         slog "[dispatch] $owner_repo — listing or release sort failed ($rq_tags): $(head -c 300 "$rq_err" | tr '\n' ' ')"
         notify_engineering 0 ":warning:" "dispatch listing/sort failed for $owner_repo ($rq_tags)" "$owner_repo"; rm -f "$rq_err"; continue; }
       rm -f "$rq_err"
@@ -2425,6 +2426,7 @@ if { [ "$launched" -eq 0 ] || { [ "$drain_launched" -eq 1 ] && [ "$dispatch_hold
       # #247 end
       # #182 begin
       sentry_gate=""   # this repo's cap decision, made at its first sentry-auto-go candidate: 0 launch, 3 capped, 1 log unreadable
+      sentry_held_set=0   # #781: 1 once this tick wrote the repo's cap-hold file (the status page's list of held tickets)
       # #182 end
       for num in $candidates; do
         rk=$(run_key "$owner_repo" "$num")
@@ -2442,17 +2444,31 @@ if { [ "$launched" -eq 0 ] || { [ "$drain_launched" -eq 1 ] && [ "$dispatch_hold
         # candidates go on. Decided once per repo per tick (one slog line); an unreadable log fails closed the same way
         # (logged and alerted by sentry_cap_gate). orchestrate.sh re-checks and appends the launch line; it is told the
         # label through SENTRY_CAP_LABELLED so it does not read it again.
-        export SENTRY_CAP_LABELLED=0
+        export SENTRY_CAP_LABELLED=0 SENTRY_CAP_EXEMPT=0
         case " $sentry_cands " in *" $num "*)
           SENTRY_CAP_LABELLED=1
-          if [ -z "$sentry_gate" ]; then
+          # #781: a ci-critical candidate is exempt: no gate, so it neither reads, sets nor is blocked by the cached
+          # decision (a normal ticket after it still meets the cap) and an unreadable launch log cannot hold it.
+          case " $sentry_exempt " in *" $num "*) SENTRY_CAP_EXEMPT=1; slog "[dispatch] $owner_repo#$num — ci-critical, exempt from the sentry launch cap" ;; esac
+          if [ "$SENTRY_CAP_EXEMPT" != 1 ] && [ -z "$sentry_gate" ]; then
             sentry_gate=0; sentry_cap_gate "$owner_repo" "$num" || sentry_gate=$?
-            [ "$sentry_gate" != 3 ] || slog "[dispatch] $owner_repo#$num — sentry launch cap reached ($SENTRY_CAP_N/$SENTRY_CAP_MAX in 24h), sentry-auto-go tickets of this repo wait (labels untouched)"
+            if [ "$sentry_gate" = 3 ]; then
+              slog "[dispatch] $owner_repo#$num — sentry launch cap reached ($SENTRY_CAP_N/$SENTRY_CAP_MAX in 24h), sentry-auto-go tickets of this repo wait (labels untouched)"
+              # #781: the waiting tickets for the status page (the non-exempt sentry-auto-go candidates; the page recounts the window itself)
+              sentry_held_list=""
+              for _h in $sentry_cands; do
+                case " $sentry_exempt " in *" $_h "*) ;; *) sentry_held_list="$sentry_held_list $_h" ;; esac
+              done
+              # shellcheck disable=SC2086
+              sentry_cap_held_write "$owner_repo" $sentry_held_list && sentry_held_set=1
+            fi
             # #688: a pass only because this ticket is already counted says nothing about the repo's window: not cached for the next candidate
             if [ "${SENTRY_CAP_COUNTED:-0}" = 1 ]; then sentry_gate=""; sentry_pass=1; fi
           fi
-          [ "$sentry_gate" = 0 ] || [ "${sentry_pass:-0}" = 1 ] || continue
-          sentry_pass=0 ;;
+          if [ "$SENTRY_CAP_EXEMPT" != 1 ]; then
+            [ "$sentry_gate" = 0 ] || [ "${sentry_pass:-0}" = 1 ] || continue
+            sentry_pass=0
+          fi ;;
         esac
         # #182 end
         ts=$(date -u +%FT%TZ)
@@ -2473,7 +2489,8 @@ if { [ "$launched" -eq 0 ] || { [ "$drain_launched" -eq 1 ] && [ "$dispatch_hold
         break
       done
       # #182 begin
-      unset SENTRY_CAP_LABELLED   # meant for the launch above only: nothing started later in the tick may inherit it
+      unset SENTRY_CAP_LABELLED SENTRY_CAP_EXEMPT   # meant for the launch above only: nothing started later in the tick may inherit it
+      [ "$sentry_held_set" = 1 ] || sentry_cap_held_clear "$owner_repo"   # #781: no cap hold seen this tick, nothing to show
       # #182 end
     done
   fi

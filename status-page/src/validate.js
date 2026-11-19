@@ -292,6 +292,24 @@ function sanitiseBacklog(raw) {
   return Array.isArray(raw) ? raw.map(sanitiseBacklogItem).filter((item) => item !== null).slice(0, MAX_BACKLOG) : [];
 }
 
+// ---- sentry_cap[] (#781): a repo whose daily Sentry launch cap is holding tickets right now, published by the host.
+const MAX_SENTRY_CAP = 20;
+const MAX_SENTRY_CAP_HELD = 100;
+const OWNER_REPO = /^[\w.-]+\/[\w.-]+$/;
+
+/**
+ * Sanitises one sentry_cap[] item by reconstruction: {repo: "owner/repo", count, max (0-99), resets_at (ISO UTC),
+ * held: [issue numbers]}. A bad repo or resets_at drops the item; bad entries of `held` are dropped one by one.
+ */
+function sanitiseSentryCapItem(raw) {
+  if (!isPlainObject(raw)) return null;
+  if (typeof raw.repo !== 'string' || !OWNER_REPO.test(raw.repo)) return null;
+  const resetsAt = sanitiseCronDate(raw.resets_at);
+  if (resetsAt === null) return null;
+  const held = Array.isArray(raw.held) ? raw.held.filter((n) => isIntInRange(n, 1, 999999)).slice(0, MAX_SENTRY_CAP_HELD) : [];
+  return { repo: raw.repo, count: clampCount(raw.count), max: clampCount(raw.max), resets_at: resetsAt, held };
+}
+
 // ---- cron[] (issue #756): the host user's scheduled jobs, name + schedule + last run/result only.
 const MAX_CRON = 50;
 const CRON_NAME = /^[A-Za-z0-9._-]+$/;
@@ -788,6 +806,12 @@ export function validateBeatPayload(parsedBody) {
   if (isPlainObject(parsedBody.webhook_stale)) {
     const since = sanitiseCronDate(parsedBody.webhook_stale.since);
     if (since !== null) value.webhook_stale = { since };
+  }
+
+  // Optional (#781): absent or non-array -> no key. First MAX_SENTRY_CAP entries, then filtered; an item with nothing held is dropped.
+  if (Array.isArray(parsedBody.sentry_cap)) {
+    const caps = parsedBody.sentry_cap.slice(0, MAX_SENTRY_CAP).map(sanitiseSentryCapItem).filter((c) => c !== null && c.held.length > 0);
+    if (caps.length > 0) value.sentry_cap = caps;
   }
 
   // Optional (issue #756): absent -> no key (an older host); present but not an array -> [].

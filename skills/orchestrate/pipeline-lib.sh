@@ -641,22 +641,30 @@ pm_closing_reject() {
 
 # sentry_launch_count <owner/repo> [<issue>] — prints how many launches of that repo (with <issue>: of that ticket only) lie
 # inside the last 86400 s, each `released` line cancelling the latest launch line of its ticket. A missing log is 0. Returns 1, printing nothing, when the log
-# exists but cannot be read (callers fail closed). Lines of any other shape are not counted; repo names compare
-# case-insensitively (GitHub's rule).
+# exists but cannot be read (callers fail closed). Lines of any other shape are not counted (an `exempt` line, #781, has four
+# fields and is one of them); repo names compare case-insensitively (GitHub's rule). SENTRY_CAP_NOW (epoch) replaces the clock (tests).
 sentry_launch_count() {
-  local r n
+  local n
   [ -e "$PIPE/sentry-launches.log" ] || { echo 0; return 0; }
+  n=$(_sentry_launch_scan "$1" "${2:-}" count) || return 1
+  case "$n" in ''|*[!0-9]*) return 1 ;; esac
+  echo "$n"
+}
+
+# _sentry_launch_scan <owner/repo> <issue or ""> <count|times> — the one reader of the launch log. `count`: the number
+# sentry_launch_count prints; `times`: the epochs of those same launches, oldest first, one per line. Returns 1 when the log
+# cannot be read.
+_sentry_launch_scan() {
+  local r
   [ -f "$PIPE/sentry-launches.log" ] && [ -r "$PIPE/sentry-launches.log" ] || return 1
   r=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
-  n=$(awk -v r="$r" -v iss="${2:-}" -v min="$(( $(date +%s) - 86400 ))" '
+  awk -v r="$r" -v iss="${2:-}" -v mode="$3" -v min="$(( ${SENTRY_CAP_NOW:-$(date +%s)} - 86400 ))" '
     (NF == 3 || NF == 4) && $1 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ && tolower($2) == r && (iss == "" || $3 == iss) {
       if (NF == 3) { n[$3]++; t[$3 "," n[$3]] = $1 }
       else if ($4 == "released" && n[$3] > 0) n[$3]--
     }
-    END { for (i in n) for (j = 1; j <= n[i]; j++) if ((t[i "," j] + 0) > (min + 0)) c++; print c + 0 }' \
-    "$PIPE/sentry-launches.log" 2>/dev/null) || return 1
-  case "$n" in ''|*[!0-9]*) return 1 ;; esac
-  echo "$n"
+    END { for (i in n) for (j = 1; j <= n[i]; j++) if ((t[i "," j] + 0) > (min + 0)) { c++; if (mode == "times") print t[i "," j] + 0 } if (mode == "count") print c + 0 }'     "$PIPE/sentry-launches.log" 2>/dev/null | { if [ "$3" = times ]; then sort -n; else cat; fi; }
+  [ "${PIPESTATUS[0]}" = 0 ]
 }
 
 # sentry_launch_record <owner/repo> <issue> — appends the launch line; returns 1 when the append failed.
@@ -744,6 +752,53 @@ sentry_cap_fail() {
     "$SLACK_WEBHOOK_URL" >/dev/null 2>&1 </dev/null || true
   return 0
 }
+
+# sentry_ci_critical <labels, comma-joined> — 0 when the ticket carries LABEL_CI_CRITICAL (#781): a sentry-auto-go ticket
+# with that label is exempt from the daily cap. The label alone decides; it is never read from a ticket body.
+sentry_ci_critical() {
+  case ",$1," in *",${LABEL_CI_CRITICAL:-ci-critical},"*) return 0 ;; esac
+  return 1
+}
+
+# sentry_launch_record_exempt <owner/repo> <issue> — appends "<epoch> <owner/repo> <issue> exempt" (#781): an audit line for a
+# cap-exempt launch. It has four fields and is not "released", so sentry_launch_count never counts it; returns 1 on failure.
+sentry_launch_record_exempt() {
+  { printf '%s %s %s exempt\n' "$(date +%s)" "$1" "$2" >> "$PIPE/sentry-launches.log"; } 2>/dev/null
+}
+
+# sentry_cap_record <owner/repo> [<held issue>...] — prints the status-page record of a repo's cap hold (#781) as one JSON
+# line, {repo,count,max,resets_at,held}, and nothing when the repo is under the cap. Counted live from the launch log (never
+# trusted from a file a supervisor tick wrote earlier). resets_at (UTC ISO) is when the cap frees: the (count - max + 1)th
+# oldest counted launch ages past 24 h, which is the oldest launch whenever count equals max, the normal case. Returns 1 when
+# the log cannot be read. SENTRY_CAP_NOW (epoch) replaces the clock (tests).
+sentry_cap_record() {
+  local repo=$1 max n times at; shift
+  max=${SENTRY_AUTO_GO_DAILY_CAP:-3}; case "$max" in ''|*[!0-9]*) max=3 ;; esac
+  n=$(sentry_launch_count "$repo") || return 1
+  [ "$n" -ge "$max" ] || return 0
+  times=$(_sentry_launch_scan "$repo" "" times) || return 1
+  at=$(printf '%s\n' "$times" | sed -n "$(( n - max + 1 ))p")
+  case "$at" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s\n' "$@" | jq -Rn --arg repo "$repo" --argjson count "$n" --argjson max "$max" --argjson at "$at" \
+    '{repo: $repo, count: $count, max: $max, resets_at: (($at + 86400) | todate),
+      held: [inputs | select(test("^[0-9]+$")) | tonumber]}' 2>/dev/null
+}
+
+# sentry_cap_held_file <owner/repo> — the file the supervisor leaves for the status page (#781): the tickets of that repo the cap
+# is holding, {repo, held:[issue...]}. Only the list: count and reset time are recounted from the launch log when it is read.
+sentry_cap_held_file() { printf '%s/sentry-cap-held.%s.json' "$PIPE" "$(printf '%s' "$1" | tr '[:upper:]/' '[:lower:]_')"; }
+
+# sentry_cap_held_write <owner/repo> [<issue>...] — atomic replace; returns 1 on a write failure (logged, never fatal).
+sentry_cap_held_write() {
+  local f tmp repo=$1; shift
+  f=$(sentry_cap_held_file "$repo"); tmp="$f.tmp.$$"
+  if printf '%s\n' "$@" | jq -Rnc --arg repo "$repo" '{repo: $repo, held: [inputs | select(test("^[0-9]+$")) | tonumber]}' > "$tmp" 2>/dev/null && mv -f "$tmp" "$f" 2>/dev/null; then return 0; fi
+  rm -f "$tmp" 2>/dev/null
+  if declare -F slog >/dev/null 2>&1; then slog "[sentry-cap] $repo — cap-hold file write failed; the status page will not list the held tickets"; fi
+  return 1
+}
+
+sentry_cap_held_clear() { rm -f "$(sentry_cap_held_file "$1")" 2>/dev/null; return 0; }
 
 # sentry_cap_gate <owner/repo> <issue> — 0: under SENTRY_AUTO_GO_DAILY_CAP, may launch. 3: at or above it (nothing is
 # logged here; the caller words its own refusal). 1: the launch log could not be read — already reported through

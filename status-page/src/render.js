@@ -64,6 +64,20 @@ export function formatCet(iso) {
   return `${parts.weekday} ${parts.day} ${parts.month}, ${parts.hour}:${parts.minute}`;
 }
 
+/**
+ * ISO UTC string -> "14:05" in Europe/Madrid (the page states times in CET). Unparseable -> ''.
+ * @param {unknown} iso
+ */
+export function formatCetClock(iso) {
+  if (typeof iso !== "string") return "";
+  const ms = Date.parse(iso);
+  if (Number.isNaN(ms)) return "";
+  const parts = {};
+  for (const part of CET_FORMAT.formatToParts(new Date(ms)))
+    parts[part.type] = part.value;
+  return `${parts.hour}:${parts.minute}`;
+}
+
 /** Derives the live/stale/offline badge from `received_at` only (never `sent_at`). */
 function computeBadge(receivedAt, thresholds, nowEpochSecs) {
   const receivedAtMs =
@@ -425,6 +439,47 @@ const BACKLOG_REORDER_SCRIPT = `<script>
   });
 })();
 </script>`;
+
+/**
+ * Tickets the daily Sentry launch cap is holding (#781), from each host's `sentry_cap` records, read straight from the
+ * record (not from runs[], so the 20-run limit can never drop one). Per repo: the earliest reset among hosts (the first
+ * host to free a place launches it) and the union of held tickets. A title is shown when the backlog row carries one.
+ * Nothing held -> no section.
+ */
+function renderSentryCapSection(hosts) {
+  const byRepo = new Map();
+  for (const hostKey of ["mac", "vm"]) {
+    const list = hosts[hostKey] && Array.isArray(hosts[hostKey].sentry_cap) ? hosts[hostKey].sentry_cap : [];
+    for (const c of list) {
+      if (!c || typeof c.repo !== "string" || !Array.isArray(c.held)) continue;
+      const seen = byRepo.get(c.repo);
+      if (!seen) byRepo.set(c.repo, { resets_at: c.resets_at, held: new Set(c.held) });
+      else {
+        if (Date.parse(c.resets_at) < Date.parse(seen.resets_at)) seen.resets_at = c.resets_at;
+        for (const n of c.held) seen.held.add(n);
+      }
+    }
+  }
+  const titles = new Map(buildBacklog(hosts).map((row) => [backlogKeyOf(row), row]));
+  const rows = [];
+  for (const [repo, rec] of [...byRepo].sort((a, b) => a[0].localeCompare(b[0]))) {
+    const clock = formatCetClock(rec.resets_at);
+    const tag = `Held by Sentry cap, resets ${clock} CET`;
+    for (const n of [...rec.held].sort((a, b) => a - b)) {
+      const row = titles.get(`${repo}#${n}`);
+      rows.push(`<tr><td data-label="Issue">#${esc(n)}</td><td data-label="Repo">${esc(repo)}</td><td data-label="Ticket">${row ? renderTicketCell(row) : ""}</td><td data-label="State"><span class="badge goal-held sentry-cap-tag">${esc(tag)}</span></td></tr>`);
+    }
+  }
+  if (rows.length === 0) return "";
+  return `<section class="group sentry-cap">
+    <h2>Held by Sentry cap (${rows.length})</h2>
+    <p class="backlog-help">Automatically released Sentry tickets wait here once the repo's daily launch limit is used. They start by themselves when a place frees up. A ticket marked <code>ci-critical</code> is never held.</p>
+    <div class="table-scroll"><table>
+      <tr class="cols"><th>Issue</th><th>Repo</th><th>Ticket</th><th>State</th></tr>
+      <tbody>${rows.join("")}</tbody>
+    </table></div>
+  </section>`;
+}
 
 /**
  * Backlog priority (reorder view): lists every standalone (non-goal) open `agent-go` ticket in
@@ -1072,7 +1127,7 @@ export function renderPage(hosts, thresholds, nowEpochSecs) {
 
   const body = bothEmpty
     ? '<p class="empty">no data from either host yet</p>'
-    : `${renderHostSection("mac", hosts.mac, thresholds, nowEpochSecs)}${renderHostSection("vm", hosts.vm, thresholds, nowEpochSecs)}${renderGoalsSection(hosts)}${renderBacklogSection(hosts)}${renderGroupSections(hosts, nowEpochSecs)}`;
+    : `${renderHostSection("mac", hosts.mac, thresholds, nowEpochSecs)}${renderHostSection("vm", hosts.vm, thresholds, nowEpochSecs)}${renderGoalsSection(hosts)}${renderSentryCapSection(hosts)}${renderBacklogSection(hosts)}${renderGroupSections(hosts, nowEpochSecs)}`;
 
   return `<!doctype html>
 <html lang="en">

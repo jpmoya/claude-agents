@@ -204,12 +204,15 @@ except Exception: print('?')
     # deliberate hand launch. Supervisor step 5 already knows the label from its listing and passes SENTRY_CAP_LABELLED
     # (no second GitHub read); any other caller reads it here, fresh and over REST (its own budget, #388). A failed
     # label or launch-log read refuses the launch (fail closed); only the bypass launches without the label, uncounted.
-    SENTRY_CAPPED=${SENTRY_CAP_LABELLED:-}; SENTRY_NOCOUNT=0
+    # #781: a sentry-auto-go ticket that also carries ci-critical is exempt: no lock, no gate, no count (SENTRY_EXEMPT=1; an
+    # `exempt` audit line is appended where a counted launch would append its own). The supervisor passes the label
+    # through SENTRY_CAP_EXEMPT next to SENTRY_CAP_LABELLED; a caller that reads the labels here reads it from them.
+    SENTRY_CAPPED=${SENTRY_CAP_LABELLED:-}; SENTRY_NOCOUNT=0; SENTRY_EXEMPT=0
     case "$SENTRY_CAPPED" in
-      0|1) ;;
+      0|1) [ "$SENTRY_CAPPED" = 0 ] || [ "${SENTRY_CAP_EXEMPT:-0}" != 1 ] || SENTRY_EXEMPT=1 ;;
       *) SENTRY_CAPPED=0
         if SC_LABELS=$(GH_NOCACHE=1 gh api "repos/$OWNER_REPO/issues/$ISSUE" --jq '[.labels[].name] | join(",")' 2>/dev/null </dev/null); then
-          case ",$SC_LABELS," in *",$LABEL_SENTRY_GO,"*) SENTRY_CAPPED=1 ;; esac
+          case ",$SC_LABELS," in *",$LABEL_SENTRY_GO,"*) SENTRY_CAPPED=1; ! sentry_ci_critical "$SC_LABELS" || SENTRY_EXEMPT=1 ;; esac
         elif [ "${SENTRY_CAP_BYPASS:-0}" = 1 ]; then
           echo "#$ISSUE could not read the issue labels — SENTRY_CAP_BYPASS=1: launching without the sentry launch cap (not counted)" >&2
         else
@@ -217,6 +220,7 @@ except Exception: print('?')
           echo "#$ISSUE could not read the issue labels for the sentry launch cap — refusing, labels untouched; check gh access, then relaunch" >&2; exit 1
         fi ;;
     esac
+    if [ "$SENTRY_EXEMPT" = 1 ]; then SENTRY_CAPPED=0; fi   # exempt (#781): never gated, locked or counted, whatever the launch log looks like
     if [ "$SENTRY_CAPPED" = 1 ] && [ "${SENTRY_CAP_BYPASS:-0}" != 1 ]; then
       # From here to the launch-log append the launch holds the repo's cap lock, so two launchers (a hand launch, a lead,
       # the supervisor) cannot both take the last place; every exit on the way releases it (EXIT trap).
@@ -294,6 +298,7 @@ with open('$QUEUE/orch-$RK.json', 'w') as f:
           sentry_cap_fail "$OWNER_REPO" "$ISSUE" "launch log append failed, launch not counted"
         fi
       fi
+      [ "$SENTRY_EXEMPT" != 1 ] || sentry_launch_record_exempt "$OWNER_REPO" "$ISSUE" || sentry_cap_fail "$OWNER_REPO" "$ISSUE" "exempt launch log append failed"
       sentry_cap_unlock
       exit 0
     fi
@@ -319,6 +324,7 @@ with open('$QUEUE/orch-$RK.json', 'w') as f:
     log_run_launch "$OWNER_REPO" "$ISSUE" "${LAUNCH_REASON:-manual}" 0 "" "$RK"
     # #182: the launch line is appended only here, after the claim was won and the run started
     [ "$SENTRY_CAPPED" != 1 ] || [ "$SENTRY_NOCOUNT" = 1 ] || sentry_launch_record "$OWNER_REPO" "$ISSUE" || sentry_cap_fail "$OWNER_REPO" "$ISSUE" "launch log append failed, launch not counted"
+    [ "$SENTRY_EXEMPT" != 1 ] || sentry_launch_record_exempt "$OWNER_REPO" "$ISSUE" || sentry_cap_fail "$OWNER_REPO" "$ISSUE" "exempt launch log append failed"
     sentry_cap_unlock
     report_status_async "launch"   # event push: run launched (design #10 §4.4)
     echo "launched orchestrator for $OWNER_REPO#$ISSUE  pid=$!  log=$PIPE/orch-$RK.log"
