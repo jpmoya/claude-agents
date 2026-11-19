@@ -194,7 +194,7 @@ test_sp_ac1_step_a_block_is_small_and_labelled() {
   local n; n=$(printf '%s\n' "$blk" | grep -c .)
   assert_le "$n" "60" "AC1: step A is ~50 lines (got $n)" || return 1
   assert_contains "$(head -20 "$SUP_SP")" "#   3c. spec: " "AC1: file-header step list names 3c (guard contract)" || return 1
-  assert_not_contains "$blk" "orchestrate.sh" "AC1: step A never starts an orchestrator" || return 1
+  assert_not_contains "$blk" "launcher.sh" "AC1: step A never starts an orchestrator" || return 1
   assert_not_contains "$blk" "--add-label \"\$LABEL_GO\"" "AC1: step A never adds agent-go" || return 1
 }
 

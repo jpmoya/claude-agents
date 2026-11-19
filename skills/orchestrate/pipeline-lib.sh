@@ -1,5 +1,5 @@
 #!/bin/bash
-# Shared launcher helpers (issue #8), sourced by orchestrate.sh and supervisor.sh right after config.sh.
+# Shared launcher helpers (issue #8), sourced by launcher.sh and supervisor.sh right after config.sh.
 # Reads $PIPE, $MAX_CONCURRENT and $MEM_FLOOR_MB at call time, so it does not source config.sh itself.
 # marker_last_jq needs marker_re from hooks/pipeline-markers.sh, which both launchers also source.
 pipeline_host() { hostname -s 2>/dev/null | tr '[:upper:]' '[:lower:]'; }
@@ -515,7 +515,7 @@ claim_foreign_owner() {
 # claim_pick <label_on 0|1> <window-cutoff-ts> — #587: stdin as above; prints the winning host (empty if none).
 # Label on and the latest claim before this host's own claim names another host: that host wins, whatever its age.
 # Otherwise (fresh race, own restart, no label) the earliest claim inside the window wins, unchanged. A dead owner with the
-# label left on is NOT auto-taken-over: the takeover path is `orchestrate.sh --force`, which skips arbitration.
+# label left on is NOT auto-taken-over: the takeover path is `launcher.sh --force`, which skips arbitration.
 claim_pick() {
   local data own_t owner self; data=$(cat); self=$(hostname -s)
   if [ "$1" = 1 ]; then
@@ -554,7 +554,7 @@ claim_withdraw() {
 # dispatch and hand launch (#217). The optional repo reads a claim on an issue of a repo other than the checkout's (the goal
 # registry issue, #320): it carries no label, so the window rule applies unchanged. A failed comment/label read returns 1,
 # prints nothing and records claim_lookup_failed, so callers fail closed. A losing host withdraws its own claim (claim_withdraw).
-# `orchestrate.sh --force` skips arbitration entirely: it is the only takeover of a run whose owner died with the label on.
+# `launcher.sh --force` skips arbitration entirely: it is the only takeover of a run whose owner died with the label on.
 claim_winner() {
   local path=$1 issue=$2 repo_arg="" cutoff out lab=0 win
   [ -z "${3:-}" ] || repo_arg="--repo $3"
@@ -633,11 +633,11 @@ pm_closing_reject() {
 # --- Daily launch cap for automatically released Sentry tickets (#182) -------------------------------------------
 # $PIPE/sentry-launches.log is append-only. A launch of a `sentry-auto-go` ticket is "<epoch> <owner/repo> <issue>"; a launch
 # counted when it was queued and then dropped before it started is cancelled by "<epoch> <owner/repo> <issue> released".
-# Local state only: the cap never costs a GitHub call. Used by orchestrate.sh (the refusal, the append) and by the
+# Local state only: the cap never costs a GitHub call. Used by launcher.sh (the refusal, the append) and by the
 # supervisor's step 5 (the pre-check that keeps a capped ticket from getting a claim comment). Any relaunch of a ticket
 # that already holds an unreleased launch line in the window (a supervisor restart or queue drain through do_launch, or a
-# hand / delivery-lead relaunch through orchestrate.sh after a hold) is not counted again and is never refused by the cap
-# (#688): sentry_cap_gate passes it and orchestrate.sh appends no second line.
+# hand / delivery-lead relaunch through launcher.sh after a hold) is not counted again and is never refused by the cap
+# (#688): sentry_cap_gate passes it and launcher.sh appends no second line.
 
 # sentry_launch_count <owner/repo> [<issue>] — prints how many launches of that repo (with <issue>: of that ticket only) lie
 # inside the last 86400 s, each `released` line cancelling the latest launch line of its ticket. A missing log is 0. Returns 1, printing nothing, when the log
@@ -672,7 +672,7 @@ sentry_launch_record() {
   { printf '%s %s %s\n' "$(date +%s)" "$1" "$2" >> "$PIPE/sentry-launches.log"; } 2>/dev/null
 }
 
-# sentry_slot_release <queue entry json> — a launch that was counted when it was queued (orchestrate.sh found no free slot
+# sentry_slot_release <queue entry json> — a launch that was counted when it was queued (launcher.sh found no free slot
 # and wrote the entry with a sentry_slot key) and is dropped before it ever started gives its place back: one `released`
 # line. No-op for any other entry. Call it before removing the entry. Never fails the caller.
 sentry_slot_release() {

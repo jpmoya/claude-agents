@@ -1,7 +1,7 @@
 # Issue #94 — launch writes the real newest GitHub routing marker to orch-<n>.marker instead of
 # deleting it, from the SAME `gh issue view <n> --json title,comments` call that fetches the title.
 #
-#   AC3a  orchestrate.sh launched AND queued paths: orch-<n>.marker = marker name (no "**[agent] "
+#   AC3a  launcher.sh launched AND queued paths: orch-<n>.marker = marker name (no "**[agent] "
 #         prefix, no trailing "**"), e.g. "**[test-reviewer] TESTS APPROVED**" -> "TESTS APPROVED"
 #   AC3b  no extra API call: exactly one `issue view <n>` call asks for comments, and it is the title call
 #   AC3c  failed fetch / no routing marker (NOTE only) -> the file is removed, never stale; launch still succeeds
@@ -14,7 +14,7 @@
 
 HERE_LM=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 RS_LM="$HERE_LM/.."
-ORCH_LM="$RS_LM/orchestrate.sh"
+ORCH_LM="$RS_LM/launcher.sh"
 SUP_LM="$RS_LM/supervisor.sh"
 
 lm_env() {  # lm_env <full|open> -> LM_PIPE, LM_HOME, LM_REPO, LM_BIN
@@ -167,7 +167,7 @@ test_lm_marker_parsing_lives_once_in_pipeline_lib() {
   local sedexpr='s/^\*\*\[[^]]*\] //'
   grep -qF -- "$sedexpr" "$RS_LM/pipeline-lib.sh" || { fail "#94: the marker sed cleanup must live in pipeline-lib.sh"; return 1; }
   if grep -qF -- "$sedexpr" "$RS_LM/reconcile-status.sh"; then fail "#94: reconcile-status.sh still carries its own copy of the marker sed cleanup"; return 1; fi
-  if grep -qF -- "$sedexpr" "$RS_LM/orchestrate.sh" "$RS_LM/supervisor.sh"; then fail "#94: launchers must use the shared function, not a copy"; return 1; fi
+  if grep -qF -- "$sedexpr" "$RS_LM/launcher.sh" "$RS_LM/supervisor.sh"; then fail "#94: launchers must use the shared function, not a copy"; return 1; fi
 }
 
 test_lm_build_runs_json_has_no_runs_jsonl_marker_fallback() {

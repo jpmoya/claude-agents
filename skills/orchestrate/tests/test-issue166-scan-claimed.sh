@@ -1,4 +1,4 @@
-# Issue #166 — scan-backlog.sh skips issues carrying a launch claim comment; orchestrate.sh launch drops agent-proposed.
+# Issue #166 — scan-backlog.sh skips issues carrying a launch claim comment; launcher.sh launch drops agent-proposed.
 # gh stub: `issue list --search` returns the claim hits; plain `issue list` applies the caller's --jq to the fixture.
 
 _scan166() { # $1=claim-search mode (ok|fail) → echoes gh log + curl log
@@ -41,7 +41,7 @@ test_i166_failed_claim_search_fails_closed_and_alerts() {
 }
 test_i166_launch_removes_agent_proposed() {
   local line
-  line=$(grep -n 'add-label "$LABEL_IN_PROGRESS" --remove-label "$LABEL_GO"' "$HERE_166/../orchestrate.sh" | head -1)
+  line=$(grep -n 'add-label "$LABEL_IN_PROGRESS" --remove-label "$LABEL_GO"' "$HERE_166/../launcher.sh" | head -1)
   assert_contains "$line" '--remove-label "$LABEL_PROPOSED"' "launch edit drops agent-proposed" || return 1
 }
 run_test test_i166_claimed_issue_not_labelled_new_one_is

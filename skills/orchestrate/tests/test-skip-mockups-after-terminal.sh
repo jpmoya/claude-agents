@@ -5,7 +5,7 @@
 #   AC2  st_ac2_*   SKIP MOCKUPS before / without a terminal marker behaves as today
 #   AC3  st_ac3_*   [jp] GO (and other jp markers) after DEPLOYED TO STAGING still route
 #   AC4  st_ac4_*   DEPLOYED then SKIP MOCKUPS: latest_marker = DEPLOYED, terminal_kind = done; a tick logs [done], no [queue-restart]
-#   AC5  st_ac5_*   orchestrate.sh LAUNCH banner carries the caller's parent PID and command
+#   AC5  st_ac5_*   launcher.sh LAUNCH banner carries the caller's parent PID and command
 #   AC6  st_ac6_*   the drain's "already running" branch logs a line naming the issue
 #   AC7  st_ac7_*   (IF IT WORKS) manual-relaunch trail: [done] line, never [queue-restart] on SKIP MOCKUPS
 #   AC8  st_ac8_*   no new mechanism (no new function, no new state file/counter in the two scripts)
@@ -16,7 +16,7 @@
 HERE_ST=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT_ST=$(cd "$HERE_ST/../../.." && pwd)
 SUP_ST="$HERE_ST/../supervisor.sh"
-ORCH_ST="$HERE_ST/../orchestrate.sh"
+ORCH_ST="$HERE_ST/../launcher.sh"
 LIB_ST="$HERE_ST/../pipeline-lib.sh"
 MARKERS_ST="$ROOT_ST/hooks/pipeline-markers.sh"
 
@@ -173,7 +173,7 @@ test_st_ac4_tick_marks_done_and_does_not_restart() {
 
 test_st_ac5_launch_banner_logs_parent_pid_and_command() {
   st_env
-  # a wrapper with a known PID launches orchestrate.sh as a child (no exec), so the banner's caller is the wrapper
+  # a wrapper with a known PID launches launcher.sh as a child (no exec), so the banner's caller is the wrapper
   local wrapper="$ST_PIPE/caller-wrapper-551.sh" out rc log wpid
   printf '#!/bin/bash\necho $$ > "%s/wrapper.pid"\n"%s" "%s" 42\n' "$ST_PIPE" "$ORCH_ST" "$ST_REPO" > "$wrapper"; chmod +x "$wrapper"
   out=$(HOME="$ST_HOME" PATH="$ST_GH:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$ST_PIPE" QUEUE="$ST_PIPE/queue" bash "$wrapper" 2>&1); rc=$?
@@ -211,7 +211,7 @@ test_st_ac7_manual_relaunch_of_a_deployed_ticket_ends_in_done_not_queue_restart(
   st_env
   printf '#!/bin/bash\nexit 0\n' > "$ST_GH/claude"; chmod +x "$ST_GH/claude"   # the relaunched orchestrator finds nothing to do and exits 0
   st_thread "$ST_OPEN" "$ST_DEPLOYED" "$ST_SKIP"
-  touch "$(rkp "$ST_PIPE/orch-42.done")"   # the tombstone a manual launch clears (orchestrate.sh)
+  touch "$(rkp "$ST_PIPE/orch-42.done")"   # the tombstone a manual launch clears (launcher.sh)
   local out rc i log done_f
   out=$(HOME="$ST_HOME" PATH="$ST_GH:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$ST_PIPE" QUEUE="$ST_PIPE/queue" "$ORCH_ST" "$ST_REPO" 42 2>&1); rc=$?
   for i in 1 2 3 4 5 6 7 8 9 10; do [ -e "$(rkp "$ST_PIPE/orch-42.exit")" ] && break; sleep 0.3; done
@@ -229,7 +229,10 @@ test_st_ac7_manual_relaunch_of_a_deployed_ticket_ends_in_done_not_queue_restart(
 test_st_ac8_no_new_mechanism() {
   local base added
   base=$(cd "$ROOT_ST" && git merge-base HEAD origin/main 2>/dev/null); [ -n "$base" ] || { fail "AC8: no merge-base"; return 1; }
-  added=$(cd "$ROOT_ST" && git diff -U0 "$base" -- skills/orchestrate/supervisor.sh skills/orchestrate/orchestrate.sh | grep -E '^\+' | grep -vE '^\+\+\+ ')
+  # #779: the launcher was orchestrate.sh at a merge-base from before the rename; compare it against whichever name the base has
+  local lp=skills/orchestrate/launcher.sh
+  (cd "$ROOT_ST" && git cat-file -e "$base:$lp" 2>/dev/null) || lp=skills/orchestrate/orchestrate.sh
+  added=$(cd "$ROOT_ST" && { git diff -U0 "$base" -- skills/orchestrate/supervisor.sh; git show "$base:$lp" | diff -U0 - skills/orchestrate/launcher.sh; } | grep -E '^\+' | grep -vE '^\+\+\+ ')
   # #676 (feedback tickets never strand) mandates shared intake/spec retry helpers and the unowned-feedback digest finding in
   # supervisor.sh. Exactly these names are allowed (code review of PR #680); any other new function still fails this guard.
   local allow_676='fb_exit_class|fb_iso|fb_limit_active|fb_release|fb_giveup|fb_claimable|sw_tags|sw_repo_dir|sw_has_local_run|sw_feedback_gate|sw_unowned_feedback'

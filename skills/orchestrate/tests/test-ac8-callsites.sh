@@ -14,12 +14,12 @@ RS_AC8="$HERE_AC8/.."
 
 test_ac8_three_call_sites_use_report_status_async() {
   local n_orch n_sup n_hook
-  n_orch=$(grep -c 'report_status_async' "$ROOT_AC8/skills/orchestrate/orchestrate.sh" 2>/dev/null)
+  n_orch=$(grep -c 'report_status_async' "$ROOT_AC8/skills/orchestrate/launcher.sh" 2>/dev/null)
   n_sup=$(grep -c 'report_status_async' "$ROOT_AC8/skills/orchestrate/supervisor.sh" 2>/dev/null)
   n_hook=$(grep -c 'report_status_async' "$ROOT_AC8/hooks/report-status-hook.sh" 2>/dev/null)
 
-  # orchestrate.sh: run launched + run stopped = at least 2 call sites (design §4.4)
-  [ "$n_orch" -ge 2 ] || { fail "AC8: orchestrate.sh should call report_status_async at both the launch and stop events (found $n_orch)"; return 1; }
+  # launcher.sh: run launched + run stopped = at least 2 call sites (design §4.4)
+  [ "$n_orch" -ge 2 ] || { fail "AC8: launcher.sh should call report_status_async at both the launch and stop events (found $n_orch)"; return 1; }
   # supervisor.sh: tick keep-alive + queue-restart + held/gate + escalate = at least 4
   [ "$n_sup" -ge 4 ] || { fail "AC8: supervisor.sh should call report_status_async at tick/queue-restart/held/escalate (found $n_sup)"; return 1; }
   # the hook: at least one call, guarded by the PIPELINE_ISSUE check
@@ -29,7 +29,7 @@ test_ac8_three_call_sites_use_report_status_async() {
   # would bypass the one documented backgrounding pattern and could block or fail the caller.
   local hits
   hits=$(grep -rn 'report-status\.sh' \
-    "$ROOT_AC8/skills/orchestrate/orchestrate.sh" "$ROOT_AC8/skills/orchestrate/supervisor.sh" "$ROOT_AC8/hooks/report-status-hook.sh" 2>/dev/null || true)
+    "$ROOT_AC8/skills/orchestrate/launcher.sh" "$ROOT_AC8/skills/orchestrate/supervisor.sh" "$ROOT_AC8/hooks/report-status-hook.sh" 2>/dev/null || true)
   assert_eq "$hits" "" "AC8: no call site should reference report-status.sh directly; only run-state.sh's report_status_async may invoke it" || return 1
 }
 

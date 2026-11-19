@@ -43,7 +43,7 @@ test_drd_ac11_pm_never_adds_agent_go_on_a_direct_route_repo() {
 
 test_drd_ac12_claude_md_rule() {
   drd_has "$CMD_DRD" 'Every change to jpmoya/claude-agents — features, fixes, enhancements, pipeline self-heal tickets — is done directly by the interactive session, never through the pipeline.' || return 1
-  drd_has "$CMD_DRD" 'orchestrate.sh refuses the repo' || return 1
+  drd_has "$CMD_DRD" 'launcher.sh refuses the repo' || return 1
   drd_has "$CMD_DRD" 'DIRECT_ROUTE_REPOS' || return 1
   drd_has "$CMD_DRD" 'never asks JP to merge' || return 1
   drd_has "$CMD_DRD" 'files its own fix ticket (no `agent-go`)' || return 1

@@ -48,7 +48,7 @@ mkdir -p "$PIPE" "$QUEUE" 2>/dev/null
 # -> owner/repo -> STATUS_REPO_ALIASES ("owner/repo:alias", a plain indexed array — see AC11) ->
 # unmapped -> "other".
 # ---- ticket title (#29): the builder reads $PIPE/orch-<issue>.title (written at launch by
-# orchestrate.sh / supervisor.sh) and emits runs[].title + runs[].url. Local file only — a beat
+# launcher.sh / supervisor.sh) and emits runs[].title + runs[].url. Local file only — a beat
 # never makes a network call for a title; no file means neither field.
 _rs_aliases_arg() {
   local e out=""

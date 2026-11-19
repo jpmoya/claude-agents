@@ -13,7 +13,7 @@
 
 HERE_HC=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 RS_HC="$HERE_HC/.."
-ORCH_HC="$RS_HC/orchestrate.sh"
+ORCH_HC="$RS_HC/launcher.sh"
 SUP_HC="$RS_HC/supervisor.sh"
 
 hc_iso() {  # hc_iso <secs-ago> -> UTC timestamp that many seconds in the past
@@ -202,7 +202,7 @@ test_hc_supervisor_uses_shared_function() {
   assert_eq "$n_inline" "0" "#217: no inline winner query left in supervisor.sh" || return 1
   [ "$n_call" -ge 3 ] || { fail "#217: supervisor.sh must call claim_winner at all 3 dispatch sites (found $n_call)"; return 1; }
   [ "$n_call" -ge 1 ] || { fail "#217: supervisor.sh does not call claim_winner"; return 1; }
-  [ "$n_orch" -ge 1 ] || { fail "#217: orchestrate.sh does not call claim_winner"; return 1; }
+  [ "$n_orch" -ge 1 ] || { fail "#217: launcher.sh does not call claim_winner"; return 1; }
 }
 
 # Dispatch-level (AC 6d): supervisor intake dispatch with a rival's earlier claim must not launch or relabel.

@@ -95,7 +95,7 @@ test_sl_setsid_probe_defined_once_in_lib()     { sl_defined_once '^SETSID='     
 
 test_sl_both_launchers_source_the_lib() {
   local f hit
-  for f in orchestrate.sh supervisor.sh; do
+  for f in launcher.sh supervisor.sh; do
     hit=$(grep -E '^[[:space:]]*(source|\.)[[:space:]].*pipeline-lib\.sh' "$RS_SL/$f" 2>/dev/null || true)
     assert_ne "$hit" "" "AC1: $f must source pipeline-lib.sh" || return 1
   done
@@ -162,7 +162,7 @@ test_sl_mem_available_mb_prints_a_positive_integer() {
 
 test_sl_no_inline_marker_expression_in_launchers() {
   local f hit
-  for f in orchestrate.sh supervisor.sh; do
+  for f in launcher.sh supervisor.sh; do
     hit=$(grep -nF 'split(\"\n\")' "$RS_SL/$f" 2>/dev/null || true)
     assert_eq "$hit" "" "AC2: $f must not contain the inline split(\\\"\\n\\\") marker expression — use marker_last_jq" || return 1
   done
@@ -254,14 +254,14 @@ issue view" "AC3: issue_is_closed makes exactly one gh call per invocation (2 in
 }
 
 # ---------------------------------------------------------------------------
-# AC2/AC3 — orchestrate.sh status: still ONE combined `gh issue view --json state,comments` per
+# AC2/AC3 — launcher.sh status: still ONE combined `gh issue view --json state,comments` per
 # run, with --jq built from marker_last_jq. Stub gh lives in an isolated HOME's .local/bin (which
 # config.sh puts first on PATH), so no real gh can shadow it; tests/bin/gh is not touched.
 # The stub applies the --jq argument with REAL jq to a per-issue reply file (like gh does), so the
 # composed `{state, last: (...)}` expression is actually evaluated, not just string-matched.
 # ---------------------------------------------------------------------------
 
-# sl_status_setup — builds a 2-run fixture (#101 OPEN, #102 CLOSED) and runs `orchestrate.sh status`
+# sl_status_setup — builds a 2-run fixture (#101 OPEN, #102 CLOSED) and runs `launcher.sh status`
 # once. Sets SL_PIPE SL_HOME SL_REPO_A SL_REPO_B SL_D (stub dir) SL_OUT (combined stdout+stderr).
 # Reply files (gh-json shape): #101 = a real marker followed by a NOTE; #102 = CLOSED, no comments.
 sl_status_setup() {
@@ -292,7 +292,7 @@ GH_EOF
   printf '%s' '{"state":"CLOSED","comments":[]}' > "$SL_D/reply-102.json"
   mk_running "$SL_PIPE" 101 "$SL_REPO_A"
   mk_running "$SL_PIPE" 102 "$SL_REPO_B"
-  SL_OUT=$( HOME="$SL_HOME" PATH="$SL_D:$PATH" PIPE="$SL_PIPE" QUEUE="$SL_PIPE/queue" "$RS_SL/orchestrate.sh" status 2>&1 )
+  SL_OUT=$( HOME="$SL_HOME" PATH="$SL_D:$PATH" PIPE="$SL_PIPE" QUEUE="$SL_PIPE/queue" "$RS_SL/launcher.sh" status 2>&1 )
   cleanup_running
 }
 
@@ -309,7 +309,7 @@ test_sl_status_one_gh_issue_view_per_run_using_shared_expression() {
   assert_eq "$ncalls" "2" "AC3: status over 2 runs makes exactly 2 gh calls in total" || { sl_status_cleanup; return 1; }
   assert_eq "$nview" "2" "AC3: both are 'gh issue view' (one per run)" || { sl_status_cleanup; return 1; }
   for i in 1 2; do
-    assert_eq "$(cat "$SL_D/json-$i.txt" 2>/dev/null)" "state,author,comments" "AC3: call $i keeps the single combined --json state,author,comments (re-pinned for #442: orchestrate.sh status now also reads author)" || { sl_status_cleanup; return 1; }
+    assert_eq "$(cat "$SL_D/json-$i.txt" 2>/dev/null)" "state,author,comments" "AC3: call $i keeps the single combined --json state,author,comments (re-pinned for #442: launcher.sh status now also reads author)" || { sl_status_cleanup; return 1; }
     assert_contains "$(cat "$SL_D/jq-$i.txt" 2>/dev/null)" "$expr" "AC2: call $i's --jq must contain marker_last_jq's output" || { sl_status_cleanup; return 1; }
   done
   sl_status_cleanup
@@ -390,12 +390,12 @@ test_sl_readme_install_paragraph_mentions_bot_token_and_channel() {
 
 test_sl_both_launch_blocks_still_present_once() {
   local f n
-  for f in orchestrate.sh supervisor.sh; do
+  for f in launcher.sh supervisor.sh; do
     n=$(grep -c -- '--dangerously-skip-permissions --agent orchestrator -p "\$1"' "$RS_SL/$f" || true)
     assert_eq "$n" "1" "AC6: $f must keep exactly one 'claude ... --agent orchestrator -p' launch line" || return 1
   done
   assert_contains "$(cat "$RS_SL/supervisor.sh")" '2>&1 9>&- &' "AC6: supervisor.sh's launch block keeps its 9>&- fd close" || return 1
-  assert_contains "$(cat "$RS_SL/orchestrate.sh")" '2>&1 9>&- &' "AC6: orchestrate.sh's launch block keeps its 9>&- fd close (#56)" || return 1
+  assert_contains "$(cat "$RS_SL/launcher.sh")" '2>&1 9>&- &' "AC6: launcher.sh's launch block keeps its 9>&- fd close (#56)" || return 1
 }
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 #!/bin/bash
 # Shared run-state derivation + the one fire-and-forget reporter call pattern.
-# Sourced by orchestrate.sh, supervisor.sh and hooks/report-status-hook.sh — see issue #10 Design.
+# Sourced by launcher.sh, supervisor.sh and hooks/report-status-hook.sh — see issue #10 Design.
 #
 # Caller-independent by design (SA's NOTE correction on #10): a hook call site has neither a
 # caller-provided $HERE nor $LOGDIR, so this file resolves its own directory from its own
@@ -154,7 +154,7 @@ derive_runs() {  # derive_runs [run_key] — with a key, only that run's pid rec
 }
 
 # report_status_async — the one fire-and-forget call pattern used by all three call sites
-# (orchestrate.sh, supervisor.sh, hooks/report-status-hook.sh). Never blocks, never fails the
+# (launcher.sh, supervisor.sh, hooks/report-status-hook.sh). Never blocks, never fails the
 # caller: backgrounded, output redirected to its own log, fd 9 (supervisor.sh's single-flight
 # tick lock, if any) is explicitly closed so a backgrounded child never holds it past the tick.
 report_status_async() {   # fire-and-forget: never blocks, never fails the caller

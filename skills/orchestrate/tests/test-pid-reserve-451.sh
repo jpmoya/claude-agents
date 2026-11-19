@@ -43,17 +43,17 @@ GH_EOF
 pr_launch() {  # pr_launch <issue> [args] — the hand launcher under test
   local n=$1; shift
   HOME="$HC_HOME" PATH="$HC_BIN:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$HC_PIPE" QUEUE="$HC_PIPE/queue" LOGDIR="$HC_HOME/logs/pipeline" \
-    "$RS_PR/orchestrate.sh" "$@" "$HC_REPO" "$n" 2>&1
+    "$RS_PR/launcher.sh" "$@" "$HC_REPO" "$n" 2>&1
 }
-pr_launch_bg() {  # pr_launch_bg <issue> — same launcher in the background; PR_BG_PID is orchestrate.sh's own pid (exec'd)
+pr_launch_bg() {  # pr_launch_bg <issue> — same launcher in the background; PR_BG_PID is launcher.sh's own pid (exec'd)
   local n=$1; shift
   ( HOME="$HC_HOME" PATH="$HC_BIN:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$HC_PIPE" QUEUE="$HC_PIPE/queue" LOGDIR="$HC_HOME/logs/pipeline" \
-    exec "$RS_PR/orchestrate.sh" "$@" "$HC_REPO" "$n" ) >/dev/null 2>&1 &
+    exec "$RS_PR/launcher.sh" "$@" "$HC_REPO" "$n" ) >/dev/null 2>&1 &
   PR_BG_PID=$!
 }
 pr_stop() {  # pr_stop <issue>
   HOME="$HC_HOME" PATH="$HC_BIN:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$HC_PIPE" QUEUE="$HC_PIPE/queue" LOGDIR="$HC_HOME/logs/pipeline" \
-    "$RS_PR/orchestrate.sh" stop "project-a/repo-a#$1" 2>&1
+    "$RS_PR/launcher.sh" stop "project-a/repo-a#$1" 2>&1
 }
 pr_tick() {  # one supervisor tick (drains the queue -> do_launch)
   HOME="$HC_HOME" PATH="$HC_BIN:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$HC_PIPE" QUEUE="$HC_PIPE/queue" LOGDIR="$HC_HOME/logs/pipeline" \
@@ -100,7 +100,7 @@ pr_wait_spawns() {  # spawns are written by the detached child: wait for the fir
 }
 pr_release() { touch "$HC_BIN/go"; }
 
-# --- hand launcher (orchestrate.sh) ------------------------------------------------------------------------------
+# --- hand launcher (launcher.sh) ------------------------------------------------------------------------------
 
 test_pr451_manual_manual_one_spawn() {
   pr_env

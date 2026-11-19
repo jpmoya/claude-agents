@@ -36,7 +36,7 @@
 #   AC7  i76_ac7  — Run log section names delegated-decision fail-before-terminal ordering and a `reason` field on
 #                    pass lines. RED before the fix.
 #   AC8  i76_ac8  — no new mechanisms: hooks/pipeline-markers.sh, agents/project-manager.md, supervisor.sh,
-#                    orchestrate.sh byte-identical to origin/main. Characterisation (passes before and after).
+#                    launcher.sh byte-identical to origin/main. Characterisation (passes before and after).
 # No supervisor.sh runtime test is added: terminal_kind() resumes on ANY non-infra BLOCKED + DECISION regardless of
 # wording (it never reads `Blocked on:` text) and AC8 forbids touching it — the money-carve-out enforcement lives
 # entirely in orchestrator.md prose, read by the orchestrator agent itself, so it is only testable as doc-contract.
@@ -379,7 +379,7 @@ test_dd_ac17_project_manager_agent_contents() {
     || { fail "AC17: agents/project-manager.md must exist and be tracked"; return 1; }
   dd_has "$PMGR_DD" 'name: delivery-lead' || return 1   # #192: content lives in delivery-lead.md; alias file existence checked above
   for s in '**[delivery-lead] DECISION**' '**[delivery-lead] JP CONFIRMED**' 'Resolves:' '**[delivery-lead] NOTE**' \
-           'AWAITING GO' 'orchestrate.sh' 'VM cannot read'; do
+           'AWAITING GO' 'launcher.sh' 'VM cannot read'; do
     dd_has "$PMGR_DD" "$s" || return 1
   done
   for s in "**Decision on JP's behalf" '**JP: ' 'Never start a comment with' 'give them a file they can read'; do
@@ -607,7 +607,7 @@ test_dd_i76_ac8_no_new_mechanisms() {   # characterisation
   local base d
   base=$(dd_base)
   if [ -z "$base" ]; then printf '    (i76 AC8 skipped: no origin/main merge-base)\n' >&2; return 0; fi
-  # orchestrate.sh dropped: #94 AC3 must edit it (launch writes the marker file)
+  # launcher.sh dropped: #94 AC3 must edit it (launch writes the marker file)
   # whole-file check narrowed to markers_for/marker_re: #136 AC10 appends block_classes()
   local want got
   # #192: also strip only the `delivery-lead)` case line and the ` delivery-lead` token, on both sides

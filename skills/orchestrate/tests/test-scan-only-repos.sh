@@ -118,11 +118,11 @@ EOF2
 }
 
 test_so_5d_scan_only_repos_is_referenced_only_by_config_and_scan() {
-  # 5d: grep -c SCAN_ONLY_REPOS is 0 in supervisor.sh, orchestrate.sh, install.sh (never dispatched).
+  # 5d: grep -c SCAN_ONLY_REPOS is 0 in supervisor.sh, launcher.sh, install.sh (never dispatched).
   # Positive control: config.sh and scan-backlog.sh DO reference it, so the zero counts are not
   # just a grep aimed at nothing.
   local f n
-  for f in supervisor.sh orchestrate.sh install.sh; do
+  for f in supervisor.sh launcher.sh install.sh; do
     # #442: supervisor.sh's read-only stale-work digest (sw_repo_list, #491) scans the set but never dispatches it
     n=$(grep SCAN_ONLY_REPOS "$RS_SO/$f" | grep -vE 'sw_repo_list|for e in ' | grep -c . || true)
     assert_eq "$n" "0" "5d: $f must not reference SCAN_ONLY_REPOS" || return 1

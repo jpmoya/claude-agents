@@ -648,7 +648,7 @@ Rules:
 - Completion is decided by the supervisor from GitHub state, never by you. Never unload, create or edit launchd/cron/loop schedulers.
 - JP-only items (a prod go, spending money, external communications, private-artefact access) park the ticket and are reported, never decided.
 - Goals only run on repos listed in DISPATCH_REPOS; never act outside the scope above.
-- A ticket in a direct-route repo (DIRECT_ROUTE_REPOS in config.sh, today jpmoya/claude-agents) is never dispatched, given agent-go or relaunched by you: the interactive session implements it with subagents, and orchestrate.sh refuses it. Report it under "Direct route — needs the interactive session".
+- A ticket in a direct-route repo (DIRECT_ROUTE_REPOS in config.sh, today jpmoya/claude-agents) is never dispatched, given agent-go or relaunched by you: the interactive session implements it with subagents, and launcher.sh refuses it. Report it under "Direct route — needs the interactive session".
 RULES
 }
 

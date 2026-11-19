@@ -1,5 +1,5 @@
 # AC1 — given a fixture pipeline-state directory with two running orchestrators, one queued, and
-#        one held run, the shared state-derivation function used by both `orchestrate.sh status`
+#        one held run, the shared state-derivation function used by both `launcher.sh status`
 #        and the reporter returns all four with correct `state`, `stage`, `issue`, and repo alias.
 # AC2 — a run that is `held` in one reporter invocation and `stopped` (or removed/done) in the
 #        next, against the same fixture directory advanced between calls, omits that run entirely
@@ -91,7 +91,7 @@ test_ac2_held_then_stopped_omitted_from_next_payload() {
   out1=$(print_payload "$pipe" "$home")
   assert_eq "$(run_field "$out1" 207 state)" "held" "AC2: first payload carries #207 as held" || { rm -rf "$pipe" "$home"; return 1; }
 
-  # advance the SAME fixture directory: held -> stopped (a manual `orchestrate.sh stop`)
+  # advance the SAME fixture directory: held -> stopped (a manual `launcher.sh stop`)
   rm -f "$(rkp "$pipe/orch-207.held")"
   touch "$(rkp "$pipe/orch-207.stopped")"
 

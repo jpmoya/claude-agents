@@ -90,7 +90,7 @@ test_c781_ci_critical_label_of_another_repo_does_not_exempt_this_repos_tickets()
   assert_eq "$labels7" "agent-go,bug,sentry-auto-go,source:sentry" "labels untouched" || return 1
 }
 
-# ------------------------------------------------------------------------------------------ AC1/AC2: orchestrate.sh
+# ------------------------------------------------------------------------------------------ AC1/AC2: launcher.sh
 
 test_c781_hand_launches_of_exempt_tickets_are_not_counted() {
   sc_env; touch "$SC_D/claude-hold"; sc_seed "$SC_A" 600 1800 3000

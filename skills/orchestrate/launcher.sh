@@ -1,0 +1,333 @@
+#!/bin/bash
+# Launch the pipeline orchestrator as a detached headless Claude Code process.
+# Usage:
+#   launcher.sh <repo-path> <issue> [extra instructions...]   launch (queues if at max)
+#   launcher.sh status [<owner/repo>#<N> | <N>]                list running/queued orchestrators
+#   launcher.sh tail <owner/repo>#<N> | <N> [lines]            tail an orchestrator's log
+#   launcher.sh stop <owner/repo>#<N> | <N>                    kill an orchestrator (prevents auto-restart)
+#     (a bare <N> resolves only when exactly one run matches; otherwise it is refused and the candidates are listed)
+#   launcher.sh queue                                          show the queue
+#   launcher.sh --force <repo-path> <issue>                   launch even if agent-in-progress is set (other machine died)
+set -euo pipefail
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+source "$HERE/config.sh"
+# shared launcher helpers: SETSID probe, capacity checks, marker jq expression (issue #8)
+source "$HERE/pipeline-lib.sh"
+# shared run-state derivation (used by `status` below) + report_status_async (issue #10)
+source "$HERE/run-state.sh"
+# routing-marker vocabulary (marker_re), shared with the supervisor, the handoff hook and the orchestrator
+source "$HERE/../../hooks/pipeline-markers.sh" 2>/dev/null || source "$HOME/.claude/hooks/pipeline-markers.sh"
+mkdir -p "$PIPE" "$QUEUE"
+
+# resolve_run <spec> — spec is <owner/repo>#<N> or a bare <N>. Sets RUN_KEY (the orch-<RUN_KEY>.* file stem), RUN_ISSUE and
+# RUN_SLUG. Reads the new key first, then a legacy orch-<N>.* set only when its .repo names the same repo (#318 read-both).
+# A bare number resolves only when exactly one run matches; zero or several return 1 with the candidates on stderr.
+resolve_run() {
+  local spec=$1 n slug k f rf cands="" count=0 line; CANDS_TXT=""
+  case "$spec" in
+    */*#*) slug=${spec%#*}; n=${spec##*#}
+      case "$n" in ''|*[!0-9]*) echo "bad run spec: $spec" >&2; return 1 ;; esac
+      k=$(run_key "$slug" "$n")
+      if [ ! -e "$PIPE/orch-$k.repo" ] && [ ! -e "$PIPE/orch-$k.pid" ] && [ ! -e "$QUEUE/orch-$k.json" ]; then
+        rf=$(cat "$PIPE/orch-$n.repo" 2>/dev/null) || rf=""
+        if [ -n "$rf" ] && [ "$(repo_slug "$rf")" = "$slug" ]; then k=$n; fi
+      fi
+      RUN_KEY=$k; RUN_ISSUE=$n; RUN_SLUG=$slug; return 0 ;;
+    ''|*[!0-9]*) echo "bad run spec: $spec (use <owner/repo>#<N> or <N>)" >&2; return 1 ;;
+  esac
+  n=$spec
+  for f in "$PIPE"/orch-*.repo "$QUEUE"/orch-*.json; do
+    [ -e "$f" ] || continue
+    k=${f##*/orch-}; k=${k%.*}
+    [ "${k##*-}" = "$n" ] || continue
+    case "$cands" in *"|$k|"*) continue ;; esac
+    case "$f" in
+      *.json) slug=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['repo'])" "$f" 2>/dev/null); slug=$(repo_slug "$slug") ;;
+      *) slug=$(repo_slug "$(cat "$f" 2>/dev/null)") ;;
+    esac
+    cands="$cands|$k|"; count=$((count + 1)); line="$k ${slug:-?}"
+    CANDS_TXT="${CANDS_TXT:-}${slug:-?}#$n"$'\n'; RUN_KEY=$k; RUN_ISSUE=$n; RUN_SLUG=${slug:-}
+  done
+  if [ "$count" -eq 1 ]; then return 0; fi
+  if [ "$count" -eq 0 ]; then echo "no run matches #$n; nothing done" >&2; return 2
+  else echo "#$n matches $count runs; refusing. Use <owner/repo>#$n with one of:" >&2; printf '%s\n' "$CANDS_TXT" | sed '/^$/d; s/^/  /' >&2; fi
+  return 1
+}
+FORCE=0; args=()
+for a in "$@"; do [ "$a" = "--force" ] && FORCE=1 || args+=("$a"); done
+set -- "${args[@]}"
+
+case "${1:-}" in
+  status)
+    ISSUE="${2:-}"; FILTER_KEY=""
+    if [ -n "$ISSUE" ]; then
+      rc=0; resolve_run "$ISSUE" 2>/dev/null || rc=$?
+      # no match keeps the pre-#318 output (an empty filter result, alerts and queue still shown); ambiguity refuses
+      if [ "$rc" = 2 ]; then FILTER_KEY="__no-match__"; elif [ "$rc" != 0 ]; then resolve_run "$ISSUE" || exit 1; else FILTER_KEY=$RUN_KEY; fi
+    fi
+    # State derivation is shared with the reporter (run-state.sh's derive_runs) — issue #10 AC14:
+    # only this derivation moved; every echo/printf format string, the found=1-after-issue-filter
+    # behaviour ("no orchestrators recorded" fires only when the orch-*.pid glob itself is empty,
+    # never on a filter that matches nothing), the per-run gh marker fetch, and the runs -> alerts
+    # -> queued ordering below are unchanged.
+    if ! ls "$PIPE"/orch-*.pid >/dev/null 2>&1; then
+      echo "no orchestrators recorded"
+    else
+      while IFS=$'\t' read -r n repo state_code pid started last_activity restarts stage; do
+        [ -n "$n" ] || continue
+        [ "$state_code" = "queued" ] && continue   # queued entries are the section below, unchanged
+        k=$(run_key "$(repo_slug "$repo")" "$n" 2>/dev/null) || k=$n; [ -e "$PIPE/orch-$k.repo" ] || k=$n   # new key, else the legacy name
+        [ -n "$FILTER_KEY" ] && [ "$k" != "$FILTER_KEY" ] && continue
+        case "$state_code" in
+          running)    state="running (pid $pid)" ;;
+          stopped)    state="stopped (manual)" ;;
+          held)       state="held (needs JP)" ;;
+          done|closed) state="done" ;;
+          *)          state="exited (will auto-restart)" ;;
+        esac
+        gh_out=$( (cd "$repo" 2>/dev/null && gh issue view "$n" --json state,author,comments \
+          --jq "{state, last: ($(marker_last_jq))}") 2>/dev/null)
+        gh_state=$(printf '%s' "$gh_out" | python3 -c "import json,sys; print(json.load(sys.stdin).get('state','?'))" 2>/dev/null || echo "?")
+        last=$(printf '%s' "$gh_out" | python3 -c "import json,sys; print(json.load(sys.stdin).get('last','?'))" 2>/dev/null || echo "?")
+        # Local files (pid/held/done) never learn that an issue was closed directly on GitHub
+        # (JP finishing it by hand, bypassing the deployer stage) — without this override a
+        # closed, fully-done issue keeps reporting "held (needs JP)" indefinitely (#216 session,
+        # 2026-09-18: #151 and #183 were reported as still needing JP days after being closed).
+        [ "$gh_state" = "CLOSED" ] && state="done (issue closed)"
+        echo "#$n  $state  repo=$repo  latest marker: $last  log=$PIPE/orch-$k.log"
+      done <<< "$(derive_runs "$FILTER_KEY")"
+    fi
+    # Reporter health (design #10 §4.2): >=3 consecutive push failures earn one extra line so a
+    # broken reporter (bad token, typo'd URL) doesn't render identically to a genuinely dead host.
+    # No effect unless that state exists — absent here, so the golden stays byte-identical (AC14).
+    if [ -f "$PIPE/status-push.state" ]; then
+      push_health=$(python3 -c "
+import json
+try:
+    d = json.load(open('$PIPE/status-push.state'))
+except Exception:
+    d = {}
+fails = d.get('fails', 0)
+if isinstance(fails, int) and fails >= 3:
+    print('%s|%s' % (d.get('last_status', '?'), d.get('last_attempt_epoch', 0)))
+" 2>/dev/null)
+      if [ -n "$push_health" ]; then
+        code=${push_health%%|*}; epoch=${push_health##*|}
+        ts=$(python3 -c "
+import datetime
+try: print(datetime.datetime.fromtimestamp(int('$epoch'), tz=datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))
+except Exception: print('?')
+" 2>/dev/null)
+        echo "!! status push failing: HTTP $code since $ts"
+      fi
+    fi
+    # Host-level: the supervisor's code-sync guard is refusing every tick (no run starts on this host until fixed).
+    # Absent file -> no output, so the AC14 golden stays byte-identical.
+    [ -s "$PIPE/code-sync.alert" ] && echo "!! CODE SYNC: $(cat "$PIPE/code-sync.alert")"
+    # Surface any unresolved alerts
+    for af in "$PIPE"/orch-*.alert; do
+      [ -e "$af" ] || break
+      echo "!! ALERT: $(cat "$af")"
+    done
+    if ls "$QUEUE"/*.json >/dev/null 2>&1; then
+      echo "--- queued ---"
+      for qf in $(ls -1 "$QUEUE"/*.json 2>/dev/null | sort); do
+        q_issue=$(python3 -c "import json; d=json.load(open('$qf')); print(d['issue'])")
+        q_repo=$(python3 -c "import json; d=json.load(open('$qf')); print(d['repo'])")
+        queued_at=$(python3 -c "import json; d=json.load(open('$qf')); print(d.get('queued_at','?'))")
+        nb=$(python3 -c "import json,time; nb=json.load(open('$qf')).get('not_before',0); d=int(nb-time.time()); print(f'ready' if d<=0 else f'in {d}s')" 2>/dev/null)
+        echo "#$q_issue  queued since $queued_at  $nb  repo=$q_repo"
+      done
+    fi
+    ;;
+  tail)
+    resolve_run "${2:?run required: <owner/repo>#<N> or <N>}" || exit 1
+    tail -n "${3:-20}" "$PIPE/orch-$RUN_KEY.log"
+    ;;
+  stop)
+    resolve_run "${2:?run required: <owner/repo>#<N> or <N>}" || exit 1
+    pid=$(cat "$PIPE/orch-$RUN_KEY.pid" 2>/dev/null || true)
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      # #451: during the supervisor's claim wait the pid file holds the supervisor's own pid (its reservation) — killing
+      # it would take the whole tick down mid-launch. Refuse; the spawn (or the restore) lands within the settle window.
+      if ps -o command= -p "$pid" 2>/dev/null | grep -q 'supervisor\.sh'; then
+        echo "#$RUN_ISSUE launch in progress (supervisor reservation), retry in a moment" >&2; exit 1
+      fi
+      # $pid is the nohup'd bash wrapper; SIGTERM does not reach its claude child,
+      # which kept driving #611 for 14 min after a stop (2026-09-13). Kill the
+      # child too. Stage processes the orchestrator launched are left alone.
+      pkill -TERM -P "$pid" 2>/dev/null || true   # set -e: no children (pid not a wrapper) must not abort before the kill
+      kill "$pid" && echo "stopped orchestrator for ${RUN_SLUG:+$RUN_SLUG}#$RUN_ISSUE (pid $pid)"
+    else
+      echo "orchestrator for ${RUN_SLUG:+$RUN_SLUG}#$RUN_ISSUE not running"
+    fi
+    touch "$PIPE/orch-$RUN_KEY.stopped"
+    sentry_slot_release "$QUEUE/orch-$RUN_KEY.json"   # #182: a counted launch stopped while still queued gives its place back
+    rm -f "$QUEUE/orch-$RUN_KEY.json"
+    report_status_async "stop"   # event push: run stopped (design #10 §4.4)
+    echo "wrote tombstone — supervisor will not auto-restart ${RUN_SLUG:+$RUN_SLUG}#$RUN_ISSUE"
+    ;;
+  queue)
+    if ! ls "$QUEUE"/*.json >/dev/null 2>&1; then
+      echo "queue is empty"
+    else
+      for qf in $(ls -1 "$QUEUE"/*.json 2>/dev/null | sort); do
+        q_issue=$(python3 -c "import json; d=json.load(open('$qf')); print(d['issue'])")
+        q_repo=$(python3 -c "import json; d=json.load(open('$qf')); print(d['repo'])")
+        queued_at=$(python3 -c "import json; d=json.load(open('$qf')); print(d.get('queued_at','?'))")
+        echo "#$q_issue  queued since $queued_at  repo=$q_repo"
+      done
+    fi
+    ;;
+  *)
+    REPO="${1:?repo path required}"; ISSUE="${2-}"
+    # Same rule as pipeline-bridge-dispatch.sh; before any gh call or state file (#123: "stop" became a phantom run).
+    if ! [[ "$ISSUE" =~ ^[0-9]+$ ]]; then
+      echo "issue must be a number (got \"$ISSUE\") — did you mean 'launcher.sh stop <N>'?" >&2; exit 2
+    fi
+    shift 2; EXTRA="$*"
+    REPO=$(cd "$REPO" && pwd)
+    OWNER_REPO=$(cd "$REPO" && gh repo view --json nameWithOwner --jq .nameWithOwner)
+    # #632: a direct-route repo (DIRECT_ROUTE_REPOS, config.sh) is never pipelined — refused before any gh write or state
+    # file, and --force is deliberately not consulted. stop/status/tail/queue above still work on its old runs.
+    if direct_route_repo "$OWNER_REPO"; then
+      echo "$OWNER_REPO#$ISSUE is a direct-route repo: implement in the interactive session with subagents (fullstack-developer in a worktree, code-reviewer/test-reviewer, merge when green) — see CLAUDE.md" >&2; exit 2
+    fi
+    RK=$(run_key "$OWNER_REPO" "$ISSUE")
+    migrate_legacy_runs   # a legacy orch-<N>.* set of this repo moves to its key before the checks below read it
+    if [ -f "$PIPE/orch-$RK.pid" ] && kill -0 "$(cat "$PIPE/orch-$RK.pid")" 2>/dev/null; then
+      echo "orchestrator for #$ISSUE already running (pid $(cat "$PIPE/orch-$RK.pid")); use 'stop' first" >&2; exit 1
+    fi
+    # #182: daily launch cap for automatically released Sentry tickets (label sentry-auto-go), checked before any claim,
+    # label write or state file. A relaunch of a ticket that already holds an unreleased launch line in the window passes
+    # the gate and appends no second line (#688). --force is deliberately not consulted; SENTRY_CAP_BYPASS=1 in the environment is JP's
+    # deliberate hand launch. Supervisor step 5 already knows the label from its listing and passes SENTRY_CAP_LABELLED
+    # (no second GitHub read); any other caller reads it here, fresh and over REST (its own budget, #388). A failed
+    # label or launch-log read refuses the launch (fail closed); only the bypass launches without the label, uncounted.
+    # #781: a sentry-auto-go ticket that also carries ci-critical is exempt: no lock, no gate, no count (SENTRY_EXEMPT=1; an
+    # `exempt` audit line is appended where a counted launch would append its own). The supervisor passes the label
+    # through SENTRY_CAP_EXEMPT next to SENTRY_CAP_LABELLED; a caller that reads the labels here reads it from them.
+    SENTRY_CAPPED=${SENTRY_CAP_LABELLED:-}; SENTRY_NOCOUNT=0; SENTRY_EXEMPT=0
+    case "$SENTRY_CAPPED" in
+      0|1) [ "$SENTRY_CAPPED" = 0 ] || [ "${SENTRY_CAP_EXEMPT:-0}" != 1 ] || SENTRY_EXEMPT=1 ;;
+      *) SENTRY_CAPPED=0
+        if SC_LABELS=$(GH_NOCACHE=1 gh api "repos/$OWNER_REPO/issues/$ISSUE" --jq '[.labels[].name] | join(",")' 2>/dev/null </dev/null); then
+          case ",$SC_LABELS," in *",$LABEL_SENTRY_GO,"*) SENTRY_CAPPED=1; ! sentry_ci_critical "$SC_LABELS" || SENTRY_EXEMPT=1 ;; esac
+        elif [ "${SENTRY_CAP_BYPASS:-0}" = 1 ]; then
+          echo "#$ISSUE could not read the issue labels — SENTRY_CAP_BYPASS=1: launching without the sentry launch cap (not counted)" >&2
+        else
+          sentry_cap_fail "$OWNER_REPO" "$ISSUE" "issue label read failed, not launched"
+          echo "#$ISSUE could not read the issue labels for the sentry launch cap — refusing, labels untouched; check gh access, then relaunch" >&2; exit 1
+        fi ;;
+    esac
+    if [ "$SENTRY_EXEMPT" = 1 ]; then SENTRY_CAPPED=0; fi   # exempt (#781): never gated, locked or counted, whatever the launch log looks like
+    if [ "$SENTRY_CAPPED" = 1 ] && [ "${SENTRY_CAP_BYPASS:-0}" != 1 ]; then
+      # From here to the launch-log append the launch holds the repo's cap lock, so two launchers (a hand launch, a lead,
+      # the supervisor) cannot both take the last place; every exit on the way releases it (EXIT trap).
+      trap 'sentry_cap_unlock' EXIT
+      sentry_cap_lock "$OWNER_REPO" || {
+        echo "#$ISSUE another sentry-auto-go launch of $OWNER_REPO holds the launch-cap lock — refusing, labels untouched; relaunch in a minute" >&2; exit 1; }
+      SC_RC=0; sentry_cap_gate "$OWNER_REPO" "$ISSUE" || SC_RC=$?
+      if [ "$SC_RC" = 3 ]; then
+        echo "sentry launch cap reached for $OWNER_REPO ($SENTRY_CAP_N/$SENTRY_CAP_MAX in 24h)" >&2; exit 3
+      elif [ "$SC_RC" != 0 ]; then
+        echo "#$ISSUE could not read the sentry launch log — refusing, labels untouched; fix $PIPE/sentry-launches.log, then relaunch" >&2; exit 1
+      fi
+      [ "${SENTRY_CAP_COUNTED:-0}" != 1 ] || SENTRY_NOCOUNT=1   # #688: already counted in the window — this launch adds no line
+    fi
+    # #451: reserve the pid file now so the claim-settle wait below is covered by the liveness check above; every exit
+    # before the spawn puts the earlier content back.
+    pid_reserve "$RK"
+    trap 'pid_reserve_restore "$RK"; sentry_cap_unlock' EXIT   # sentry_cap_unlock: no-op unless this launch holds the #182 cap lock
+    pid_reserve_trap "$RK" 130   # EXIT traps do not run on an unhandled INT/TERM/HUP (Ctrl-C, `stop` during the wait)
+    # Cross-machine guard: agent-in-progress on an issue this machine does not own (never launched here, or launched
+    # here but already released via .label-cleared) means another machine is driving it.
+    if [ "$FORCE" -eq 0 ] && { [ ! -f "$PIPE/orch-$RK.repo" ] || [ -f "$PIPE/orch-$RK.label-cleared" ]; } \
+       && (cd "$REPO" && gh issue view "$ISSUE" --json labels --jq '[.labels[].name] | index("'"$LABEL_IN_PROGRESS"'") != null' 2>/dev/null | grep -q true); then
+      echo "#$ISSUE carries $LABEL_IN_PROGRESS but nothing is running here — running elsewhere? check the other machine's status, or --force" >&2; exit 1
+    fi
+    # Post the owner claim (same format as shared dispatch) so the other machine's reconcile leaves the label alone.
+    (cd "$REPO" && gh issue comment "$ISSUE" --body "**[supervisor] NOTE** claim: $(hostname -s) $(date -u +%FT%TZ)" >/dev/null 2>&1) || true
+    # Arbitrate like shared dispatch (#217): earliest claim inside the window wins. --force is the deliberate takeover
+    # (dispatch already arbitrated). Unreadable comments fail closed. Losing leaves agent-in-progress to the winner.
+    if [ "$FORCE" -eq 0 ]; then
+      sleep "$CLAIM_SETTLE_SECS"
+      if WINNER=$(claim_winner "$REPO" "$ISSUE"); then
+        [ -n "$WINNER" ] || { echo "#$ISSUE could not see our own claim to arbitrate — refusing, labels untouched; check gh access, then relaunch (or --force to take over)" >&2; exit 1; }
+        [ "$WINNER" = "$(hostname -s)" ] || { echo "#$ISSUE lost claim to ${WINNER:-?} — running there; use --force to take over" >&2; exit 1; }
+      else
+        echo "#$ISSUE could not read claims to arbitrate — refusing, labels untouched; check gh access, then relaunch (or --force to take over)" >&2; exit 1
+      fi
+    fi
+    # Only after winning arbitration (a refused launch must leave labels alone, #217): launching consumes agent-go (the shared-dispatch pool) and claims the issue for this machine. Crash restarts are
+    # the local supervisor's job, not the label's; the supervisor drops agent-in-progress when the run is done or parked.
+    (cd "$REPO" && gh issue edit "$ISSUE" --add-label "$LABEL_IN_PROGRESS" --remove-label "$LABEL_GO" --remove-label "$LABEL_PROPOSED" 2>/dev/null) || true
+    sentry_slot_release "$QUEUE/orch-$RK.json"   # #182: a queued launch that was counted gives its place back; this launch counts itself
+    # #688: when that queued place was the only line of the ticket, the launch is no longer counted and records itself below
+    if [ "$SENTRY_NOCOUNT" = 1 ] && [ "$(sentry_launch_count "$OWNER_REPO" "$ISSUE" 2>/dev/null)" = 0 ]; then SENTRY_NOCOUNT=0; fi
+    rm -f "$QUEUE/orch-$RK.json"   # a manual launch supersedes a queued one; never both
+    # Clear tombstones and restart state on manual launch
+    rm -f "$PIPE/orch-$RK".{stopped,held,done,closed,release,marker,milestone,alert,label-cleared,start,exit,exit-logged,startgate,jp-reminded} "$PIPE/orch-$RK.restarts"
+    # Persist on both the launch and queued paths: supervisor.sh rebuilds the queue JSON from this file.
+    printf '%s' "$EXTRA" > "$PIPE/orch-$RK.extra"
+    # Ticket title for the status board (#29) — fetched once here, before the capacity check so a queued run has it
+    # too; the status reporter only ever reads the file. A failed or empty fetch leaves no title file and never blocks
+    # the launch.
+    write_title_marker "$REPO" "$ISSUE" 1 "$RK"
+    # #714: LAUNCH_REASON=agent-go-queue is the supervisor's step 5 on a tick whose slot the queue drain took (or none was
+    # free at tick start): the claimed ticket takes its place in the oldest-first queue even if a slot has freed since, so it
+    # never launches ahead of older queued entries.
+    if [ "${LAUNCH_REASON:-}" = agent-go-queue ] || ! has_capacity "$RK"; then
+      python3 -c "
+import json, datetime, time
+with open('$QUEUE/orch-$RK.json', 'w') as f:
+    json.dump({'issue': '$ISSUE', 'repo': '$REPO', 'extra': '''$EXTRA''', 'reason': 'queued',
+               'queued_at': datetime.datetime.utcnow().strftime('%FT%TZ'), 'not_before': int(time.time())}, f)
+"
+      echo "queued #$ISSUE ($(count_running "$RK")/$MAX_CONCURRENT slots full, $(mem_available_mb)MB avail) — supervisor will auto-launch when a slot opens"
+      echo "check: ~/.claude/skills/orchestrate/launcher.sh queue"
+      pid_reserve_done; rm -f "$PIPE/orch-$RK.pid"   # queued, not running: a stale dead pid makes the supervisor read this as a run that just ended (#22)
+      # #182: accepted into the queue (claim won, agent-go consumed; the drain starts it with no second check), so the
+      # launch takes its place in the daily window now. The entry remembers it (sentry_slot), so a drop before it ever
+      # starts (stop, tombstone, lost claim) releases the place again.
+      if [ "$SENTRY_CAPPED" = 1 ] && [ "$SENTRY_NOCOUNT" != 1 ]; then
+        if sentry_launch_record "$OWNER_REPO" "$ISSUE"; then
+          jq -c --arg s "$OWNER_REPO" '. + {sentry_slot: $s}' "$QUEUE/orch-$RK.json" > "$QUEUE/orch-$RK.json.tmp" 2>/dev/null \
+            && mv "$QUEUE/orch-$RK.json.tmp" "$QUEUE/orch-$RK.json" || rm -f "$QUEUE/orch-$RK.json.tmp"
+        else
+          sentry_cap_fail "$OWNER_REPO" "$ISSUE" "launch log append failed, launch not counted"
+        fi
+      fi
+      [ "$SENTRY_EXEMPT" != 1 ] || sentry_launch_record_exempt "$OWNER_REPO" "$ISSUE" || sentry_cap_fail "$OWNER_REPO" "$ISSUE" "exempt launch log append failed"
+      sentry_cap_unlock
+      exit 0
+    fi
+    # The headless session IS the orchestrator (--agent), not a wrapper that calls Agent(orchestrator):
+    # a prompt arguing "you are the exception to the CLAUDE.md rule" reads as a prompt injection and
+    # was intermittently refused (#217, #151, #637 — 2026-09-17).
+    # #451: another launcher overwrote the reservation during the wait — it owns the run, we exit without spawning (also on --force).
+    if ! pid_reserve_held "$RK"; then
+      launch_skip "$ISSUE" orchestrate
+      echo "#$ISSUE another launcher holds the pid file — not launching" >&2; exit 1
+    fi
+    PROMPT="Drive $OWNER_REPO#$ISSUE through the pipeline. Repo: $REPO. Read the latest marker on the issue and continue from there. $EXTRA"
+    printf '\n===== [%s] LAUNCH issue=%s reason=manual ppid=%s cmd=%s =====\n' "$(date -u +%FT%TZ)" "$ISSUE" "$PPID" "$(ps -o args= -p "$PPID" 2>/dev/null | tr -d '\n' | cut -c1-200)" >> "$PIPE/orch-$RK.log"
+    cd "$REPO"
+    CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 nohup $SETSID bash -c '
+      echo 300 > /proc/self/oom_score_adj 2>/dev/null
+      claude --dangerously-skip-permissions --agent orchestrator -p "$1"
+      echo $? > "$2"
+    ' _ "$PROMPT" "$PIPE/orch-$RK.exit" >> "$PIPE/orch-$RK.log" 2>&1 9>&- &
+    pid_reserve_done
+    echo $! > "$PIPE/orch-$RK.pid"; echo "$REPO" > "$PIPE/orch-$RK.repo"
+    date -u +%FT%TZ > "$PIPE/orch-$RK.start"; date -u +%FT%TZ > "$PIPE/orch-$RK.launched-at"
+    log_run_launch "$OWNER_REPO" "$ISSUE" "${LAUNCH_REASON:-manual}" 0 "" "$RK"
+    # #182: the launch line is appended only here, after the claim was won and the run started
+    [ "$SENTRY_CAPPED" != 1 ] || [ "$SENTRY_NOCOUNT" = 1 ] || sentry_launch_record "$OWNER_REPO" "$ISSUE" || sentry_cap_fail "$OWNER_REPO" "$ISSUE" "launch log append failed, launch not counted"
+    [ "$SENTRY_EXEMPT" != 1 ] || sentry_launch_record_exempt "$OWNER_REPO" "$ISSUE" || sentry_cap_fail "$OWNER_REPO" "$ISSUE" "exempt launch log append failed"
+    sentry_cap_unlock
+    report_status_async "launch"   # event push: run launched (design #10 §4.4)
+    echo "launched orchestrator for $OWNER_REPO#$ISSUE  pid=$!  log=$PIPE/orch-$RK.log"
+    echo "check: ~/.claude/skills/orchestrate/launcher.sh status $OWNER_REPO#$ISSUE"
+    ;;
+esac

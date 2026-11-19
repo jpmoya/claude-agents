@@ -4,6 +4,10 @@ Agent-readable session log. Newest first. Terse by design — see the `living` s
 
 ---
 
+## 2026-11-19 — launcher-rename
+
+SHIP: claude-agents#779 — `skills/orchestrate/orchestrate.sh` renamed `launcher.sh` (git mv); `orchestrate.sh` stays as a <=10-line wrapper that execs it (deprecation note on a TTY only; removal is a follow-up ticket). The `orchestrator` agent, the `orchestrate` skill and its directory keep their names. No hook matches the script name; hook texts, docs, agents and tests now say `launcher.sh`. Older entries below keep the old name as written.
+
 ## 2026-10-27 — release-watch-spam-fix
 
 SHIP: benjis-ops-tool#1925 (scripts/auto-release.sh `note_on_pr()` de-dups PR/Slack notices; scripts/release-watch-rolling.sh `find_issue()` stops discarding gh's stderr) — merged to staging, then cherry-picked via promotion PR benjis-ops-tool#1933 (branch release/auto-1921-promo, commit a711882, version bump to v1.19.0 via scripts/bump-version.sh) into main — prod deploy green.

@@ -1,9 +1,9 @@
-# AC14 — `orchestrate.sh status` output is byte-for-byte identical, against a fixture /tmp/pipeline
+# AC14 — `launcher.sh status` output is byte-for-byte identical, against a fixture /tmp/pipeline
 # tree, before and after the shared state-derivation refactor. Editing the golden to make this pass
 # is not an acceptable way to satisfy the criterion (ticket text, verbatim).
 #
 # This is a regression guard, not a feature test: it is expected to be GREEN right now, since
-# `orchestrate.sh` on this branch is still the pre-refactor script the golden was captured from.
+# `launcher.sh` on this branch is still the pre-refactor script the golden was captured from.
 # It goes red the moment the state-derivation refactor changes a byte of `status` output that
 # isn't the one documented addition (the "!! status push failing" line, which needs >=3
 # consecutive push failures in the cache — a state this fixture never reaches, so the golden has
@@ -14,16 +14,16 @@
 #   HOME=<fresh empty dir with .claude/pipeline/> \
 #   PATH=<repo>/skills/orchestrate/tests/bin:/usr/bin:/bin \
 #   PIPE=<fixture pipe dir> QUEUE=$PIPE/queue \
-#   ./orchestrate.sh status [<issue>] \
+#   ./launcher.sh status [<issue>] \
 #   | sed -e "s#$PIPE#@@PIPE@@#g" -e "s#$REPO_A#@@REPOA@@#g" -e "s#$REPO_B#@@REPOB@@#g" \
 #         -e "s/pid [0-9][0-9]*/pid @@PID@@/g"
-# (captured against this repo's pre-refactor orchestrate.sh at HEAD; fixture: #101 running,
+# (captured against this repo's pre-refactor launcher.sh at HEAD; fixture: #101 running,
 #  #102 exited/will-auto-restart, #103 held with an .alert, #104 queued — see build_golden_fixture()).
 
 HERE_AC14=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 GOLDEN_DIR="$HERE_AC14/fixtures/golden"
 FAKEBIN="$HERE_AC14/bin"
-ORCH="$HERE_AC14/../orchestrate.sh"
+ORCH="$HERE_AC14/../launcher.sh"
 
 AC14_PIDS=""
 
@@ -56,7 +56,7 @@ json.dump({'issue':'104','repo':'$repo_b','extra':'','reason':'queued','queued_a
 "
 }
 
-# run_status_normalized <pipe> <repo_a> <repo_b> [issue] — runs the real orchestrate.sh status
+# run_status_normalized <pipe> <repo_a> <repo_b> [issue] — runs the real launcher.sh status
 # against the fixture, with the fake `gh` on PATH (a true external, mocked at the wrapper
 # boundary the script already uses) and a HOME with no real ~/.local/bin/gh to shadow it, then
 # applies the same normalization the golden was captured with.

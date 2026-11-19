@@ -9,7 +9,7 @@
 #   AC5   a reopened + relaunched ticket returns to runs[] (.closed / .marker cleared)
 #   AC6   builder + reporter stay network-free (no gh call while building the payload)
 #   AC8   payload v stays 1; `completed` is always present ([] when none)
-#   AC9   `orchestrate.sh status` never reports a closed record as "exited (will auto-restart)"
+#   AC9   `launcher.sh status` never reports a closed record as "exited (will auto-restart)"
 #   AC12  docs: README.md Status board paragraph + status-page/README.md describe Completed
 #   (AC2, AC7 — the Worker half — live in status-page/test/*.test.js; the rest of AC9 and AC10 are the
 #    existing suites staying green; AC11 — the one-time reconcile on the VM — is a developer delivery
@@ -518,10 +518,10 @@ test_sc_ac4_supervisor_reconcile_call_is_backgrounded_fd9_closed_after_dispatch_
 }
 
 # =================================================================================================
-# AC9 — `orchestrate.sh status` keeps printing sensible, non-restarting states for a closed record
+# AC9 — `launcher.sh status` keeps printing sensible, non-restarting states for a closed record
 # =================================================================================================
 
-# The `closed` code is new; orchestrate.sh status must not fall into its "exited (will auto-restart)"
+# The `closed` code is new; launcher.sh status must not fall into its "exited (will auto-restart)"
 # branch for it. When gh does not say CLOSED (here: OPEN, e.g. the record is momentarily ahead of or
 # behind GitHub), a finished record reads exactly as the old `done` did ("done"); when gh says CLOSED,
 # the existing override applies ("done (issue closed)"). (A gh that exits non-zero aborts `status`
@@ -533,7 +533,7 @@ test_sc_ac9_orchestrate_status_closed_record_is_not_reported_as_restarting() {
   sc_mk_closed_record 403 3600; sc_gh_closed 403 "$(sc_iso_ago 3600)"   # gh works and says CLOSED
   sc_gh_marker 403 '**[deployer] DEPLOYED**'                   # (the fake gh only returns comments when it has some)
   mk_restarting "$SC_PIPE" 404 "$SC_REPO"                       # control: a genuinely restarting record still says so
-  sc_run "$RS_SC/orchestrate.sh" status
+  sc_run "$RS_SC/launcher.sh" status
   local out=$SC_OUT rc=$SC_RC l401 l402 l403 l404
   l401=$(printf '%s\n' "$out" | grep '^#401 '); l402=$(printf '%s\n' "$out" | grep '^#402 ')
   l403=$(printf '%s\n' "$out" | grep '^#403 '); l404=$(printf '%s\n' "$out" | grep '^#404 ')
@@ -562,7 +562,7 @@ test_sc_ac5_orchestrate_relaunch_clears_closed_and_marker_and_ticket_returns_to_
   closed_before=$(sc_present "$(rkp "$SC_PIPE/orch-301.closed")"); marker_before=$(sc_present "$(rkp "$SC_PIPE/orch-301.marker")")
   # JP reopens it and relaunches
   rm -f "$SC_BIN/gh-issue-state-301" "$SC_BIN/gh-issue-closed-at-301"
-  sc_run "$RS_SC/orchestrate.sh" "$SC_REPO" 301
+  sc_run "$RS_SC/launcher.sh" "$SC_REPO" 301
   local launch_out=$SC_OUT
   local out2; out2=$(sc_print)
   local closed_after marker_after
@@ -572,9 +572,9 @@ test_sc_ac5_orchestrate_relaunch_clears_closed_and_marker_and_ticket_returns_to_
   assert_eq "$closed_before:$marker_before" "present:present" "AC5: control — reconcile wrote .closed and .marker" || return 1
   assert_eq "$(sc_completed_issues "$out1")" "301" "AC5: control — the closed ticket was in completed[]" || return 1
   assert_contains "$launch_out" "launched orchestrator" "AC5: relaunch took the launch path (scenario sanity)" || return 1
-  assert_eq "$closed_after" "absent" "AC5: orchestrate.sh clears orch-<n>.closed on launch" || return 1
+  assert_eq "$closed_after" "absent" "AC5: launcher.sh clears orch-<n>.closed on launch" || return 1
   # #94 AC3: launch writes the current GitHub marker (DEPLOYED, set above) instead of deleting the file
-  assert_eq "$marker_after" "present" "AC5/#94 AC3: orchestrate.sh rewrites orch-<n>.marker on launch (current GitHub marker)" || return 1
+  assert_eq "$marker_after" "present" "AC5/#94 AC3: launcher.sh rewrites orch-<n>.marker on launch (current GitHub marker)" || return 1
   assert_eq "$marker_content" "DEPLOYED" "#94 AC3: rewritten marker holds the current GitHub marker name" || return 1
   assert_ne "$(sc_run_field "$out2" 301 state)" "NORUN" "AC5: the relaunched ticket is back in runs[]" || return 1
   assert_eq "$(sc_completed_issues "$out2")" "" "AC5: ...and absent from completed[]" || return 1

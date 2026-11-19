@@ -15,7 +15,7 @@ if ! declare -f sq_env >/dev/null 2>&1; then
   . "$HERE_RL/test-supervisor-queued-not-counted.sh"
   eval "$(declare -f rl_real_run_test | sed '1s/rl_real_run_test/run_test/')"
 fi
-ORCH_RL="$HERE_RL/../orchestrate.sh"
+ORCH_RL="$HERE_RL/../launcher.sh"
 LIB_RL="$HERE_RL/../pipeline-lib.sh"
 PM_RL="$HERE_RL/../../../agents/product-manager.md"
 RL_HOST=$(hostname -s 2>/dev/null | tr '[:upper:]' '[:lower:]')

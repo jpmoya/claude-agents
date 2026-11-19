@@ -5,7 +5,7 @@
 # queued and counted on the same tick that logged "waiting".
 #
 #   AC1 (1a, 1b)      a queued run is never counted
-#   AC2 (2a, 2b, 2c)  a queued manual relaunch is invisible to step 1 (orchestrate.sh drops the stale .pid)
+#   AC2 (2a, 2b, 2c)  a queued manual relaunch is invisible to step 1 (launcher.sh drops the stale .pid)
 #   AC3 (3a, 3b)      BLOCKED inside grace means "wait", once; past the window it parks as before
 #   AC4 (4a, 4b, 4c)  real exits still restart, back off and escalate
 #
@@ -14,7 +14,7 @@
 # Placeholder repo names only.
 
 HERE_SQ=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-ORCH_SQ="$HERE_SQ/../orchestrate.sh"
+ORCH_SQ="$HERE_SQ/../launcher.sh"
 SUP_SQ="$HERE_SQ/../supervisor.sh"
 
 SQ_READY='**[product-manager] READY FOR ENGINEERING**'

@@ -16,7 +16,7 @@ if ! declare -f sq_env >/dev/null 2>&1; then
   . "$HERE_FD/test-supervisor-queued-not-counted.sh"
   eval "$(declare -f fd_real_run_test | sed '1s/fd_real_run_test/run_test/')"
 fi
-ORCH_FD="$HERE_FD/../orchestrate.sh"
+ORCH_FD="$HERE_FD/../launcher.sh"
 
 # fd_fast_tick — reset .launched-at to now (this "run" lived 0s), drop the queue entry, tick.
 fd_fast_tick() {
@@ -83,7 +83,7 @@ test_fd_1c_non_transient_run_still_escalates_at_no_progress_cap() {
 
 test_fd_1d_transient_ceiling_removed_from_source() {
   local hits
-  hits=$(cd "$HERE_FD/.." && grep -n 'MAX_TRANSIENT_TOTAL\|transient_count' supervisor.sh config.sh orchestrate.sh)
+  hits=$(cd "$HERE_FD/.." && grep -n 'MAX_TRANSIENT_TOTAL\|transient_count' supervisor.sh config.sh launcher.sh)
   assert_eq "$hits" "" "#38/1d: no MAX_TRANSIENT_TOTAL / transient_count left" || return 1
   assert_contains "$(cat "$HERE_FD/../config.sh")" "TRANSIENT_BACKOFF=" "#38/1d: TRANSIENT_BACKOFF table kept" || return 1
 }

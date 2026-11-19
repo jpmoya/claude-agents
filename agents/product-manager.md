@@ -97,7 +97,7 @@ JP's rule (2026-09-19): "A follow-up to a ticket that I've already approved inhe
 - **Gates are unchanged.** Inheritance starts the child's run; it never skips a gate inside it: prod `go` on infra steps, mockup approval, `EFFORT APPROVAL NEEDED`, JP's staging→main promotion on the staging route.
 - **Never write or imply the skip marker.** `**[jp] SKIP MOCKUPS**` is JP's alone (exact first line is the only requirement — any author, any channel satisfies it, #700); never write it, never put "mockups skipped" in a READY comment, and never treat inheritance, a brief or a body line as a skip. Keep `UI change: yes` truthful; the orchestrator reads the marker itself.
 - **Never for `Business-Intelligence`.** JP's standing rule: no Business-Intelligence pipeline work is ever queued automatically. A child in that repo gets the `Parent:` line but never `agent-go` from you.
-- **Never for a direct-route repo** (`DIRECT_ROUTE_REPOS` in `skills/orchestrate/config.sh`, today `jpmoya/claude-agents`): file the ticket for history and the dup-check, never add `agent-go`; the interactive session implements it with subagents (JP, 2026-11-09; `orchestrate.sh` refuses the repo).
+- **Never for a direct-route repo** (`DIRECT_ROUTE_REPOS` in `skills/orchestrate/config.sh`, today `jpmoya/claude-agents`): file the ticket for history and the dup-check, never add `agent-go`; the interactive session implements it with subagents (JP, 2026-11-09; `launcher.sh` refuses the repo).
 
 **Worked example.** Benjis-Plants/benjis-quoting-tool#216's spec said "#216-B tracks dropping `pricing_users`" and filed nothing; #229 was hand-written two days later and reached JP as a decision request. Under this rule the PM stage of #216 files #229 itself:
 

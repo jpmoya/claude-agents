@@ -10,7 +10,7 @@
 #   AC6  OPEN + milestone ^vN.N.N$ == CLOSED (.release, completed[].release); other titles do nothing
 #   AC7  one `issue view` per in-scope ticket (with milestone in --json); throttle covers the list calls
 #   AC8  building the payload makes no gh call
-#   AC9  orchestrate.sh relaunch cleanup removes orch-<n>.release
+#   AC9  launcher.sh relaunch cleanup removes orch-<n>.release
 #   (AC10 regression gates = the existing suites staying green, golden untouched; AC12 is a delivery
 #    obligation. AC3's "both arrays are part of the change hash" is not separately tested: hash_payload
 #    hashes the whole payload minus sent_at / supervisor_last_tick.)
@@ -522,7 +522,7 @@ test_sg_ac8_print_makes_no_gh_call() {
 # =================================================================================================
 
 test_sg_ac9_relaunch_cleanup_line_lists_release() {
-  local line; line=$(grep -n 'rm -f "\$PIPE/orch-\$RK"' "$RS_SG/orchestrate.sh" | head -n1)
+  local line; line=$(grep -n 'rm -f "\$PIPE/orch-\$RK"' "$RS_SG/launcher.sh" | head -n1)
   assert_contains "$line" "release" "AC9: the relaunch rm -f brace list contains release" || return 1
 }
 
@@ -532,7 +532,7 @@ test_sg_ac9_relaunch_removes_release_file() {
   mk_held "$SG_PIPE" 801 "$SG_REPO"
   echo "v1.3.0" > "$(rkp "$SG_PIPE/orch-801.release")"
   local before; before=$(sg_present "$(rkp "$SG_PIPE/orch-801.release")")
-  sg_run "$RS_SG/orchestrate.sh" "$SG_REPO" 801
+  sg_run "$RS_SG/launcher.sh" "$SG_REPO" 801
   local launch=$SG_OUT
   local after; after=$(sg_present "$(rkp "$SG_PIPE/orch-801.release")")
   sg_cleanup
