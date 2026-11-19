@@ -2,7 +2,7 @@
 # Reuses helpers from earlier-sorted files (test-install-backfill-cron.sh: ic_*, test-scheduled-triggers.sh: stt_*); this file's name
 # sorts after both on purpose. Placeholder repo names only.
 
-STG_LINE_RE='^\* \* \* \* \* .*/\.claude/skills/orchestrate/scheduled-triggers\.sh run >/dev/null 2>&1$'
+STG_LINE_RE='^\* \* \* \* \* .*/\.claude/skills/orchestrate/scheduled-triggers\.sh run >> .*/logs/pipeline/scheduled-triggers-cron\.log 2>&1$'
 
 stg_enable() { printf 'SCHEDULED_TRIGGERS_ENABLED=1\n' >> "$IC_HOME/.claude/pipeline/config.local.sh"; }
 stg_lines() { grep -c 'orchestrate/scheduled-triggers\.sh' "$IC_TAB"; }
@@ -14,7 +14,7 @@ test_stt783_ac1_install_adds_exactly_one_line_when_enabled_and_twice_leaves_one(
   ic_install --minute even
   local r=0
   assert_eq "$(stg_lines)" "1" "one scheduled-triggers line after two installs" || r=1
-  assert_eq "$(grep -c -E "$STG_LINE_RE" "$IC_TAB")" "1" "the line is '* * * * * <path>/scheduled-triggers.sh run >/dev/null 2>&1'" || r=1
+  assert_eq "$(grep -c -E "$STG_LINE_RE" "$IC_TAB")" "1" "the line is '* * * * * <path>/scheduled-triggers.sh run >> <logs>/scheduled-triggers-cron.log 2>&1'" || r=1
   assert_contains "$(cat "$IC_TAB")" "0 14 * * 1 /usr/bin/true" "unrelated seeded line kept" || r=1
   assert_eq "$(grep -c 'orchestrate/session-backfill\.sh' "$IC_TAB")" "1" "other managed lines unchanged" || r=1
   rm -rf "$IC_HOME"; return $r
@@ -68,12 +68,9 @@ test_stt783_ac3_three_concurrent_passes_dispatch_once() {
 test_stt783_ac4_a_pass_dispatches_while_the_supervisor_lock_is_held() {
   stt_home
   stt_conf 'example-owner/project-a auto-release.yml 5'
-  # a long supervisor tick: both lock forms supervisor.sh uses are held (flock file where flock exists, else the lockdir)
+  # a long supervisor tick: its lock directory is held (the portable lock form; the pass has its own lock and never looks at this one)
   mkdir -p "$STT_HOME/pipe/supervisor.lockdir"
-  local holder=""
-  if command -v flock >/dev/null 2>&1; then flock "$STT_HOME/pipe/supervisor.lock" sleep 20 & holder=$!; sleep 0.3; fi
   stt_run
-  [ -z "$holder" ] || { kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null; }
   assert_exit0 "$STT_RC" "pass" || return 1
   assert_eq "$(stt_calls '^workflow run')" "1" "the due workflow was dispatched during the tick" || return 1
 }

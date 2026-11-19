@@ -66,8 +66,8 @@ SCN="0 * * * * $CL/skills/orchestrate/scan-backlog.sh >> $LOGS/scan.log 2>&1"
 BKF="23 13 * * * $CL/skills/orchestrate/session-backfill.sh >> $LOGS/session-backfill.log 2>&1"
 ROT="41 13 * * * $CL/skills/orchestrate/rotate-logs.sh >> $LOGS/rotate-logs.log 2>&1"
 # #783: scheduled triggers get their own 1-minute job (a supervisor tick takes 6-60 min), only where config.local.sh enables them (the VM).
-# The script logs to ~/logs/pipeline/scheduled-triggers.log itself and alerts on its own failures, so cron output is discarded.
-STG="* * * * * $CL/skills/orchestrate/scheduled-triggers.sh run >/dev/null 2>&1"
+# The script logs dispatches to ~/logs/pipeline/scheduled-triggers.log and alerts on its own failures; the cron log only catches unexpected stderr (it stays empty).
+STG="* * * * * $CL/skills/orchestrate/scheduled-triggers.sh run >> $LOGS/scheduled-triggers-cron.log 2>&1"
 STG_ON=0; grep -q -E '^[[:space:]]*(export[[:space:]]+)?SCHEDULED_TRIGGERS_ENABLED=1([[:space:]]|$)' "$PIPE_CFG/config.local.sh" 2>/dev/null && STG_ON=1
 cur=$(crontab -l 2>/dev/null || true)
 new=$(printf '%s\n' "$cur" | grep -v -E 'orchestrate/supervisor\.sh|scan-backlog\.sh|pipeline/dispatch\.sh|orchestrate/session-backfill\.sh|orchestrate/rotate-logs\.sh|orchestrate/scheduled-triggers\.sh')
