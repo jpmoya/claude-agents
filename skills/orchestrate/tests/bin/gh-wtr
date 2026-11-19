@@ -1,0 +1,10 @@
+#!/bin/bash
+# Fake `gh api <path>` for test-where-things-run.sh. Serves $WTR_FIX/<path with / as _, query string dropped>.json;
+# a path with no fixture file fails like a rate-limited or under-scoped call (exit 1, message on stderr).
+# Every argv is appended to $WTR_FIX/calls.log so a test can prove the script only reads.
+printf '%s\n' "$*" >> "${WTR_FIX:?}/calls.log"
+[ "$1" = "api" ] || { echo "fake gh: unexpected invocation: $*" >&2; exit 1; }
+name=$(printf '%s' "$2" | sed -e 's/?.*//' -e 's#/#_#g')
+if [ -f "$WTR_FIX/$name.json" ]; then cat "$WTR_FIX/$name.json"; exit 0; fi
+echo "gh: HTTP 403: API rate limit exceeded (fake)" >&2
+exit 1

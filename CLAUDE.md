@@ -61,6 +61,8 @@ This is specifically about repeated/polling status checks. Raw `gh`/`gh api` cal
 
 **Caveat:** `ccd_pr` is an MCP tool family available only inside an interactive Claude Code session. The headless pipeline scripts (`supervisor.sh`, `orchestrate.sh`, and anything launched via `claude --agent <x> -p`) have no such tool and must still poll with `gh`/`gh api` — but sparingly (#637): check local state (a PID, a run file, the marker already on disk) first, and read GitHub itself at most every ~2 min, never on every short liveness tick.
 
+**Where a job runs (JP, 2026-11-19).** The app repos' CI jobs EXECUTE on our self-hosted runners; GitHub Actions only TRIGGERS and orchestrates them. Before stating where a job runs, run `~/.claude/skills/orchestrate/where-things-run.sh` (live variables and runners); never infer it from workflow YAML or comments (`ubuntu-latest` fallbacks and "GitHub-hosted" comments describe unset variables, not what runs). Map and proof commands: claude-agents `docs/where-things-run.md`.
+
 ## Google integrations
 
 Three accounts. Never mix them up, especially for email:
