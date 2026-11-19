@@ -103,12 +103,12 @@ test_tt_ac2_slow_sweep_does_not_delay_the_tick_or_goal_sync() {
 test_tt_ac3_second_sweep_launch_is_refused_while_one_runs() {
   gs_env
   tt_worktree
-  tt_slow_gh 4
+  tt_slow_gh 40   # far longer than two sandbox ticks, so the first sweep is certainly still running at the second
   gs_tick
   rm -f "$GS_PIPE/worktree-sweep.last"   # make the 30-minute gate due again while the first sweep still holds its lock
   gs_tick
   local log; log=$(gs_log)
-  tt_wait_log "[worktree-sweep] background pass finished" 15
+  kill "$(cat "$GS_PIPE/worktree-sweep.lockdir/pid" 2>/dev/null)" 2>/dev/null
   gs_cleanup
   assert_contains "$log" "previous sweep still running" "AC3: second sweep refused while the first runs" || return 1
 }
