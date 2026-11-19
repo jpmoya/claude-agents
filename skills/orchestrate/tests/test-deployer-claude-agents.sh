@@ -52,7 +52,7 @@ test_dca_ac2_hard_limit_scoped_to_two_repos() {
   # Negative: the unscoped sentence must be gone.
   assert_not_contains "$h" "Never merge to \`main\`, never push to \`main\`, never \`vercel deploy\`" "Hard limits (unscoped wording)" || return 1
   # The "never merge to main" wording must remain but name the scoped repos.
-  assert_contains "$h" "scheduler" "Hard limits" || return 1
+  assert_contains "$h" "ops tool" "Hard limits" || return 1
   assert_contains "$h" "sales tool" "Hard limits" || return 1
   assert_contains "$h" "claude-agents" "Hard limits (explicit carve-out for claude-agents)" || return 1
 }
