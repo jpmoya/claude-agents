@@ -40,8 +40,10 @@ repo_dir_current() {
 # (run keys of runs already on disk are built from it).
 repo_slug() {
   local u slug dir base
-  dir=$(repo_dir_current "$1")
-  if [ -n "$1" ] && [ ! -d "$dir" ]; then   # an empty path keeps its old meaning (git -C "" = the current directory)
+  dir=$1
+  # the `type` guards keep a harness that extracts repo_slug alone (tests eval single functions) on the old behaviour
+  ! type repo_dir_current >/dev/null 2>&1 || dir=$(repo_dir_current "$1")
+  if [ -n "$1" ] && [ ! -d "$dir" ] && type repo_alias_new >/dev/null 2>&1; then   # an empty path keeps its old meaning (git -C "" = the current directory)
     base=${dir%/}; base=${base##*/}
     printf '%s' "$(repo_alias_new "$base")"; return 0
   fi
