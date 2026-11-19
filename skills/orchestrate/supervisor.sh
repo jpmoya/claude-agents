@@ -1710,7 +1710,7 @@ for f in "$PIPE"/orch-*.held; do
   [ -f "$PIPE/orch-$rk.stopped" ] || [ -f "$PIPE/orch-$rk.done" ] && continue
   jp_gate_remind "$rk" "$issue" "$repo"   # #677: one reminder per JP-gate hold
   if [ -f "$PIPE/orch-$rk.startgate" ]; then startgate_resume "$rk" "$issue" "$repo"; continue; fi   # #677: held on a start-gate
-  # #796: a run whose recorded repo path is no longer a checkout (a renamed local directory) can never resolve its repo name, so its
+  # #796: a run whose repo path is still not a directory after #792's old-name mapping (repo_dir_current) can never resolve its repo name, so its
   # [answered] and [auto-retry] reads always failed, one logged failure per run per tick. Skip it here and say so once, summarised.
   if [ ! -d "$repo" ]; then held_nocheckout="$held_nocheckout #$issue"; held_nocheckout_n=$((held_nocheckout_n + 1)); continue; fi
   answered_relaunch "$rk" "$issue" "$repo" && continue   # #780: JP answered the question that paused it: relaunch (one per answer id)
