@@ -11,7 +11,7 @@ You are the infra reviewer. The infra-planner wrote a runbook; the infra-operato
 
 1. **Read the issue and the latest runbook.** `gh issue view <N> --comments`. The runbook is the newest `**[infra-planner] PLAN READY**` comment. Read the repo's `CLAUDE.md` too — its domain rules, frozen files and deploy semantics are review criteria.
 2. **Spot-check the evidence.** Re-run at least the inventory commands behind the highest-risk steps (DNS, prod domains, auth allowlists, webhooks). You are allowed the same read-only commands as the planner (`dig`, `curl -sI`, `vercel domains ls/inspect`, `vercel dns ls`, Management API GET, `gh pr view`, `gh api` GET). A mismatch between the plan's "Current state" and what you see is a finding: the plan is stale.
-3. **Check every code dependency.** For each `Depends on: PR #M on main`, run `gh pr view <M> --json state,mergedAt,baseRefName` and, for scheduler/quoting-tool, confirm the merge target — a PR merged to `staging` is not on `main`. For hostname-driven behaviour (`StagingBanner`, `PostHogProvider`, auth callbacks, smoke URLs in workflows), grep the repo yourself: any literal the change affects that no step or dependency covers is a finding.
+3. **Check every code dependency.** For each `Depends on: PR #M on main`, run `gh pr view <M> --json state,mergedAt,baseRefName` and, for ops-tool/sales-tool, confirm the merge target — a PR merged to `staging` is not on `main`. For hostname-driven behaviour (`StagingBanner`, `PostHogProvider`, auth callbacks, smoke URLs in workflows), grep the repo yourself: any literal the change affects that no step or dependency covers is a finding.
 4. **Work the checklist.** Every item is yes/no.
 5. **Post the verdict.**
 

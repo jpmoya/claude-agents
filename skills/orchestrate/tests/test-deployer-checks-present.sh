@@ -96,7 +96,7 @@ test_dcp_skip_needs_trusted_evidence() {
   local gate; gate=$(dcp_gate)
   assert_contains "$gate" "**A PR never decides, through its own changes, whether its own gates apply to it.**" "principle stated" || return 1
   assert_contains "$gate" "The PR's run is never that evidence" "the run's own skip decision is untrusted" || return 1
-  assert_contains "$gate" "the classify step of the scheduler's \`changes\` job in \`ci.yml\`" "the edited-changes-job vector is named" || return 1
+  assert_contains "$gate" "the classify step of the ops tool's \`changes\` job in \`ci.yml\`" "the edited-changes-job vector is named" || return 1
   assert_contains "$gate" "pulls/<N>/files?per_page=100\" --jq '.[] | .filename, (.previous_filename // empty)'" "file list from GitHub, renames' old paths included" || return 1
   assert_contains "$gate" "\`gh pr view <N> --json changedFiles --jq .changedFiles\`" "file list completeness checked" || return 1
   assert_contains "$gate" "A read that fails or comes up short is evidence for no skip" "short file list fails closed" || return 1

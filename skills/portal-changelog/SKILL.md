@@ -1,6 +1,6 @@
 ---
 name: portal-changelog
-description: Post a user-facing changelog to Slack for the quoting portal or ops portal (scheduler). Use when JP asks to announce changes, post an update, or share what shipped in either portal's Slack channel.
+description: Post a user-facing changelog to Slack for the quoting portal or ops portal (ops tool). Use when JP asks to announce changes, post an update, or share what shipped in either portal's Slack channel.
 ---
 
 # Portal Changelog
@@ -16,7 +16,7 @@ Post a plain-language summary of recently shipped changes to the portal's Slack 
 | Portal | Slack channel | channel_id | Repo | Version scheme |
 |---|---|---|---|---|
 | Sales portal (sales.benjis.com) | #quoting_portal | `C0BFS1X1Z3N` | `~/dev/benjis-sales-tool` | `1.0.<commit count>` — `git rev-list --count origin/main`. Matches the sidebar footer. |
-| Ops portal (ops.benjis.com) | #ops_portal | `C0AHAU7GAR4` | `~/dev/scheduler` | `version` field in `package.json` on main. |
+| Ops portal (ops.benjis.com) | #ops_portal | `C0AHAU7GAR4` | `~/dev/benjis-ops-tool` | `version` field in `package.json` on main. |
 
 Post with `mcp__plugin_slack_slack__slack_send_message` to the channel_id. Do NOT DM Kyle separately — the channel replaces the old DM updates. Members post bugs/questions in these channels too; only respond to those if JP asks.
 
@@ -32,7 +32,7 @@ Post with `mcp__plugin_slack_slack__slack_send_message` to the channel_id. Do NO
    - Plain language for non-technical readers: say what the user sees or what changed for them — never file names, PR numbers, or jargon like "metadata"/"refactor". Say "quotes will come out higher" not "default parameter changed".
    - If a pricing change alters quote outputs, say so explicitly — that's the thing users most need to know.
    - Close with: `Questions or anything that looks off — post here or ping JP.`
-5. **Ops portal (scheduler) only: verify docs are updated.** Before posting,
+5. **Ops portal (ops tool) only: verify docs are updated.** Before posting,
    check whether the change was user-facing; if so, verify the same PR
    updated the matching `docs/user-guide/` page. If it didn't, flag it to JP
    instead of silently posting the changelog.

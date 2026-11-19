@@ -52,8 +52,8 @@ test_dca_ac2_hard_limit_scoped_to_two_repos() {
   # Negative: the unscoped sentence must be gone.
   assert_not_contains "$h" "Never merge to \`main\`, never push to \`main\`, never \`vercel deploy\`" "Hard limits (unscoped wording)" || return 1
   # The "never merge to main" wording must remain but name the scoped repos.
-  assert_contains "$h" "scheduler" "Hard limits" || return 1
-  assert_contains "$h" "quoting tool" "Hard limits" || return 1
+  assert_contains "$h" "ops tool" "Hard limits" || return 1
+  assert_contains "$h" "sales tool" "Hard limits" || return 1
   assert_contains "$h" "claude-agents" "Hard limits (explicit carve-out for claude-agents)" || return 1
 }
 
@@ -97,7 +97,7 @@ test_dca_ac5_orchestrator_deployed_row_mentions_claude_agents() {
   assert_contains "$row" "claude-agents" "orchestrator DEPLOYED row" || return 1
   assert_contains "$row" "merged to \`main\`" "orchestrator DEPLOYED row" || return 1
   # Production-promotion text must stay scoped to the two staging repos.
-  assert_contains "$row" "scheduler and the quoting tool" "orchestrator DEPLOYED row" || return 1
+  assert_contains "$row" "ops tool and the sales tool" "orchestrator DEPLOYED row" || return 1
 }
 
 test_dca_ac5_orchestrator_has_no_mergeable_word() {

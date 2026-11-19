@@ -17,7 +17,7 @@ The orchestrator must outlive this session. Subagents don't: they run inside the
 ~/.claude/skills/orchestrate/orchestrate.sh <repo-path> <issue> [extra instructions]
 ```
 
-- `<repo-path>`: the repo's main checkout (e.g. `~/dev/scheduler`, or `~/scheduler` on Clog). The script resolves `owner/repo` with `gh`.
+- `<repo-path>`: the repo's main checkout (e.g. `~/dev/benjis-ops-tool`, or `~/benjis-ops-tool` on Clog). The script resolves `owner/repo` with `gh`.
 - Extra instructions are appended to the orchestrator's prompt verbatim — use them for context it can't read from the issue (e.g. "config blocker resolved, retry from test-writer").
 - One orchestrator per issue; the script refuses to launch a second while the first is alive.
 - Max 3 concurrent orchestrators (VM has 3.7GB RAM, 1200MB memory floor). If all slots are full or memory is low, the launch is queued automatically and the supervisor launches it when capacity is available. `status` shows both running and queued.
@@ -37,8 +37,8 @@ The orchestrator must outlive this session. Subagents don't: they run inside the
 
 Config: shared defaults in `skills/orchestrate/config.sh` (labels, caps, backoff). Per machine, untracked, `~/.claude/pipeline/config.local.sh` holds the repo lists.
 
-- **Dispatch eligibility** is per machine: `DISPATCH_REPOS=("owner/repo:/local/checkout" …)` lists the repos whose `agent-go` issues this machine's supervisor may launch — VM: casa-verde-site, rfp-finder, scheduler; Mac: those plus quoting tool and Business-Intelligence. Empty list = that machine only runs what is launched on it by hand.
-- **Scan coverage** is separate and lives on the one `SCAN_BACKLOG=1` machine (the VM): the hourly `scan-backlog.sh` labels unlabelled open issues `agent-proposed` across that machine's `DISPATCH_REPOS` plus `SCAN_ONLY_REPOS=("owner/repo" …)`, each repo at most once. `SCAN_ONLY_REPOS` (default empty = scan exactly `DISPATCH_REPOS`) is read by the scan alone — the supervisor and the launcher never see it, so listing a repo there never makes a machine dispatch it. The quoting tool is scanned on the VM through `SCAN_ONLY_REPOS` and dispatched only from the Mac. Business-Intelligence is in neither the scan nor any automatic queue — it is on no list of the scanning machine, so nothing ever proposes it, and the Mac launches a Business-Intelligence issue only after JP himself adds `agent-go`.
+- **Dispatch eligibility** is per machine: `DISPATCH_REPOS=("owner/repo:/local/checkout" …)` lists the repos whose `agent-go` issues this machine's supervisor may launch — VM: casa-verde-site, rfp-finder, ops tool; Mac: those plus sales tool and Business-Intelligence. Empty list = that machine only runs what is launched on it by hand.
+- **Scan coverage** is separate and lives on the one `SCAN_BACKLOG=1` machine (the VM): the hourly `scan-backlog.sh` labels unlabelled open issues `agent-proposed` across that machine's `DISPATCH_REPOS` plus `SCAN_ONLY_REPOS=("owner/repo" …)`, each repo at most once. `SCAN_ONLY_REPOS` (default empty = scan exactly `DISPATCH_REPOS`) is read by the scan alone — the supervisor and the launcher never see it, so listing a repo there never makes a machine dispatch it. The sales tool is scanned on the VM through `SCAN_ONLY_REPOS` and dispatched only from the Mac. Business-Intelligence is in neither the scan nor any automatic queue — it is on no list of the scanning machine, so nothing ever proposes it, and the Mac launches a Business-Intelligence issue only after JP himself adds `agent-go`.
 
 Label rule: `agent-go` = "approved, not launched anywhere yet"; launching anywhere swaps it for `agent-in-progress`; the supervisor removes `agent-in-progress` when the run is done or parked. To run a parked issue again, relaunch by hand or re-add `agent-go`.
 

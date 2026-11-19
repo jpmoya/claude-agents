@@ -766,7 +766,7 @@ _goal_closed_eval() {
 # passes them); only a
 # caller without a row (goal_ticket_state) pays one REST issue read. Exit 1 when a read fails (a failed read is never "delivered").
 #
-# A deployer merge to `staging` is not delivery (scheduler / quoting tool: production ships later, by the release bot or JP's
+# A deployer merge to `staging` is not delivery (ops tool / sales tool: production ships later, by the release bot or JP's
 # promotion). The deployer writes `**[deployer] DEPLOYED**` for an ordinary staging merge ("- PR #N merged to staging", last
 # line "Production deploy pending ..." or "Route: direct ...") and `DEPLOYED TO STAGING` only in post-merge mode, so the body,
 # not the first line, says where it landed. Such a ticket stays open until the release ships it (close-shipped-issues.sh) and
