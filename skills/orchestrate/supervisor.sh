@@ -62,9 +62,22 @@ tick_soft_over() {
 # Hard budget: a background watcher (own copy of this function, fd 9 closed by the caller) signals the tick with USR1 once it is
 # TICK_HARD_SECS old; _tick_hard_stop logs and exits 0 so the EXIT handler releases the lock. Bash runs the handler between
 # commands, so a hung foreground command is ended by the watcher (see below) for the handler to run.
-_tick_kill_tree() {  # <pid> — TERM the process and everything below it
-  local k; for k in $(pgrep -P "$1" 2>/dev/null); do _tick_kill_tree "$k"; done
-  kill -TERM "$1" 2>/dev/null
+_tick_descendants() {  # <pid> <skip pid> <skip pid> — every process below <pid>, except the two skipped ones and what runs under them
+  local k
+  for k in $(pgrep -P "$1" 2>/dev/null); do
+    { [ "$k" = "$2" ] || [ "$k" = "$3" ]; } && continue
+    printf '%s\n' "$k"; _tick_descendants "$k" "$2" "$3"
+  done
+}
+# Only the tick's own short-lived foreground tools are ever ended by the hard stop: gh, git, curl, jq, python3, sleep (and the test stubs'
+# `nap`), found by argv[0] or, for a script run through its interpreter, argv[1]. Agent and orchestrator runs (claude, bash -c wrappers, caffeinate)
+# are never on the list, and are launched detached anyway.
+_tick_is_hung_tool() {  # <pid>
+  local c; c=$(ps -o command= -p "$1" 2>/dev/null) || return 1
+  set -- $c
+  case "${1##*/}" in gh|git|curl|jq|python3|sleep|nap) return 0 ;; esac
+  case "${1##*/}" in bash|sh|env|zsh) case "${2##*/}" in gh|git|curl|jq|nap) return 0 ;; esac ;; esac
+  return 1
 }
 tick_hard_watchdog() {  # <tick pid>
   trap - EXIT USR1
@@ -74,15 +87,14 @@ tick_hard_watchdog() {  # <tick pid>
       slog "[tick-watchdog] hard budget ${TICK_HARD_SECS}s passed: stopping tick pid=$pid"
       kill -USR1 "$pid" 2>/dev/null
       # bash runs the USR1 handler only between commands: a foreground command that is hung (a gh call) must be ended for the handler to run.
-      # Direct children of the tick only: launches are double-forked, so a started orchestrator is not touched. The background worktree
-      # sweep is also a direct child but has its own lock and time budget, so its pid (recorded in its lock dir) is skipped.
+      # Only the tick's own hung tool processes are ended (allow-list below); agent runs are never on it and are launched detached. The
+      # background worktree sweep has its own lock and time budget, so its pid (recorded in its lock dir) and what runs under it are skipped.
       sleep 3
       if kill -0 "$pid" 2>/dev/null; then
         local sweep c me; sweep=$(cat "$PIPE/worktree-sweep.lockdir/pid" 2>/dev/null); me=$(sh -c 'echo $PPID')   # me = this watcher (no $BASHPID on bash 3.2)
-        # whole subtrees (a hung gh under a command-substitution subshell would otherwise outlive it and keep holding the tick lock fd)
-        for c in $(pgrep -P "$pid" 2>/dev/null); do
-          [ "$c" = "$sweep" ] || [ "$c" = "$me" ] || { _tick_kill_tree "$c"; }
-        done
+        # the tick's hung tool processes (see _tick_is_hung_tool), at any depth under it: the command-substitution subshell around a hung gh
+        # then returns, and the tick can run its stop handler. The leaf must die too, or it would keep the lock fd open.
+        for c in $(_tick_descendants "$pid" "$sweep" "$me"); do _tick_is_hung_tool "$c" && kill -TERM "$c" 2>/dev/null; done
       fi
       return 0
     fi
@@ -822,14 +834,15 @@ do_launch() {  # <repo> <issue> <extra> <restart_n> <reason> <queue_wait_s> <run
   printf '\n===== [%s] LAUNCH issue=%s reason=%s restart=%s =====\n' "$(date -u +%FT%TZ)" "$issue" "$reason" "$restart_n" >> "$PIPE/orch-$rk.log"
   rm -f "$PIPE/orch-$rk.exit"   # a killed run never writes it; a stale value would be reported as this run's (#38)
   cd "$repo"
-  CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 nohup $SETSID bash -c '
+  # Double-forked (like the intake and spec launches): the run is not a child of the tick, so nothing that stops the tick (the #796 hard
+  # stop, a kill of the tick's process group) can reach it. The subshell records the run's pid.
+  ( CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 nohup $SETSID bash -c '
     echo 300 > /proc/self/oom_score_adj 2>/dev/null
     claude --dangerously-skip-permissions --agent orchestrator -p "$1"
     echo $? > "$2"
-  ' _ "$prompt" "$PIPE/orch-$rk.exit" >> "$PIPE/orch-$rk.log" 2>&1 9>&- &
+  ' _ "$prompt" "$PIPE/orch-$rk.exit" >> "$PIPE/orch-$rk.log" 2>&1 9>&- & echo $! > "$PIPE/orch-$rk.pid" ) 9>&-
 
   pid_reserve_done
-  echo $! > "$PIPE/orch-$rk.pid"
   echo "$repo" > "$PIPE/orch-$rk.repo"
   [ -f "$PIPE/orch-$rk.start" ] || date -u +%FT%TZ > "$PIPE/orch-$rk.start"
   date -u +%FT%TZ > "$PIPE/orch-$rk.launched-at"
@@ -838,7 +851,7 @@ do_launch() {  # <repo> <issue> <extra> <restart_n> <reason> <queue_wait_s> <run
   case "$reason" in auto-restart) ev_reason=auto-restart ;; queued) ev_reason=queue ;; esac
   log_run_launch "$owner_repo" "$issue" "$ev_reason" "$restart_n" "$queue_wait_s" "$rk"
 
-  slog "[launch] #$issue pid=$! reason=$reason restart=$restart_n mem=$(mem_available_mb)MB running=$(count_running)/$MAX_CONCURRENT"
+  slog "[launch] #$issue pid=$(cat "$PIPE/orch-$rk.pid" 2>/dev/null) reason=$reason restart=$restart_n mem=$(mem_available_mb)MB running=$(count_running)/$MAX_CONCURRENT"
 }
 
 file_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
@@ -1061,10 +1074,10 @@ EOF_GOALS
   fi
   return 0
 }
-# #796: a failed issue read for a held run is remembered (orch-<rk>.read-fail) so neither the answered check nor the auto-retry check
-# repeats the failing call for HELD_READ_FAIL_TTL_SECS (default 5 min).
-held_read_recent_fail() {  # <rk> — 0 while the last failed read of this run is younger than the TTL
-  local t; t=$(file_mtime "$PIPE/orch-$1.read-fail")
+# #796: a failed issue read for a held run is remembered (orch-<rk>.read-fail-<check>) so neither the answered check nor the auto-retry check
+# repeats its failing call for HELD_READ_FAIL_TTL_SECS (default 5 min).
+held_read_recent_fail() {  # <rk> <check: answered|auto-retry> — 0 while this check's last failed read of the run is younger than the TTL
+  local t; t=$(file_mtime "$PIPE/orch-$1.read-fail-$2")
   [ -n "$t" ] && [ $(( $(date +%s) - t )) -lt "${HELD_READ_FAIL_TTL_SECS:-300}" ]
 }
 # answered_relaunch <rk> <issue> <repo dir> — 0 when the run was relaunched this call (the caller skips the auto-retry path), else 1.
@@ -1082,9 +1095,9 @@ answered_relaunch() {
     [ -z "$last" ] || [ $(( now - last )) -ge "$ANSWERED_CHECK_SECS" ] || return 1
     touch "$PIPE/orch-$rk.answer-check" 2>/dev/null || true
   fi
-  held_read_recent_fail "$rk" && return 1
+  held_read_recent_fail "$rk" answered && return 1
   info=$(issue_info_rest "$repo" "$issue") || {
-    touch "$PIPE/orch-$rk.read-fail" 2>/dev/null || true
+    touch "$PIPE/orch-$rk.read-fail-answered" 2>/dev/null || true
     slog "[answered] ${slug:-$repo}#$issue — issue read failed: ${info:-no error text}; $(sw_tags supervisor/answered)"
     autoretry_alert "$issue" "issue read" answered; return 1; }
   [ "$(printf '%s' "$info" | jq -r '.state // empty' 2>/dev/null)" = "OPEN" ] || return 1
@@ -1714,7 +1727,7 @@ for f in "$PIPE"/orch-*.held; do
   # [answered] and [auto-retry] reads always failed, one logged failure per run per tick. Skip it here and say so once, summarised.
   if [ ! -d "$repo" ]; then held_nocheckout="$held_nocheckout #$issue"; held_nocheckout_n=$((held_nocheckout_n + 1)); continue; fi
   answered_relaunch "$rk" "$issue" "$repo" && continue   # #780: JP answered the question that paused it: relaunch (one per answer id)
-  held_read_recent_fail "$rk" && continue   # #796: a read of this run failed a moment ago (answered check above): no second failing call, and the 30-min throttle stamp below is not spent
+  held_read_recent_fail "$rk" auto-retry && continue   # #796: this check's read of the run failed a moment ago: no repeat call
   n=$(tr -dc '0-9' 2>/dev/null < "$PIPE/orch-$rk.autoretry"); n=${n:-0}
   is_lc=0; held_by_loopcap "$rk" "$issue" && is_lc=1
   [ "$n" -lt "$AUTORETRY_MAX" ] || [ "$is_lc" -eq 1 ] || continue
@@ -1734,7 +1747,7 @@ for f in "$PIPE"/orch-*.held; do
   if [ -s "$PIPE/orch-$rk.alert" ] && grep -q 'finished red (real failure)' "$PIPE/orch-$rk.alert" 2>/dev/null; then continue; fi
 
   info=$(issue_info_rest "$repo" "$issue") \
-    || { touch "$PIPE/orch-$rk.read-fail" 2>/dev/null || true; slog "[auto-retry] #$issue — issue read failed: ${info:-no error text}"; autoretry_alert "$issue" "issue read"; continue; }
+    || { touch "$PIPE/orch-$rk.read-fail-auto-retry" 2>/dev/null || true; slog "[auto-retry] #$issue — issue read failed: ${info:-no error text}"; autoretry_alert "$issue" "issue read"; continue; }
   [ "$(printf '%s' "$info" | jq -r '.state // empty')" = "OPEN" ] || continue
   if [ "$is_lc" -eq 1 ]; then
     # Resume only on a delegated decision ([delivery-lead] DECISION / JP CONFIRMED, legacy [project-manager] spelling) with a higher

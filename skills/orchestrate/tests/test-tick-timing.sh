@@ -172,13 +172,14 @@ test_tt_ac4_soft_budget_skips_optional_late_stages_and_logs_them() {
 }
 
 # tt_hang_gh <bash case pattern over "$*"> — fake gh whose matching calls nap 60 s (a hung GitHub call); other calls pass through.
-# Optional second argument: a directory that must exist for the hang to apply (e.g. the sweep's lock dir).
+# Optional second argument: a path (glob allowed) that must exist for the hang to apply (e.g. the sweep's lock dir, or the fake claude's call dir).
 tt_hang_gh() {
   tt_nap
   mv "$GS_BIN/gh" "$GS_BIN/gh.real"
   cat > "$GS_BIN/gh" <<EOF
 #!/bin/bash
-case "\$*" in $1) [ -z "${2:-}" ] || [ -d "${2:-}" ] && "\$(dirname "\$0")/nap" 60 ;; esac
+case "\$*" in "api repos/{owner}/{repo}"*) echo example-owner/project-a; exit 0 ;; esac   # the checkout-relative repo name lookup the fake gh does not know
+case "\$*" in $1) [ -z "${2:-}" ] || ls -d ${2:-} >/dev/null 2>&1 && "\$(dirname "\$0")/nap" 60 ;; esac
 case "\$*" in "pr list --head "*) [ -n "${2:-}" ] && "\$(dirname "\$0")/nap" 60 ;; esac
 exec "\$(dirname "\$0")/gh.real" "\$@"
 EOF
@@ -223,6 +224,32 @@ test_tt_ac4_hard_stop_leaves_the_background_sweep_running() {
   assert_contains "$log" "[tick-watchdog] hard budget 6s passed" "AC4: the hard stop fired" || return 1
   [ -n "$spid" ] || { fail "AC4: no sweep pid recorded"; return 1; }
   assert_eq "$alive" "yes" "AC4: the background sweep survived the hard stop" || return 1
+}
+
+# A launched orchestrator run survives the hard stop while the tick's hung gh is ended: the queued run is launched by the drain (step 2, fake claude
+# that stays alive), every `gh api` after that point hangs, the hard stop fires at 6 s. Only the tick's own hung tool is killed.
+test_tt_ac4_hard_stop_kills_the_hung_gh_but_not_a_launched_run() {
+  gs_env
+  gs_issue 77 open
+  gs_comment 77 $'**[product-manager] READY FOR ENGINEERING**\nLane: fast'
+  mkdir -p "$GS_PIPE/queue"
+  python3 -c "import json,sys; json.dump({'issue':'77','repo':sys.argv[1],'extra':'','reason':'queued','queued_at':'2026-01-01T00:00:00Z','not_before':0}, open(sys.argv[2],'w'))" \
+    "$GS_CK_A" "$GS_PIPE/queue/orch-example-owner_project-a-77.json"
+  tt_hang_gh '*' "$GS_BIN/claude-calls.*"
+  export TICK_HARD_SECS=6 TICK_BUDGET_SECS=0
+  local t0=$SECONDS
+  gs_tick
+  local took=$(( SECONDS - t0 ))
+  unset TICK_HARD_SECS TICK_BUDGET_SECS
+  local rpid; rpid=$(cat "$GS_PIPE/orch-example-owner_project-a-77.pid" 2>/dev/null)
+  local alive=no; [ -n "$rpid" ] && kill -0 "$rpid" 2>/dev/null && alive=yes
+  local calls; calls=$(gs_claude_count)
+  local log; log=$(gs_log)
+  tt_stop_naps; gs_cleanup
+  [ "$calls" -ge 1 ] || { fail "AC4: the queued run was never launched (no fake claude call); log: $(printf '%s' "$log" | tail -5 | tr '\n' ' ')"; return 1; }
+  assert_contains "$log" "[tick-watchdog] hard budget 6s passed" "AC4: the hard stop fired after the launch" || return 1
+  [ "$took" -lt 40 ] || { fail "AC4: the hung gh was not ended (${took}s)"; return 1; }
+  assert_eq "$alive" "yes" "AC4: the launched orchestrator run survived the hard stop" || return 1
 }
 
 # The goal-sync stamp is written after the sync: a tick stopped mid-sync (the registry read hangs) leaves it unwritten, so the next tick syncs again.
@@ -282,8 +309,8 @@ test_tt_ac5_failed_read_is_remembered_for_a_few_minutes() {
   gs_tick
   local n2; n2=$(gs_log | grep -c 'issue read failed')
   gs_cleanup
-  assert_eq "$n1" "1" "AC5: the first tick fails the read once (the answered check; auto-retry reuses the memory)" || return 1
-  assert_eq "$n2" "1" "AC5: the second tick makes no new failing read" || return 1
+  assert_eq "$n1" "2" "AC5: the first tick fails the read once per check (answered, auto-retry)" || return 1
+  assert_eq "$n2" "2" "AC5: the second tick makes no new failing read" || return 1
 }
 
 run_test test_tt_ac1_tick_logs_total_and_no_stage_line_for_fast_stages
@@ -295,6 +322,7 @@ run_test test_tt_ac3_sweep_stops_at_its_deadline
 run_test test_tt_ac4_soft_budget_skips_optional_late_stages_and_logs_them
 run_test test_tt_ac4_hard_budget_ends_a_tick_stuck_in_a_hung_gh_call
 run_test test_tt_ac4_hard_stop_leaves_the_background_sweep_running
+run_test test_tt_ac4_hard_stop_kills_the_hung_gh_but_not_a_launched_run
 run_test test_tt_ac2_goal_sync_stamp_is_written_after_the_sync_not_before
 run_test test_tt_ac2_goal_sync_is_written_before_a_hung_foreground_stage
 run_test test_tt_ac5_held_run_without_a_checkout_is_one_summary_line_not_a_failed_read
