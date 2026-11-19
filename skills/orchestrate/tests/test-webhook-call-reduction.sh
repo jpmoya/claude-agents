@@ -122,4 +122,19 @@ test_cr_the_counter_line_is_logged_per_supervisor_tick() {
   assert_contains "$(grep -n '\[gh-calls\] tick' "$sup")" "gh_tick_summary" "supervisor logs the per-tick summary" || return 1
 }
 
+test_cr_the_merge_conflict_retry_reads_mergeable_past_the_cache() {
+  cr_setup
+  cr_event 1 99
+  cr_tick 1 >/dev/null; cr_age_to 120                       # a trusted, cached `pr list` the plain read would reuse
+  local plain bypass
+  cr_proc 1 "cd '$CR/checkout'; webhook_tick_prepare; gh pr list --state open --json number,headRefName,mergeable >/dev/null"
+  plain=$(grep -c '^pr list --state open --json number,headRefName,mergeable' "$CR/calls.log")
+  cr_proc 1 "cd '$CR/checkout'; webhook_tick_prepare; GH_NOCACHE=1 gh pr list --state open --json number,headRefName,mergeable >/dev/null"
+  bypass=$(grep -c '^pr list --state open --json number,headRefName,mergeable' "$CR/calls.log")
+  cr_teardown
+  assert_eq "$plain" "1" "the plain read is served from the cache (only the tick-1 call exists)" || return 1
+  assert_eq "$bypass" "2" "GH_NOCACHE=1 reaches GitHub even while the repo is event-trusted" || return 1
+  assert_not_contains "$(grep 'gh pr list' "$CR_RS/supervisor.sh" | grep -v 'GH_NOCACHE=1' | grep -- '--limit 100')" "gh pr list" "every auto-retry pr list read in supervisor.sh bypasses the cache" || return 1
+}
+
 for t in $(declare -F | awk '{print $3}' | grep '^test_cr_'); do run_test "$t"; done

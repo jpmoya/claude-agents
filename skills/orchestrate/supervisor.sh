@@ -1436,20 +1436,20 @@ autoretry_cleared() {
         dstate=$(cd "$repo" && gh issue view "$dnum" ${drepo[@]+"${drepo[@]}"} --json state --jq .state 2>/dev/null </dev/null) \
           || { AR_ERR="dependency read $dep"; return 2; }
         case "$dstate" in CLOSED|MERGED) continue ;; esac
-        prs=$(cd "$repo" && gh pr list ${drepo[@]+"${drepo[@]}"} --state merged --limit 100 --json number,headRefName 2>/dev/null </dev/null) \
+        prs=$(cd "$repo" && GH_NOCACHE=1 gh pr list ${drepo[@]+"${drepo[@]}"} --state merged --limit 100 --json number,headRefName 2>/dev/null </dev/null) \
           || { AR_ERR="dependency pr list $dep"; return 2; }
         printf '%s' "$prs" | jq -e --arg p "issue-$dnum-" '[.[] | select(.headRefName | startswith($p))] | length > 0' >/dev/null 2>&1 || return 1
       done
       return 0 ;;
     ci_*|merge_conflict)
-      prs=$(cd "$repo" && gh pr list --state open --limit 100 --json number,headRefName,mergeable 2>/dev/null </dev/null) \
+      prs=$(cd "$repo" && GH_NOCACHE=1 gh pr list --state open --limit 100 --json number,headRefName,mergeable 2>/dev/null </dev/null) \
         || { AR_ERR="pr list"; return 2; }
       pr=$(printf '%s' "$prs" | jq -r --arg p "issue-$issue-" '[.[] | select(.headRefName | startswith($p))][0] // empty | "\(.number) \(.mergeable)"' 2>/dev/null) \
         || { AR_ERR="pr list parse"; return 2; }
       if [ -z "$pr" ] && [ "$cls" != merge_conflict ]; then
         # #439: a ci_* stop can come after the merge (deployer waiting on the staging deploy); the open-PR list is then
         # empty forever. A merged issue-N- PR means the cause is gone: relaunch (still capped by AUTORETRY_MAX).
-        prs=$(cd "$repo" && gh pr list --state merged --limit 100 --json number,headRefName 2>/dev/null </dev/null) \
+        prs=$(cd "$repo" && GH_NOCACHE=1 gh pr list --state merged --limit 100 --json number,headRefName 2>/dev/null </dev/null) \
           || { AR_ERR="pr list merged"; return 2; }
         printf '%s' "$prs" | jq -e --arg p "issue-$issue-" '[.[] | select(.headRefName | startswith($p))] | length > 0' >/dev/null 2>&1 && return 0
       fi
