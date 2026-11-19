@@ -2,8 +2,8 @@
 # Stateless supervisor tick — cron runs it every 2 min (VM even minutes, Mac odd minutes). One tick does, in order:
 #   0a. goal step (#195, moved first in #796): registry sync + goal keep-alive, right after the since-sync, before any slow stage
 #   0b. worktree sweep (time-gated to once per 30 min; a bounded background job since #796): remove merged, clean-enough ad hoc worktrees under DISPATCH_REPOS
-#   Timing and budget (#796): `[tick-timing] stage=<n> secs=<s>` for stages over 5 s and a total line; TICK_BUDGET_SECS (soft, skips optional
-#   late stages) and TICK_HARD_SECS (hard, stops the tick cleanly) in config.sh
+#   Timing and budget (#796): `[tick-timing] stage=<n> secs=<s>` for stages over 5 s and a total line; TICK_BUDGET_SECS (soft, skips only label
+#   reconcile and the stale digest) and TICK_HARD_SECS (hard, stops the tick cleanly) in config.sh
 #   1. restart exited non-terminal local orchestrators with backoff; 1b: requeue held runs whose machine-clearable cause
 #      (CI, merge conflict, dependency, start-gate #677) has cleared, remind JP once of a run waiting on him (#677)
 #   2. drain the local launch queue (up to DRAIN_MAX_PER_TICK launches, slots and memory re-checked before each)
