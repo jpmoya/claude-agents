@@ -801,12 +801,11 @@ export function validateBeatPayload(parsedBody) {
     if (triggers.length > 0) value.scheduled_triggers = triggers;
   }
 
-  // Optional (#773): {since: ISO-8601 Z} of the newest webhook event (or of when the feature was enabled), published only while the
-  // host's webhook queue is stale. Anything else -> no key.
-  if (isPlainObject(parsedBody.webhook_stale)) {
-    const since = sanitiseCronDate(parsedBody.webhook_stale.since);
-    if (since !== null) value.webhook_stale = { since };
-  }
+  // Optional (#782): the VM receiver's newest GitHub webhook event time (ISO-8601 Z), published by the VM host only while that feed is
+  // stale. Anything else -> no key. The older per-host `webhook_stale` ({since}, #773) is no longer stored: the Mac's own apply of events
+  // is not a webhook-health signal.
+  const lastEvent = sanitiseCronDate(parsedBody.webhook_last_event_at);
+  if (lastEvent !== null) value.webhook_last_event_at = lastEvent;
 
   // Optional (#781): absent or non-array -> no key. First MAX_SENTRY_CAP entries, then filtered; an item with nothing held is dropped.
   if (Array.isArray(parsedBody.sentry_cap)) {

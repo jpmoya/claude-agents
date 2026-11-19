@@ -41,6 +41,10 @@ export CI_QUEUE_COLLECT_ENABLED=0
 export CI_QUEUE_COLLECT_TEST_DISABLE=1
 # #769: scheduled-triggers.sh dispatches real GitHub workflows from the supervisor tick; no suite may fire it (test-scheduled-triggers.sh sets its own env).
 export SCHEDULED_TRIGGERS_ENABLED=0
+# #778: status-page-deploy.sh runs a real `wrangler deploy` from the supervisor tick; no suite may fire it (config.sh forces the flag to 0 whenever the
+# marker is set, so a host config.local.sh that enables it for real cannot win). test-status-page-deploy.sh removes the marker for its own calls.
+export STATUS_PAGE_DEPLOY_ENABLED=0
+export STATUS_PAGE_DEPLOY_TEST_DISABLE=1
 # #773: the webhook event queue (kill switch, default 0) must never be switched on by a host config.local.sh while the suites run
 # (it would read the host's real queue and skip since-syncs); test-webhook-events.sh sets it per call.
 export WEBHOOK_EVENTS_ENABLED=0

@@ -132,6 +132,10 @@ CI_QUEUE_METRICS_ENABLED=${CI_QUEUE_METRICS_ENABLED:-1}
 # override, same pattern as DIRECT_ROUTE_REPOS below.
 [ "${CI_QUEUE_COLLECT_TEST_DISABLE:-0}" != "1" ] || CI_QUEUE_COLLECT_ENABLED=0
 
+# #778: status-page-deploy.sh (wrangler deploy of status-page/ from the supervisor tick) is off by default and enabled on exactly one host in its
+# config.local.sh. Same structural guarantee for the suites: run-tests.sh exports STATUS_PAGE_DEPLOY_TEST_DISABLE=1 and no host config can win.
+[ "${STATUS_PAGE_DEPLOY_TEST_DISABLE:-0}" != "1" ] || STATUS_PAGE_DEPLOY_ENABLED=0
+
 # Direct-route repos (#632): the pipeline never runs them — orchestrate.sh refuses the launch (exit 2, no --force), the
 # supervisor and the goal machinery ignore their tickets. Set AFTER the host override so no config.local.sh can clear it.
 # Changed only by an interactive session with subagents — never orchestrate.sh, agent-go, a goal or the supervisor (#632).
@@ -227,5 +231,5 @@ WEBHOOK_OWNERS="${WEBHOOK_OWNERS:-Benjis-Plants}"                     # owners t
 WEBHOOK_STALE_MINUTES="${WEBHOOK_STALE_MINUTES:-30}"                  # status banner "no webhook received in N minutes" past this age
 WEBHOOK_TRUST_SECS="${WEBHOOK_TRUST_SECS:-600}"                        # other processes trust the event-applied cache while the supervisor's last apply is this fresh
 if [ -f "$(dirname "${BASH_SOURCE[0]}")/webhook-events.sh" ]; then . "$(dirname "${BASH_SOURCE[0]}")/webhook-events.sh"
-else webhook_tick_prepare() { :; }; webhook_stale_json() { :; }; WEBHOOK_EVENTS_ENABLED=0   # copied without its siblings (a test fixture): polling only
+else webhook_tick_prepare() { :; }; webhook_last_event_at_json() { :; }; WEBHOOK_EVENTS_ENABLED=0   # copied without its siblings (a test fixture): polling only
 fi

@@ -1,5 +1,5 @@
 # #773 — GitHub webhook receiver (webhook-receiver.py), event queue read path (webhook-events.sh), the gh_since_sync choke point
-# (gh-budget.sh), the kill switch (config.sh) and the stale-queue beat field (report-status.sh). Real receiver process on 127.0.0.1:<random>,
+# (gh-budget.sh), the kill switch (config.sh) and the stale-feed beat field (report-status.sh). Real receiver process on 127.0.0.1:<random>,
 # stub gh / fake Slack server; no GitHub, no network beyond loopback. Prefix wh_ / WH_. Placeholder repo names only; the secrets below are
 # fixtures, not credentials.
 #
@@ -9,7 +9,7 @@
 #   AC4  wh_ac4_*   shell metacharacters in a payload create nothing; static grep: no eval / shell=True / unquoted payload use
 #   AC5  wh_ac5_*   sequence, /events?since=, the Mac pull (cursor, bad token, reset queue)
 #   AC6  wh_ac6_*   supervisor read path: only touched objects re-read, fallback poll heals a dropped event
-#   AC7  wh_ac7_*   stale-queue beat field + status-page text lives in status-page/test/webhook-stale.test.js
+#   AC7  wh_ac7_*   VM receiver last-event beat field (#782) + status-page text lives in status-page/test/webhook-stale.test.js
 #   AC9  wh_ac9_*   kill switch default 0, off = no API-call or state difference
 #   AC12 wh_ac12_*  a receiver error and a pull error are captured with release / environment / route tags and no secrets
 
@@ -371,36 +371,67 @@ test_wh_ac9_example_config_documents_the_switch_and_secret_placeholders_are_empt
   assert_contains "$(grep -n 'WEBHOOK_EVENTS_ENABLED=' "$WH_RS/config.sh")" '${WEBHOOK_EVENTS_ENABLED:-0}' "AC9: default 0 in config.sh" || return 1
 }
 
-# ---- AC7 (host side) ------------------------------------------------------------------------------------------------------------
-test_wh_ac7_stale_json_only_when_enabled_and_the_newest_event_is_old() {
+# ---- AC7 (host side; #782: the VM receiver's last event time, never the Mac's own apply) -----------------------------------------
+# VM = WEBHOOK_RECEIVER_URL empty (it reads the receiver's own queue file); Mac = the URL is set (its queue is a mirror).
+WE_MAC_URL='https://hooks.example.invalid'
+test_wh_ac7_vm_publishes_the_receiver_last_event_time_only_while_stale() {
   we_setup; mkdir -p "$WE/pipe/webhook"
   local now old; now=$(date +%s); old=$((now - 31 * 60))
   printf '{"seq":1,"ts":%s,"delivery":"d-1","event":"issues","repo":"o/r","number":1}\n' "$old" > "$WE/pipe/webhook/events.jsonl"
   local stale fresh off empty_since
-  stale=$(we_tick 1 'webhook_stale_json')
+  stale=$(we_tick 1 'webhook_last_event_at_json')
   printf '{"seq":2,"ts":%s,"delivery":"d-2","event":"issues","repo":"o/r","number":1}\n' "$now" >> "$WE/pipe/webhook/events.jsonl"
-  fresh=$(we_tick 1 'webhook_stale_json')
+  fresh=$(we_tick 1 'webhook_last_event_at_json')
   rm "$WE/pipe/webhook/events.jsonl"; echo $((now - 40 * 60)) > "$WE/pipe/webhook/enabled-since"
-  empty_since=$(we_tick 1 'webhook_stale_json')
+  empty_since=$(we_tick 1 'webhook_last_event_at_json')
   printf '{"seq":1,"ts":%s,"delivery":"d-1","event":"issues","repo":"o/r","number":1}\n' "$old" > "$WE/pipe/webhook/events.jsonl"
-  off=$(we_tick 0 'webhook_stale_json')
+  off=$(we_tick 0 'webhook_last_event_at_json')
   we_teardown
-  assert_eq "$(printf '%s' "$stale" | jq -r '.since | fromdateiso8601')" "$old" "AC7: 31 minutes old -> since is the newest event's time" || return 1
+  assert_eq "$(printf '%s' "$stale" | jq -r 'fromdateiso8601')" "$old" "AC7: 31 minutes old -> the newest event's time, a JSON string" || return 1
   assert_eq "$fresh" "" "AC7: a fresh event -> nothing" || return 1
-  assert_eq "$(printf '%s' "$empty_since" | jq -r '.since | fromdateiso8601')" "$((now - 40 * 60))" "AC7: an empty queue is measured from the enable time" || return 1
+  assert_eq "$(printf '%s' "$empty_since" | jq -r 'fromdateiso8601')" "$((now - 40 * 60))" "AC7: an empty queue is measured from the enable time" || return 1
   assert_eq "$off" "" "AC7: kill switch off -> nothing" || return 1
 }
 
-test_wh_ac7_reporter_payload_carries_webhook_stale_only_while_stale() {
+test_wh_ac7_mac_publishes_nothing_even_when_its_mirror_is_old_or_empty() {
+  we_setup; mkdir -p "$WE/pipe/webhook"
+  local now old; now=$(date +%s); old=$((now - 90 * 60))
+  printf '{"seq":1,"ts":%s,"delivery":"d-1","event":"issues","repo":"o/r","number":1}\n' "$old" > "$WE/pipe/webhook/events.jsonl"
+  local old_mirror empty_mirror
+  old_mirror=$(WEBHOOK_RECEIVER_URL="$WE_MAC_URL" we_tick 1 'webhook_last_event_at_json')
+  rm "$WE/pipe/webhook/events.jsonl"; echo $((now - 90 * 60)) > "$WE/pipe/webhook/enabled-since"
+  empty_mirror=$(WEBHOOK_RECEIVER_URL="$WE_MAC_URL" we_tick 1 'webhook_last_event_at_json')
+  we_teardown
+  assert_eq "$old_mirror" "" "AC4: a Mac with a 90 minute old mirror publishes no webhook time (it may just have been asleep)" || return 1
+  assert_eq "$empty_mirror" "" "AC4: nor does a Mac with an empty mirror" || return 1
+}
+
+test_wh_ac7_reporter_payload_has_webhook_last_event_at_on_the_vm_only_and_never_webhook_stale() {
   we_setup; mkdir -p "$WE/pipe/webhook" "$WE/pipe/queue"
   local old; old=$(( $(date +%s) - 31 * 60 ))
   printf '{"seq":1,"ts":%s,"delivery":"d-1","event":"issues","repo":"o/r","number":1}\n' "$old" > "$WE/pipe/webhook/events.jsonl"
-  local on off
-  on=$(PIPE="$WE/pipe" QUEUE="$WE/pipe/queue" HOME="$WE/home" WEBHOOK_EVENTS_ENABLED=1 STATUS_CRON_CMD=true "$WH_RS/report-status.sh" --print 2>/dev/null | jq -c '.webhook_stale')
-  off=$(PIPE="$WE/pipe" QUEUE="$WE/pipe/queue" HOME="$WE/home" WEBHOOK_EVENTS_ENABLED=0 STATUS_CRON_CMD=true "$WH_RS/report-status.sh" --print 2>/dev/null | jq -c 'has("webhook_stale")')
+  local vm mac off legacy
+  local env_base="PIPE=$WE/pipe QUEUE=$WE/pipe/queue HOME=$WE/home STATUS_CRON_CMD=true"
+  vm=$(env $env_base WEBHOOK_EVENTS_ENABLED=1 "$WH_RS/report-status.sh" --print 2>/dev/null)
+  mac=$(env $env_base WEBHOOK_EVENTS_ENABLED=1 WEBHOOK_RECEIVER_URL="$WE_MAC_URL" "$WH_RS/report-status.sh" --print 2>/dev/null)
+  off=$(env $env_base WEBHOOK_EVENTS_ENABLED=0 "$WH_RS/report-status.sh" --print 2>/dev/null)
   we_teardown
-  assert_eq "$(printf '%s' "$on" | jq -r '.since | fromdateiso8601')" "$old" "AC7: the beat carries webhook_stale.since while stale" || return 1
-  assert_eq "$off" "false" "AC7/AC9: off -> the key is absent" || return 1
+  assert_eq "$(printf '%s' "$vm" | jq -r '.webhook_last_event_at | fromdateiso8601')" "$old" "AC4: the VM beat carries the receiver's last event time while stale" || return 1
+  assert_eq "$(printf '%s' "$vm$mac$off" | jq -s 'map(has("webhook_stale")) | any')" "false" "AC4: no host publishes webhook_stale any more" || return 1
+  assert_eq "$(printf '%s' "$mac" | jq -c 'has("webhook_last_event_at")')" "false" "AC4: the Mac beat has no webhook time" || return 1
+  assert_eq "$(printf '%s' "$off" | jq -c 'has("webhook_last_event_at")')" "false" "AC7/AC9: off -> the key is absent" || return 1
+}
+
+test_wh_ac7_the_webhook_time_is_constant_while_stale_so_the_beat_hash_does_not_churn() {
+  we_setup; mkdir -p "$WE/pipe/webhook" "$WE/pipe/queue"
+  local old; old=$(( $(date +%s) - 31 * 60 ))
+  printf '{"seq":1,"ts":%s,"delivery":"d-1","event":"issues","repo":"o/r","number":1}\n' "$old" > "$WE/pipe/webhook/events.jsonl"
+  local a b
+  a=$(PIPE="$WE/pipe" QUEUE="$WE/pipe/queue" HOME="$WE/home" WEBHOOK_EVENTS_ENABLED=1 STATUS_CRON_CMD=true "$WH_RS/report-status.sh" --print 2>/dev/null | jq -c '.webhook_last_event_at')
+  sleep 1
+  b=$(PIPE="$WE/pipe" QUEUE="$WE/pipe/queue" HOME="$WE/home" WEBHOOK_EVENTS_ENABLED=1 STATUS_CRON_CMD=true "$WH_RS/report-status.sh" --print 2>/dev/null | jq -c '.webhook_last_event_at')
+  we_teardown
+  assert_eq "$a" "$b" "AC4: the same stale feed publishes the same value on every tick (no KV write churn)" || return 1
 }
 
 # ---- AC12 -----------------------------------------------------------------------------------------------------------------------
@@ -502,11 +533,11 @@ test_wh_ac9_switch_defaults_to_off_inside_the_library_files_themselves() {
     bash -c ". '$WH_RS/gh-budget.sh'; . '$WH_RS/webhook-events.sh'
       webhook_tick_prepare; gh_since_sync example-owner/project-a; gh_since_sync example-owner/project-a
       webhook_trusted example-owner/project-a && echo TRUSTED
-      webhook_stale_json" 2>/dev/null)
+      webhook_last_event_at_json" 2>/dev/null)
   calls=$(we_calls 'issues?state=all'); after=$(ls "$WE/pipe/webhook" | tr '\n' ' ')
   we_teardown
   assert_eq "$calls" "1" "unset switch: the second since-sync still makes its API call (cold, then one list call)" || return 1
-  assert_eq "$stale" "" "unset switch: not trusted, no stale banner field" || return 1
+  assert_eq "$stale" "" "unset switch: not trusted, no webhook time field" || return 1
   assert_eq "$after" "$before" "unset switch: webhook_tick_prepare wrote no state" || return 1
 }
 
@@ -577,7 +608,9 @@ run_test test_wh_ac6_a_gap_forces_every_repo_to_full_sync
 run_test test_wh_ac6_a_repo_whose_owner_has_no_webhook_keeps_the_plain_since_sync
 run_test test_wh_ac9_off_is_the_old_behaviour_and_writes_no_webhook_state
 run_test test_wh_ac9_example_config_documents_the_switch_and_secret_placeholders_are_empty
-run_test test_wh_ac7_stale_json_only_when_enabled_and_the_newest_event_is_old
-run_test test_wh_ac7_reporter_payload_carries_webhook_stale_only_while_stale
+run_test test_wh_ac7_vm_publishes_the_receiver_last_event_time_only_while_stale
+run_test test_wh_ac7_mac_publishes_nothing_even_when_its_mirror_is_old_or_empty
+run_test test_wh_ac7_reporter_payload_has_webhook_last_event_at_on_the_vm_only_and_never_webhook_stale
+run_test test_wh_ac7_the_webhook_time_is_constant_while_stale_so_the_beat_hash_does_not_churn
 run_test test_wh_ac12_a_receiver_error_is_captured_with_tags_and_no_secrets
 run_test test_wh_ac12_a_failed_pull_is_captured_with_tags_and_no_token

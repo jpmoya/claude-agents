@@ -54,6 +54,11 @@ DISPATCH_REPOS=(
 # should set this (the VM); the dedupe read also stops a second host double-firing.
 # SCHEDULED_TRIGGERS_ENABLED=1
 
+# Status page auto-deploy (#778): the supervisor tick runs `wrangler deploy` for status-page/ when its tree on origin/main changed. Exactly ONE host
+# sets this: the one that holds the Cloudflare login (wrangler login) or CLOUDFLARE_API_TOKEN. No wrangler or no credential = quiet no-op.
+# STATUS_PAGE_DEPLOY_ENABLED=1
+# CLOUDFLARE_API_TOKEN=""    # secret; only if the host deploys with a token instead of `wrangler login`; never printed or logged
+
 # GitHub webhook events (#773, docs/webhook-events.md): the supervisor reads pushed events instead of polling. Kill switch, default 0 (off:
 # polling exactly as before). Secrets are generated on the VM (`openssl rand -hex 32`, one per variable), never committed.
 # WEBHOOK_EVENTS_ENABLED=1
@@ -61,4 +66,4 @@ DISPATCH_REPOS=(
 # WEBHOOK_PULL_TOKEN=""      # VM and Mac; secret — bearer token for GET /events (different value from WEBHOOK_SECRET)
 # WEBHOOK_RECEIVER_URL=""    # Mac only: https://<public hostname> of the VM receiver; empty on the VM (it reads its own queue file)
 # WEBHOOK_FALLBACK_POLL_MINUTES=20   # full per-repo sync at most this often; heals dropped deliveries
-# WEBHOOK_STALE_MINUTES=30           # status banner "no webhook received in N minutes" past this age
+# WEBHOOK_STALE_MINUTES=30           # VM only: publish the receiver's last event time for the status banner "no webhook received in N minutes" past this age
