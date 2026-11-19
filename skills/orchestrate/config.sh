@@ -96,6 +96,14 @@ GOAL_REGISTRY_REPO=jpmoya/claude-agents
 MAX_GOALS=2                 # goal (delivery-lead) pids alive at once on this host; not counted in count_running (with GOAL_SERIAL=1 the one goal plus any feedback goals)
 GOAL_CYCLE_SECS=1200        # a cleanly ended cycle is relaunched only this long after its launch
 GOAL_SYNC_SECS=300          # registry sync + live-goal re-evaluation throttle, per host
+# Supervisor tick wall budget (#796). Soft: past TICK_BUDGET_SECS only the pure housekeeping (label reconcile, stale-work digest) is
+# skipped this tick and logged; every stage that starts or restarts work (restart, drain, intake, spec, promotion, dispatch) always runs. Hard: past
+# TICK_HARD_SECS a watchdog stops the tick cleanly (lock released) so a stuck tick never sits on the lock for 20+ minutes.
+# A host without flock reclaims a tick lock older than max(10 min, TICK_HARD_SECS + 2 min), so a stopped tick never overlaps the next one. 0 turns either limit off.
+TICK_BUDGET_SECS=${TICK_BUDGET_SECS:-480}
+TICK_HARD_SECS=${TICK_HARD_SECS:-840}
+# The background worktree sweep (0b) gets its own time budget so it can never run long (#796).
+WORKTREE_SWEEP_BUDGET_SECS=${WORKTREE_SWEEP_BUDGET_SECS:-240}
 GOAL_MAX_NO_PROGRESS=3      # relaunch decisions with an unchanged scope snapshot before a goal is parked
 GOAL_MAX_LAUNCH_FAILS=3     # consecutive attempts that never got to work (launch error / exit < MIN_RUN_SECS) before a goal is parked (#514)
 # One goal at a time (JP 2026-10-30): 1 = a single goal slot for BOTH hosts. A queued goal starts only when no other goal is
