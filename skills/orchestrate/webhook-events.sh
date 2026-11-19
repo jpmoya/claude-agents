@@ -23,12 +23,14 @@ _wh_slug() { printf '%s' "$1" | tr 'A-Z/' 'a-z_'; }
 _wh_iso() {
   TZ=UTC date -u -d "@$1" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || TZ=UTC date -u -r "$1" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null
 }
-# _wh_owner_ok <owner/repo> — only repos whose owner has a webhook (WEBHOOK_OWNERS, space separated, case-insensitive) are served from
-# events; any other repo keeps the plain 2-minute since-sync, so a repo with no hook never silently drops to 20-minute freshness.
+# _wh_owner_ok <owner/repo> — only repos covered by a webhook (WEBHOOK_OWNERS, space separated, case-insensitive: an `owner`, or a full
+# `owner/repo` for a user account whose hook is per repository) are served from events; any other repo keeps the plain 2-minute
+# since-sync, so a repo with no hook never silently drops to 20-minute freshness.
 _wh_owner_ok() {
-  local o w owner; owner=$(printf '%s' "${1%%/*}" | tr 'A-Z' 'a-z')
-  for w in ${WEBHOOK_OWNERS:-Benjis-Plants}; do
-    o=$(printf '%s' "$w" | tr 'A-Z' 'a-z'); [ "$o" = "$owner" ] && return 0
+  local o w owner repo; owner=$(printf '%s' "${1%%/*}" | tr 'A-Z' 'a-z'); repo=$(printf '%s' "$1" | tr 'A-Z' 'a-z')
+  for w in ${WEBHOOK_OWNERS:-Benjis-Plants jpmoya/claude-agents}; do
+    o=$(printf '%s' "$w" | tr 'A-Z' 'a-z')
+    case "$o" in */*) [ "$o" = "$repo" ] && return 0 ;; *) [ "$o" = "$owner" ] && return 0 ;; esac
   done
   return 1
 }

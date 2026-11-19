@@ -138,6 +138,7 @@ function sanitiseRun(rawRun) {
   if (isIsoTimestamp(rawRun.last_activity_at)) run.last_activity_at = rawRun.last_activity_at;
 
   if (isIsoTimestamp(rawRun.gate_at)) run.gate_at = rawRun.gate_at;
+  if (isIsoTimestamp(rawRun.answered_at)) run.answered_at = rawRun.answered_at; // #780: JP answered, no relaunch has used it yet
   if (typeof rawRun.needs === 'string' && NEEDS_VOCAB.includes(rawRun.needs)) run.needs = rawRun.needs;
   if (typeof rawRun.parked_reason === 'string' && PARKED_REASON_VOCAB.includes(rawRun.parked_reason)) {
     run.parked_reason = rawRun.parked_reason;

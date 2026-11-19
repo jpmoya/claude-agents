@@ -1,7 +1,9 @@
 # Caddy reverse proxy for the GitHub webhook receiver (#773, docs/webhook-events.md). Automatic Let's Encrypt certificates
 # (needs inbound 80 and 443 and a DNS A record for the hostname). The receiver itself listens on 127.0.0.1:8787 only.
-# Replace hooks.example.com with the real hostname when installing (the runbook has the sed line); this file is public.
+# Replace hooks.example.com with the real hostname and @VM_PUBLIC_IP@ with the VM's public address when installing (the runbook has the
+# sed line; this file is public, so the address is not committed). `bind` keeps Caddy on that one address, as on the live VM.
 hooks.example.com {
+	bind @VM_PUBLIC_IP@
 	# Only the three receiver routes leave Caddy; everything else is answered here.
 	@receiver path /webhook /events /health
 	handle @receiver {
@@ -25,9 +27,11 @@ hooks.example.com {
 		# Never log credentials or signatures.
 		format filter {
 			wrap json
-			request>headers>Authorization delete
-			request>headers>X-Hub-Signature-256 delete
-			request>headers>X-Hub-Signature delete
+			fields {
+				request>headers>Authorization delete
+				request>headers>X-Hub-Signature-256 delete
+				request>headers>X-Hub-Signature delete
+			}
 		}
 	}
 }

@@ -34,11 +34,11 @@ mkdir -p "$PIPE" "$QUEUE" "$LOGDIR"
 # queue_write <file> <issue> <repo> <extra> <not_before> — write to <file>.tmp then mv; never leaves a 0-byte/partial entry (#539)
 queue_write() {
   local f=$1
-  python3 - "$f.tmp" "$2" "$3" "$4" "$(date -u +%FT%TZ)" "$5" <<'PY' 2>/dev/null && mv "$f.tmp" "$f" 2>/dev/null && return 0
+  python3 - "$f.tmp" "$2" "$3" "$4" "$(date -u +%FT%TZ)" "$5" "${6:-auto-restart}" <<'PY' 2>/dev/null && mv "$f.tmp" "$f" 2>/dev/null && return 0
 import json, sys
-path, issue, repo, extra, qa, nb = sys.argv[1:7]
+path, issue, repo, extra, qa, nb, reason = sys.argv[1:8]
 with open(path, 'w') as fh:
-    json.dump({'issue': issue, 'repo': repo, 'extra': extra, 'reason': 'auto-restart', 'queued_at': qa, 'not_before': int(nb)}, fh)
+    json.dump({'issue': issue, 'repo': repo, 'extra': extra, 'reason': reason, 'queued_at': qa, 'not_before': int(nb)}, fh)
 PY
   rm -f "$f.tmp"
   return 1
@@ -973,6 +973,92 @@ jp_gate_remind() {
     slog "[jp-gate-remind] #$issue — reminder post failed, retried later; $(sw_tags supervisor/jp-gate-remind)"
   fi
 }
+# --- A held ticket JP answered is relaunched by itself (#780) -----------------------------------------------------------------------
+# Ten tickets sat answered but not relaunched until someone did it by hand. answered_relaunch runs in the step-1b held loop, before the
+# auto-retry gates: held_answer (hooks/pipeline-markers.sh, the one detector, also behind the status page's answered_at) reads the
+# ticket's comments through issue_info_rest (cache-served for a synced repo: an unchanged held ticket costs no call). An answer relaunches
+# the run exactly like the other resumes: a queue entry, which step 2's do_launch turns into claim + settle + launch when a slot and
+# memory allow (a busy slot leaves it queued, which the status page counts as owned). Loop guard: orch-<rk>.answered holds the last answer
+# comment id acted on; one relaunch per answer id, so a run that parks again on the same gate waits for a NEW answer.
+#   orch-<rk>.answered_at   createdAt of an answer found but not yet relaunched (the status page's "pending within grace" clock)
+#   orch-<rk>.answer-check  throttle stamp for a repo this process has not synced (a synced repo is read every tick, for free)
+ANSWERED_CHECK_SECS=${ANSWERED_CHECK_SECS:-300}
+# answered_dispatch_ok <slug> <issue> <labels, one per line> — the step-5 rules for a ticket this host may start: a goal whose lead is
+# live here, queued, or confined to the other host owns its tickets (the lead resumes them); SHARED_DISPATCH_ENABLED=0 keeps only
+# user-feedback tickets and the slot goal's spread list.
+answered_dispatch_ok() {
+  local slug=$1 issue=$2 labels=$3 g
+  while IFS= read -r g; do
+    [ -n "$g" ] || continue
+    printf '%s\n' "$labels" | grep -qixF -- "$g" && return 1
+  done <<EOF_GOALS
+$( { goal_live_labels; goal_queued_labels; goal_foreign_labels; } 2>/dev/null )
+EOF_GOALS
+  if [ "${SHARED_DISPATCH_ENABLED:-1}" != 1 ]; then
+    printf '%s\n' "$labels" | grep -qixF -- "$LABEL_FEEDBACK" && return 0
+    goal_slot_spread_nums "$slug" 2>/dev/null | jq -e --argjson n "$issue" 'any(.[]; . == $n)' >/dev/null 2>&1 && return 0
+    return 1
+  fi
+  return 0
+}
+# answered_relaunch <rk> <issue> <repo dir> — 0 when the run was relaunched this call (the caller skips the auto-retry path), else 1.
+answered_relaunch() {
+  local rk=$1 issue=$2 repo=$3 slug info ans id marker created guard last now qf labels why
+  [ "${ANSWERED_RELAUNCH_ENABLED:-1}" = 1 ] || return 1
+  [ -f "$PIPE/orch-$rk.startgate" ] && return 1                           # a start-gate hold resumes on its own dependency check
+  held_by_loopcap "$rk" "$issue" && return 1                              # the loop-cap resume owns its own delegated-decision rule
+  qf="$QUEUE/orch-$rk.json"; [ -e "$qf" ] && return 1                     # already queued
+  if [ -f "$PIPE/orch-$rk.pid" ] && kill -0 "$(cat "$PIPE/orch-$rk.pid" 2>/dev/null)" 2>/dev/null; then return 1; fi   # a live run owns it
+  slug=$(repo_slug "$repo")
+  now=$(date +%s)
+  if ! { [ "${GH_BUDGET_ENABLED:-0}" = 1 ] && type _gh_since_synced >/dev/null 2>&1 && [ -n "$slug" ] && _gh_since_synced "$slug"; }; then
+    last=$(file_mtime "$PIPE/orch-$rk.answer-check")
+    [ -z "$last" ] || [ $(( now - last )) -ge "$ANSWERED_CHECK_SECS" ] || return 1
+    touch "$PIPE/orch-$rk.answer-check" 2>/dev/null || true
+  fi
+  info=$(issue_info_rest "$repo" "$issue") || {
+    slog "[answered] ${slug:-$repo}#$issue — issue read failed: ${info:-no error text}; $(sw_tags supervisor/answered)"
+    autoretry_alert "$issue" "issue read" answered; return 1; }
+  [ "$(printf '%s' "$info" | jq -r '.state // empty' 2>/dev/null)" = "OPEN" ] || return 1
+  ans=$(held_answer "$info") || { rm -f "$PIPE/orch-$rk.answered_at"; return 1; }
+  IFS=$'\t' read -r id marker created <<EOF_ANS
+$ans
+EOF_ANS
+  guard=$(tr -dc '0-9' 2>/dev/null < "$PIPE/orch-$rk.answered"); guard=${guard:-0}
+  [ "$id" -gt "$guard" ] || return 1                                      # this answer was already acted on
+  case "$created" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) printf '%s\n' "$created" > "$PIPE/orch-$rk.answered_at" ;; esac
+  # the stops that already end a run on purpose: too many restarts without progress (escalate), or the counters at their ceiling
+  why=""
+  grep -q 'manual relaunch after investigation' "$PIPE/orch-$rk.alert" 2>/dev/null && why="escalated after repeated restarts"
+  if [ -z "$why" ] && [ -f "$PIPE/orch-$rk.restarts" ]; then
+    why=$(python3 - "$PIPE/orch-$rk.restarts" "$MAX_NO_PROGRESS" "$MAX_TOTAL" <<'PY' 2>/dev/null
+import json, sys
+try: d = json.load(open(sys.argv[1]))
+except Exception: sys.exit(0)
+if d.get('count', 0) >= int(sys.argv[2]) or d.get('total', 0) >= int(sys.argv[3]): print('restart limit reached')
+PY
+)
+  fi
+  if [ -n "$why" ]; then
+    [ "$(cat "$PIPE/orch-$rk.answered-skip" 2>/dev/null)" = "$id" ] || { echo "$id" > "$PIPE/orch-$rk.answered-skip"; slog "[answered] ${slug:-$repo}#$issue — answer $id not relaunched: $why"; }
+    return 1
+  fi
+  labels=$(gh api "repos/$slug/issues/$issue" 2>/dev/null </dev/null | jq -r '.labels[]?.name' 2>/dev/null) || labels=""
+  if ! answered_dispatch_ok "$slug" "$issue" "$labels"; then
+    [ "$(cat "$PIPE/orch-$rk.answered-skip" 2>/dev/null)" = "$id" ] || { echo "$id" > "$PIPE/orch-$rk.answered-skip"; slog "[answered] ${slug:-$repo}#$issue — answer $id not relaunched here: its goal lead or SHARED_DISPATCH_ENABLED=0 owns the launch"; }
+    return 1
+  fi
+  if ! queue_write "$qf" "$issue" "$repo" "$(cat "$PIPE/orch-$rk.extra" 2>/dev/null)" 0 queued; then
+    slog "[answered] ${slug:-$repo}#$issue — relaunch after $marker $id failed: queue entry not written; $(sw_tags supervisor/answered)"
+    autoretry_alert "$issue" "queue write" answered
+    return 1
+  fi
+  echo "$id" > "$PIPE/orch-$rk.answered"
+  rm -f "$PIPE/orch-$rk.held" "$PIPE/orch-$rk.alert" "$PIPE/orch-$rk.answered_at" "$PIPE/orch-$rk.answered-skip"
+  slog "[answered] ${slug:-$repo}#$issue — relaunched after $marker $id"
+  report_status_async "answered"
+  return 0
+}
 # --- Main tick ---
 
 # GitHub API budget (gh-budget.sh): one quota line per tick (times in Europe/Madrid) and the tier flags the steps
@@ -980,6 +1066,7 @@ jp_gate_remind() {
 # failing hundreds of calls (2026-10-29..11-03: 550-2753 "API rate limit exceeded" lines a day).
 if [ "$GH_BUDGET_ENABLED" = 1 ]; then
   slog "$(gh_quota_line)"
+  gh_tick_mark   # #773 AC8: the per-tick call counter, summarised at the end of the tick
   if ! gh_tier_allows essential; then
     slog "[gh-quota] REST quota exhausted — no GitHub work this tick, resuming after the reset"
     exit 0
@@ -1349,20 +1436,20 @@ autoretry_cleared() {
         dstate=$(cd "$repo" && gh issue view "$dnum" ${drepo[@]+"${drepo[@]}"} --json state --jq .state 2>/dev/null </dev/null) \
           || { AR_ERR="dependency read $dep"; return 2; }
         case "$dstate" in CLOSED|MERGED) continue ;; esac
-        prs=$(cd "$repo" && gh pr list ${drepo[@]+"${drepo[@]}"} --state merged --limit 100 --json number,headRefName 2>/dev/null </dev/null) \
+        prs=$(cd "$repo" && GH_NOCACHE=1 gh pr list ${drepo[@]+"${drepo[@]}"} --state merged --limit 100 --json number,headRefName 2>/dev/null </dev/null) \
           || { AR_ERR="dependency pr list $dep"; return 2; }
         printf '%s' "$prs" | jq -e --arg p "issue-$dnum-" '[.[] | select(.headRefName | startswith($p))] | length > 0' >/dev/null 2>&1 || return 1
       done
       return 0 ;;
     ci_*|merge_conflict)
-      prs=$(cd "$repo" && gh pr list --state open --limit 100 --json number,headRefName,mergeable 2>/dev/null </dev/null) \
+      prs=$(cd "$repo" && GH_NOCACHE=1 gh pr list --state open --limit 100 --json number,headRefName,mergeable 2>/dev/null </dev/null) \
         || { AR_ERR="pr list"; return 2; }
       pr=$(printf '%s' "$prs" | jq -r --arg p "issue-$issue-" '[.[] | select(.headRefName | startswith($p))][0] // empty | "\(.number) \(.mergeable)"' 2>/dev/null) \
         || { AR_ERR="pr list parse"; return 2; }
       if [ -z "$pr" ] && [ "$cls" != merge_conflict ]; then
         # #439: a ci_* stop can come after the merge (deployer waiting on the staging deploy); the open-PR list is then
         # empty forever. A merged issue-N- PR means the cause is gone: relaunch (still capped by AUTORETRY_MAX).
-        prs=$(cd "$repo" && gh pr list --state merged --limit 100 --json number,headRefName 2>/dev/null </dev/null) \
+        prs=$(cd "$repo" && GH_NOCACHE=1 gh pr list --state merged --limit 100 --json number,headRefName 2>/dev/null </dev/null) \
           || { AR_ERR="pr list merged"; return 2; }
         printf '%s' "$prs" | jq -e --arg p "issue-$issue-" '[.[] | select(.headRefName | startswith($p))] | length > 0' >/dev/null 2>&1 && return 0
       fi
@@ -1518,6 +1605,7 @@ for f in "$PIPE"/orch-*.held; do
   [ -f "$PIPE/orch-$rk.stopped" ] || [ -f "$PIPE/orch-$rk.done" ] && continue
   jp_gate_remind "$rk" "$issue" "$repo"   # #677: one reminder per JP-gate hold
   if [ -f "$PIPE/orch-$rk.startgate" ]; then startgate_resume "$rk" "$issue" "$repo"; continue; fi   # #677: held on a start-gate
+  answered_relaunch "$rk" "$issue" "$repo" && continue   # #780: JP answered the question that paused it: relaunch (one per answer id)
   n=$(tr -dc '0-9' 2>/dev/null < "$PIPE/orch-$rk.autoretry"); n=${n:-0}
   is_lc=0; held_by_loopcap "$rk" "$issue" && is_lc=1
   [ "$n" -lt "$AUTORETRY_MAX" ] || [ "$is_lc" -eq 1 ] || continue
@@ -2526,4 +2614,6 @@ gh_class optional
 #    dispatch, so it never delays or blocks a launch decision made earlier in this tick.
 [ "$T_OPT" = 1 ] && { stale_work_digest || true; }
 
+# #773 AC8: what this tick cost in GitHub calls (call-log delta since gh_tick_mark; background reconcile / PM poll calls land in the next one)
+[ "$GH_BUDGET_ENABLED" = 1 ] && slog "[gh-calls] tick $(gh_tick_summary)"
 exec 9>&- 2>/dev/null
