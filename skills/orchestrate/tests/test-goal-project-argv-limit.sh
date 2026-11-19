@@ -148,19 +148,20 @@ test_av_every_temp_dir_is_removed_on_signals_too() {   # reviewer MEDIUM on #794
 test_av_a_signalled_read_leaves_no_temp_dir_behind() {
   av_setup
   av_page "$AV_DIR/pages/1.json" 1 100 c1 scope
+  cp "$(command -v sleep)" "$AV_DIR/bin/avsleep"   # a private copy: every kill below names $AV_DIR, never a bare process name
   cat > "$AV_DIR/bin/gh" <<'AV_SLOW_EOF'
 #!/bin/bash
 D=$(cd "$(dirname "$0")/.." && pwd)
-case "$*" in *cursor=c1*) : > "$D/second-call"; exec sleep 30 ;; esac
+case "$*" in *cursor=c1*) : > "$D/second-call"; exec "$D/bin/avsleep" 30 ;; esac
 cat "$D/pages/1.json"
 AV_SLOW_EOF
   chmod +x "$AV_DIR/bin/gh"
-  ( cd "$AV_DIR" && PATH="$AV_DIR/bin:$PATH" TMPDIR="$AV_DIR/tmp" PIPE="$AV_DIR/pipe" bash -c '. "$1/goal-project.sh"; goal_project_read example-owner 41' _ "$AV_SRC_DIR" >/dev/null 2>&1 ) &
+  ( cd "$AV_DIR" && PATH="$AV_DIR/bin:$PATH" TMPDIR="$AV_DIR/tmp" PIPE="$AV_DIR/pipe" bash -c '. "$1/goal-project.sh"; goal_project_read example-owner 41' _ "$AV_SRC_DIR" "$AV_DIR" >/dev/null 2>&1 ) &
   local bg=$! i=0 rc=0
   while [ ! -e "$AV_DIR/second-call" ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
   # TERM every shell of the read (the one that owns the dir is a fork of it), then end the blocked gh so the deferred trap can run
-  pkill -TERM -f "goal_project_read example-owner 41" 2>/dev/null
-  sleep 0.3; pkill -f "sleep 30" 2>/dev/null; wait "$bg" 2>/dev/null
+  pkill -TERM -f "bash -c .*goal_project_read example-owner 41.*$AV_DIR" 2>/dev/null
+  sleep 0.3; pkill -f "$AV_DIR/bin/avsleep" 2>/dev/null; wait "$bg" 2>/dev/null
   i=0; while [ -n "$(ls -A "$AV_DIR/tmp" 2>/dev/null)" ] && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
   assert_eq "$(ls -A "$AV_DIR/tmp")" "" "no temp dir left after the reader was terminated mid-read" || rc=1
   rm -rf "$AV_DIR"; return $rc

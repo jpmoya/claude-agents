@@ -63,6 +63,15 @@ test_gst_closed_project_names_the_goal_and_reason() {
     "closed project: one entry (newest event per project) named like its goals-list row, reason from the log, hint to reopen" || return 1
 }
 
+test_gst_a_skipped_goal_is_shown_for_as_long_as_it_is_skipped_not_just_15_minutes() {
+  gst_env
+  gst_queue "{\"serial\":true,\"slot\":null,\"candidate\":\"q2\",\"unreadable\":[],\"errored\":[{\"id\":\"proj-jpmoya_41\",\"issue\":759,\"why\":\"gh exit 1: HTTP 502 bad gateway\"}],\"queued\":$GST_QUEUED,\"open\":[{\"id\":\"proj-jpmoya_41\",\"issue\":759,\"title\":\"CD hardening\",\"st\":\"active\"}],\"recent\":[]}"
+  gst_event 1500 goal-project-scope "project goal jpmoya/41: cannot read the project scope: gh exit 1: HTTP 502 bad gateway"   # 25 min: past the event window, still skipped
+  local j; j=$(gst_mode); gst_cleanup
+  assert_eq "$j" '[{"kind": "project_error", "goal": "CD hardening", "reason": "gh exit 1: HTTP 502 bad gateway", "hint": "see the [goal] error lines in the supervisor log, then fix or stop the goal"}]' \
+    "one entry from goalqueue.json errored[] (reason from the marker), no duplicate from the log" || return 1
+}
+
 test_gst_old_or_foreign_events_are_ignored_and_text_is_plain() {
   gst_env
   gst_queue "{\"serial\":true,\"slot\":null,\"candidate\":null,\"unreadable\":[],\"queued\":$GST_QUEUED,\"open\":[],\"recent\":[]}"
@@ -90,5 +99,6 @@ run_test test_gst_queue_save_records_unreadable_entries
 run_test test_gst_unreadable_entry_is_reported_as_skipped_not_blocking
 run_test test_gst_nothing_when_serial_is_off_and_still_reported_with_nothing_queued
 run_test test_gst_closed_project_names_the_goal_and_reason
+run_test test_gst_a_skipped_goal_is_shown_for_as_long_as_it_is_skipped_not_just_15_minutes
 run_test test_gst_old_or_foreign_events_are_ignored_and_text_is_plain
 run_test test_gst_report_status_publishes_goal_stall_only_when_non_empty

@@ -1398,8 +1398,17 @@ def build_goal_stall():
         if isinstance(d, dict) and isinstance(d.get("issue"), int) and not isinstance(d.get("issue"), bool):
             out.append({"kind": "unreadable", "goal": "registry issue #%d" % d["issue"],
                         "reason": "its goal block cannot be read", "hint": "fix or close registry issue #%d" % d["issue"]})
+    skipped_ids = set()
+    for d in q.get("errored") or []:   # the goals the queue is skipping NOW (marker younger than GOAL_SCOPE_ERR_SECS), with gh's reason
+        if isinstance(d, dict) and isinstance(d.get("id"), str) and d["id"]:
+            reason = _stall_text(d.get("why") or "", 120) or "the project cannot be read"
+            skipped_ids.add(d["id"])
+            out.append({"kind": "project_error", "goal": _stall_text(name_of.get(d["id"]) or d["id"], 80),
+                        "reason": reason, "hint": _stall_hint(reason)})
     for ref, why in sorted(_recent_project_errors(time.time()).items()):
         gid = "proj-%s_%s" % tuple(ref.split("/", 1))
+        if gid in skipped_ids:
+            continue
         reason = _stall_text(why, 120) or "the project cannot be read"
         out.append({"kind": "project_error", "goal": _stall_text(name_of.get(gid) or "project " + ref, 80),
                     "reason": reason, "hint": _stall_hint(reason)})

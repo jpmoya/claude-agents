@@ -264,7 +264,7 @@ _goal_proj_err() {
 
 # A project goal whose scope cannot be read is SKIPPED, never a blocker (JP, 2026-11-19): the read failure leaves a marker
 # $PIPE/goal-proj-err-<owner>_<number> ("<epoch>\t<one line reason>"), the queue computation (_goal_queue_jq) leaves that goal out of the slot
-# and the candidate choice for GOAL_SCOPE_ERR_SECS (default 1800) and every other goal goes on in the same priority order; a good read clears it.
+# and the candidate choice for GOAL_SCOPE_ERR_SECS (default 600) and every other goal goes on in the same priority order; a good read clears it.
 _goal_scope_err_file() { printf '%s/goal-proj-err-%s_%s' "$PIPE" "$(printf '%s' "${1%%/*}" | tr '[:upper:]' '[:lower:]')" "${1##*/}"; }
 _goal_scope_err_set() {   # <owner/number> <reason>: one line, no tab, capped
   mkdir -p "$PIPE" 2>/dev/null
@@ -273,8 +273,8 @@ _goal_scope_err_set() {   # <owner/number> <reason>: one line, no tab, capped
 _goal_scope_err_clear() { rm -f "$(_goal_scope_err_file "$1")" 2>/dev/null || true; }
 # _goal_errored_json -> [{key: "<owner lowercase>_<number>", why}] of the project scopes whose last read failed less than GOAL_SCOPE_ERR_SECS ago
 _goal_errored_json() {
-  local f ts why now ttl="${GOAL_SCOPE_ERR_SECS:-1800}" rows=""
-  case "$ttl" in ''|*[!0-9]*) ttl=1800 ;; esac
+  local f ts why now ttl="${GOAL_SCOPE_ERR_SECS:-600}" rows=""
+  case "$ttl" in ''|*[!0-9]*) ttl=600 ;; esac
   now=$(date +%s)
   for f in "$PIPE"/goal-proj-err-*; do
     [ -f "$f" ] || continue
@@ -294,7 +294,9 @@ _goal_proj_read() {
   err=$(mktemp "${TMPDIR:-/tmp}/goal-proj-err.XXXXXX") || err=/dev/null
   while :; do
     if out=$(goal_project_read "${1%%/*}" "${1##*/}" "${2:-}" 2>"$err"); then
-      rm -f "$err"; _goal_scope_err_clear "$1"; printf '%s\n' "$out"; return 0
+      # only a FULL read clears the marker: a --meta read (the goal's name, the start probe) sees the first item only, and a failure that only a
+      # later page or a redacted item hits must not be wiped by it every sync
+      rm -f "$err"; [ "${2:-}" = --meta ] || _goal_scope_err_clear "$1"; printf '%s\n' "$out"; return 0
     fi
     why=$(head -1 "$err" 2>/dev/null)
     case "$why" in "gh exit "*) [ "$tries" -lt "${GOAL_PROJ_RETRIES:-2}" ] || break; tries=$((tries + 1)); sleep "${GOAL_PROJ_RETRY_SECS:-2}" ;; *) break ;; esac

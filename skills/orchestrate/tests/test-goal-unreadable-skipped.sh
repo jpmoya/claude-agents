@@ -140,6 +140,14 @@ test_ug_a_good_read_clears_an_old_marker() {
   ug_cleanup
 }
 
+test_ug_a_one_item_meta_read_never_clears_the_marker() {
+  ug_env; ug_gh 0 ok; ug_marker jpmoya/41 60 "an items page does not parse"
+  local out; out=$(PATH="$UG_DIR/bin:$PATH" ug_lib "_goal_proj_read jpmoya/41 --meta >/dev/null; echo rc=\$?")
+  assert_eq "$out" "rc=0" "the --meta read itself succeeds" || { ug_cleanup; return 1; }
+  [ -e "$UG_PIPE/goal-proj-err-jpmoya_41" ] || { ug_cleanup; fail "a --meta read (goal name, start probe) must not wipe a failure only a full read sees"; return 1; }
+  ug_cleanup
+}
+
 test_ug_a_page_that_does_not_parse_is_final_no_retry() {
   ug_env; ug_gh 0 noodes
   local out; out=$(ug_read)
@@ -185,7 +193,7 @@ for t in test_ug_an_errored_goal_at_the_head_does_not_block_the_next_queued_goal
          test_ug_the_order_of_the_other_goals_is_unchanged_and_a_readable_active_goal_still_holds_the_slot test_ug_only_the_goal_of_the_failed_project_is_skipped \
          test_ug_a_stale_marker_is_ignored test_ug_an_unreadable_registry_entry_is_skipped_and_listed \
          test_ug_a_failed_gh_call_is_retried_twice_before_the_goal_is_marked test_ug_a_transient_gh_failure_that_clears_logs_nothing_and_leaves_no_marker \
-         test_ug_a_good_read_clears_an_old_marker test_ug_a_page_that_does_not_parse_is_final_no_retry \
+         test_ug_a_good_read_clears_an_old_marker test_ug_a_one_item_meta_read_never_clears_the_marker test_ug_a_page_that_does_not_parse_is_final_no_retry \
          test_ug_queue_save_lists_the_errored_goal_and_names_the_next_candidate test_ug_the_start_step_skips_a_candidate_whose_scope_cannot_be_read; do
   run_test "$t"
 done
