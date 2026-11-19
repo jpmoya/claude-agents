@@ -1,0 +1,33 @@
+# Caddy reverse proxy for the GitHub webhook receiver (#773, docs/webhook-events.md). Automatic Let's Encrypt certificates
+# (needs inbound 80 and 443 and a DNS A record for the hostname). The receiver itself listens on 127.0.0.1:8787 only.
+# Replace hooks.example.com with the real hostname when installing (the runbook has the sed line); this file is public.
+hooks.example.com {
+	# Only the three receiver routes leave Caddy; everything else is answered here.
+	@receiver path /webhook /events /health
+	handle @receiver {
+		# Cut oversize bodies at the edge (the receiver enforces its own exact 1 MiB cap and returns 413).
+		request_body {
+			max_size 1100KB
+		}
+		# Caddy overwrites any client-supplied X-Forwarded-For, so the receiver's per-source rate limit sees the real peer.
+		reverse_proxy 127.0.0.1:8787 {
+			transport http {
+				dial_timeout 3s
+				response_header_timeout 15s
+			}
+		}
+	}
+	handle {
+		respond "not found" 404
+	}
+	log {
+		output file /var/log/caddy/webhook-access.log
+		# Never log credentials or signatures.
+		format filter {
+			wrap json
+			request>headers>Authorization delete
+			request>headers>X-Hub-Signature-256 delete
+			request>headers>X-Hub-Signature delete
+		}
+	}
+}

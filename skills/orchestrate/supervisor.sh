@@ -987,6 +987,9 @@ gh_class essential
 # #637: per-repo incremental sync replaces the old blanket gh_cache_clear here — one issues?since=<last read> list
 # call per in-scope repo tells us which tickets changed; everything else is served from the previous tick's cached
 # per-ticket reads (issue_info_rest, latest_marker, goal-lib's comments fetches) instead of re-fetching unconditionally.
+# #773: with WEBHOOK_EVENTS_ENABLED=1, pull (Mac) and apply the event queue to that cache first; gh_since_sync then makes no API call
+# for a repo whose fallback poll is not due. A no-op (and gh_since_sync unchanged) when the kill switch is off.
+type webhook_tick_prepare >/dev/null 2>&1 && webhook_tick_prepare
 while IFS= read -r _sw_repo; do
   [ -n "$_sw_repo" ] && gh_since_sync "$_sw_repo"
 done <<< "$(sw_repo_list)"

@@ -780,6 +780,13 @@ export function validateBeatPayload(parsedBody) {
     if (triggers.length > 0) value.scheduled_triggers = triggers;
   }
 
+  // Optional (#773): {since: ISO-8601 Z} of the newest webhook event (or of when the feature was enabled), published only while the
+  // host's webhook queue is stale. Anything else -> no key.
+  if (isPlainObject(parsedBody.webhook_stale)) {
+    const since = sanitiseCronDate(parsedBody.webhook_stale.since);
+    if (since !== null) value.webhook_stale = { since };
+  }
+
   // Optional (issue #756): absent -> no key (an older host); present but not an array -> [].
   if ('cron' in parsedBody) value.cron = sanitiseCron(parsedBody.cron);
 

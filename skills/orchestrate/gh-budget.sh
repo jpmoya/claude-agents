@@ -288,6 +288,9 @@ gh_since_sync() {
   _gh_budget_paths
   local repo="$1" sf prev start_epoch start out rc=0 new_since numbers
   [ -n "$repo" ] || return 1
+  # #773: with WEBHOOK_EVENTS_ENABLED=1 and the tick's queue already applied to the cache (webhook_tick_prepare), a repo whose own
+  # fallback poll is not due needs no API read at all. Anything else (off, not prepared, fallback due, gap) runs the code below unchanged.
+  if [ "${WEBHOOK_EVENTS_ENABLED:-0}" = 1 ] && type webhook_sync_repo >/dev/null 2>&1 && webhook_sync_repo "$repo"; then return 0; fi
   mkdir -p "$GH_CACHE_DIR" 2>/dev/null
   sf="$GH_CACHE_DIR/.since.$(printf '%s' "$repo" | tr '/' '_')"
   prev=$(cat "$sf" 2>/dev/null) || prev=""
@@ -296,6 +299,7 @@ gh_since_sync() {
     _gh_since_invalidate_repo "$repo"; _gh_since_invalidate_lists "$repo"
     printf '%s\n' "$start" > "$sf.$$" 2>/dev/null && mv "$sf.$$" "$sf" 2>/dev/null
     _gh_since_mark_synced "$repo"
+    [ "${WEBHOOK_EVENTS_ENABLED:-0}" = 1 ] && type webhook_full_done >/dev/null 2>&1 && webhook_full_done "$repo"
     return 0
   fi
   out=$(GH_NOCACHE=1 gh api --paginate "repos/$repo/issues?state=all&since=$prev&per_page=100" 2>/dev/null) || rc=$?
@@ -314,6 +318,7 @@ gh_since_sync() {
   new_since=$(_gh_since_iso $(( start_epoch - 120 ))); [ -n "$new_since" ] || new_since="$start"
   printf '%s\n' "$new_since" > "$sf.$$" 2>/dev/null && mv "$sf.$$" "$sf" 2>/dev/null
   _gh_since_mark_synced "$repo"
+  [ "${WEBHOOK_EVENTS_ENABLED:-0}" = 1 ] && type webhook_full_done >/dev/null 2>&1 && webhook_full_done "$repo"
   return 0
 }
 
@@ -331,7 +336,10 @@ gh() {
       # survives across ticks instead of expiring inside one. Never exempt in a process that never synced the repo
       # (deliver.sh, a goal repo outside sw_repo_list, the literal `repos/{owner}/{repo}` placeholder, a slug
       # mismatch) — those fall straight through to the ordinary TTL check below, same as before #637.
-      if { [ -n "$_GH_ISSUE_REPO" ] && _gh_since_synced "$_GH_ISSUE_REPO"; } || { [ -n "$_GH_LIST_REPO" ] && _gh_since_synced "$_GH_LIST_REPO"; }; then
+      # #773: with the webhook queue on, a process that never synced the repo itself (goal sync, reconcile) trusts the same entries
+      # while the supervisor's applied-events stamp is fresh and the repo's fallback poll is not overdue (webhook_trusted).
+      if { [ -n "$_GH_ISSUE_REPO" ] && _gh_since_synced "$_GH_ISSUE_REPO"; } || { [ -n "$_GH_LIST_REPO" ] && _gh_since_synced "$_GH_LIST_REPO"; } \
+         || { [ "${WEBHOOK_EVENTS_ENABLED:-0}" = 1 ] && [ -n "$_GH_ISSUE_REPO$_GH_LIST_REPO" ] && type webhook_trusted >/dev/null 2>&1 && webhook_trusted "${_GH_ISSUE_REPO:-$_GH_LIST_REPO}"; }; then
         _gh_log "$class" hit; tail -n +2 "$cf"; return 0
       fi
       IFS= read -r t < "$cf" 2>/dev/null || t=0
