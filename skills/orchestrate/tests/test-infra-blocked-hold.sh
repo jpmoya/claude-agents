@@ -213,7 +213,7 @@ test_ib_ac5_supervisor_and_test_lib_are_not_edited() {
     printf '    (AC5 skipped: no origin/main merge-base in this checkout)\n' >&2
     return 0
   fi
-  diff=$(cd "$ROOT_IB" && git diff --stat "$base" -- skills/orchestrate/tests/lib ':(exclude)skills/orchestrate/tests/lib/fixture.sh')
+  diff=$(cd "$ROOT_IB" && git diff --stat "$base" -- skills/orchestrate/tests/lib ':(exclude)skills/orchestrate/tests/lib/fixture.sh' ':(exclude)skills/orchestrate/tests/lib/sentry-cap.sh')   # #779: sentry-cap.sh only had its launcher script path renamed
   assert_eq "$diff" "" "AC5: no change to tests/lib (other than fixture.sh, extended by #51)" || return 1
 }
 
