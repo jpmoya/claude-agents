@@ -36,7 +36,7 @@ test_bcs_dead_and_blocked_exits_2() {
   assert_contains "$BCS_OUT" '[delivery-lead] DECISION' "message names the marker" || { bcs_cleanup; return 1; }
   assert_contains "$BCS_OUT" 'Resolves:' "message names Resolves line" || { bcs_cleanup; return 1; }
   assert_contains "$BCS_OUT" 'Madrid' "times shown in Madrid" || { bcs_cleanup; return 1; }
-  assert_contains "$BCS_OUT" 'orchestrate.sh' "message says to relaunch" || { bcs_cleanup; return 1; }
+  assert_contains "$BCS_OUT" 'launcher.sh' "message says to relaunch" || { bcs_cleanup; return 1; }
   bcs_cleanup
 }
 

@@ -1,13 +1,13 @@
 #!/bin/bash
 # Launch the pipeline orchestrator as a detached headless Claude Code process.
 # Usage:
-#   orchestrate.sh <repo-path> <issue> [extra instructions...]   launch (queues if at max)
-#   orchestrate.sh status [<owner/repo>#<N> | <N>]                list running/queued orchestrators
-#   orchestrate.sh tail <owner/repo>#<N> | <N> [lines]            tail an orchestrator's log
-#   orchestrate.sh stop <owner/repo>#<N> | <N>                    kill an orchestrator (prevents auto-restart)
+#   launcher.sh <repo-path> <issue> [extra instructions...]   launch (queues if at max)
+#   launcher.sh status [<owner/repo>#<N> | <N>]                list running/queued orchestrators
+#   launcher.sh tail <owner/repo>#<N> | <N> [lines]            tail an orchestrator's log
+#   launcher.sh stop <owner/repo>#<N> | <N>                    kill an orchestrator (prevents auto-restart)
 #     (a bare <N> resolves only when exactly one run matches; otherwise it is refused and the candidates are listed)
-#   orchestrate.sh queue                                          show the queue
-#   orchestrate.sh --force <repo-path> <issue>                   launch even if agent-in-progress is set (other machine died)
+#   launcher.sh queue                                          show the queue
+#   launcher.sh --force <repo-path> <issue>                   launch even if agent-in-progress is set (other machine died)
 set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source "$HERE/config.sh"
@@ -183,7 +183,7 @@ except Exception: print('?')
     REPO="${1:?repo path required}"; ISSUE="${2-}"
     # Same rule as pipeline-bridge-dispatch.sh; before any gh call or state file (#123: "stop" became a phantom run).
     if ! [[ "$ISSUE" =~ ^[0-9]+$ ]]; then
-      echo "issue must be a number (got \"$ISSUE\") — did you mean 'orchestrate.sh stop <N>'?" >&2; exit 2
+      echo "issue must be a number (got \"$ISSUE\") — did you mean 'launcher.sh stop <N>'?" >&2; exit 2
     fi
     shift 2; EXTRA="$*"
     REPO=$(cd "$REPO" && pwd)
@@ -285,7 +285,7 @@ with open('$QUEUE/orch-$RK.json', 'w') as f:
                'queued_at': datetime.datetime.utcnow().strftime('%FT%TZ'), 'not_before': int(time.time())}, f)
 "
       echo "queued #$ISSUE ($(count_running "$RK")/$MAX_CONCURRENT slots full, $(mem_available_mb)MB avail) — supervisor will auto-launch when a slot opens"
-      echo "check: ~/.claude/skills/orchestrate/orchestrate.sh queue"
+      echo "check: ~/.claude/skills/orchestrate/launcher.sh queue"
       pid_reserve_done; rm -f "$PIPE/orch-$RK.pid"   # queued, not running: a stale dead pid makes the supervisor read this as a run that just ended (#22)
       # #182: accepted into the queue (claim won, agent-go consumed; the drain starts it with no second check), so the
       # launch takes its place in the daily window now. The entry remembers it (sentry_slot), so a drop before it ever
@@ -328,6 +328,6 @@ with open('$QUEUE/orch-$RK.json', 'w') as f:
     sentry_cap_unlock
     report_status_async "launch"   # event push: run launched (design #10 §4.4)
     echo "launched orchestrator for $OWNER_REPO#$ISSUE  pid=$!  log=$PIPE/orch-$RK.log"
-    echo "check: ~/.claude/skills/orchestrate/orchestrate.sh status $OWNER_REPO#$ISSUE"
+    echo "check: ~/.claude/skills/orchestrate/launcher.sh status $OWNER_REPO#$ISSUE"
     ;;
 esac

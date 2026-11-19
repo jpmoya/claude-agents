@@ -83,7 +83,7 @@ fi
 # Code sync (docs/host-sync.md), inside the lock: refuse to launch on code that cannot be brought current; otherwise
 # the EXIT trap fast-forwards main after this script has finished reading itself (the next tick runs the new code).
 # A refusal is never silent (16 h VM outage, 472 unseen refusals): every stale tick and every failed fast-forward
-# raises code_sync_alert ($PIPE/code-sync.alert, shown by `orchestrate.sh status`, + throttled Slack); the guard
+# raises code_sync_alert ($PIPE/code-sync.alert, shown by `launcher.sh status`, + throttled Slack); the guard
 # reopening clears it.
 CS_STATE=fresh
 if [ "${CODE_SYNC_ENABLED:-1}" = 1 ]; then
@@ -733,7 +733,7 @@ do_launch() {  # <repo> <issue> <extra> <restart_n> <reason> <queue_wait_s> <run
     pid_reserve_restore "$rk"; return 1
   fi
 
-  # Ticket title for the status board (#29): orchestrate.sh normally wrote it at launch and restarts reuse that
+  # Ticket title for the status board (#29): launcher.sh normally wrote it at launch and restarts reuse that
   # file; fetch only when it is missing. A failed or empty fetch leaves no file and never blocks the launch.
   if [ ! -f "$PIPE/orch-$rk.title" ]; then
     write_title_marker "$repo" "$issue" 0 "$rk"   # one gh issue view --json title,comments (title + marker)
@@ -753,7 +753,7 @@ do_launch() {  # <repo> <issue> <extra> <restart_n> <reason> <queue_wait_s> <run
   rm -f "$PIPE/orch-$rk.cap-exit"   # every launch consumes the signal
   # #178 end
 
-  # Same launch shape as orchestrate.sh: the headless session IS the orchestrator (--agent), no Agent() call.
+  # Same launch shape as launcher.sh: the headless session IS the orchestrator (--agent), no Agent() call.
   prompt="Drive $owner_repo#$issue through the pipeline. Repo: $repo. Read the latest marker on the issue and continue from there. ${preamble}${extra}"
 
   if ! pid_reserve_held "$rk"; then
@@ -843,7 +843,7 @@ This orchestrator has been auto-restarted multiple times without making progress
 |---|---|---|
 $history_text
 
-Relaunch manually with \`orchestrate.sh $repo $issue\` after investigating.
+Relaunch manually with \`launcher.sh $repo $issue\` after investigating.
 EOC
 )") 2>/dev/null
 
@@ -1175,7 +1175,7 @@ for f in "$PIPE"/orch-*.pid; do
     gate)
       # Human gate (mockups, infra go, BLOCKED with no delegated decision after it): park it; JP relaunches (or re-adds
       # agent-go) after acting. $marker is the gate marker, never a [delivery-lead] (or legacy [project-manager]) one. A run that is already .held is
-      # skipped above and stays held — held runs are not polled; the delivery lead relaunches with orchestrate.sh,
+      # skipped above and stays held — held runs are not polled; the delivery lead relaunches with launcher.sh,
       # which clears .held (claude-agents#59).
       # #306: a run auto-retry (step 1b) re-queued keeps its queue entry for the drain; re-holding it here would swallow the retry.
       if [ -f "$QUEUE/orch-$rk.json" ]; then
@@ -1707,7 +1707,7 @@ done
 # 2. Drain queue (up to DRAIN_MAX_PER_TICK items per tick, oldest queued_at first)
 # Capacity is decided once per tick; the drain and the dispatch step (5) share the result. A slot freed mid-tick is
 # never launched into by step 5 on this decision; when the drain took the slot or none is free, step 5 still claims its
-# top candidate and orchestrate.sh queues it (#714), so new agent-go tickets get a place in the oldest-first line even
+# top candidate and launcher.sh queues it (#714), so new agent-go tickets get a place in the oldest-first line even
 # while relaunches keep the queue busy.
 # Audit 2026-11-18: up to DRAIN_MAX_PER_TICK entries per tick (15 queued Mac tickets drained one per 6-16 min tick while 1-4 of
 # 7 slots were busy). The first launch uses the tick's single capacity decision above; each further one re-checks has_capacity
@@ -2442,7 +2442,7 @@ fi
 # ordinary agent-go tickets. Exception (JP 2026-10-19): a ticket labeled user-feedback (staff-reported bug/idea) still
 # dispatches even then — feedback bugs must keep auto-fixing regardless of goal-gating.
 # #714: also runs when the drain took this tick's slot or no slot is free (only a failed sentry gate, or a launch by an
-# earlier step, still holds it); orchestrate.sh queues the claimed ticket when it finds no capacity, stamping queued_at.
+# earlier step, still holds it); launcher.sh queues the claimed ticket when it finds no capacity, stamping queued_at.
 dispatched=0
 if { [ "$launched" -eq 0 ] || { [ "$drain_launched" -eq 1 ] && [ "$dispatch_hold" -eq 0 ]; }; } && [ "${#DISPATCH_REPOS[@]}" -gt 0 ]; then
   if ! power_ok; then
@@ -2535,7 +2535,7 @@ if { [ "$launched" -eq 0 ] || { [ "$drain_launched" -eq 1 ] && [ "$dispatch_hold
         # before any claim comment, while the repo's launches of the last 24 h ($PIPE/sentry-launches.log, local) are at
         # or above SENTRY_AUTO_GO_DAILY_CAP. Labels stay as they are, so it launches when the window frees; other
         # candidates go on. Decided once per repo per tick (one slog line); an unreadable log fails closed the same way
-        # (logged and alerted by sentry_cap_gate). orchestrate.sh re-checks and appends the launch line; it is told the
+        # (logged and alerted by sentry_cap_gate). launcher.sh re-checks and appends the launch line; it is told the
         # label through SENTRY_CAP_LABELLED so it does not read it again.
         export SENTRY_CAP_LABELLED=0 SENTRY_CAP_EXEMPT=0
         case " $sentry_cands " in *" $num "*)
@@ -2576,7 +2576,7 @@ if { [ "$launched" -eq 0 ] || { [ "$drain_launched" -eq 1 ] && [ "$dispatch_hold
         rm -f "$PIPE/orch-$rk".{stopped,held,done,closed,marker,milestone,alert,label-cleared,startgate,jp-reminded} "$PIPE/orch-$rk.restarts"
         dispatch_reason=agent-go
         { [ "$HAS_CAP" -ne 1 ] || [ "$drain_launched" -eq 1 ]; } && dispatch_reason=agent-go-queue   # #714: queue it, never launch ahead of the line
-        out=$(LAUNCH_REASON=$dispatch_reason "$(dirname "${BASH_SOURCE[0]}")/orchestrate.sh" --force "$local_path" "$num" 2>&1 | tail -1)
+        out=$(LAUNCH_REASON=$dispatch_reason "$(dirname "${BASH_SOURCE[0]}")/launcher.sh" --force "$local_path" "$num" 2>&1 | tail -1)
         slog "[dispatch] $owner_repo#$num — claimed by $HOST, candidates=$cand_n, $out"
         launched=1; dispatched=1
         break

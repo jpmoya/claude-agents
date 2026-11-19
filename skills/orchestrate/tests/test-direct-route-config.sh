@@ -21,7 +21,7 @@ test_drc_ac1_constant_lists_claude_agents_with_the_pinned_comment() {
   drc_cfg "" 'printf "%s\n" ${DIRECT_ROUTE_REPOS[@]+"${DIRECT_ROUTE_REPOS[@]}"}'
   assert_eq "$DRC_RC" "0" "AC1: config.sh loads (output: $DRC_OUT)" || return 1
   printf '%s\n' "$DRC_OUT" | grep -qxF 'jpmoya/claude-agents' || { fail "AC1: DIRECT_ROUTE_REPOS must contain jpmoya/claude-agents, got [$DRC_OUT]"; return 1; }
-  grep -qF -- '# Changed only by an interactive session with subagents — never orchestrate.sh, agent-go, a goal or the supervisor (#632).' "$RS_DRC/config.sh" \
+  grep -qF -- '# Changed only by an interactive session with subagents — never launcher.sh, agent-go, a goal or the supervisor (#632).' "$RS_DRC/config.sh" \
     || { fail "AC1: config.sh is missing the ticket's comment line on DIRECT_ROUTE_REPOS"; return 1; }
   grep -q '^DIRECT_ROUTE_REPOS=(' "$RS_DRC/config.sh" || { fail "AC1: DIRECT_ROUTE_REPOS is not assigned at top level of config.sh"; return 1; }
 }

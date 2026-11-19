@@ -17,7 +17,7 @@ All counts are read-only measurements at that moment.
 | (a) one queued ticket per tick | Confirmed, and it is the biggest throughput loss of the day (section 2). |
 | (e) feedback goals lost their slot exemption | Not live now: both feedback goals in `goalqueue.json` still have specs ending `:feedback`; PR #760 (project-only goals) keeps that spec. |
 | (l) stale DISPATCH_REPOS | Already cleaned on the Mac at 19:05Z (`config.local.sh.bak-20261118` diff: casa-verde-site, rfp_finder, Business-Intelligence removed). 320 "no local checkout" lines before that. |
-| (m) launch and queue print the same "check" line | Not on main: the queue path prints `queued #N ... check: orchestrate.sh queue`, the launch path `launched ... check: orchestrate.sh status`. The real failure is that callers sent the output to /dev/null and both paths exit 0. Exit codes were left alone (goal launchers treat non-zero as failure). |
+| (m) launch and queue print the same "check" line | Not on main: the queue path prints `queued #N ... check: launcher.sh queue`, the launch path `launched ... check: launcher.sh status`. The real failure is that callers sent the output to /dev/null and both paths exit 0. Exit codes were left alone (goal launchers treat non-zero as failure). |
 
 ## 2. Tonight's main stall, measured
 
@@ -60,7 +60,7 @@ tick lock (`flock`) skips overlapping ticks, so a slow goal step directly divide
    any registry goal is `unreadable`, so no queued goal starts. A project goal whose GitHub project is closed did this to
    Sales Workflow 3.0 tonight. With `GOAL_SERIAL=1` this is a single point of failure for both hosts. Visibility is
    #762 (status page: show goal stalling queue); the behaviour change (skip instead of block) is a design call.
-5. **Labels drift from run state with no signal.** `agent-go` is consumed at claim (`orchestrate.sh`), step 3 clears
+5. **Labels drift from run state with no signal.** `agent-go` is consumed at claim (`launcher.sh`), step 3 clears
    `agent-in-progress` when a run is held, dead or done, and step 4 clears it on any ticket with no local state and a
    30-minute-old last comment (`supervisor.sh` ~2286). Nothing puts `agent-go` back. Result: a ticket in no state any
    automation reads (the #1488 "lost ticket"). Now: 85 open tickets carry a non-terminal pipeline marker and no pipeline

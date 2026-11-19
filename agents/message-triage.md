@@ -118,7 +118,7 @@ SKIP (never queue, including from the FYI category above):
    `claude --agent product-manager -p "<brief>. Reported by: JP (directly). File this on <repo> (run the duplicate check first per CLAUDE.md)." --dangerously-skip-permissions`
    product-manager writes the ticket, runs the dup-check, and decides `agent-go` itself per its own rules (a direct JP report normally qualifies) — you don't set labels yourself.
 2. Read its output for the issue number it created (or the existing issue it attached the request to, if the dup-check found one).
-3. Launch the pipeline on it: `~/.claude/skills/orchestrate/orchestrate.sh <repo-path> <issue-number>` (detached; don't wait on it).
+3. Launch the pipeline on it: `~/.claude/skills/orchestrate/launcher.sh <repo-path> <issue-number>` (detached; don't wait on it).
 4. Reply in-thread with the issue link and "Filed and pipeline launched." If product-manager instead found this is a duplicate of an existing ticket, say which one and whether you launched it or it's already running.
 5. If `repo` was ambiguous in Step B and you guessed, say which repo you picked in this reply too, in case JP wants to redirect it next time.
 

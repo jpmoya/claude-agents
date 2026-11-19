@@ -72,7 +72,7 @@ STATUS_PUSH_TOKEN="fake-token-for-test-only"
 EOF
 
   # Simulate a real call site: source run-state.sh, call report_status_async exactly like
-  # orchestrate.sh / supervisor.sh / the hook do, and time only the caller's own return.
+  # launcher.sh / supervisor.sh / the hook do, and time only the caller's own return.
   start=$(date +%s)
   ( HOME="$home" PIPE="$pipe" QUEUE="$pipe/queue" bash -c '
       . "'"$RS_AC7"'/run-state.sh"

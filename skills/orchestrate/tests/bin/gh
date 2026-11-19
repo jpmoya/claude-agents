@@ -1,6 +1,6 @@
 #!/bin/bash
 # Fake `gh` for the AC14 golden test. Deterministic, no network, no real repo/issue leaked.
-# `orchestrate.sh status` shells out to `gh issue view <n> --json state,comments --jq ...` per run
+# `launcher.sh status` shells out to `gh issue view <n> --json state,comments --jq ...` per run
 # to fetch the issue's open/closed state (so a closed issue never reports "held (needs JP)" after
 # someone finishes it by hand outside the pipeline -- #151/#183, 2026-09-18) and the latest marker;
 # this stub always reports an open issue with no marker so the golden capture and the golden

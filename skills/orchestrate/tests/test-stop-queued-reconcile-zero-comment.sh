@@ -1,10 +1,10 @@
-# Tests for claude-agents#93 — (a) `orchestrate.sh stop` on a queued-only ticket (no pid file) must still
+# Tests for claude-agents#93 — (a) `launcher.sh stop` on a queued-only ticket (no pid file) must still
 # write the tombstone and drop the queue entry; (b)-(d) supervisor reconcile (step 4) ages a zero-comment
 # agent-in-progress issue by its updatedAt instead of clearing the label at once.
 # Isolated HOME/PIPE/QUEUE/LOGDIR. Own gh stub (the shared fake has no updatedAt). Placeholder names only.
 
 HERE_Z=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-ORCH_Z="$HERE_Z/../orchestrate.sh"
+ORCH_Z="$HERE_Z/../launcher.sh"
 SUP_Z="$HERE_Z/../supervisor.sh"
 
 # z_env — Z_PIPE, Z_HOME, Z_REPO, Z_GH; DISPATCH_REPOS lists one repo; gh stub reports issue 77 as

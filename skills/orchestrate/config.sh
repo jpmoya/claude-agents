@@ -1,5 +1,5 @@
 #!/bin/bash
-# Shared pipeline defaults, sourced by orchestrate.sh and supervisor.sh.
+# Shared pipeline defaults, sourced by launcher.sh and supervisor.sh.
 # Per-machine overrides (DISPATCH_REPOS, caps) go in ~/.claude/pipeline/config.local.sh — untracked, no secrets here.
 
 # Run state is durable (#332): /tmp is emptied by a reboot, which orphaned in-flight runs (2026-10-16). Same default in stage-run.sh,
@@ -59,12 +59,12 @@ INTAKE_MAX_GIVEUPS=4
 SENTRY_AUTO_GO=1
 # Daily launch cap for automatically released Sentry tickets (#182). With SENTRY_AUTO_GO=1 the label helper adds
 # LABEL_SENTRY_GO next to agent-go; at most this many tickets carrying it are launched per repo in any rolling 24 h
-# (orchestrate.sh refuses with exit 3, supervisor step 5 leaves the ticket queued). Worst-case spend = cap x
+# (launcher.sh refuses with exit 3, supervisor step 5 leaves the ticket queued). Worst-case spend = cap x
 # COST_CEILING_USD per app per day: 3 x $40 = $120. The count is this host's own $PIPE/sentry-launches.log (no GitHub
 # call), so two dispatching hosts each allow the cap. 0 = no automatic Sentry launch. A ticket JP releases by hand (after
 # intake is done) never carries the label and is never throttled; SENTRY_CAP_BYPASS=1 in the environment lets one hand
 # launch through. The cap bounds new tickets: any relaunch of a ticket that already launched in the window (an
-# automatic restart, a queue drain, or a hand / delivery-lead relaunch through orchestrate.sh) is neither refused nor counted
+# automatic restart, a queue drain, or a hand / delivery-lead relaunch through launcher.sh) is neither refused nor counted
 # again (COST_CEILING_USD bounds what one ticket can spend across its restarts). A ticket that also carries
 # LABEL_CI_CRITICAL (#781) is exempt: it launches with the cap full, is not counted (its log line ends in `exempt`), and an
 # unreadable launch log does not block it; the label is the only test, and only on a sentry-auto-go ticket.
@@ -75,7 +75,7 @@ DISPATCH_REPOS=()
 # JP (2026-10-18): only the goal-based pipeline (deliver.sh / delivery-lead) should launch work; a bare agent-go
 # ticket with no goal must not auto-run. 0 = supervisor step 5 (shared dispatch) never claims or launches a ticket,
 # whatever DISPATCH_REPOS says; a goal's own dispatch (goal_launch, the delivery lead's hand-launches) is unaffected.
-# A hand launch (orchestrate.sh <repo> <issue>, run by JP or an agent he points at it) still works either way.
+# A hand launch (launcher.sh <repo> <issue>, run by JP or an agent he points at it) still works either way.
 SHARED_DISPATCH_ENABLED=${SHARED_DISPATCH_ENABLED:-1}
 # Scanned by scan-backlog.sh, never dispatched. "owner/repo" entries; a ":path" suffix is tolerated and ignored.
 SCAN_ONLY_REPOS=()
@@ -136,9 +136,9 @@ CI_QUEUE_METRICS_ENABLED=${CI_QUEUE_METRICS_ENABLED:-1}
 # config.local.sh. Same structural guarantee for the suites: run-tests.sh exports STATUS_PAGE_DEPLOY_TEST_DISABLE=1 and no host config can win.
 [ "${STATUS_PAGE_DEPLOY_TEST_DISABLE:-0}" != "1" ] || STATUS_PAGE_DEPLOY_ENABLED=0
 
-# Direct-route repos (#632): the pipeline never runs them — orchestrate.sh refuses the launch (exit 2, no --force), the
+# Direct-route repos (#632): the pipeline never runs them — launcher.sh refuses the launch (exit 2, no --force), the
 # supervisor and the goal machinery ignore their tickets. Set AFTER the host override so no config.local.sh can clear it.
-# Changed only by an interactive session with subagents — never orchestrate.sh, agent-go, a goal or the supervisor (#632).
+# Changed only by an interactive session with subagents — never launcher.sh, agent-go, a goal or the supervisor (#632).
 DIRECT_ROUTE_REPOS=("jpmoya/claude-agents")
 # direct_route_repo <owner/repo[:path]> -> 0 when the repo is in DIRECT_ROUTE_REPOS, 1 otherwise. Case-insensitive (GitHub
 # owner/repo is); only the part before the first ":" is compared, so a DISPATCH_REPOS-shaped "owner/repo:/path" entry works.

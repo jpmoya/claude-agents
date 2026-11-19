@@ -1,6 +1,6 @@
 # Issue #182 — daily cap on automatic Sentry-ticket launches per repo: the supervisor's shared-dispatch step (5).
 # Whole ticks in an isolated HOME/PIPE with stubbed gh / claude / pmset / curl (lib/sentry-cap.sh); step 5 launches
-# through the real orchestrate.sh. Config is the default (cap 3) unless a test says otherwise.
+# through the real launcher.sh. Config is the default (cap 3) unless a test says otherwise.
 #
 #   AC1  fixture 1: cap 3, 3 launches of repo A in the last hour, one sentry-auto-go issue queued in A -> not launched,
 #                   slog line written, labels unchanged
@@ -193,7 +193,7 @@ test_scs_fx4_hand_release_is_not_throttled_with_auto_go_on_either() {
   assert_eq "$l7" "agent-in-progress,bug,source:sentry,user-feedback" "claimed as any agent-go ticket" || return 1
 }
 
-# sc_queue_counted <issue> — a launch of repo A that orchestrate.sh queued and counted: the queue entry with its sentry_slot
+# sc_queue_counted <issue> — a launch of repo A that launcher.sh queued and counted: the queue entry with its sentry_slot
 # key and the launch line, as the queued path writes them
 sc_queue_counted() {
   jq -nc --arg i "$1" --arg r "$SC_RA" --arg s "$SC_A" --arg t "$(date -u +%FT%TZ)" \

@@ -4,7 +4,7 @@
 #
 # Stub gh keeps issues in $SC_D/issues.json ([{number,repo,labels:[{name}]}]) and every comment in $SC_D/comments.json,
 # applies --label / --jq like the real CLI, honours `issue edit --add-label/--remove-label`, answers `repo view` from the
-# named repo or the checkout's origin, and logs every call to $SC_D/gh-calls.log. orchestrate.sh's label read
+# named repo or the checkout's origin, and logs every call to $SC_D/gh-calls.log. launcher.sh's label read
 # (`api repos/<owner/repo>/issues/<n> --jq ...`) is answered from issues.json; $SC_D/labels-fail makes it exit 1 (with a
 # token-shaped string on stderr that must never be logged). With $SC_D/rest-comments the supervisor's REST comment reads
 # (`api repos/<owner/repo>/issues/<n>/comments...`) are answered from comments.json (the queue drain arbitrates its claim
@@ -16,7 +16,7 @@ HERE_SCL=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 RS_SC="$HERE_SCL/../.."
 ROOT_SC="$RS_SC/../.."
 SUP_SC="$RS_SC/supervisor.sh"
-ORCH_SC="$RS_SC/orchestrate.sh"
+ORCH_SC="$RS_SC/launcher.sh"
 SC_A="project-a/repo-a"
 SC_B="project-b/repo-b"
 
@@ -119,7 +119,7 @@ sc_wait_launches() {
   while [ "$(sc_orch_launches)" -lt "$1" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
   return 0
 }
-# sc_tick — one supervisor tick; waits for every launch its log reports (step 5: "claimed by <host> ... orchestrate.sh status
+# sc_tick — one supervisor tick; waits for every launch its log reports (step 5: "claimed by <host> ... launcher.sh status
 # <ticket>", the last line of a successful launch; queue drain: "[launch] #<n> pid=")
 sc_tick() {
   HOME="$SC_HOME" PATH="$(sc_path)" PIPE="$SC_PIPE" QUEUE="$SC_PIPE/queue" LOGDIR="$SC_HOME/logs/pipeline" \
@@ -127,7 +127,7 @@ sc_tick() {
     /bin/bash "$SUP_SC" >/dev/null 2>&1
   sc_wait_launches "$(sc_suplog | grep -cE 'claimed by .*orchestrate\.sh status |\[launch\] #[0-9]+ pid=')"
 }
-# sc_launch <checkout> <issue> [orchestrate.sh flags...] — a hand launch; prints stdout+stderr, returns the exit code.
+# sc_launch <checkout> <issue> [launcher.sh flags...] — a hand launch; prints stdout+stderr, returns the exit code.
 # SC_BYPASS / SC_LABELLED / SC_WEBHOOK feed SENTRY_CAP_BYPASS / SENTRY_CAP_LABELLED / SLACK_WEBHOOK_URL.
 sc_launch() {
   local repo=$1 n=$2 rc out before; shift 2

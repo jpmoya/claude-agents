@@ -16,7 +16,7 @@ Both are idempotent: re-running the helper on a ticket that already has them cha
 
 The hook fires on wording, so it can be wrong ("close the ticket", "what is the issue with the deploy"). If JP did not ask for a ticket to be created, say so in one line and carry on with the real request. Otherwise find the target repo (from the conversation, the checkout, or the ticket's subject). If it is not clear and cannot be inferred, that is the one thing to ask.
 
-**`jpmoya/claude-agents` is exempt (direct route).** Tickets in this repo never get `agent-go` and never join a goal or project (`DIRECT_ROUTE_REPOS`: orchestrate.sh refuses the repo, deliver.sh refuses a goal on it). Do step 1 (duplicate check) and step 3 (product-manager files it, for history), skip everything else, and implement it with subagents as CLAUDE.md says. The helper and the guard both leave this repo alone.
+**`jpmoya/claude-agents` is exempt (direct route).** Tickets in this repo never get `agent-go` and never join a goal or project (`DIRECT_ROUTE_REPOS`: launcher.sh refuses the repo, deliver.sh refuses a goal on it). Do step 1 (duplicate check) and step 3 (product-manager files it, for history), skip everything else, and implement it with subagents as CLAUDE.md says. The helper and the guard both leave this repo alone.
 
 ## Step 1: duplicate check, first
 

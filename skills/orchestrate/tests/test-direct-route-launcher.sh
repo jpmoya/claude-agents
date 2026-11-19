@@ -1,4 +1,4 @@
-# #632 — orchestrate.sh and direct-route repos.
+# #632 — launcher.sh and direct-route repos.
 #   AC2  a launch whose `gh repo view` resolves to jpmoya/claude-agents exits 2 with "direct-route repo … see CLAUDE.md",
 #        the fake gh records no `issue comment` and no `issue edit`, no orch-* file exists under PIPE or QUEUE afterwards;
 #        `--force` changes nothing
@@ -8,7 +8,7 @@
 # Prefix dro_ / DRO_. Placeholder repo names for the app repo (public repo).
 
 HERE_DRO=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-ORCH_DRO="$HERE_DRO/../orchestrate.sh"
+ORCH_DRO="$HERE_DRO/../launcher.sh"
 
 dro_env() {  # dro_env <owner/repo the fake gh resolves the checkout to> -> DRO_HOME DRO_PIPE DRO_REPO DRO_BIN
   DRO_HOME=$(new_home); DRO_PIPE=$(new_pipe); DRO_REPO="$DRO_PIPE/checkout"
@@ -20,7 +20,7 @@ dro_env() {  # dro_env <owner/repo the fake gh resolves the checkout to> -> DRO_
   printf 'MEM_FLOOR_MB=0\nCLAIM_SETTLE_SECS=0\n' > "$DRO_HOME/.claude/pipeline/config.local.sh"
 }
 
-dro_run() {  # dro_run <orchestrate.sh args…> -> DRO_OUT (stdout+stderr) DRO_RC
+dro_run() {  # dro_run <launcher.sh args…> -> DRO_OUT (stdout+stderr) DRO_RC
   DRO_OUT=$(HOME="$DRO_HOME" PATH="$DRO_BIN:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$DRO_PIPE" QUEUE="$DRO_PIPE/queue" \
     LOGDIR="$DRO_HOME/logs/pipeline" bash "$ORCH_DRO" "$@" 2>&1); DRO_RC=$?
 }
@@ -101,7 +101,7 @@ test_dro_ac4_stop_and_status_still_work_on_an_old_claude_agents_run() {
   dro_cleanup; return $rc
 }
 
-echo "-- direct-route repos: orchestrate.sh (issue #632 AC2-AC4)"
+echo "-- direct-route repos: launcher.sh (issue #632 AC2-AC4)"
 run_test test_dro_ac2_direct_route_repo_is_refused_before_any_write_or_state_file
 run_test test_dro_ac2_case_insensitive_resolve_is_refused_too
 run_test test_dro_ac3_other_repo_proceeds_past_the_refusal_point

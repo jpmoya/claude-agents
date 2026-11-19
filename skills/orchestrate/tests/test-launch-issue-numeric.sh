@@ -1,7 +1,7 @@
-# Issue #123: orchestrate.sh's launch branch rejects a non-numeric issue (^[0-9]+$, same rule as
+# Issue #123: launcher.sh's launch branch rejects a non-numeric issue (^[0-9]+$, same rule as
 # pipeline-bridge-dispatch.sh) before any gh call, state file, queue entry or process.
 ROOT_LN=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
-LAUNCHER_LN="$ROOT_LN/skills/orchestrate/orchestrate.sh"
+LAUNCHER_LN="$ROOT_LN/skills/orchestrate/launcher.sh"
 
 # ln_run <bad-issue> — runs the launcher against an isolated HOME/PIPE with a stub gh; sets LN_* vars.
 ln_run() {
@@ -29,7 +29,7 @@ test_ln_rejects_non_numeric() {
 
 test_ln_stop_hint() {
   ln_run stop
-  assert_contains "$LN_OUT" "did you mean 'orchestrate.sh stop <N>'?" "hint" || return 1
+  assert_contains "$LN_OUT" "did you mean 'launcher.sh stop <N>'?" "hint" || return 1
 }
 
 test_ln_numeric_still_launches() {

@@ -1,5 +1,5 @@
 # Regression for claude-agents#56 — the supervisor holds its single-flight lock as file descriptor 9
-# and dispatches orchestrate.sh under it. The background launch must close fd 9 (9>&-), or the
+# and dispatches launcher.sh under it. The background launch must close fd 9 (9>&-), or the
 # orchestrator inherits the lock for its whole life and every later supervisor tick exits silently.
 #
 # The stub `claude` records whether fd 9 is open in its own process. Every case runs in an isolated
@@ -7,10 +7,10 @@
 # over any real binary). Placeholder repo names only.
 
 HERE_LFD=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-ORCH_LFD="$HERE_LFD/../orchestrate.sh"
+ORCH_LFD="$HERE_LFD/../launcher.sh"
 
 # lfd_env -> sets LFD_PIPE, LFD_HOME, LFD_REPO, LFD_TMP, LFD_OUT. Capacity is open (memory floor
-# zeroed) so orchestrate.sh takes the launch path, not the queue.
+# zeroed) so launcher.sh takes the launch path, not the queue.
 lfd_env() {
   LFD_PIPE=$(new_pipe); LFD_HOME=$(new_home)
   LFD_REPO="$LFD_PIPE/repo-a"

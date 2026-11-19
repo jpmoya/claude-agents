@@ -1,7 +1,7 @@
 # #318 — run state keyed by owner/repo + issue. Scheduler #100 and quoting #100 must not share files.
 # Expected values come from the ticket (key = <owner>_<repo>-<N>, files orch-<key>.*, <key>-<agent>-before.txt,
 # locked-<key>.txt, run-<key>-<agent>.log) or hand arithmetic in comments — never from the code under test.
-# Every "after" state is produced by running the shipped scripts (orchestrate.sh, supervisor.sh, the hook,
+# Every "after" state is produced by running the shipped scripts (launcher.sh, supervisor.sh, the hook,
 # reconcile-status.sh); only LEGACY orch-<N>.* files are hand-seeded.
 # Everything is prefixed rk_ / RK_ (all test files share one shell). Placeholder repo names only (public repo).
 # Interpretation flagged for the PM: the AC6 error row is provoked by a legacy set whose new-key files already
@@ -65,10 +65,10 @@ rk_cleanup() {
   rm -rf "$RK_HOME" "$RK_PIPE"
 }
 
-rk_orch() {  # rk_orch <args…> — shipped orchestrate.sh from the copied tree; stdout+stderr, rc in RK_RC
+rk_orch() {  # rk_orch <args…> — shipped launcher.sh from the copied tree; stdout+stderr, rc in RK_RC
   RK_RC=0
   ( cd "$RK_HOME" && env HOME="$RK_HOME" PATH="$RK_BIN:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$RK_PIPE" QUEUE="$RK_PIPE/queue" LOGDIR="$RK_HOME/logs/pipeline" \
-      PIPELINE_TEST_CLAIM_SETTLE_SECS=0 bash "$RK_TREE/skills/orchestrate/orchestrate.sh" "$@" ) 2>&1 || RK_RC=$?
+      PIPELINE_TEST_CLAIM_SETTLE_SECS=0 bash "$RK_TREE/skills/orchestrate/launcher.sh" "$@" ) 2>&1 || RK_RC=$?
 }
 # rk_orch_out <args…> — like rk_orch but sets RK_OUT and RK_RC in the CURRENT shell (no $(…) subshell, which would lose RK_RC).
 rk_orch_out() {

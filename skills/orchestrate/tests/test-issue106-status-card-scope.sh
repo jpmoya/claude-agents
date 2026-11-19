@@ -26,7 +26,7 @@ test_i106_claude_md_rest_of_card_text_unchanged() {
   local l; l=$(i106_card_line)
   assert_contains "$l" 'answer with this card' "AC1 unchanged: card instruction" || return 1
   assert_contains "$l" 'plain language, no jargon (no marker names, PIDs or stage names)' "AC1 unchanged: no jargon" || return 1
-  assert_contains "$l" 'Build it from `orchestrate.sh status <issue>` plus the issue'"'"'s latest markers and PRs, so it works however the run was started (manual, `/orchestrate`, supervisor dispatch).' "AC1 unchanged: build-from sentence" || return 1
+  assert_contains "$l" 'Build it from `launcher.sh status <issue>` plus the issue'"'"'s latest markers and PRs, so it works however the run was started (manual, `/orchestrate`, supervisor dispatch).' "AC1 unchanged: build-from sentence" || return 1
   assert_contains "$l" 'Never hand-roll a different layout.' "AC1 unchanged: closing sentence" || return 1
   local f
   for f in 'STATUS:    <RUNNING | WAITING ON YOU | BLOCKED | HELD | STALLED, retrying | DEPLOYED | DONE>' \
@@ -116,7 +116,7 @@ test_i106_no_new_mechanism_only_doc_files_and_tests_touched() {
       # #193: exactly its new Files-table paths
       skills/orchestrate/deliver.sh|skills/orchestrate/goal-lib.sh) ;;
       # #217: hand launch claim arbitration
-      skills/orchestrate/orchestrate.sh) ;;
+      skills/orchestrate/launcher.sh) ;;
       # #188: exactly its Files-table paths not already listed
       agents/solutions-architect.md|agents/pipeline-adjudicator.md) ;;
       # #196: exactly its Files-table path not already listed

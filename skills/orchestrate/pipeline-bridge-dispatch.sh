@@ -17,7 +17,7 @@
 # Once resolved: `gh issue view --json state,labels` — closed, already agent-in-progress, or
 # already agent-go each report status and take no action (idempotent, no `gh issue edit` call);
 # otherwise add the label via exactly one `gh issue edit --repo <owner/repo> <issue> --add-label
-# agent-go` call (never call orchestrate.sh directly — the shared claim/dispatch protocol in
+# agent-go` call (never call launcher.sh directly — the shared claim/dispatch protocol in
 # supervisor.sh §5 is what actually launches it).
 #
 # Every outcome tied to a real issue in a real repo (closed / already running / already queued /

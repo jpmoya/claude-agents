@@ -6,7 +6,7 @@
 #         a 300-char title file yields a 140-char title.
 #   AC11  with a title file present, "example-owner/project-a" appears in the payload only inside
 #         runs[].url values. (test-ac5-no-leak.sh, which has no title file, is untouched.)
-#   AC12  orchestrate.sh writes $PIPE/orch-<issue>.title on the launched AND queued paths, and a
+#   AC12  launcher.sh writes $PIPE/orch-<issue>.title on the launched AND queued paths, and a
 #         failing/empty fetch neither breaks the launch nor leaves a title file; supervisor.sh
 #         do_launch fetches only when the title file is absent and tolerates failure.
 #   AC13  build-runs-json.py makes no gh/curl call; report-status.sh's only curl is the push.
@@ -16,7 +16,7 @@
 
 HERE_ST=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 RS_ST="$HERE_ST/.."
-ORCH_ST="$RS_ST/orchestrate.sh"
+ORCH_ST="$RS_ST/launcher.sh"
 SUP_ST="$RS_ST/supervisor.sh"
 
 # ---- reporter helpers -----------------------------------------------------------------------
@@ -227,7 +227,7 @@ test_st_ac13_builder_reads_title_file_and_makes_no_network_call() {
   assert_eq "$curl_code" "1" "AC13: report-status.sh's only curl is the existing push" || return 1
 }
 
-# ---- AC12: orchestrate.sh launch capture ----------------------------------------------------
+# ---- AC12: launcher.sh launch capture ----------------------------------------------------
 
 # st_env <full|open> -> ST_PIPE, ST_HOME, ST_REPO, ST_BIN. "full" fills every slot so the launch
 # queues; "open" zeroes the memory floor so it launches (claude is a no-op stub).
@@ -265,7 +265,7 @@ st_sleepy_claude() {
   chmod +x "$ST_BIN/claude"
 }
 
-st_launch() {  # st_launch <issue> — orchestrate.sh in the isolated env; combined output on stdout
+st_launch() {  # st_launch <issue> — launcher.sh in the isolated env; combined output on stdout
   HOME="$ST_HOME" PATH="$ST_BIN:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$ST_PIPE" QUEUE="$ST_PIPE/queue" \
     "$ORCH_ST" "$ST_REPO" "$1" 2>&1
 }

@@ -165,10 +165,10 @@ test_code_sync_status_shows_alert_only_when_present() {
   cs_alert_env
   local home; home=$(mktemp -d "${TMPDIR:-/tmp}/cs-alert-home.XXXXXX"); mkdir -p "$home/.claude/pipeline" "$CSA_PIPE/queue"
   local out
-  out=$(HOME="$home" PIPE="$CSA_PIPE" QUEUE="$CSA_PIPE/queue" "$HERE_CS/../orchestrate.sh" status 2>&1)
+  out=$(HOME="$home" PIPE="$CSA_PIPE" QUEUE="$CSA_PIPE/queue" "$HERE_CS/../launcher.sh" status 2>&1)
   assert_not_contains "$out" "CODE SYNC" "no alert file -> no line" || return 1
   cs_alert_call 'code_sync_alert dirty d'
-  out=$(HOME="$home" PIPE="$CSA_PIPE" QUEUE="$CSA_PIPE/queue" "$HERE_CS/../orchestrate.sh" status 2>&1)
+  out=$(HOME="$home" PIPE="$CSA_PIPE" QUEUE="$CSA_PIPE/queue" "$HERE_CS/../launcher.sh" status 2>&1)
   assert_contains "$out" "!! CODE SYNC:" "status surfaces the refusing guard" || return 1
   assert_contains "$out" "refused to launch since" "with the alert text"
 }

@@ -1,7 +1,7 @@
 # Tests for claude-agents#119 — supervisor reconcile (section 4) must not strip agent-in-progress from a run another
-# host owns, and orchestrate.sh launch/queue must post the ownership claim line reconcile reads.
+# host owns, and launcher.sh launch/queue must post the ownership claim line reconcile reads.
 #
-#   AC1  orchestrate.sh launch AND queue paths each post exactly one `**[supervisor] NOTE** claim: <hostname -s> <UTC ISO ts>`
+#   AC1  launcher.sh launch AND queue paths each post exactly one `**[supervisor] NOTE** claim: <hostname -s> <UTC ISO ts>`
 #        (dispatch's format, supervisor.sh:541); a failing comment call never blocks the launch
 #   AC2  reconcile: latest claim (no time window) naming another host -> label kept; naming this host / no claim -> today's rule
 #   AC3  (a) other-host claim, 2h old, no local state -> kept   (b) this-host claim, 2h old -> cleared
@@ -11,7 +11,7 @@
 # supervisor passes to a full issue JSON, so the tests do not pin the query shape. Bash 3.2 portable.
 
 HERE_RH=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-ORCH_RH="$HERE_RH/../orchestrate.sh"
+ORCH_RH="$HERE_RH/../launcher.sh"
 SUP_RH="$HERE_RH/../supervisor.sh"
 RH_THIS=$(hostname -s)
 RH_OTHER="other-host-zz"
@@ -152,7 +152,7 @@ test_rh_h_empty_line1_keeps_label() {
   assert_not_contains "$RH_CALLS" "issue edit 88 --remove-label" "#326/h: label not removed" || return 1
 }
 
-# ---- orchestrate.sh side ----------------------------------------------------------------------------------------
+# ---- launcher.sh side ----------------------------------------------------------------------------------------
 rh_o_env() {  # rh_o_env <full|open>
   local mode=$1 i
   RO_PIPE=$(new_pipe); RO_HOME=$(new_home)

@@ -21,7 +21,7 @@ A workflow line like `runs-on: fromJSON(vars.CI_RUNNER_JSON || '"ubuntu-latest"'
 | Mobile release (ops tool) | `push` | Android on `benjis-ci` or the Mac, iOS on the Mac runner `jp-mac-mobile` (`MOBILE_MAC_RUNNER_JSON`) | same |
 | This repo's `ci-metrics.yml` | `schedule` | GitHub-hosted `ubuntu-latest` (literal, so it works when the pool is down) | `grep runs-on .github/workflows/ci-metrics.yml` |
 | Supervisor | Mac: launchd, odd minutes; VM: cron, even minutes | the Mac and the Clog VM | `launchctl list \| grep pipeline-supervisor`; `ssh clog-exec 'crontab -l \| grep supervisor'` |
-| Orchestrator and stage agents | launched by the supervisor or `orchestrate.sh` as `claude --agent <name> -p` | the Mac or the VM | `skills/orchestrate/orchestrate.sh status` |
+| Orchestrator and stage agents | launched by the supervisor or `launcher.sh` as `claude --agent <name> -p` | the Mac or the VM | `skills/orchestrate/launcher.sh status` |
 | Status page | hosts POST heartbeats | Cloudflare Worker `status-page`, fronted by Vercel (`pipeline-status-jp.vercel.app`, Google sign-in) | `status-page/wrangler.jsonc` |
 
 Runner hosts: the `gha-CI-*` slots are the Hetzner CI host, the `gha-Claude-*` slots are the Clog VM (which also runs the supervisor and agents), `jp-mac-mobile` is JP's Mac (see `infra/ci-runners/README.md`). Slot labels and counts change: read them from the script, not from here.

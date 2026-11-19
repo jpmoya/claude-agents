@@ -1,4 +1,4 @@
-# Regression for claude-agents#3 — orchestrate.sh must persist the extra instructions to
+# Regression for claude-agents#3 — launcher.sh must persist the extra instructions to
 # $PIPE/orch-<issue>.extra on BOTH the immediate-launch and the queued path. supervisor.sh treats
 # that file as the source of truth and rebuilds the queue JSON from it, so a queued launch that
 # skipped the write lost its extra on the next supervisor tick.
@@ -7,7 +7,7 @@
 # fake gh/claude installed there win over any real binary). Placeholder repo names only.
 
 HERE_EXT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-ORCH_EXT="$HERE_EXT/../orchestrate.sh"
+ORCH_EXT="$HERE_EXT/../launcher.sh"
 SUP_EXT="$HERE_EXT/../supervisor.sh"
 
 # ext_env <full|open> -> sets EXT_PIPE, EXT_HOME, EXT_REPO. "full" fills every MAX_CONCURRENT slot
@@ -32,7 +32,7 @@ ext_env() {
 
 ext_cleanup() { cleanup_running; rm -rf "$EXT_PIPE" "$EXT_HOME"; }
 
-# ext_launch <issue> [extra...] -> runs orchestrate.sh in the isolated env; stdout+stderr on stdout, rc returned
+# ext_launch <issue> [extra...] -> runs launcher.sh in the isolated env; stdout+stderr on stdout, rc returned
 ext_launch() {
   local issue=$1; shift
   HOME="$EXT_HOME" PATH="$EXT_HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$EXT_PIPE" QUEUE="$EXT_PIPE/queue" \
@@ -119,7 +119,7 @@ test_extra_supervisor_reenqueue_keeps_extra() {
   out=$(ext_launch 42 "$extra"); rc=$?
   assert_exit0 "$rc" "extra/AC4: queued launch exits 0" || { ext_cleanup; return 1; }
   # A queued-launched #42 that the supervisor sees as a dead, non-terminal run to re-enqueue
-  # (stale .exit + .repo + dead .pid). Drop the queue entry orchestrate.sh wrote: the supervisor
+  # (stale .exit + .repo + dead .pid). Drop the queue entry launcher.sh wrote: the supervisor
   # only rebuilds it (from .extra) when none exists.
   # (#318: the launch wrote the run under its owner_repo-keyed names; seed and drop those, not legacy orch-42.*.)
   local qf stem

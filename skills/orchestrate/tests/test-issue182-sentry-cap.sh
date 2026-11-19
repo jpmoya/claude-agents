@@ -1,12 +1,12 @@
 # Issue #182 — daily cap on automatic Sentry-ticket launches per repo: config, label helper, the launch log and the
-# orchestrate.sh refusal (the place every launch passes, PM readiness note on the ticket). The supervisor's step-5
+# launcher.sh refusal (the place every launch passes, PM readiness note on the ticket). The supervisor's step-5
 # pre-check is in test-issue182-sentry-cap-supervisor.sh.
 #
 #   AC1  fixture 5: `intake-labels.sh bug sentry` with SENTRY_AUTO_GO=1 -> agent-go + sentry-auto-go; 0 -> agent-proposed,
 #        no sentry-auto-go; every other #176 output unchanged
 #   AC2  config.sh defines SENTRY_AUTO_GO_DAILY_CAP=3 with a comment stating the worst-case spend (cap x COST_CEILING_USD)
 #   AC4  the launch log is append-only; a missing file counts as zero launches
-#   PM   orchestrate.sh on a sentry-auto-go issue with a full log -> exit 3 with the exact message, no claim comment, no
+#   PM   launcher.sh on a sentry-auto-go issue with a full log -> exit 3 with the exact message, no claim comment, no
 #        process; --force does not bypass; SENTRY_CAP_BYPASS=1 does; a source:sentry issue without the label launches;
 #        the launch line is appended after a successful launch; agents/intake.md leaves the label to the supervisor
 #   Rev  (code review of PR #683) gate and append are serialised per repo by a mkdir lock with a stale takeover; a launch
@@ -183,7 +183,7 @@ test_sc_gate_under_cap_at_cap_and_unreadable() {
   assert_eq "$bad" "rc=1" "unreadable log: neither 'may launch' nor 'at the cap' (fail closed)" || return 1
 }
 
-# ------------------------------------------------------------------------------------------ orchestrate.sh (PM note 2)
+# ------------------------------------------------------------------------------------------ launcher.sh (PM note 2)
 
 test_sc_orch_full_log_refuses_with_exit_3_and_touches_nothing() {
   sc_env; sc_seed "$SC_A" 600 1800 3000

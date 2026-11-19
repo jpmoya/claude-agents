@@ -22,7 +22,7 @@
 # settings.json still counts as dirty.
 #
 # A tripped guard is LOUD (16 h silent outage on the VM, 472 refused ticks nobody saw): every stale tick rewrites
-# $PIPE/code-sync.alert (shown by `orchestrate.sh status`) and posts to the existing SLACK_WEBHOOK_URL on the first
+# $PIPE/code-sync.alert (shown by `launcher.sh status`) and posts to the existing SLACK_WEBHOOK_URL on the first
 # refusal and every CODE_SYNC_ALERT_REPEAT_SECS after; the first fresh tick removes it and posts one "recovered".
 CODE_SYNC_IGNORE_DIRTY=${CODE_SYNC_IGNORE_DIRTY-settings.json}
 CODE_SYNC_ALERT_REPEAT_SECS=${CODE_SYNC_ALERT_REPEAT_SECS:-3600}

@@ -37,7 +37,7 @@ test_sf_2_status_single_ticket_scans_once() {
   local pipe repo home cnt out
   pipe=$(new_pipe); home=$(new_home); repo=$(mktemp -d "${TMPDIR:-/tmp}/sf-repo.XXXXXX"); fixture_repo "$repo" project-a/app
   sf_fixture "$pipe" "$repo" 60; cnt=$(mktemp "${TMPDIR:-/tmp}/sf-cnt.XXXXXX")
-  out=$( HOME="$home" PATH="$HERE_SF/bin:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin" PIPE="$pipe" QUEUE="$pipe/queue" RS_PS_CMD="$(sf_ps_stub "$cnt")" "$SK_SF/orchestrate.sh" status 7 2>&1 )
+  out=$( HOME="$home" PATH="$HERE_SF/bin:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin" PIPE="$pipe" QUEUE="$pipe/queue" RS_PS_CMD="$(sf_ps_stub "$cnt")" "$SK_SF/launcher.sh" status 7 2>&1 )
   local c; c=$(wc -l < "$cnt")
   rm -rf "$pipe" "$repo" "$home" "$cnt"
   assert_eq "$(printf '%s\n' "$out" | grep -c '^#')" "1" "#598: status 7 prints one run row" || return 1
