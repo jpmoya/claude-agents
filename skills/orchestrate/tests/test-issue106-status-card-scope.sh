@@ -127,6 +127,8 @@ test_i106_no_new_mechanism_only_doc_files_and_tests_touched() {
       skills/orchestrate/report-status.sh) ;;
       # #234: exactly its Files-table path not already listed
       skills/orchestrate/run-state.sh) ;;
+      # #806: exactly its Files-table path (hooks/brevity-stop.sh status-card exemption; its test is skills/orchestrate/tests/* already allowed above)
+      hooks/brevity-stop.sh) ;;
       *) bad="$bad $f" ;;
     esac
   done <<< "$changed"
@@ -138,7 +140,9 @@ test_i106_no_runtime_script_parses_final_report() {
   local hits
   hits=$(grep -lE 'Report to JP|STATUS: +<|NEEDED FROM YOU|SELF-HEAL TICKETS|marker trail' \
     "$ROOT_106"/skills/orchestrate/*.sh "$ROOT_106"/hooks/* 2>/dev/null \
-    | grep -vxF "$ROOT_106/skills/orchestrate/goal-lib.sh")   # #195: goal-lib.sh composes (never parses) the standard card in its delivered/waiting comments
+    | grep -vxF "$ROOT_106/skills/orchestrate/goal-lib.sh" \
+    | grep -vxF "$ROOT_106/hooks/brevity-stop.sh")   # #195: goal-lib.sh composes (never parses) the standard card in its delivered/waiting comments;
+                                                      # #806: brevity-stop.sh matches (never composes) STATUS:/NEEDED FROM YOU: to exempt status cards from the brevity gate
   assert_eq "$hits" "" "AC6: no runtime script/hook parses the final report" || return 1
 }
 
