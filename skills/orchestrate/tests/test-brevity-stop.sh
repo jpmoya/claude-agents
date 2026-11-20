@@ -173,6 +173,125 @@ owner/repo #202 (3-5 word description) — queued
   assert_eq "$BS_OUT" "" "one real card with a bulleted NEEDED FROM YOU: no rejection text" || return 1
 }
 
+# #807 re-review: the per-card line cap (was 12) must match CLAUDE.md's "Status answers" spec of
+# "under 20 lines per card" — a legitimate single card of 16-19 lines (extra context lines plus a
+# bulleted NEEDED FROM YOU: and a multi-line SELF-HEAL TICKETS:, still only 3 bullets) must not be
+# truncated by the ordinary gate just because it ran longer than the old 12-line cap.
+test_bs_legit_16_to_19_line_single_card_passes() {
+  local msg; msg="Example ticket title here for this run (example-owner/project-a #101) — PR #1 · release none yet
+STATUS:    RUNNING
+MERGED TO STAGING: No        LIVE ON PROD: No — verify-shipped.sh has not run yet for this branch
+WHATS UP: a long sentence explaining the current state of this run in plain, non-technical language for JP to read
+NEEDED FROM YOU:
+- staging review is ready
+- missing: A, B
+- confirm the copy change
+TECHNICAL PROBLEM: No
+SELF-HEAL TICKETS: owner/repo #201 (3-5 word description) — open
+owner/repo #202 (3-5 word description) — queued
+owner/repo #203 (3-5 word description) — fixed
+owner/repo #204 (3-5 word description) — open
+Extra plain-language context line one, still part of the same card's narrative.
+Extra plain-language context line two, still part of the same card's narrative.
+Extra plain-language context line three, still part of the same card's narrative.
+Extra plain-language context line four, still part of the same card's narrative.
+"
+  local lines; lines=$(printf '%s\n' "$msg" | grep -c .)
+  assert_lt "15" "$lines" "fixture sanity: card is at least 16 lines" || return 1
+  assert_lt "$lines" "20" "fixture sanity: card is at most 19 lines" || return 1
+  bs_hook "$msg"
+  assert_eq "$?" "0" "legitimate 16-19 line single card: passes" || return 1
+  assert_eq "$BS_OUT" "" "legitimate 16-19 line single card: no rejection text" || return 1
+}
+
+# #807 re-review spoof: all 3 required labels plus 9 bullet lines (12 lines, ~800 chars) — within
+# the old 12-line/1200-char cap, so it previously passed uncapped on bullets. The new per-card
+# bullet cap (3 * CARDS) must reject it.
+test_bs_spoof_nine_bullets_is_rejected() {
+  local msg; msg="STATUS:    RUNNING
+NEEDED FROM YOU: see bullets below
+TECHNICAL PROBLEM: No
+- bullet one of unrelated narration dressed up as a list item
+- bullet two of unrelated narration dressed up as a list item
+- bullet three of unrelated narration dressed up as a list item
+- bullet four of unrelated narration dressed up as a list item
+- bullet five of unrelated narration dressed up as a list item
+- bullet six of unrelated narration dressed up as a list item
+- bullet seven of unrelated narration dressed up as a list item
+- bullet eight of unrelated narration dressed up as a list item
+- bullet nine of unrelated narration dressed up as a list item
+"
+  local lines bullets; lines=$(printf '%s\n' "$msg" | grep -c .)
+  bullets=$(printf '%s\n' "$msg" | grep -cE '^\s*([-*•]|[0-9]+[.)]) ')
+  assert_eq "$lines" "12" "fixture sanity: 3 labels + 9 bullets is 12 lines (within the old per-card line cap)" || return 1
+  assert_eq "$bullets" "9" "fixture sanity: fixture has 9 bullets" || return 1
+  bs_hook "$msg"
+  assert_eq "$?" "2" "9-bullet spoof within the old line cap: rejected by the new bullet cap" || return 1
+  assert_contains "$BS_OUT" "replies must be short" "9-bullet spoof: rejection message present" || return 1
+}
+
+# The exact shape the code reviewer used to justify raising the line cap: one real card, 16 lines,
+# with a NEEDED FROM YOU: list of 9 bullets (CLAUDE.md's own template puts a bulleted list there).
+# A flat "3 bullets per card" cap would reject this legitimate card all over again — proves the
+# density-based (bullets <= 2/3 of total lines) cap keeps it passing: 9 bullets <= 10 (16*2/3).
+test_bs_reviewers_16_line_9_bullet_card_passes() {
+  local msg; msg="Example ticket title here for this run (example-owner/project-a #101) — PR #1 · release none yet
+STATUS:    RUNNING
+MERGED TO STAGING: No        LIVE ON PROD: No — verify-shipped.sh has not run yet for this branch
+WHATS UP: a long sentence explaining the current state of this run in plain, non-technical language for JP to read
+NEEDED FROM YOU:
+- item one of several things JP could decide on this run
+- item two of several things JP could decide on this run
+- item three of several things JP could decide on this run
+- item four of several things JP could decide on this run
+- item five of several things JP could decide on this run
+- item six of several things JP could decide on this run
+- item seven of several things JP could decide on this run
+- item eight of several things JP could decide on this run
+- item nine of several things JP could decide on this run
+TECHNICAL PROBLEM: No
+SELF-HEAL TICKETS: None
+"
+  local lines bullets; lines=$(printf '%s\n' "$msg" | grep -c .)
+  bullets=$(printf '%s\n' "$msg" | grep -cE '^\s*([-*•]|[0-9]+[.)]) ')
+  assert_eq "$lines" "16" "fixture sanity: reviewer's repro is 16 lines" || return 1
+  assert_eq "$bullets" "9" "fixture sanity: reviewer's repro has 9 bullets" || return 1
+  bs_hook "$msg"
+  assert_eq "$?" "0" "reviewer's 16-line/9-bullet legitimate card: still passes" || return 1
+  assert_eq "$BS_OUT" "" "reviewer's 16-line/9-bullet legitimate card: no rejection text" || return 1
+}
+
+# The exact shape the code reviewer verified already passes (PASS comment: "a two-card reply with
+# bullets (24 lines, 10 bullets, about 1100 chars)"). Must keep passing after the bullet cap lands.
+test_bs_reviewers_two_card_24_line_10_bullet_reply_passes() {
+  local msg; msg="$(bs_card 101)
+Example ticket title here for this run (example-owner/project-a #102) — PR #2 · release none yet
+STATUS:    RUNNING
+MERGED TO STAGING: No        LIVE ON PROD: No — verify-shipped.sh has not run yet for this branch
+WHATS UP: a long sentence explaining the current state of this run in plain, non-technical language for JP to read
+NEEDED FROM YOU:
+- item one of several things JP could decide on this run
+- item two of several things JP could decide on this run
+- item three of several things JP could decide on this run
+- item four of several things JP could decide on this run
+- item five of several things JP could decide on this run
+- item six of several things JP could decide on this run
+- item seven of several things JP could decide on this run
+- item eight of several things JP could decide on this run
+- item nine of several things JP could decide on this run
+- item ten of several things JP could decide on this run
+TECHNICAL PROBLEM: No
+SELF-HEAL TICKETS: None
+"
+  local lines bullets; lines=$(printf '%s\n' "$msg" | grep -c .)
+  bullets=$(printf '%s\n' "$msg" | grep -cE '^\s*([-*•]|[0-9]+[.)]) ')
+  assert_eq "$lines" "24" "fixture sanity: reviewer's two-card repro is 24 lines" || return 1
+  assert_eq "$bullets" "10" "fixture sanity: reviewer's two-card repro has 10 bullets" || return 1
+  bs_hook "$msg"
+  assert_eq "$?" "0" "reviewer's 2-card/24-line/10-bullet legitimate reply: still passes" || return 1
+  assert_eq "$BS_OUT" "" "reviewer's 2-card/24-line/10-bullet legitimate reply: no rejection text" || return 1
+}
+
 run_test test_bs_short_reply_under_limits_passes_untouched
 run_test test_bs_long_reply_no_status_card_markers_is_rejected
 run_test test_bs_multi_ticket_status_card_bypasses_the_gate
@@ -184,3 +303,7 @@ run_test test_bs_spoof_three_markers_plus_long_narration_is_rejected
 run_test test_bs_real_three_card_status_reply_within_cap_passes
 run_test test_bs_spoof_repeated_status_lines_does_not_inflate_the_cap
 run_test test_bs_real_card_with_bulleted_needed_from_you_passes
+run_test test_bs_legit_16_to_19_line_single_card_passes
+run_test test_bs_spoof_nine_bullets_is_rejected
+run_test test_bs_reviewers_16_line_9_bullet_card_passes
+run_test test_bs_reviewers_two_card_24_line_10_bullet_reply_passes
