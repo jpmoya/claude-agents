@@ -179,12 +179,29 @@ _gh_log() {  # _gh_log <class> <call|hit|skip> — fixed-format line; never fail
   printf '%s %s:%s %s %s %s\n' "$(date +%s)" "${_src##*/}" "${FUNCNAME[2]:-main}" "$1" "$2" "$_GH_SUB" >> "$GH_CALL_LOG" 2>/dev/null || true
 }
 
+# _gh_scopes_save <epoch> <raw gh api -i output> — GH_SCOPES_FILE ($PIPE/gh-scopes), written only after a good rate_limit read:
+# "<epoch> known <scope,scope,...>" when the response has an X-OAuth-Scopes header (classic token), "<epoch> unknown" when it has none
+# (fine-grained or app token); nothing is written by a process with GH_TOKEN/GITHUB_TOKEN set. gh-scope.sh reads it; nothing here decides anything.
+_gh_scopes_save() {
+  local f="${GH_SCOPES_FILE:-${GH_QUOTA_FILE%/*}/gh-scopes}" h line
+  # a process running as a bot/PAT reports THAT token's scopes, not the host login's: never record them. A supervisor STARTED with GH_TOKEN/GITHUB_TOKEN
+  # exported therefore records no scopes at all and gh-scope.sh stays silent on that host; the one log line below says so.
+  if [ -n "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ]; then
+    type slog >/dev/null 2>&1 && slog "[gh-scope] GH_TOKEN/GITHUB_TOKEN is set in this process: token scopes are not recorded, the scope check is blind here"
+    return 0
+  fi
+  h=$(printf '%s\n' "$2" | tr -d '\r' | grep -i '^x-oauth-scopes:' | head -n 1) || h=""
+  if [ -n "$h" ]; then line="$1 known $(printf '%s' "${h#*:}" | tr -d ' ')"; else line="$1 unknown"; fi
+  mkdir -p "${f%/*}" 2>/dev/null
+  printf '%s\n' "$line" > "$f.$$" 2>/dev/null && mv "$f.$$" "$f" 2>/dev/null || rm -f "$f.$$" 2>/dev/null
+}
+
 # gh_quota_read — fill GHQ_CORE / GHQ_CORE_RESET / GHQ_GQL / GHQ_GQL_RESET (-1 = unknown) from the cache file, refreshing it with
 # `gh api rate_limit` when older than GH_QUOTA_TTL_SECS (or when a cached reset time has passed). A failed refresh keeps the old
 # numbers and still stamps the attempt, so a broken read is retried once per TTL, not once per call.
 gh_quota_read() {
   _gh_budget_paths
-  local now at c cr g gr out
+  local now at c cr g gr out raw
   now=$(date +%s)
   GHQ_CORE=-1; GHQ_CORE_RESET=0; GHQ_GQL=-1; GHQ_GQL_RESET=0
   at=0
@@ -196,11 +213,13 @@ gh_quota_read() {
   if [ $(( now - at )) -ge "$GH_QUOTA_TTL_SECS" ] \
      || { [ "$GHQ_CORE" -ge 0 ] && [ "$GHQ_CORE_RESET" -gt 0 ] && [ "$GHQ_CORE_RESET" -le "$now" ]; } \
      || { [ "$GHQ_GQL" -ge 0 ] && [ "$GHQ_GQL_RESET" -gt 0 ] && [ "$GHQ_GQL_RESET" -le "$now" ]; }; then
-    out=$(command gh api rate_limit --jq '[.resources.core.remaining, .resources.core.reset, .resources.graphql.remaining, .resources.graphql.reset] | @tsv' 2>/dev/null </dev/null) || out=""
+    # -i adds the response headers in front of the jq line: the same free call also reports the token's scopes (X-OAuth-Scopes), see gh-scope.sh
+    raw=$(command gh api rate_limit -i --jq '[.resources.core.remaining, .resources.core.reset, .resources.graphql.remaining, .resources.graphql.reset] | @tsv' 2>/dev/null </dev/null) || raw=""
+    out=$(printf '%s\n' "$raw" | tail -n 1)
     read -r c cr g gr <<< "$out"
     case "$c$cr$g$gr" in
       ''|*[!0-9]*) ;;   # unreadable: keep the previous numbers
-      *) GHQ_CORE=$c; GHQ_CORE_RESET=$cr; GHQ_GQL=$g; GHQ_GQL_RESET=$gr ;;
+      *) GHQ_CORE=$c; GHQ_CORE_RESET=$cr; GHQ_GQL=$g; GHQ_GQL_RESET=$gr; _gh_scopes_save "$now" "$raw" ;;
     esac
     mkdir -p "${GH_QUOTA_FILE%/*}" 2>/dev/null
     printf '%s %s %s %s %s\n' "$now" "$GHQ_CORE" "$GHQ_CORE_RESET" "$GHQ_GQL" "$GHQ_GQL_RESET" > "$GH_QUOTA_FILE.$$" 2>/dev/null \

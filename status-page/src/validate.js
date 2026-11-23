@@ -250,7 +250,7 @@ function sanitiseGoal(raw) {
 
 // ---- goal_stall[] (status-page alert banner): goals the queue skips because they cannot be read (they block nothing else). By reconstruction: a closed
 // `kind` enum, short plain-text fields (no markup characters), at most MAX_GOAL_STALL items and MAX_GOAL_STALL_BLOCKED names each.
-const GOAL_STALL_KINDS = ['unreadable', 'project_error'];
+const GOAL_STALL_KINDS = ['unreadable', 'project_error', 'token_scope'];
 const MAX_GOAL_STALL = 5;
 const MAX_GOAL_STALL_BLOCKED = 10;
 

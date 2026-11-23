@@ -48,6 +48,8 @@ export STATUS_PAGE_DEPLOY_TEST_DISABLE=1
 # #773: the webhook event queue (kill switch, default 0) must never be switched on by a host config.local.sh while the suites run
 # (it would read the host's real queue and skip since-syncs); test-webhook-events.sh sets it per call.
 export WEBHOOK_EVENTS_ENABLED=0
+# gh-scope.sh reads the scopes gh-budget.sh saved; supervisor suites must not alert on a stub's headers. test-gh-scope.sh switches it on per call.
+export GH_SCOPE_CHECK_ENABLED=0
 # #756: report-status.sh reads the host user's real crontab (`crontab -l`) for the payload's optional `cron[]`;
 # a suite must never publish (or depend on) whatever the machine running it happens to schedule. `true` is an empty crontab.
 # test-status-cron.sh overrides this per call with its own fixtures.
