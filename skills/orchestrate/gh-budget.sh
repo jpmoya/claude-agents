@@ -181,9 +181,10 @@ _gh_log() {  # _gh_log <class> <call|hit|skip> — fixed-format line; never fail
 
 # _gh_scopes_save <epoch> <raw gh api -i output> — GH_SCOPES_FILE ($PIPE/gh-scopes), written only after a good rate_limit read:
 # "<epoch> known <scope,scope,...>" when the response has an X-OAuth-Scopes header (classic token), "<epoch> unknown" when it has none
-# (fine-grained or app token). gh-scope.sh reads it; nothing here decides anything.
+# (fine-grained or app token); nothing is written by a process with GH_TOKEN/GITHUB_TOKEN set. gh-scope.sh reads it; nothing here decides anything.
 _gh_scopes_save() {
   local f="${GH_SCOPES_FILE:-${GH_QUOTA_FILE%/*}/gh-scopes}" h line
+  [ -z "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ] || return 0   # a process running as a bot/PAT reports THAT token's scopes, not the host login's: never record them
   h=$(printf '%s\n' "$2" | tr -d '\r' | grep -i '^x-oauth-scopes:' | head -n 1) || h=""
   if [ -n "$h" ]; then line="$1 known $(printf '%s' "${h#*:}" | tr -d ' ')"; else line="$1 unknown"; fi
   mkdir -p "${f%/*}" 2>/dev/null

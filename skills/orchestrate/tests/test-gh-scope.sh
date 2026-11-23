@@ -115,6 +115,20 @@ test_gs_unknown_scopes_neither_alert_nor_clear() {
   gs_done
 }
 
+test_gs_a_process_with_its_own_token_env_never_touches_the_host_scopes() {
+  gs_env "gist, read:org, repo, workflow"
+  gs_tick; gs_tick
+  printf '%s' "gist, project, read:org, repo, workflow" > "$GS/scopes"   # a bot PAT that DOES hold project
+  gs_tick GH_TOKEN=x
+  assert_file_exists "$GS/pipe/gh-scope.alert" "a GH_TOKEN process does not clear the host's standing alert" || return 1
+  gs_done
+  gs_env "gist, read:org, repo, workflow"   # and a narrow bot PAT does not start one
+  gs_tick GITHUB_TOKEN=x
+  assert_file_absent "$GS/pipe/gh-scope.alert" "nor create one" || return 1
+  assert_file_absent "$GS/pipe/gh-scopes" "and nothing is recorded" || return 1
+  gs_done
+}
+
 test_gs_stale_scopes_file_is_unknown() {
   gs_env "gist, read:org, repo, workflow"
   gs_tick; rm -f "$GS/pipe/gh-scope.alert" "$GS/pipe/gh-scope.alert-state"
@@ -181,6 +195,7 @@ run_test test_gs_scope_back_clears_the_alert_and_stays_quiet
 run_test test_gs_all_scopes_present_is_silent
 run_test test_gs_no_extra_rest_calls_only_the_free_rate_limit_read
 run_test test_gs_unknown_scopes_neither_alert_nor_clear
+run_test test_gs_a_process_with_its_own_token_env_never_touches_the_host_scopes
 run_test test_gs_stale_scopes_file_is_unknown
 run_test test_gs_a_different_missing_set_alerts_again
 run_test test_gs_admin_org_satisfies_read_org_and_the_required_set_is_overridable
