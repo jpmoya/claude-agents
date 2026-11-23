@@ -51,12 +51,13 @@ gh_scope_check() {
   fi
   [ -s "$st" ] && read -r since n old < "$st"
   case "$since" in ''|*[!0-9]*) since=0 ;; esac; case "$n" in ''|*[!0-9]*) n=0 ;; esac
-  [ "$since" -gt 0 ] || since=$now
+  [ "$since" -gt 0 ] && { [ -z "$old" ] || [ "$old" = "$csvm" ]; } || { since=$now; n=0; }   # a different missing set is a new problem: its own start time and tick count
   n=$((n + 1))
   fix="$GH_SCOPE_FIX_CMD_BASE $csvm"   # one refresh command with every missing scope (gh takes -s a,b)
   mkdir -p "$PIPE" 2>/dev/null
   printf '%s gh-scope: the GitHub login on %s is missing the %s permission since %s (%s ticks), so goals and project updates fail there. Fix on that machine: %s\n' \
-    "$(date -u +%FT%TZ)" "$host" "$(printf '%s' "$csvm" | sed 's/,/, /g')" "$(_gs_iso "$since")" "$n" "$fix" > "$PIPE/gh-scope.alert"
+    "$(date -u +%FT%TZ)" "$host" "$(printf '%s' "$csvm" | sed 's/,/, /g')" "$(_gs_iso "$since")" "$n" "$fix" > "$PIPE/gh-scope.alert.$$" \
+    && mv "$PIPE/gh-scope.alert.$$" "$PIPE/gh-scope.alert"   # temp + mv: launcher.sh status and the reporter never read a half-written line
   printf '%s %s %s\n' "$since" "$n" "$csvm" > "$st"
   slog "[gh-scope] token on $host is missing scope(s): $csvm (alert since $(_gs_iso "$since"), $n ticks); fix: $fix"
   if [ "$old" != "$csvm" ]; then   # first tick of the outage, or a different missing set

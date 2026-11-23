@@ -1,7 +1,7 @@
 // Status page alert banner (JP, 2026-11-19; pipeline-audit-2026-11-18, #762): the four alert families derived from what the hosts
 // already publish. Expected values are hand-written from the thresholds in the brief (idle 10 min, tick 15 min, goal stall 6 h).
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { deriveAlerts, formatDuration, ALERT_LIST_MAX } from '../src/alerts.js';
 import { validateBeatPayload } from '../src/validate.js';
 import { renderPage } from '../src/render.js';
@@ -245,6 +245,9 @@ describe('render.js - banner', () => {
 });
 
 describe('alert 1b - a host gh token lost a required scope (gh-scope.sh)', () => {
+  // deriveAlerts is pure and takes NOW; the clock is pinned anyway so nothing in the fixtures or validate.js can read the real one.
+  beforeAll(() => { vi.useFakeTimers(); vi.setSystemTime(NOW * 1000); });
+  afterAll(() => { vi.useRealTimers(); });
   const tok = (o = {}) => ({ kind: 'token_scope', goal: 'mac', reason: 'project', hint: 'run gh auth refresh -h github.com -s project on mac', ...o });
   it('is red, names the host and the scope, and carries the fix command', () => {
     const a = derive(host({ goal_stall: [tok()] }));
@@ -258,6 +261,9 @@ describe('alert 1b - a host gh token lost a required scope (gh-scope.sh)', () =>
     const a = derive(host({ goal_stall: [tok()] }), vm);
     expect(ids(a)).toEqual(['gh-token-scope-mac']);
     expect(ids(derive(host({ goal_stall: [tok()] }), host({ goal_stall: [tok({ goal: 'vm', reason: 'project, workflow' })] })))).toEqual(['gh-token-scope-mac', 'gh-token-scope-vm']);
+  });
+  it('the same host reported in both records shows once', () => {
+    expect(ids(derive(host({ goal_stall: [tok()] }), host({ goal_stall: [tok(), tok({ reason: 'workflow' })] })))).toEqual(['gh-token-scope-mac']);
   });
   it('is not also listed as an unreadable goal', () => {
     expect(ids(derive(host({ goal_stall: [tok()] })))).toEqual(['gh-token-scope-mac']);

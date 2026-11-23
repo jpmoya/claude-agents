@@ -1418,7 +1418,7 @@ def _gh_scope_stall():
     if len(parts) < 3 or not re.match(r"^[A-Za-z0-9:_,.-]+$", parts[2]):
         return []
     missing = parts[2].split(",")
-    host = re.sub(r"[^A-Za-z0-9_.-]", "", socket.gethostname().split(".")[0]) or "this machine"
+    host = re.sub(r"[^a-z0-9_.-]", "", socket.gethostname().split(".")[0].lower()) or "this machine"   # lowercase, like gh-scope.sh's alert text
     return [{"kind": "token_scope", "goal": host, "reason": ", ".join(missing),
              "hint": "run gh auth refresh -h github.com -s %s on %s" % (",".join(missing), host)}]
 

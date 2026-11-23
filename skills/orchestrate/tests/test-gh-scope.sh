@@ -145,6 +145,10 @@ test_gs_a_different_missing_set_alerts_again() {
   printf '%s' "gist, read:org, repo" > "$GS/scopes"; gs_tick
   assert_eq "$(gs_slack_count)" 2 "project, then workflow too: a new problem posts once more" || return 1
   assert_contains "$(cat "$GS/pipe/gh-scope.alert")" "workflow, project" "both scopes named" || return 1
+  assert_contains "$(cat "$GS/pipe/gh-scope.alert")" "gh auth refresh -h github.com -s workflow,project" "one combined fix command for the multi-scope set" || return 1
+  assert_contains "$(cat "$GS/pipe/gh-scope.alert")" "(1 ticks)" "a different missing set restarts the tick count" || return 1
+  assert_eq "$(cut -d' ' -f2 "$GS/pipe/gh-scope.alert-state")" 1 "state ticks restarted" || return 1
+  assert_eq "$(ls "$GS/pipe" | grep -c 'gh-scope.alert\.[0-9]')" 0 "no temp file left behind" || return 1
   gs_done
 }
 
@@ -185,10 +189,25 @@ test_gs_status_page_payload_carries_the_alert_and_clears_with_it() {
 test_gs_launcher_status_shows_the_alert_line() {
   gs_env "gist, read:org, repo, workflow"
   gs_tick
-  assert_contains "$(grep -n 'gh-scope.alert' "$GS_LIB/launcher.sh")" "!! GH TOKEN" "launcher.sh status prints it next to the code-sync line" || return 1
+  local home out; home=$(mktemp -d "${TMPDIR:-/tmp}/gs-home.XXXXXX"); mkdir -p "$home/.claude/pipeline" "$GS/pipe/queue"
+  out=$(HOME="$home" PATH="$GS_HERE/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$GS/pipe" QUEUE="$GS/pipe/queue" "$GS_LIB/launcher.sh" status 2>&1)
+  assert_contains "$out" "!! GH TOKEN: " "launcher.sh status prints the alert next to the code-sync line" || return 1
+  assert_contains "$out" "gh auth refresh -h github.com -s project" "with the fix command" || return 1
+  printf '%s' "gist, project, read:org, repo, workflow" > "$GS/scopes"; gs_tick
+  out=$(HOME="$home" PATH="$GS_HERE/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$GS/pipe" QUEUE="$GS/pipe/queue" "$GS_LIB/launcher.sh" status 2>&1)
+  assert_not_contains "$out" "GH TOKEN" "and nothing once cleared" || return 1
+  rm -rf "$home"
   gs_done
 }
 
+test_gs_token_env_process_logs_one_line_that_it_is_blind() {
+  gs_env "gist, read:org, repo, workflow"
+  gs_tick GH_TOKEN=x
+  assert_contains "$(cat "$GS/slog")" "GH_TOKEN/GITHUB_TOKEN is set in this process" "the blind spot is logged, not silent" || return 1
+  gs_done
+}
+
+run_test test_gs_token_env_process_logs_one_line_that_it_is_blind
 run_test test_gs_missing_scope_alerts_once_with_host_scope_and_fix_command
 run_test test_gs_repeated_ticks_do_not_realert_and_log_one_line_per_tick
 run_test test_gs_scope_back_clears_the_alert_and_stays_quiet

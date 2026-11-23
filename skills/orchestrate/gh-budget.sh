@@ -184,7 +184,12 @@ _gh_log() {  # _gh_log <class> <call|hit|skip> — fixed-format line; never fail
 # (fine-grained or app token); nothing is written by a process with GH_TOKEN/GITHUB_TOKEN set. gh-scope.sh reads it; nothing here decides anything.
 _gh_scopes_save() {
   local f="${GH_SCOPES_FILE:-${GH_QUOTA_FILE%/*}/gh-scopes}" h line
-  [ -z "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ] || return 0   # a process running as a bot/PAT reports THAT token's scopes, not the host login's: never record them
+  # a process running as a bot/PAT reports THAT token's scopes, not the host login's: never record them. A supervisor STARTED with GH_TOKEN/GITHUB_TOKEN
+  # exported therefore records no scopes at all and gh-scope.sh stays silent on that host; the one log line below says so.
+  if [ -n "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ]; then
+    type slog >/dev/null 2>&1 && slog "[gh-scope] GH_TOKEN/GITHUB_TOKEN is set in this process: token scopes are not recorded, the scope check is blind here"
+    return 0
+  fi
   h=$(printf '%s\n' "$2" | tr -d '\r' | grep -i '^x-oauth-scopes:' | head -n 1) || h=""
   if [ -n "$h" ]; then line="$1 known $(printf '%s' "${h#*:}" | tr -d ' ')"; else line="$1 unknown"; fi
   mkdir -p "${f%/*}" 2>/dev/null
