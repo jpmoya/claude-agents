@@ -814,7 +814,7 @@ sentry_launch_record_exempt() {
 # the log cannot be read. SENTRY_CAP_NOW (epoch) replaces the clock (tests).
 sentry_cap_record() {
   local repo=$1 max n times at; shift
-  max=${SENTRY_AUTO_GO_DAILY_CAP:-3}; case "$max" in ''|*[!0-9]*) max=3 ;; esac
+  max=${SENTRY_AUTO_GO_DAILY_CAP:-10}; case "$max" in ''|*[!0-9]*) max=10 ;; esac
   n=$(sentry_launch_count "$repo") || return 1
   [ "$n" -ge "$max" ] || return 0
   times=$(_sentry_launch_scan "$repo" "" times) || return 1
