@@ -45,14 +45,14 @@ _gh_madrid() {
 }
 
 # _gh_scan_gqlq <field value> — #808: when the value is `query=<text>`, set the caller's (_gh_scan's, by bash dynamic scope) gqlq to
-# `mutation` when <text> starts with "mutation" (after leading whitespace) or "@", else `read`; any other field leaves it alone.
+# `mutation` when <text> starts with "mutation" (after leading whitespace), "@" or "#", else `read`; any other field leaves it alone.
 _gh_scan_gqlq() {
   case "$1" in
     query=*)
       local v="${1#query=}"
       v="${v#"${v%%[![:space:]]*}"}"
-      # a query=@file value is read by gh from a file we cannot see: it stays a write
-      case "$v" in mutation*|@*) gqlq=mutation ;; *) [ "$gqlq" = mutation ] || gqlq=read ;; esac ;;
+      # a query=@file value is read by gh from a file we cannot see, and a document that opens with a # comment may hide a mutation: both stay writes
+      case "$v" in mutation*|@*|\#*) gqlq=mutation ;; *) [ "$gqlq" = mutation ] || gqlq=read ;; esac ;;
   esac
 }
 
@@ -78,6 +78,8 @@ _gh_scan() {
           --method=*) method="${a#*=}" ;;
           --input=*) payload=1; inputp=1 ;;
           --field=*|--raw-field=*) payload=1; _gh_scan_gqlq "${a#*=}" ;;
+          -f?*|-F?*) payload=1; _gh_scan_gqlq "${a#-?}" ;;   # attached value: -fquery=... / -Fnumber=1
+          -X?*) method="${a#-X}" ;;                           # attached method: -XPOST
           -*) ;;
           *) [ -n "$path" ] || path="$a" ;;
         esac

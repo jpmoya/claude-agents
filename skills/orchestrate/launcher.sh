@@ -268,7 +268,7 @@ except Exception: print('?')
     if [ "$SENTRY_NOCOUNT" = 1 ] && [ "$(sentry_launch_count "$OWNER_REPO" "$ISSUE" 2>/dev/null)" = 0 ]; then SENTRY_NOCOUNT=0; fi
     rm -f "$QUEUE/orch-$RK.json"   # a manual launch supersedes a queued one; never both
     # Clear tombstones and restart state on manual launch
-    rm -f "$PIPE/orch-$RK".{stopped,held,done,closed,release,marker,milestone,alert,label-cleared,start,exit,exit-logged,startgate,jp-reminded} "$PIPE/orch-$RK.restarts"
+    rm -f "$PIPE/orch-$RK".{stopped,held,done,closed,release,marker,milestone,alert,label-cleared,label-clear-tried,start,exit,exit-logged,startgate,jp-reminded} "$PIPE/orch-$RK.restarts"
     # Persist on both the launch and queued paths: supervisor.sh rebuilds the queue JSON from this file.
     printf '%s' "$EXTRA" > "$PIPE/orch-$RK.extra"
     # Ticket title for the status board (#29) — fetched once here, before the capacity check so a queued run has it

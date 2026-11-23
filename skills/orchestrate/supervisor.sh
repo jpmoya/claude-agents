@@ -767,15 +767,19 @@ notify_engineering() {  # post a pipeline event to #engineering; requires SLACK_
 clear_in_progress() {  # <repo> <issue> <why> <run_key> — idempotent; one gh call per run key, remembered in a marker file
   local repo=$1 issue=$2 why=$3 rk=$4
   [ -f "$PIPE/orch-$rk.label-cleared" ] && return 0
+  [ -f "$PIPE/orch-$rk.label-clear-tried" ] && return 0   # #808: a failed attempt is not retried every tick
   # #808: one attempt per run key, whatever the result (a label that does not exist in the repo fails every time, and each failed
-  # edit counts as a write that flushes the gh-budget read cache). The step-4 label reconcile remains the backstop.
+  # edit counts as a write that flushes the gh-budget read cache). A failed attempt leaves .label-clear-tried, NOT .label-cleared:
+  # launcher.sh reads .label-cleared as "this machine released the label, so a label still present means another machine drives it"
+  # and would refuse a manual relaunch after a transient failure. The step-4 label reconcile remains the backstop.
   local err
   if err=$(cd "$repo" 2>/dev/null && gh issue edit "$issue" --remove-label "$LABEL_IN_PROGRESS" 2>&1 >/dev/null); then
     slog "[label] #$issue — removed $LABEL_IN_PROGRESS ($why)"
+    touch "$PIPE/orch-$rk.label-cleared"
   else
     slog "[label] #$issue — remove failed ($(gh_err_line <(printf '%s\n' "$err")))"
+    touch "$PIPE/orch-$rk.label-clear-tried"
   fi
-  touch "$PIPE/orch-$rk.label-cleared"
 }
 
 do_launch() {  # <repo> <issue> <extra> <restart_n> <reason> <queue_wait_s> <run_key>
@@ -851,7 +855,7 @@ do_launch() {  # <repo> <issue> <extra> <restart_n> <reason> <queue_wait_s> <run
   echo "$repo" > "$PIPE/orch-$rk.repo"
   [ -f "$PIPE/orch-$rk.start" ] || date -u +%FT%TZ > "$PIPE/orch-$rk.start"
   date -u +%FT%TZ > "$PIPE/orch-$rk.launched-at"
-  rm -f "$PIPE/orch-$rk.label-cleared"
+  rm -f "$PIPE/orch-$rk.label-cleared" "$PIPE/orch-$rk.label-clear-tried"
   local ev_reason=manual
   case "$reason" in auto-restart) ev_reason=auto-restart ;; queued) ev_reason=queue ;; esac
   log_run_launch "$owner_repo" "$issue" "$ev_reason" "$restart_n" "$queue_wait_s" "$rk"
@@ -2716,7 +2720,7 @@ if { [ "$launched" -eq 0 ] || { [ "$drain_launched" -eq 1 ] && [ "$dispatch_hold
           continue
         fi
         # Won: a re-dispatch is JP's explicit "go again", so clear local tombstones like a manual launch does.
-        rm -f "$PIPE/orch-$rk".{stopped,held,done,closed,marker,milestone,alert,label-cleared,startgate,jp-reminded} "$PIPE/orch-$rk.restarts"
+        rm -f "$PIPE/orch-$rk".{stopped,held,done,closed,marker,milestone,alert,label-cleared,label-clear-tried,startgate,jp-reminded} "$PIPE/orch-$rk.restarts"
         dispatch_reason=agent-go
         { [ "$HAS_CAP" -ne 1 ] || [ "$drain_launched" -eq 1 ]; } && dispatch_reason=agent-go-queue   # #714: queue it, never launch ahead of the line
         out=$(LAUNCH_REASON=$dispatch_reason "$(dirname "${BASH_SOURCE[0]}")/launcher.sh" --force "$local_path" "$num" 2>&1 | tail -1)

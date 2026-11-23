@@ -27,7 +27,9 @@ test_ci_failed_edit_writes_marker_and_is_not_retried() {
   ci_setup 1
   ci_run; ci_run; ci_run
   assert_eq "$(ci_edits)" 1 "three ticks, one gh issue edit" || { ci_teardown; return 1; }
-  [ -f "$CI_DIR/pipe/orch-rk1.label-cleared" ] || { ci_teardown; fail "marker written after a failed attempt"; return 1; }
+  [ -f "$CI_DIR/pipe/orch-rk1.label-clear-tried" ] || { ci_teardown; fail "tried-marker written after a failed attempt"; return 1; }
+  # launcher.sh refuses a manual relaunch when .label-cleared exists and the label is still on the issue: a failed removal must not set it
+  [ ! -f "$CI_DIR/pipe/orch-rk1.label-cleared" ] || { ci_teardown; fail ".label-cleared must NOT be written by a failed attempt (blocks manual relaunch)"; return 1; }
   assert_eq "$(grep -c 'remove failed' "$CI_DIR/slog")" 1 "one failure line" || { ci_teardown; return 1; }
   assert_contains "$(cat "$CI_DIR/slog")" "[label] #12 — remove failed (label not found)" "failure line shape, gh error text included" || { ci_teardown; return 1; }
   assert_not_contains "$(cat "$CI_DIR/slog")" "removed agent-in-progress" "no success line" || { ci_teardown; return 1; }
@@ -44,14 +46,35 @@ test_ci_successful_edit_writes_marker_and_logs_removed() {
   ci_teardown
 }
 
+test_ci_success_does_not_write_tried_marker() {
+  ci_setup 0
+  ci_run
+  [ ! -f "$CI_DIR/pipe/orch-rk1.label-clear-tried" ] || { ci_teardown; fail "success writes only .label-cleared"; return 1; }
+  ci_teardown
+}
+
+test_ci_relaunch_paths_reset_the_tried_marker() {
+  # a launch (supervisor do_launch, dispatch re-launch, manual launcher.sh) starts a fresh attempt budget for the run key
+  local f n
+  for f in supervisor.sh launcher.sh; do
+    n=$(grep -c 'label-clear-tried' "$CI_HERE/../$f")
+    [ "$n" -ge 1 ] || { fail "$f resets label-clear-tried"; return 1; }
+  done
+  assert_eq "$(grep -c 'rm -f.*label-clear-tried' "$CI_SUP")" 2 "do_launch and the dispatch tombstone clear both remove the tried marker" || return 1
+  assert_contains "$(grep 'rm -f' "$CI_HERE/../launcher.sh" | grep label-cleared)" "label-clear-tried" "manual launcher clears it" || return 1
+}
+
 test_ci_existing_marker_means_no_call() {
   ci_setup 0
   touch "$CI_DIR/pipe/orch-rk1.label-cleared"
   ci_run
   assert_eq "$(ci_edits)" 0 "marker present: no call" || { ci_teardown; return 1; }
+  rm -f "$CI_DIR/pipe/orch-rk1.label-cleared"; touch "$CI_DIR/pipe/orch-rk1.label-clear-tried"
+  ci_run
+  assert_eq "$(ci_edits)" 0 "tried-marker present: no call" || { ci_teardown; return 1; }
   ci_teardown
 }
 
-for t in test_ci_failed_edit_writes_marker_and_is_not_retried test_ci_successful_edit_writes_marker_and_logs_removed test_ci_existing_marker_means_no_call; do
+for t in test_ci_failed_edit_writes_marker_and_is_not_retried test_ci_successful_edit_writes_marker_and_logs_removed test_ci_existing_marker_means_no_call test_ci_success_does_not_write_tried_marker test_ci_relaunch_paths_reset_the_tried_marker; do
   run_test "$t"
 done

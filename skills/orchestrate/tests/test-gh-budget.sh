@@ -216,6 +216,34 @@ test_gb_graphql_mutation_and_input_stay_writes() {
   rm -rf "$GB"
 }
 
+# #808 review: attached-value forms are parsed too; anything not provably a non-mutation query stays a write
+test_gb_attached_flag_forms_fail_safe() {
+  gb_env 5000
+  local out
+  out=$(gb_run '_gh_scan api graphql -fquery="mutation { x }"; echo WRITE=$_GH_WRITE')
+  assert_contains "$out" "WRITE=1" "-fquery=mutation is a write" || return 1
+  out=$(gb_run '_gh_scan api graphql -Fquery="mutation { x }" -Fn=1; echo WRITE=$_GH_WRITE')
+  assert_contains "$out" "WRITE=1" "-Fquery=mutation is a write" || return 1
+  out=$(gb_run '_gh_scan api graphql --field=query="mutation { x }"; echo WRITE=$_GH_WRITE')
+  assert_contains "$out" "WRITE=1" "--field=query=mutation is a write" || return 1
+  out=$(gb_run '_gh_scan api graphql --raw-field=query="  mutation { x }"; echo WRITE=$_GH_WRITE')
+  assert_contains "$out" "WRITE=1" "--raw-field=query=<ws>mutation is a write" || return 1
+  out=$(gb_run '_gh_scan api graphql -fquery="query { x }" -fowner=o; echo WRITE=$_GH_WRITE')
+  assert_contains "$out" "WRITE=0" "attached -fquery=query... is still a read" || return 1
+  out=$(gb_run '_gh_scan api graphql --field=query="query { x }"; echo WRITE=$_GH_WRITE')
+  assert_contains "$out" "WRITE=0" "--field=query=query... is a read" || return 1
+  out=$(gb_run '_gh_scan api graphql -fquery="# note
+mutation { x }"; echo WRITE=$_GH_WRITE')
+  assert_contains "$out" "WRITE=1" "a comment-led document cannot be proven a query: write" || return 1
+  out=$(gb_run '_gh_scan api graphql -fowner=o; echo WRITE=$_GH_WRITE')
+  assert_contains "$out" "WRITE=1" "fields without any query= value: write" || return 1
+  out=$(gb_run '_gh_scan api repos/o/r/issues/1/labels/x -XDELETE; echo WRITE=$_GH_WRITE')
+  assert_contains "$out" "WRITE=1" "attached -XDELETE is a write" || return 1
+  out=$(gb_run '_gh_scan api repos/o/r/issues/1 -XGET; echo WRITE=$_GH_WRITE')
+  assert_contains "$out" "WRITE=0" "attached -XGET stays a read" || return 1
+  rm -rf "$GB"
+}
+
 test_gb_real_goal_project_calls_are_reads() {
   gb_env 5000
   local out gp="$(cd "$(dirname "$GB_LIB")" && pwd)/goal-project.sh" call
@@ -263,7 +291,7 @@ for t in test_gb_log_line_format test_gb_tiers test_gb_exhausted_skips_with_one_
          test_gb_failed_read_not_cached test_gb_ttl_zero_disables_cache test_gb_disabled_is_passthrough test_gb_tick_due \
          test_gb_log_cap_stops_logging \
          test_gb_graphql_query_read_is_not_a_write_and_cache_survives test_gb_graphql_mutation_and_input_stay_writes \
-         test_gb_real_goal_project_calls_are_reads test_gb_non_graphql_paths_unchanged test_gb_tick_summary_core_used; do
+         test_gb_real_goal_project_calls_are_reads test_gb_attached_flag_forms_fail_safe test_gb_non_graphql_paths_unchanged test_gb_tick_summary_core_used; do
   run_test "$t"
 done
 
