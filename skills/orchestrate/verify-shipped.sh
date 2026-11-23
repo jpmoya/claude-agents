@@ -68,7 +68,7 @@ blob_at() { git_ rev-parse -q --verify "$1:$2" 2>/dev/null; }
 # hist <ref> <path> [--reverse] -> one "<commit> <blob>" line per commit (last 200, path-touching, full history), blob empty when the path is
 # absent at that commit. One git process for all blobs (git cat-file --batch-check), not one per commit.
 hist() {
-  local cs; cs=$(git_ log --full-history ${3:-} --format=%H -n 200 "$1" -- "$2" 2>/dev/null)
+  local cs; cs=$(git_ log --full-history ${3:+"$3"} --format=%H -n 200 "$1" -- "$2" 2>/dev/null)
   [ -n "$cs" ] || return 0
   paste -d' ' <(printf '%s\n' "$cs") <(printf '%s\n' "$cs" | awk -v p="$2" '{print $0 ":" p}' | git_ cat-file --batch-check='%(objectname)' 2>/dev/null | sed 's/^.* missing$//')
 }
@@ -98,7 +98,8 @@ EOF
 }
 
 # deleted_later <ref> <path> <want blob> — the path is absent on <ref>: was that a later change moving the file on? Yes when the want blob
-# appeared in the path's history and the commit that deleted the path is not a Revert (a reverted addition is NOT shipped).
+# appeared in the path's history and the commit that deleted the path is not a revert (subject starting "Revert", or a "This reverts commit"
+# line in the message): a reverted addition is NOT shipped.
 deleted_later() {
   local c b seen=0 d
   while read -r c b; do
@@ -107,20 +108,33 @@ deleted_later() {
 $(hist "$1" "$2")
 EOF
   [ "$seen" = 1 ] || return 1
-  d=$(git_ log --full-history --diff-filter=D -n 1 --format=%s "$1" -- "$2" 2>/dev/null)
-  case "$d" in Revert*) return 1 ;; esac
+  d=$(git_ log --full-history --diff-filter=D -n 1 --format=%B "$1" -- "$2" 2>/dev/null)
+  case "$d" in Revert*|*"This reverts commit "*) return 1 ;; esac
   return 0
 }
 
-# promoted_blob <ref> <path> <PR#> <merge commit> — when the PR's merge commit is not on <ref>, the file's blob at the oldest non-Revert
+# promoted_blob <ref> <path> <PR#> <merge commit> — when the PR's merge commit is not on <ref>, the file's blob at the oldest non-revert
 # <ref> commit that names the PR and changed <path> (and still has it); empty when the merge commit is on <ref>, or no commit names the PR.
+# "Names the PR" = "(#N)" in the commit SUBJECT, a squash-release bullet in the body ("* <title> (#N)", the line ending in the PR number: how
+# GitHub lists the PRs a release squash carries), or an explicit "cherry picked from commit <merge sha>" line; a "(#N)" mentioned in prose
+# ("Follow-up to (#N)") does not count. A revert (subject "Revert...", or a "This reverts commit" line) never counts.
 # The commits naming the PR are listed once per (ref, PR) and reused for every file.
 PB_KEY=""; PB_COMMITS=""
 promoted_blob() {
-  local ref=$1 path=$2 n=$3 mc=$4 c b
+  local ref=$1 path=$2 n=$3 mc=$4 c b trailer bullets reverts
   if [ "$PB_KEY" != "$ref $n $mc" ]; then
     PB_KEY="$ref $n $mc"; PB_COMMITS=""
-    git_ merge-base --is-ancestor "$mc" "$ref" 2>/dev/null || PB_COMMITS=$(git_ log --reverse --format='%H %s' -F --grep="(#$n)" --grep="cherry picked from commit $mc" "$ref" 2>/dev/null | awk '$2 != "" && $2 !~ /^Revert/ {print $1}')
+    if ! git_ merge-base --is-ancestor "$mc" "$ref" 2>/dev/null; then
+      trailer=$(git_ log -F --grep="cherry picked from commit $mc" --format=%H "$ref" 2>/dev/null)
+      bullets=$(git_ log -E --grep="^\* .*[(]#${n}[)]\$" --format=%H "$ref" 2>/dev/null)
+      reverts=$(git_ log -F --grep="This reverts commit " --format=%H "$ref" 2>/dev/null)
+      PB_COMMITS=$(git_ log --reverse --format='%H %s' -F --grep="(#$n)" --grep="cherry picked from commit $mc" "$ref" 2>/dev/null |
+        PB_TR="$trailer
+$bullets" PB_RV="$reverts" awk -v pat="(#$n)" 'BEGIN { split(ENVIRON["PB_TR"], a, "\n"); for (i in a) t[a[i]] = 1; split(ENVIRON["PB_RV"], r, "\n"); for (i in r) v[r[i]] = 1 }
+          { h = $1; subj = substr($0, 42) }
+          subj ~ /^Revert/ || (h in v) { next }
+          index(subj, pat) || (h in t) { print h }')
+    fi
   fi
   for c in $PB_COMMITS; do
     b=$(blob_at "$c" "$path"); [ -n "$b" ] || continue

@@ -166,7 +166,7 @@ vs_multiline_base() {
   vs_git checkout -q staging && vs_git merge -q --ff-only main
 }
 
-# #810: a PR squash-merged to staging whose content reached main only through a squash release commit naming "(#N)", on a base
+# #810: a PR squash-merged to staging whose content reached main only through a squash release commit naming "(#N)" in its subject, on a base
 # that lacks staging's other unpromoted change to the same file — main never holds the staging merge commit's blob.
 test_vs_squash_promoted_with_different_base_is_shipped() {
   vs_setup; vs_multiline_base
@@ -234,6 +234,47 @@ test_vs_pr_number_must_match_exactly() {
   vs_cleanup
 }
 
+# A main commit that mentions (#N) only in its BODY ("Follow-up to (#7)") does not carry PR 7.
+test_vs_pr_number_in_a_commit_body_only_is_not_shipped() {
+  vs_setup
+  printf 'v1\n' > "$VS_D/remote/a.txt"; vs_git commit -q -am "a v1 on staging"
+  local s; s=$(vs_git rev-parse HEAD)
+  vs_git checkout -q main
+  printf 'something else\n' > "$VS_D/remote/a.txt"; vs_git commit -q -a -m "Unrelated change to a (#8)" -m "Follow-up to (#7), which is still only on staging."
+  vs_pr 7 true "$s" modified:a.txt
+  vs_run --no-deploy 7; local rc=$?
+  assert_eq "$rc" "1" "(#7) in a body is not the PR landing on main" || { vs_cleanup; return 1; }
+  assert_contains "$VS_OUT" "NOT SHIPPED (a.txt (differs on main))" "names the file" || { vs_cleanup; return 1; }
+  vs_cleanup
+}
+
+# A hand-written Revert commit whose subject names the PR must not be taken as the commit that carried it.
+test_vs_revert_commit_naming_the_pr_does_not_carry_it() {
+  vs_setup
+  printf 'v1\n' > "$VS_D/remote/a.txt"; vs_git commit -q -am "a v1 on staging (#6)"
+  local s; s=$(vs_git rev-parse HEAD)
+  vs_git checkout -q main
+  printf 'weird\n' > "$VS_D/remote/a.txt"; vs_git commit -q -am 'Revert "a v1 on staging (#6)"'
+  vs_pr 6 true "$s" modified:a.txt
+  vs_run --no-deploy 6; local rc=$?
+  assert_eq "$rc" "1" "a Revert commit is never the carrier" || { vs_cleanup; return 1; }
+  vs_cleanup
+}
+
+# A revert whose subject does not start with "Revert" is still a revert when the message says "This reverts commit".
+test_vs_revert_with_a_custom_title_is_not_shipped() {
+  vs_setup
+  local s; s=$(vs_staging_feature)
+  vs_git checkout -q main && vs_git cherry-pick "$s" >/dev/null 2>&1
+  local c; c=$(vs_git rev-parse HEAD)
+  vs_git rm -q feature.txt && vs_git commit -q -m "Remove the feature" -m "This reverts commit $c."
+  vs_pr 1 true "$s" added:feature.txt
+  vs_run --no-deploy 1; local rc=$?
+  assert_eq "$rc" "1" "a deletion by a 'This reverts commit' commit is not moving on" || { vs_cleanup; return 1; }
+  assert_contains "$VS_OUT" "NOT SHIPPED (feature.txt (absent on main))" "names the file" || { vs_cleanup; return 1; }
+  vs_cleanup
+}
+
 test_vs_promoted_pr_reverted_on_main_is_not_shipped() {
   vs_setup
   printf 'v1\n' > "$VS_D/remote/a.txt"; vs_git commit -q -am "a v1 on staging (#6)"
@@ -246,7 +287,7 @@ test_vs_promoted_pr_reverted_on_main_is_not_shipped() {
   vs_pr 6 true "$s" modified:a.txt
   vs_run --no-deploy 6; local rc=$?
   assert_eq "$rc" "0" "before the revert it is shipped" || { vs_cleanup; return 1; }
-  vs_git revert --no-edit HEAD >/dev/null 2>&1   # the Revert commit names (#6) too and touches a.txt
+  vs_git revert --no-edit HEAD >/dev/null 2>&1   # restores the earlier a.txt (the Revert subject quotes the release (#30), not PR 6)
   vs_run --no-deploy 6; rc=$?
   assert_eq "$rc" "1" "reverted on main: not shipped" || { vs_cleanup; return 1; }
   assert_contains "$VS_OUT" "NOT SHIPPED (a.txt (differs on main))" "names the reverted file" || { vs_cleanup; return 1; }
@@ -410,6 +451,9 @@ run_test test_vs_squash_promoted_with_different_base_is_shipped
 run_test test_vs_cherry_pick_x_onto_a_different_base_is_shipped
 run_test test_vs_staging_only_pr_on_a_moved_on_file_is_not_shipped
 run_test test_vs_pr_number_must_match_exactly
+run_test test_vs_pr_number_in_a_commit_body_only_is_not_shipped
+run_test test_vs_revert_commit_naming_the_pr_does_not_carry_it
+run_test test_vs_revert_with_a_custom_title_is_not_shipped
 run_test test_vs_promoted_pr_reverted_on_main_is_not_shipped
 run_test test_vs_file_changed_by_the_pr_and_deleted_later_is_shipped
 run_test test_vs_added_file_reverted_away_on_main_is_not_shipped
