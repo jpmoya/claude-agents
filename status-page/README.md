@@ -124,6 +124,7 @@ and use up the KV write budget). Tunables are constants at the top of `alerts.js
 | Alert | Fires when | Data |
 |---|---|---|
 | Goal cannot be read (amber) | a host publishes `goal_stall[]` (a registry entry whose goal block cannot be read, or a project goal whose scope cannot be read, such as a closed project). Text: "<goal> cannot be read (reason); it is skipped, other goals unaffected". The goal blocks nothing but itself: the queue goes on without it (JP, 2026-11-19) | `goal_stall[]` (optional key, `build-runs-json.py goalstall`: `goalqueue.json` + a bounded tail of `events.jsonl`) |
+| GitHub login missing a permission (red, per host) | a host publishes a `goal_stall[]` entry of kind `token_scope` (`goal` = the host, `reason` = the missing scopes, `hint` = the fix command): that host's gh token lost a scope the pipeline needs, so goals cannot be read or closed there. Read from every live host, not only the goal snapshot's | `goal_stall[]` (`build-runs-json.py goalstall`, from `$PIPE/gh-scope.alert-state`) |
 | Goal queue stalled (red) | the goal-slot holder's `last_cycle_at` is older than `GOAL_STALL_HOURS` (6) with a goal queued | `goals[]` |
 | Free slots while work waits (amber, per host) | `capacity.running < max` and the oldest `queued` run is older than `IDLE_SLOT_MINUTES` (10); approved tickets do not count | `capacity`, `runs[].started_at` (= queued_at) |
 | Paused tickets nobody works on (amber) | held tickets that are waiting on JP, answered but not relaunched (`parked_reason: answered`, marker `DECISION`/`JP CONFIRMED`) or parked; not auto-retry, out-of-scope or finished ones. Count plus the first 6, each `#n first five words (why)` linked to the issue | `runs[]`, same winner and group rules as the status groups |
@@ -131,7 +132,7 @@ and use up the KV write budget). Tunables are constants at the top of `alerts.js
 | Host not reporting (amber stale, red offline) | `received_at` older than the existing stale / offline thresholds | `received_at` |
 
 A stale or offline host is reported once and its old data raises no other alert. The reporter publishes `goal_stall` only when non-empty;
-`validate.js` rebuilds it (closed `kind` enum, plain-text fields, max 5 entries; `blocked` names, up to 10, are optional and no longer sent) and drops anything malformed.
+`validate.js` rebuilds it (closed `kind` enum (`unreadable`, `project_error`, `token_scope`), plain-text fields, max 5 entries; `blocked` names, up to 10, are optional and no longer sent) and drops anything malformed.
 
 ## Backlog priority (reorder view)
 

@@ -1407,19 +1407,36 @@ def _recent_project_errors(now_epoch):
     return out
 
 
+def _gh_scope_stall():
+    """The host's gh token lost a required scope (gh-scope.sh, 2026-11-23): one `token_scope` entry from $PIPE/gh-scope.alert-state
+    ("<since epoch> <ticks> <missing csv>"), [] when there is no alert. Local file only; the status page shows it as its own banner."""
+    try:
+        with open(os.path.join(pipe_dir, "gh-scope.alert-state"), encoding="utf-8") as f:
+            parts = f.read().split()
+    except OSError:
+        return []
+    if len(parts) < 3 or not re.match(r"^[A-Za-z0-9:_,.-]+$", parts[2]):
+        return []
+    missing = parts[2].split(",")
+    host = re.sub(r"[^A-Za-z0-9_.-]", "", socket.gethostname().split(".")[0]) or "this machine"
+    return [{"kind": "token_scope", "goal": host, "reason": ", ".join(missing),
+             "hint": "run gh auth refresh -h github.com -s %s on %s" % (",".join(missing), host)}]
+
+
 def build_goal_stall():
     """Goals the queue SKIPS because they cannot be read (JP, 2026-11-19): a registry entry whose goal block cannot be read, or a project goal whose
     scope cannot be read (closed project, missing token scope, a failed read). Such a goal blocks nothing but itself, so these entries are
     informational: the status page shows each amber as "<goal> cannot be read (reason); it is skipped, other goals unaffected"."""
     if not pipe_dir:
         return []
+    scope = _gh_scope_stall()   # first, and ahead of the goal-queue early exits below: a lost token scope must show even when no queue file is readable
     try:
         with open(os.path.join(pipe_dir, "goalqueue.json"), encoding="utf-8") as f:
             q = json.load(f)
     except (OSError, ValueError):
-        return []
+        return scope
     if not isinstance(q, dict) or q.get("serial") is not True:
-        return []
+        return scope
     goals = build_goals()
     name_of = {}
     for e in goals:
@@ -1443,7 +1460,7 @@ def build_goal_stall():
         reason = _stall_text(why, 120) or "the project cannot be read"
         out.append({"kind": "project_error", "goal": _stall_text(name_of.get(gid) or "project " + ref, 80),
                     "reason": reason, "hint": _stall_hint(reason)})
-    return out[:GOAL_STALL_MAX]
+    return (scope + out)[:GOAL_STALL_MAX]
 
 
 def build_goals_as_of():

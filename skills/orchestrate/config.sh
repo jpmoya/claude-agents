@@ -120,6 +120,11 @@ GOAL_SERIAL_FEEDBACK=${GOAL_SERIAL_FEEDBACK:-0}
 # Supervisor stale-work digest (#491): pure observability, logged/alerted, never acted on automatically.
 STALE_WORK_HOURS=4
 
+# gh token scopes (gh-scope.sh): the scopes this host's gh token must hold; a missing one raises ONE alert per outage (alert file, Slack, status page).
+# A host meant to lack one (no project mirror) overrides this in config.local.sh. GH_SCOPE_CHECK_ENABLED=0 turns the check off.
+GH_REQUIRED_SCOPES=${GH_REQUIRED_SCOPES:-repo workflow project read:org}
+GH_SCOPE_CHECK_ENABLED=${GH_SCOPE_CHECK_ENABLED:-1}
+
 [ -f "$HOME/.claude/pipeline/config.local.sh" ] && source "$HOME/.claude/pipeline/config.local.sh"
 
 # #660: this default itself is set unconditionally below (plain `:-`, after config.local.sh is

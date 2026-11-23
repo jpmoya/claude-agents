@@ -27,6 +27,7 @@ source "$HERE/pipeline-lib.sh"
 source "$HERE/run-state.sh"
 # goal-bound delivery lead library (goal-lib.sh; the goal step #195 lives there)
 source "$HERE/goal-lib.sh"
+source "$HERE/gh-scope.sh"   # gh_scope_check: the host token lost a required scope -> one alert per outage (2026-11-23 project scope)
 # routing-marker vocabulary (marker_re), shared with the handoff hook and the orchestrator
 source "$HERE/../../hooks/pipeline-markers.sh" 2>/dev/null || source "$HOME/.claude/hooks/pipeline-markers.sh"
 
@@ -1157,6 +1158,7 @@ PY
 if [ "$GH_BUDGET_ENABLED" = 1 ]; then
   slog "$(gh_quota_line)"
   gh_tick_mark   # #773 AC8: the per-tick call counter, summarised at the end of the tick
+  gh_scope_check   # before the quota gate below: the rate_limit read is free, so an exhausted tick still alerts
   if ! gh_tier_allows essential; then
     slog "[gh-quota] REST quota exhausted — no GitHub work this tick, resuming after the reset"
     exit 0

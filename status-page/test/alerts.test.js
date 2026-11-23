@@ -243,3 +243,28 @@ describe('render.js - banner', () => {
     expect(html).not.toMatch(/\.alerts[^{]*\{[^}]*#[0-9a-fA-F]{3,6}/);
   });
 });
+
+describe('alert 1b - a host gh token lost a required scope (gh-scope.sh)', () => {
+  const tok = (o = {}) => ({ kind: 'token_scope', goal: 'mac', reason: 'project', hint: 'run gh auth refresh -h github.com -s project on mac', ...o });
+  it('is red, names the host and the scope, and carries the fix command', () => {
+    const a = derive(host({ goal_stall: [tok()] }));
+    expect(ids(a)).toEqual(['gh-token-scope-mac']);
+    expect(a[0].severity).toBe('red');
+    expect(a[0].title).toBe('The GitHub login on mac is missing the project permission');
+    expect(a[0].hint).toBe('run gh auth refresh -h github.com -s project on mac');
+  });
+  it('shows even when the OTHER host owns the goal snapshot, and once per host', () => {
+    const vm = host({ goals_as_of: ago(1), goals: [] });
+    const a = derive(host({ goal_stall: [tok()] }), vm);
+    expect(ids(a)).toEqual(['gh-token-scope-mac']);
+    expect(ids(derive(host({ goal_stall: [tok()] }), host({ goal_stall: [tok({ goal: 'vm', reason: 'project, workflow' })] })))).toEqual(['gh-token-scope-mac', 'gh-token-scope-vm']);
+  });
+  it('is not also listed as an unreadable goal', () => {
+    expect(ids(derive(host({ goal_stall: [tok()] })))).toEqual(['gh-token-scope-mac']);
+  });
+  it('validate.js keeps a token_scope entry', () => {
+    const r = validateBeatPayload(validPayload({ goal_stall: [tok()] }));
+    expect(r.ok).toBe(true);
+    expect(r.value.goal_stall).toEqual([tok()]);
+  });
+});

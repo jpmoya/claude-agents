@@ -113,6 +113,27 @@ function hostAlerts(key, record, thresholds, nowEpochSecs) {
   return { alerts: out, live: true };
 }
 
+/** 1b. a host's gh token lost a required scope (gh-scope.sh, 2026-11-23): `goal_stall[]` entry of kind token_scope, `goal` = the host, `reason` = the missing scopes.
+ *  Read from EVERY live host (not only the goal snapshot's): the host whose token broke is the one that cannot read or close goals. Red, once per host. */
+function tokenScopeAlerts(liveRecords) {
+  const out = [];
+  const seen = new Set();
+  for (const { record } of liveRecords) {
+    for (const s of Array.isArray(record.goal_stall) ? record.goal_stall : []) {
+      if (!s || typeof s !== 'object' || s.kind !== 'token_scope' || seen.has(s.goal)) continue;
+      seen.add(s.goal);
+      out.push({
+        id: `gh-token-scope-${s.goal}`,
+        severity: 'red',
+        title: `The GitHub login on ${s.goal} is missing the ${s.reason} permission`,
+        detail: 'Goals and project updates fail on that machine until it is fixed; a goal that has finished cannot close or free the goal slot.',
+        hint: s.hint,
+      });
+    }
+  }
+  return out;
+}
+
 /** 1. goals that stall the goal queue, from the hosts' `goal_stall[]` and from a slot holder whose lead has not cycled for GOAL_STALL_HOURS. */
 function goalStallAlerts(liveRecords, nowEpochSecs) {
   const out = [];
@@ -123,6 +144,7 @@ function goalStallAlerts(liveRecords, nowEpochSecs) {
       const key = `${s.kind}|${s.goal}`;
       if (seen.has(key)) continue;
       seen.add(key);
+      if (s.kind === 'token_scope') continue; // its own alert (tokenScopeAlerts), read from every live host, not only the goal snapshot's
       // A goal that cannot be read is skipped by the queue and blocks nothing but itself (JP, 2026-11-19): amber, not a stall.
       out.push({
         id: `goal-stall-${out.length + 1}`,
@@ -285,7 +307,7 @@ export function deriveAlerts(hosts, thresholds, nowEpochSecs) {
     }
   }
   const goalSel = selectGoalSnapshot(hosts, thresholds, nowEpochSecs); // #795: goal alerts read the one fresh snapshot, not every live host
-  const out = [...goalStallAlerts(goalAlertSources(goalSel, liveRecords), nowEpochSecs), ...goalSnapshotAlerts(goalSel, HOST_LABELS), ...releaseRouterAlerts(liveRecords, nowEpochSecs), ...webhookStaleAlerts(liveRecords, nowEpochSecs), ...stale];
+  const out = [...tokenScopeAlerts(liveRecords), ...goalStallAlerts(goalAlertSources(goalSel, liveRecords), nowEpochSecs), ...goalSnapshotAlerts(goalSel, HOST_LABELS), ...releaseRouterAlerts(liveRecords, nowEpochSecs), ...webhookStaleAlerts(liveRecords, nowEpochSecs), ...stale];
   const unowned = unownedAlert(liveHosts, nowEpochSecs);
   const rank = (a) => (a.severity === 'red' ? 0 : 1);
   return [...out, ...perHost, ...(unowned ? [unowned] : [])].sort((a, b) => rank(a) - rank(b));
