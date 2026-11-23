@@ -1644,6 +1644,14 @@ goal_tick_one() {  # <id>
         goal_mirror "$id" waiting_jp "$GE_TOTAL" "$GE_DELIVERED"
         goal_waiting "$id" "$issue" "$spec"; return 0
       fi
+      # #814: all tickets delivered, only the prod ship gate fails (GE_NOTLIVE=1, counted active above): the goal's own work is
+      # finished and only an evaluation closes it, and only a locally owned goal gets one (a requeued goal is never evaluated or
+      # delivered again): keep the slot, so the next tick that evaluates the goal closes it once the deploy is green
+      if [ "$GE_NOTLIVE" -eq 1 ]; then
+        rm -f "$PIPE/goal-$id.idle"
+        slog "[goal] $id idle but keeps the slot (delivered, waiting on the prod deploy)"
+        return 0
+      fi
       # fail closed on the read AND on the queue jq: never hand off (or keep the slot) on a guess
       qids=$(_goal_registry_json 2>/dev/null | _goal_queue_jq ' | .queued | map(.id) | .[]' 2>/dev/null; [ "${PIPESTATUS[0]}${PIPESTATUS[1]}" = 00 ]) \
         || { goal_err "goal $id: cannot read the registry to hand off the slot; retrying next tick"; return 0; }
