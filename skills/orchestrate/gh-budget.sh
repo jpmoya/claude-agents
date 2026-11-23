@@ -44,11 +44,22 @@ _gh_madrid() {
   printf '%s Europe/Madrid' "$out"
 }
 
+# _gh_scan_gqlq <field value> — #808: when the value is `query=<text>`, set the caller's (_gh_scan's, by bash dynamic scope) gqlq to
+# `mutation` when <text> starts with "mutation" after leading whitespace, else `read`; any other field leaves it alone.
+_gh_scan_gqlq() {
+  case "$1" in
+    query=*)
+      local v="${1#query=}"
+      v="${v#"${v%%[![:space:]]*}"}"
+      case "$v" in mutation*) gqlq=mutation ;; *) [ "$gqlq" = mutation ] || gqlq=read ;; esac ;;
+  esac
+}
+
 # _gh_scan <gh args...> — classify one call into globals (no subshell, so it is cheap):
 #   _GH_SUB (log text), _GH_BUCKET (core|graphql|none), _GH_WRITE (0|1), _GH_CACHEABLE (0|1)
 _gh_scan() {
   _GH_SUB=""; _GH_BUCKET=graphql; _GH_WRITE=0; _GH_CACHEABLE=0; _GH_ISSUE_REPO=""; _GH_ISSUE_NUM=""; _GH_LIST_REPO=""; _GH_WH_REPO=""; _GH_WH_NUM=""
-  local first="${1:-}" second="${2:-}" a prev="" method=GET payload=0 path=""
+  local first="${1:-}" second="${2:-}" a prev="" method=GET payload=0 path="" inputp=0 gqlq=""
   case "$first" in
     api)
       shift
@@ -56,14 +67,16 @@ _gh_scan() {
         if [ -n "$prev" ]; then
           case "$prev" in
             -X|--method) method="$a" ;;
-            -f|-F|--field|--raw-field|--input) payload=1 ;;
+            -f|-F|--field|--raw-field) payload=1; _gh_scan_gqlq "$a" ;;
+            --input) payload=1; inputp=1 ;;
           esac
           prev=""; continue
         fi
         case "$a" in
           -X|--method|-f|-F|--field|--raw-field|--input|-H|--header|--jq|-q|--template|-t|--cache|--hostname|-p|--preview) prev="$a" ;;
           --method=*) method="${a#*=}" ;;
-          --input=*|--field=*|--raw-field=*) payload=1 ;;
+          --input=*) payload=1; inputp=1 ;;
+          --field=*|--raw-field=*) payload=1; _gh_scan_gqlq "${a#*=}" ;;
           -*) ;;
           *) [ -n "$path" ] || path="$a" ;;
         esac
@@ -76,7 +89,11 @@ _gh_scan() {
         *) _GH_BUCKET=core ;;
       esac
       case "$method" in GET|get) ;; *) _GH_WRITE=1 ;; esac
-      [ "$payload" = 1 ] && _GH_WRITE=1
+      # #808: a GraphQL call carrying only -f/-F fields whose query= value is not a mutation is a read (the goal-project reads);
+      # --input, a mutation, a non-GET method and every non-graphql path with a payload stay writes.
+      if [ "$payload" = 1 ]; then
+        if [ "$path" = graphql ] && [ "$inputp" = 0 ] && [ "$gqlq" = read ]; then :; else _GH_WRITE=1; fi
+      fi
       if [ "$_GH_WRITE" = 0 ]; then
         case "$path" in
           repos/*/issues|repos/*/issues/*|repos/*/milestones|repos/*/milestones/*|repos/*/labels|repos/*/labels/*|'repos/{owner}/{repo}') _GH_CACHEABLE=1 ;;
@@ -429,12 +446,13 @@ _gh_wh_max_age() {
 
 # gh_tick_mark / gh_tick_summary — #773 AC8 counter: how many GitHub calls one supervisor tick cost, from this call log (all callers in
 # the tick's window: the supervisor, reconcile, goal sync). gh_tick_mark remembers the log's byte offset at tick start; gh_tick_summary
-# prints "calls=N hits=H skips=S webhook=on|off" for what was appended since (a rotated log counts from its start). Prints nothing with the
+# prints "calls=N hits=H skips=S webhook=on|off core_used=N|unknown" for what was appended since (a rotated log counts from its start). Prints nothing with the
 # budget guard off. Measure idle before/after the switch: grep '[gh-calls]' supervisor.log, average calls= over >= 30 idle ticks.
 gh_tick_mark() {
   [ "$GH_BUDGET_ENABLED" = 1 ] || return 0
   _gh_budget_paths
   _GH_TICK_OFF=$(wc -c < "$GH_CALL_LOG" 2>/dev/null | tr -d ' '); _GH_TICK_OFF=${_GH_TICK_OFF:-0}
+  gh_quota_read; _GH_TICK_CORE0=$GHQ_CORE   # #808: REST core remaining at tick start (cached quota file; refreshed at most once per TTL, as any call would)
 }
 gh_tick_summary() {
   [ "$GH_BUDGET_ENABLED" = 1 ] || return 0
@@ -444,6 +462,12 @@ gh_tick_summary() {
   [ "$size" -ge "$off" ] || off=0
   [ "${WEBHOOK_EVENTS_ENABLED:-0}" = 1 ] && wh=on
   tail -c +$(( off + 1 )) "$GH_CALL_LOG" 2>/dev/null | awk -v wh="$wh" '$4=="call"{c++} $4=="hit"{h++} $4=="skip"{s++} END{printf "calls=%d hits=%d skips=%d webhook=%s", c, h, s, wh}'
+  # #808: REST core quota consumed between gh_tick_mark and now (from the quota readings, no extra call); unknown when either reading is
+  # unknown or the window reset in between (remaining went up). Measures the share of use that never reaches the call log.
+  local c0="${_GH_TICK_CORE0:--1}" cu=unknown
+  gh_quota_read
+  if [ "$c0" -ge 0 ] 2>/dev/null && [ "$GHQ_CORE" -ge 0 ] && [ "$GHQ_CORE" -le "$c0" ]; then cu=$(( c0 - GHQ_CORE )); fi
+  printf ' core_used=%s' "$cu"
 }
 
 # gh_tick_due <name> <secs> — 0 when work <name> has not run for <secs> (and stamps it now), else 1. For GitHub-only reconciliation that

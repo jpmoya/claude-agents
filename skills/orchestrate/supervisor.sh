@@ -764,13 +764,18 @@ notify_engineering() {  # post a pipeline event to #engineering; requires SLACK_
   fi
 }
 
-clear_in_progress() {  # <repo> <issue> <why> <run_key> — idempotent; one gh call per issue, remembered in a marker file
+clear_in_progress() {  # <repo> <issue> <why> <run_key> — idempotent; one gh call per run key, remembered in a marker file
   local repo=$1 issue=$2 why=$3 rk=$4
   [ -f "$PIPE/orch-$rk.label-cleared" ] && return 0
-  if (cd "$repo" 2>/dev/null && gh issue edit "$issue" --remove-label "$LABEL_IN_PROGRESS" >/dev/null 2>&1); then
-    touch "$PIPE/orch-$rk.label-cleared"
+  # #808: one attempt per run key, whatever the result (a label that does not exist in the repo fails every time, and each failed
+  # edit counts as a write that flushes the gh-budget read cache). The step-4 label reconcile remains the backstop.
+  local err
+  if err=$(cd "$repo" 2>/dev/null && gh issue edit "$issue" --remove-label "$LABEL_IN_PROGRESS" 2>&1 >/dev/null); then
     slog "[label] #$issue — removed $LABEL_IN_PROGRESS ($why)"
+  else
+    slog "[label] #$issue — remove failed ($(gh_err_line <(printf '%s\n' "$err")))"
   fi
+  touch "$PIPE/orch-$rk.label-cleared"
 }
 
 do_launch() {  # <repo> <issue> <extra> <restart_n> <reason> <queue_wait_s> <run_key>

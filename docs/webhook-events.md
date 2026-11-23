@@ -47,7 +47,7 @@ to start and no status banner is published. Setting it back to `0` returns to fu
   served from the read cache for up to `WEBHOOK_LIST_MAX_AGE_SECS` (default = the fallback interval, 20 min) while the repo is trusted
   (read from `-R/--repo`, else the checkout's origin, no API call). Any event for the repo drops them; a dropped check/PR delivery can
   therefore leave one stale for at most that cap. With the switch off `pr list` is not cached at all (unchanged).
-- Per-tick counter (AC8): with the budget guard on, every supervisor tick logs `[gh-calls] tick calls=N hits=H skips=S webhook=on|off`, the
+- Per-tick counter (AC8): with the budget guard on, every supervisor tick logs `[gh-calls] tick calls=N hits=H skips=S webhook=on|off core_used=N|unknown` (`core_used` = REST core quota consumed in the tick, #808), the
   call-log delta since the tick started (all callers in that window).
 
 Not covered yet: the goal-project GraphQL reads (`goal_project_read`, `_gp_items`, `project view`) still use their own TTLs; with

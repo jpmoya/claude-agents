@@ -182,12 +182,74 @@ test_gb_log_cap_stops_logging() {
   rm -rf "$GB"
 }
 
+# #808 AC1: a read-only GraphQL query sent with -f/-F is not a write; a mutation (or --input) still is
+test_gb_graphql_query_read_is_not_a_write_and_cache_survives() {
+  gb_env 5000
+  local out
+  out=$(gb_run '_gh_scan api graphql -f query="query { viewer { login } }" -f owner=o -F number=1; echo WRITE=$_GH_WRITE')
+  assert_contains "$out" "WRITE=0" "query with -f/-F is a read" || return 1
+  out=$(gb_run '_gh_scan api graphql -f query="  
+  query { repository(owner:\"o\", name:\"r\") { id } }" -f o=x; echo WRITE=$_GH_WRITE')
+  assert_contains "$out" "WRITE=0" "leading whitespace/newline query is a read" || return 1
+  out=$(gb_run '_gh_scan api graphql --raw-field "query=query { viewer { login } }"; echo WRITE=$_GH_WRITE')
+  assert_contains "$out" "WRITE=0" "query=... in one --raw-field arg is a read" || return 1
+  # the read-only query must not flush a cached REST read
+  gb_run 'gh api repos/o/r/issues/5/comments >/dev/null; gh api graphql -f query="query { viewer { login } }" >/dev/null; gh api repos/o/r/issues/5/comments >/dev/null'
+  assert_eq "$(gb_calls)" 2 "REST read, graphql query, REST read again: cache survived (2 real calls)" || return 1
+  rm -rf "$GB"
+}
+
+test_gb_graphql_mutation_and_input_stay_writes() {
+  gb_env 5000
+  local out
+  out=$(gb_run '_gh_scan api graphql -f query="mutation { addStar(input:{starrableId:\"x\"}) { clientMutationId } }"; echo WRITE=$_GH_WRITE')
+  assert_contains "$out" "WRITE=1" "mutation is a write" || return 1
+  out=$(gb_run '_gh_scan api graphql -f query="
+   mutation M { x }" -F n=1; echo WRITE=$_GH_WRITE')
+  assert_contains "$out" "WRITE=1" "mutation after leading whitespace is a write" || return 1
+  out=$(gb_run '_gh_scan api graphql --input payload.json; echo WRITE=$_GH_WRITE')
+  assert_contains "$out" "WRITE=1" "--input to graphql is still a write" || return 1
+  out=$(gb_run '_gh_scan api graphql -X POST -f query="query { x }"; echo WRITE=$_GH_WRITE')
+  assert_contains "$out" "WRITE=1" "non-GET method is still a write" || return 1
+  gb_run 'gh api repos/o/r/issues/5/comments >/dev/null; gh api graphql -f query="mutation { x }" >/dev/null; gh api repos/o/r/issues/5/comments >/dev/null'
+  assert_eq "$(gb_calls)" 3 "mutation flushes the cache" || return 1
+  rm -rf "$GB"
+}
+
+test_gb_non_graphql_paths_unchanged() {
+  gb_env 5000
+  local out
+  out=$(gb_run '_gh_scan api repos/o/r/issues/1 -f body=x; echo WRITE=$_GH_WRITE')
+  assert_contains "$out" "WRITE=1" "REST with -f stays a write" || return 1
+  out=$(gb_run '_gh_scan api repos/o/r/issues/1 -f query="query { x }"; echo WRITE=$_GH_WRITE')
+  assert_contains "$out" "WRITE=1" "-f query= on a REST path stays a write" || return 1
+  out=$(gb_run '_gh_scan api repos/o/r/issues/1; echo WRITE=$_GH_WRITE')
+  assert_contains "$out" "WRITE=0" "plain REST GET stays a read" || return 1
+  rm -rf "$GB"
+}
+
+# #808 AC3: the per-tick summary gains core_used = REST core quota consumed between gh_tick_mark and gh_tick_summary
+test_gb_tick_summary_core_used() {
+  gb_env 4000
+  local now; now=$(date +%s)
+  printf '%s 4000 %s 5000 %s\n' "$now" "$((now + 3600))" "$((now + 3600))" > "$GB/pipe/gh-quota"
+  local out
+  out=$(gb_run 'gh_tick_mark; printf "%s 3700 %s 5000 %s\n" "$(date +%s)" '"$((now + 3600))"' '"$((now + 3600))"' > "$PIPE/gh-quota"; gh_tick_summary')
+  assert_contains "$out" "calls=0 hits=0 skips=0 webhook=off core_used=300" "4000 -> 3700 is 300 used, field appended after the existing ones" || return 1
+  # window reset between the readings (remaining went up): unknown, never negative
+  out=$(gb_run 'gh_tick_mark; printf "%s 4900 %s 5000 %s\n" "$(date +%s)" '"$((now + 7200))"' '"$((now + 7200))"' > "$PIPE/gh-quota"; gh_tick_summary')
+  assert_contains "$out" "core_used=unknown" "reset window -> unknown" || return 1
+  rm -rf "$GB"
+}
+
 for t in test_gb_log_line_format test_gb_tiers test_gb_exhausted_skips_with_one_quiet_line test_gb_graphql_bucket_is_separate \
          test_gb_quota_read_cached_60s test_gb_quota_line_madrid test_gb_unreadable_rate_limit_does_not_block \
          test_gb_cache_hit_within_ttl_and_expiry test_gb_cache_key_includes_args_and_cwd test_gb_write_flushes_cache_and_nocache_bypasses \
          test_gb_cache_clear_spares_in_flight_reads test_gb_cache_clear_removes_finished_keeps_in_flight \
          test_gb_failed_read_not_cached test_gb_ttl_zero_disables_cache test_gb_disabled_is_passthrough test_gb_tick_due \
-         test_gb_log_cap_stops_logging; do
+         test_gb_log_cap_stops_logging \
+         test_gb_graphql_query_read_is_not_a_write_and_cache_survives test_gb_graphql_mutation_and_input_stay_writes \
+         test_gb_non_graphql_paths_unchanged test_gb_tick_summary_core_used; do
   run_test "$t"
 done
 
