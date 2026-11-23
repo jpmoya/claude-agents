@@ -105,6 +105,26 @@ test_sr_ci_critical_sentry_ticket_keeps_its_slot() {
   assert_eq "$got" "3 2 1 " "ci-critical #2 stays in the middle slot; only the two plain Sentry slots swap" || return 1
 }
 
+test_sr_broken_rank_filter_falls_back_to_unranked_order_without_aborting_dispatch() {
+  si_env
+  rq_issue 1 "" agent-go sentry-auto-go; rq_issue 2 "" agent-go sentry-auto-go; rq_issue 3 "" agent-go sentry-auto-go
+  # a ranking that WOULD reorder (3 users on #3), so unranked "1 2 3" proves the fallback and not a no-op rank
+  sr_body 1 $'Events: 1   Users: 0'
+  sr_body 2 $'Events: 1   Users: 1'
+  sr_body 3 $'Events: 1   Users: 3'
+  # run a private copy of the orchestrate dir whose sentry-rank.jq is not valid jq; the repo's own file is never touched
+  local cp="$SI_PIPE/orch-copy"; mkdir -p "$cp"
+  cp -R "$HERE_SR/.." "$cp/orchestrate" 2>/dev/null; rm -rf "$cp/orchestrate/tests"
+  printf '| BROKEN(\n' > "$cp/orchestrate/lib/sentry-rank.jq"
+  rq_wrap failclaim
+  HOME="$SI_HOME" PATH="$SI_D:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" PIPE="$SI_PIPE" QUEUE="$SI_PIPE/queue" LOGDIR="$SI_HOME/logs/pipeline" \
+    SLACK_BOT_TOKEN="" SLACK_ENGINEERING_CHANNEL="" /bin/bash "$cp/orchestrate/supervisor.sh" >/dev/null 2>&1; sleep 0.3
+  local got log; got=$(rq_order); log=$(cat "$SI_HOME/logs/pipeline/supervisor.log" 2>/dev/null); si_cleanup
+  assert_eq "$got" "1 2 3 " "broken rank filter: today's unranked order still dispatches" || return 1
+  assert_not_contains "$log" "listing or release sort failed" "a ranking failure never aborts the repo's dispatch" || return 1
+}
+
+run_test test_sr_broken_rank_filter_falls_back_to_unranked_order_without_aborting_dispatch
 run_test test_sr_free_text_cannot_fake_the_stats_line
 run_test test_sr_ci_critical_sentry_ticket_keeps_its_slot
 run_test test_sr_highest_impact_sentry_ticket_dispatched_first
