@@ -45,13 +45,14 @@ _gh_madrid() {
 }
 
 # _gh_scan_gqlq <field value> — #808: when the value is `query=<text>`, set the caller's (_gh_scan's, by bash dynamic scope) gqlq to
-# `mutation` when <text> starts with "mutation" after leading whitespace, else `read`; any other field leaves it alone.
+# `mutation` when <text> starts with "mutation" (after leading whitespace) or "@", else `read`; any other field leaves it alone.
 _gh_scan_gqlq() {
   case "$1" in
     query=*)
       local v="${1#query=}"
       v="${v#"${v%%[![:space:]]*}"}"
-      case "$v" in mutation*) gqlq=mutation ;; *) [ "$gqlq" = mutation ] || gqlq=read ;; esac ;;
+      # a query=@file value is read by gh from a file we cannot see: it stays a write
+      case "$v" in mutation*|@*) gqlq=mutation ;; *) [ "$gqlq" = mutation ] || gqlq=read ;; esac ;;
   esac
 }
 
@@ -207,6 +208,18 @@ gh_quota_read() {
   [ "$GHQ_CORE" -ge 0 ] && [ "$GHQ_CORE_RESET" -gt 0 ] && [ "$GHQ_CORE_RESET" -le "$now" ] && GHQ_CORE=-1
   [ "$GHQ_GQL" -ge 0 ] && [ "$GHQ_GQL_RESET" -gt 0 ] && [ "$GHQ_GQL_RESET" -le "$now" ] && GHQ_GQL=-1
   return 0
+}
+
+# _gh_quota_peek — #808: REST core remaining + reset (-1 / 0 when unknown) from the quota cache file as it stands, NEVER refreshing it
+# (no rate_limit call). Sets _GHP_CORE / _GHP_RESET.
+_gh_quota_peek() {
+  _gh_budget_paths
+  local at c cr g gr
+  _GHP_CORE=-1; _GHP_RESET=0
+  [ -f "$GH_QUOTA_FILE" ] || return 0
+  read -r at c cr g gr < "$GH_QUOTA_FILE" 2>/dev/null || return 0
+  case "$at$c$cr$g$gr" in *[!0-9-]*|'') return 0 ;; esac
+  _GHP_CORE=${c:--1}; _GHP_RESET=${cr:-0}
 }
 
 # gh_quota_line — "gh-quota remaining=N reset=<Europe/Madrid time> graphql=M" (REST core first: the supervisor's essential reads use it)
@@ -452,7 +465,7 @@ gh_tick_mark() {
   [ "$GH_BUDGET_ENABLED" = 1 ] || return 0
   _gh_budget_paths
   _GH_TICK_OFF=$(wc -c < "$GH_CALL_LOG" 2>/dev/null | tr -d ' '); _GH_TICK_OFF=${_GH_TICK_OFF:-0}
-  gh_quota_read; _GH_TICK_CORE0=$GHQ_CORE   # #808: REST core remaining at tick start (cached quota file; refreshed at most once per TTL, as any call would)
+  _gh_quota_peek; _GH_TICK_CORE0=$_GHP_CORE; _GH_TICK_RESET0=$_GHP_RESET   # #808: REST core remaining at tick start (quota file as is: the tick's gh_quota_line just refreshed it)
 }
 gh_tick_summary() {
   [ "$GH_BUDGET_ENABLED" = 1 ] || return 0
@@ -462,11 +475,14 @@ gh_tick_summary() {
   [ "$size" -ge "$off" ] || off=0
   [ "${WEBHOOK_EVENTS_ENABLED:-0}" = 1 ] && wh=on
   tail -c +$(( off + 1 )) "$GH_CALL_LOG" 2>/dev/null | awk -v wh="$wh" '$4=="call"{c++} $4=="hit"{h++} $4=="skip"{s++} END{printf "calls=%d hits=%d skips=%d webhook=%s", c, h, s, wh}'
-  # #808: REST core quota consumed between gh_tick_mark and now (from the quota readings, no extra call); unknown when either reading is
-  # unknown or the window reset in between (remaining went up). Measures the share of use that never reaches the call log.
+  # #808: REST core quota consumed between gh_tick_mark and now, from the quota cache file as it stands (no rate_limit call; the file is
+  # refreshed by the tick's own calls at most once per GH_QUOTA_TTL_SECS, so both readings can be that old: a short tick can show
+  # core_used=0 while using some). unknown when either reading is unknown or the window reset in between.
   local c0="${_GH_TICK_CORE0:--1}" cu=unknown
-  gh_quota_read
-  if [ "$c0" -ge 0 ] 2>/dev/null && [ "$GHQ_CORE" -ge 0 ] && [ "$GHQ_CORE" -le "$c0" ]; then cu=$(( c0 - GHQ_CORE )); fi
+  _gh_quota_peek
+  if [ "$c0" -ge 0 ] 2>/dev/null && [ "$_GHP_CORE" -ge 0 ] && [ "$_GHP_CORE" -le "$c0" ] && [ "$_GHP_RESET" = "${_GH_TICK_RESET0:-x}" ]; then
+    cu=$(( c0 - _GHP_CORE ))
+  fi
   printf ' core_used=%s' "$cu"
 }
 

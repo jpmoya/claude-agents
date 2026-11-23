@@ -216,6 +216,19 @@ test_gb_graphql_mutation_and_input_stay_writes() {
   rm -rf "$GB"
 }
 
+test_gb_real_goal_project_calls_are_reads() {
+  gb_env 5000
+  local out gp="$(cd "$(dirname "$GB_LIB")" && pwd)/goal-project.sh" call
+  # the two real callers' exact argv shapes, with the real query strings (goal-project.sh _GP_ITEMS_Q / _GP_SCOPE_Q)
+  for call in '-f query="$_GP_ITEMS_Q" -f owner=o -F number=1 -f cursor=c' '-f query="$_GP_SCOPE_Q" -f owner=o -F number=1 -F first=50'; do
+    out=$(gb_run ". '$gp' 2>/dev/null; _gh_scan api graphql $call; echo WRITE=\$_GH_WRITE")
+    assert_contains "$out" "WRITE=0" "real goal-project call [$call] is a read" || return 1
+  done
+  out=$(gb_run '_gh_scan api graphql -F query=@q.graphql; echo WRITE=$_GH_WRITE')
+  assert_contains "$out" "WRITE=1" "query=@file cannot be inspected: stays a write" || return 1
+  rm -rf "$GB"
+}
+
 test_gb_non_graphql_paths_unchanged() {
   gb_env 5000
   local out
@@ -232,10 +245,11 @@ test_gb_non_graphql_paths_unchanged() {
 test_gb_tick_summary_core_used() {
   gb_env 4000
   local now; now=$(date +%s)
-  printf '%s 4000 %s 5000 %s\n' "$now" "$((now + 3600))" "$((now + 3600))" > "$GB/pipe/gh-quota"
+  printf '%s 4000 %s 5000 %s\n' "$((now - 500))" "$((now + 3600))" "$((now + 3600))" > "$GB/pipe/gh-quota"
   local out
   out=$(gb_run 'gh_tick_mark; printf "%s 3700 %s 5000 %s\n" "$(date +%s)" '"$((now + 3600))"' '"$((now + 3600))"' > "$PIPE/gh-quota"; gh_tick_summary')
   assert_contains "$out" "calls=0 hits=0 skips=0 webhook=off core_used=300" "4000 -> 3700 is 300 used, field appended after the existing ones" || return 1
+  assert_eq "$(grep -c . "$GB/rlcalls")" 0 "tick mark + summary make no rate_limit call, even with a stale quota file" || return 1
   # window reset between the readings (remaining went up): unknown, never negative
   out=$(gb_run 'gh_tick_mark; printf "%s 4900 %s 5000 %s\n" "$(date +%s)" '"$((now + 7200))"' '"$((now + 7200))"' > "$PIPE/gh-quota"; gh_tick_summary')
   assert_contains "$out" "core_used=unknown" "reset window -> unknown" || return 1
@@ -249,7 +263,7 @@ for t in test_gb_log_line_format test_gb_tiers test_gb_exhausted_skips_with_one_
          test_gb_failed_read_not_cached test_gb_ttl_zero_disables_cache test_gb_disabled_is_passthrough test_gb_tick_due \
          test_gb_log_cap_stops_logging \
          test_gb_graphql_query_read_is_not_a_write_and_cache_survives test_gb_graphql_mutation_and_input_stay_writes \
-         test_gb_non_graphql_paths_unchanged test_gb_tick_summary_core_used; do
+         test_gb_real_goal_project_calls_are_reads test_gb_non_graphql_paths_unchanged test_gb_tick_summary_core_used; do
   run_test "$t"
 done
 
@@ -281,6 +295,14 @@ test_gbs_quota_line_each_tick() {
   sq_cleanup
 }
 
+test_gbs_tick_line_has_core_used() {   # #808 AC3: the supervisor's own end-of-tick line carries the new field, after the existing ones
+  sq_env empty
+  gbs_tick 4000
+  assert_contains "$(sq_log)" "[gh-calls] tick calls=" "tick line logged" || { sq_cleanup; return 1; }
+  assert_contains "$(sq_log)" " webhook=off core_used=" "core_used appended after webhook=" || { sq_cleanup; return 1; }
+  sq_cleanup
+}
+
 test_gbs_reduced_tier_logged() {
   sq_env empty
   gbs_tick 1000
@@ -304,6 +326,6 @@ test_gbs_exhausted_tick_ends_quietly() {
   sq_cleanup
 }
 
-for t in test_gbs_quota_line_each_tick test_gbs_reduced_tier_logged test_gbs_essential_only_tier test_gbs_exhausted_tick_ends_quietly; do
+for t in test_gbs_quota_line_each_tick test_gbs_tick_line_has_core_used test_gbs_reduced_tier_logged test_gbs_essential_only_tier test_gbs_exhausted_tick_ends_quietly; do
   run_test "$t"
 done
