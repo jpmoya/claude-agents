@@ -158,6 +158,158 @@ test_vs_reverted_pr_is_not_shipped() {
   vs_cleanup
 }
 
+# vs_multiline_base — give main (and staging, fast-forwarded) a 12-line a.txt so changes at the top and bottom merge cleanly
+vs_multiline_base() {
+  vs_git checkout -q main
+  local i; for i in 1 2 3 4 5 6 7 8 9 10 11 12; do printf 'line%s\n' "$i"; done > "$VS_D/remote/a.txt"
+  vs_git commit -q -am "multiline a"
+  vs_git checkout -q staging && vs_git merge -q --ff-only main
+}
+
+# #810: a PR squash-merged to staging whose content reached main only through a squash release commit naming "(#N)", on a base
+# that lacks staging's other unpromoted change to the same file — main never holds the staging merge commit's blob.
+test_vs_squash_promoted_with_different_base_is_shipped() {
+  vs_setup; vs_multiline_base
+  printf 'line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12\nother PR line\n' > "$VS_D/remote/a.txt"
+  vs_git commit -q -am "other PR on staging (#8)"
+  printf 'line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12\nother PR line\nfeature line\n' > "$VS_D/remote/a.txt"
+  vs_git commit -q -am "feature on staging (#7)"
+  local s; s=$(vs_git rev-parse HEAD)
+  vs_pr 7 true "$s" modified:a.txt
+  vs_run --no-deploy 7; local rc=$?
+  assert_eq "$rc" "1" "before any promotion it is not shipped" || { vs_cleanup; return 1; }
+  vs_git checkout -q main
+  printf 'main moved on\n' > "$VS_D/remote/other.txt"; vs_git add -A && vs_git commit -q -m "unrelated main commit"
+  printf 'line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12\nfeature line\n' > "$VS_D/remote/a.txt"
+  vs_git commit -q -am "release v1.2.0 (#20)
+
+* feature on staging (#7)"
+  vs_run --no-deploy 7; rc=$?
+  assert_eq "$rc" "0" "squash release naming (#7) ships it even though the blob differs from the staging merge commit" || { vs_cleanup; return 1; }
+  assert_contains "$VS_OUT" "#7: SHIPPED" "reports SHIPPED" || { vs_cleanup; return 1; }
+  vs_cleanup
+}
+
+test_vs_cherry_pick_x_onto_a_different_base_is_shipped() {
+  vs_setup; vs_multiline_base
+  sed -i.bak 's/^line12$/line12 changed by the PR/' "$VS_D/remote/a.txt" && rm -f "$VS_D/remote/a.txt.bak"
+  vs_git commit -q -am "feature on staging"
+  local s; s=$(vs_git rev-parse HEAD)
+  vs_git checkout -q main
+  sed -i.bak 's/^line1$/line1 changed on main/' "$VS_D/remote/a.txt" && rm -f "$VS_D/remote/a.txt.bak"
+  vs_git commit -q -am "main moved on"
+  vs_git cherry-pick -x "$s" >/dev/null 2>&1
+  assert_eq "$(vs_git status --porcelain | wc -l | tr -d ' ')" "0" "the cherry-pick applied cleanly" || { vs_cleanup; return 1; }
+  assert_ne "$(vs_git rev-parse HEAD:a.txt)" "$(vs_git rev-parse "$s:a.txt")" "blob differs from the staging merge commit's" || { vs_cleanup; return 1; }
+  vs_pr 7 true "$s" modified:a.txt
+  vs_run --no-deploy 7; local rc=$?
+  assert_eq "$rc" "0" "the 'cherry picked from commit' trailer ships it" || { vs_cleanup; return 1; }
+  vs_cleanup
+}
+
+test_vs_staging_only_pr_on_a_moved_on_file_is_not_shipped() {
+  vs_setup; vs_multiline_base
+  sed -i.bak 's/^line12$/line12 changed by PR 7/' "$VS_D/remote/a.txt" && rm -f "$VS_D/remote/a.txt.bak"
+  vs_git commit -q -am "feature on staging (#7)"
+  local s; s=$(vs_git rev-parse HEAD)
+  vs_git checkout -q main
+  sed -i.bak 's/^line1$/line1 changed by PR 8/' "$VS_D/remote/a.txt" && rm -f "$VS_D/remote/a.txt.bak"
+  vs_git commit -q -am "another feature on main (#8)"
+  vs_pr 7 true "$s" modified:a.txt
+  vs_run --no-deploy 7; local rc=$?
+  assert_eq "$rc" "1" "no main commit names (#7): still NOT SHIPPED" || { vs_cleanup; return 1; }
+  assert_contains "$VS_OUT" "NOT SHIPPED (a.txt (differs on main))" "names the file" || { vs_cleanup; return 1; }
+  vs_cleanup
+}
+
+test_vs_pr_number_must_match_exactly() {
+  vs_setup
+  printf 'v1\n' > "$VS_D/remote/a.txt"; vs_git commit -q -am "a v1 on staging (#7)"
+  local s; s=$(vs_git rev-parse HEAD)
+  vs_git checkout -q main
+  printf 'something else\n' > "$VS_D/remote/a.txt"; vs_git commit -q -am "other work (#77) and (#70)"
+  vs_pr 7 true "$s" modified:a.txt
+  vs_run --no-deploy 7; local rc=$?
+  assert_eq "$rc" "1" "(#77) and (#70) do not name PR 7" || { vs_cleanup; return 1; }
+  vs_cleanup
+}
+
+test_vs_promoted_pr_reverted_on_main_is_not_shipped() {
+  vs_setup
+  printf 'v1\n' > "$VS_D/remote/a.txt"; vs_git commit -q -am "a v1 on staging (#6)"
+  local s; s=$(vs_git rev-parse HEAD)
+  vs_git checkout -q main
+  printf 'other\n' > "$VS_D/remote/other.txt"; vs_git add -A && vs_git commit -q -m "unrelated"
+  printf 'v1 plus promotion edits\n' > "$VS_D/remote/a.txt"; vs_git commit -q -am "release v1.0.1 (#30)
+
+* a v1 on staging (#6)"
+  vs_pr 6 true "$s" modified:a.txt
+  vs_run --no-deploy 6; local rc=$?
+  assert_eq "$rc" "0" "before the revert it is shipped" || { vs_cleanup; return 1; }
+  vs_git revert --no-edit HEAD >/dev/null 2>&1   # the Revert commit names (#6) too and touches a.txt
+  vs_run --no-deploy 6; rc=$?
+  assert_eq "$rc" "1" "reverted on main: not shipped" || { vs_cleanup; return 1; }
+  assert_contains "$VS_OUT" "NOT SHIPPED (a.txt (differs on main))" "names the reverted file" || { vs_cleanup; return 1; }
+  vs_cleanup
+}
+
+# #747: a file the PR changed and a later change deleted from main moved on; it is not missing.
+test_vs_file_changed_by_the_pr_and_deleted_later_is_shipped() {
+  vs_setup
+  printf 'old v2\n' > "$VS_D/remote/old.txt"; vs_git commit -q -am "old v2 on staging (#9)"
+  local s; s=$(vs_git rev-parse HEAD)
+  vs_git checkout -q main && vs_git cherry-pick "$s" >/dev/null 2>&1
+  vs_git rm -q old.txt && vs_git commit -q -m "delete old (#10)"
+  vs_pr 9 true "$s" modified:old.txt
+  vs_run --no-deploy 9; local rc=$?
+  assert_eq "$rc" "0" "a later deletion on main is not a failure" || { vs_cleanup; return 1; }
+  vs_cleanup
+}
+
+test_vs_added_file_reverted_away_on_main_is_not_shipped() {
+  vs_setup
+  local s; s=$(vs_staging_feature)
+  vs_git checkout -q main && vs_git cherry-pick "$s" >/dev/null 2>&1
+  vs_git revert --no-edit HEAD >/dev/null 2>&1   # deletes feature.txt again
+  vs_pr 1 true "$s" added:feature.txt
+  vs_run --no-deploy 1; local rc=$?
+  assert_eq "$rc" "1" "a file removed by a Revert commit is not shipped" || { vs_cleanup; return 1; }
+  assert_contains "$VS_OUT" "NOT SHIPPED (feature.txt (absent on main))" "names the file" || { vs_cleanup; return 1; }
+  vs_cleanup
+}
+
+test_vs_deleted_file_never_on_main_is_not_shipped() {
+  vs_setup
+  printf 'old v2\n' > "$VS_D/remote/old.txt"; vs_git commit -q -am "old v2 on staging"
+  local s; s=$(vs_git rev-parse HEAD)
+  vs_git checkout -q main && vs_git rm -q old.txt && vs_git commit -q -m "delete old on main"   # old.txt v2 never existed on main
+  vs_pr 9 true "$s" modified:old.txt
+  vs_run --no-deploy 9; local rc=$?
+  assert_eq "$rc" "1" "the PR's version never reached main" || { vs_cleanup; return 1; }
+  assert_contains "$VS_OUT" "NOT SHIPPED (old.txt (absent on main))" "names the file" || { vs_cleanup; return 1; }
+  vs_cleanup
+}
+
+# #747: the PR's blob reached main only through a merge's SECOND parent (the merge keeps main's blob). The main-side commit is dated
+# BEFORE the PR commit so a date-ordered "held before" check would wrongly call main's blob an earlier version.
+test_vs_blob_reaching_main_only_via_a_second_parent_is_shipped() {
+  vs_setup
+  vs_git checkout -q main
+  printf 'v2 main side\n' > "$VS_D/remote/a.txt"
+  GIT_AUTHOR_DATE="2020-01-01T00:00:00Z" GIT_COMMITTER_DATE="2020-01-01T00:00:00Z" vs_git commit -q -am "a v2 on main"
+  vs_git checkout -q -b side "$VS_BASE_SHA"
+  printf 'v1 pr side\n' > "$VS_D/remote/a.txt"
+  GIT_AUTHOR_DATE="2021-01-01T00:00:00Z" GIT_COMMITTER_DATE="2021-01-01T00:00:00Z" vs_git commit -q -am "a v1 by the PR"
+  local s; s=$(vs_git rev-parse HEAD)
+  vs_git checkout -q main
+  GIT_AUTHOR_DATE="2022-01-01T00:00:00Z" GIT_COMMITTER_DATE="2022-01-01T00:00:00Z" vs_git merge -q -s ours --no-edit side >/dev/null 2>&1
+  assert_eq "$(vs_git show HEAD:a.txt)" "v2 main side" "the merge kept main's blob" || { vs_cleanup; return 1; }
+  vs_pr 11 true "$s" modified:a.txt
+  vs_run --no-deploy 11; local rc=$?
+  assert_eq "$rc" "0" "the PR's commit is in main's history through the second parent" || { vs_cleanup; return 1; }
+  vs_cleanup
+}
+
 test_vs_repo_without_a_deploy_workflow_needs_no_deploy_run() {
   VS_NO_WORKFLOW=1 vs_setup
   local s; s=$(vs_staging_feature)
@@ -254,6 +406,15 @@ run_test test_vs_modified_file_with_different_content_on_main_is_not_shipped
 run_test test_vs_file_changed_again_by_a_later_pr_is_still_shipped
 run_test test_vs_not_on_main_beats_deploy_pending_in_the_exit_code
 run_test test_vs_reverted_pr_is_not_shipped
+run_test test_vs_squash_promoted_with_different_base_is_shipped
+run_test test_vs_cherry_pick_x_onto_a_different_base_is_shipped
+run_test test_vs_staging_only_pr_on_a_moved_on_file_is_not_shipped
+run_test test_vs_pr_number_must_match_exactly
+run_test test_vs_promoted_pr_reverted_on_main_is_not_shipped
+run_test test_vs_file_changed_by_the_pr_and_deleted_later_is_shipped
+run_test test_vs_added_file_reverted_away_on_main_is_not_shipped
+run_test test_vs_deleted_file_never_on_main_is_not_shipped
+run_test test_vs_blob_reaching_main_only_via_a_second_parent_is_shipped
 run_test test_vs_repo_without_a_deploy_workflow_needs_no_deploy_run
 run_test test_vs_unmerged_pr_is_not_shipped
 run_test test_vs_deploy_states
