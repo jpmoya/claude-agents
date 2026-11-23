@@ -244,6 +244,88 @@ test_zi_ac9_docs() {
     || { fail "AC9: README must say the goal rejoins the queue behind the goals already waiting/queued"; return 1; }
 }
 
+# #814 — zi_gate_world <verify rc> [b state]: zi_world plus the prod ship gate (as in test-goal-ship-gate.sh). Ticket 7 (A's only
+# ticket) is closed and PR 101 merged "Closes #7"; the verify-shipped stub exits <rc> (1 = deploy pending, 0 = live on prod).
+zi_gate_world() {
+  zi_world "${2:-queued}"
+  gs_issue 7 closed
+  rm -f "$GS_ST/comments/$GS_A-7.json"
+  mv "$GS_BIN/gh" "$GS_BIN/gh.zq"   # zq_env already wraps gh.real: this wrapper goes in front of that one
+  cat > "$GS_BIN/gh" <<'EOF'
+#!/bin/bash
+case "$*" in
+  *"/issues/"*"/timeline"*) cat "$(dirname "$0")/timeline.json"; exit 0 ;;
+esac
+exec "$(dirname "$0")/gh.zq" "$@"
+EOF
+  chmod +x "$GS_BIN/gh"
+  cat > "$GS_BIN/timeline.json" <<'EOF'
+[{"event":"cross-referenced","source":{"issue":{"number":101,"body":"Closes #7","repository_url":"https://api.github.com/repos/example-owner/project-a","pull_request":{"merged_at":"2026-11-16T00:00:00Z"}}}}]
+EOF
+  cat > "$GS_HOME/verify" <<'EOF'
+#!/bin/bash
+echo "example-owner/project-a#101: $(cat "$(dirname "$0")/verify-line")"
+exit "$(cat "$(dirname "$0")/verify-rc")"
+EOF
+  chmod +x "$GS_HOME/verify"
+  zi_verify "$1"
+  { echo "GOAL_SHIP_GATE=1"; echo "GOAL_SHIP_CACHE_SECS=0"; echo "GOAL_VERIFY_SHIPPED=\"$GS_HOME/verify\""; } >> "$GS_HOME/.claude/pipeline/config.local.sh"
+}
+zi_verify() {
+  echo "$1" > "$GS_HOME/verify-rc"
+  if [ "$1" = 0 ]; then echo SHIPPED > "$GS_HOME/verify-line"; else echo "DEPLOY PENDING (deploy run still in progress)" > "$GS_HOME/verify-line"; fi
+}
+
+# #814: all tickets delivered, only the ship gate fails, B queued: A keeps the slot (no requeue, no hand-off note, no
+# deferred_at, no idle file, .np untouched); once the gate passes, the next evaluation delivers and closes A.
+test_zi_814_delivered_but_not_live_keeps_the_slot() {
+  zi_gate_world 1 queued
+  gs_tick; gs_settle
+  local q st idle notes log da np cache=gone
+  q=$(zi_label 50 goal-queued); st=$(gs_reg_state 50); idle=$(zi_file idle); da=$(zq_block_field 50 deferred_at)
+  notes=$(gs_reg_comment_count 50 "**[deliver] NOTE** $ZI_IDLE_NOTE"); log=$(gs_log); np=$(cat "$GS_PIPE/goal-$ZQ_A.np" 2>/dev/null)
+  [ -f "$GS_PIPE/goal-$ZQ_A.json" ] && cache=present
+  assert_eq "$q" "no" "814: A is not requeued" || { gs_cleanup; return 1; }
+  assert_eq "$st" "open" "814: A is not closed while the deploy is pending" || { gs_cleanup; return 1; }
+  assert_eq "$da" "MISSING" "814: no deferred_at" || { gs_cleanup; return 1; }
+  assert_eq "$idle" "gone" "814: the idle file is removed" || { gs_cleanup; return 1; }
+  assert_eq "$notes" "0" "814: no hand-off note" || { gs_cleanup; return 1; }
+  assert_eq "$np" "1" "814: .np untouched (no counter added or advanced)" || { gs_cleanup; return 1; }
+  assert_eq "$cache" "present" "814: A stays locally owned (cache kept)" || { gs_cleanup; return 1; }
+  assert_contains "$log" "[goal] $ZQ_A idle but keeps the slot (delivered, waiting on the prod deploy)" "814: log line" || { gs_cleanup; return 1; }
+  assert_not_contains "$log" "returned to the queue" "814: never returned to the queue" || { gs_cleanup; return 1; }
+  # the deploy goes green and A's cycle pacing (GOAL_CYCLE_SECS) has elapsed: the next evaluation delivers and closes A
+  zi_verify 0; gs_launch_state "$ZQ_A" 3000 0 2900
+  gs_tick; gs_settle
+  st=$(gs_reg_state 50)
+  gs_cleanup
+  assert_eq "$st" "closed" "814: once live on prod the goal closes itself" || return 1
+}
+
+# #814 (#627 regression): open work and no not-live verdict (the ticket is still open): the idle goal still hands off.
+test_zi_814_open_work_without_not_live_still_hands_off() {
+  zi_gate_world 1 queued
+  gs_issue 7 open
+  gs_tick; gs_settle
+  local q log
+  q=$(zi_label 50 goal-queued); log=$(gs_log)
+  gs_cleanup
+  assert_eq "$q" "yes" "814: A with no dispatchable work (not 'not live') is still handed off" || return 1
+  assert_contains "$log" "[goal] $ZQ_A $ZI_LOG_LINE" "814: hand-off log line unchanged" || return 1
+  assert_not_contains "$log" "waiting on the prod deploy" "814: not the not-live path" || return 1
+}
+
+# #814: delivered AND live on prod, B queued: the idle goal is delivered (closed), not requeued.
+test_zi_814_delivered_and_live_closes() {
+  zi_gate_world 0 queued
+  gs_tick; gs_settle
+  local st q
+  st=$(gs_reg_state 50); q=$(zi_label 50 goal-queued)
+  gs_cleanup
+  assert_eq "$st" "closed" "814: delivered and live: A closes" || return 1
+  assert_eq "$q" "no" "814: A is not requeued" || return 1
+}
+
 echo "-- idle goal hands the slot to the queue (#627)"
 run_test test_zi_f1_idle_goal_hands_the_slot_to_the_queue
 run_test test_zi_f1_next_tick_starts_the_next_goal
@@ -257,4 +339,7 @@ run_test test_zi_f6_registry_unreadable_fails_closed_then_retries
 run_test test_zi_ac8_brief_names_the_idle_file
 run_test test_zi_ac8_launch_removes_a_stale_idle_file
 run_test test_zi_ac9_docs
+run_test test_zi_814_delivered_but_not_live_keeps_the_slot
+run_test test_zi_814_open_work_without_not_live_still_hands_off
+run_test test_zi_814_delivered_and_live_closes
 gs_tree_cleanup
