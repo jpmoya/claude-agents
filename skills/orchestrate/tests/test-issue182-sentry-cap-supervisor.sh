@@ -1,6 +1,6 @@
 # Issue #182 — daily cap on automatic Sentry-ticket launches per repo: the supervisor's shared-dispatch step (5).
 # Whole ticks in an isolated HOME/PIPE with stubbed gh / claude / pmset / curl (lib/sentry-cap.sh); step 5 launches
-# through the real launcher.sh. Config is the default (cap 3) unless a test says otherwise.
+# through the real launcher.sh. sc_env pins the cap to 3 (#761: the default is now 10) unless a test says otherwise.
 #
 #   AC1  fixture 1: cap 3, 3 launches of repo A in the last hour, one sentry-auto-go issue queued in A -> not launched,
 #                   slog line written, labels unchanged

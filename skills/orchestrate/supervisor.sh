@@ -2652,12 +2652,20 @@ if { [ "$launched" -eq 0 ] || { [ "$drain_launched" -eq 1 ] && [ "$dispatch_hold
       # #182: the same listing also says which candidates carry sentry-auto-go (.s), so the daily launch cap below costs
       # no extra GitHub read; cand_json keeps the sorted objects, sentry_cands the numbers of the labelled ones.
       cand_json=$(gh issue list --repo "$owner_repo" --state open --label "$LABEL_GO" --limit 500 \
-        --search "$dispatch_search" --json number,labels,milestone \
+        --search "$dispatch_search" --json number,labels,milestone,body \
         --jq "[.[] | select([.labels[].name] | index(\"$LABEL_IN_PROGRESS\") | not) | select(([.labels[].name] | map(. as \$l | $goal_skip_json | index(\$l)) | any(. != null)) | not) $spread_sel]
           | map(. as \$i | ((((\$i.milestone.title? // \"\") | tostring) | capture(\"^v(?<a>[0-9]+)\\\\.(?<b>[0-9]+)\\\\.(?<c>[0-9]+)\")) // null) as \$v
-            | {n: \$i.number, g: ((\$i.labels // []) | any(.name // \"\" | test(\"^goal: \"))), s: ((\$i.labels // []) | any(.name // \"\" | . == \"$LABEL_SENTRY_GO\")), x: ((\$i.labels // []) | any(.name // \"\" | . == \"$LABEL_CI_CRITICAL\")), k: (if \$v then [0, (\$v.a|tonumber), (\$v.b|tonumber), (\$v.c|tonumber), \$i.number] else [1, 0, 0, 0, \$i.number] end)})
+            | (try ((\$i.body // \"\") | tostring | [match(\"(?:^|\\n)[ \\t]*Events:[ \\t]*(?<e>[0-9]{1,9})[ \\t]+Users:[ \\t]*(?<u>[0-9]{1,9})(?![0-9])(?:[ \\t]+First seen:[ \\t]*(?<f>[0-9]{4}-[0-9]{2}-[0-9]{2}))?\"; \"g\")] | last | .captures | map({(.name): .string}) | add) catch null) as \$m
+            | {n: \$i.number, g: ((\$i.labels // []) | any(.name // \"\" | test(\"^goal: \"))), s: ((\$i.labels // []) | any(.name // \"\" | . == \"$LABEL_SENTRY_GO\")), x: ((\$i.labels // []) | any(.name // \"\" | . == \"$LABEL_CI_CRITICAL\")), e: (try ((\$m.e // \"0\") | tonumber) catch 0), u: (try ((\$m.u // \"0\") | tonumber) catch 0), f: (\$m.f // \"\"), k: (if \$v then [0, (\$v.a|tonumber), (\$v.b|tonumber), (\$v.c|tonumber), \$i.number] else [1, 0, 0, 0, \$i.number] end)})
           | sort_by(.k)" 2>"$rq_err") \
         && candidates=$(printf '%s' "$cand_json" | jq --argjson prio "$prio_json" -f "$HERE/lib/backlog-sort.jq" 2>>"$rq_err") \
+        && { # #761: impact-rank the sentry-auto-go slots among themselves (lib/sentry-rank.jq; ci-critical first, overrides the
+             # backlog priority store among Sentry tickets); any failure keeps the unranked order. Counts come from the
+             # `Events: N   Users: M` stats line only (line-anchored, last one), never from free text mid-line.
+             sr_order=$(printf '%s\n' "$candidates" | jq -Rsc 'split("\n") | map(select(length > 0) | tonumber)' 2>/dev/null) \
+               && sr_ranked=$(printf '%s' "$cand_json" | jq -r --argjson order "$sr_order" -f "$HERE/lib/sentry-rank.jq" 2>/dev/null) \
+               && [ -n "$sr_ranked" ] && candidates=$sr_ranked
+             true; } \
         && sentry_cands=$(printf '%s' "$cand_json" | jq -r '[.[] | select(.s) | .n | tostring] | join(" ")' 2>>"$rq_err") \
         && sentry_exempt=$(printf '%s' "$cand_json" | jq -r '[.[] | select(.s and .x) | .n | tostring] | join(" ")' 2>>"$rq_err") || {
         slog "[dispatch] $owner_repo — listing or release sort failed ($rq_tags): $(head -c 300 "$rq_err" | tr '\n' ' ')"

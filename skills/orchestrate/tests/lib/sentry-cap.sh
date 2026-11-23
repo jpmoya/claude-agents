@@ -20,6 +20,9 @@ ORCH_SC="$RS_SC/launcher.sh"
 SC_A="project-a/repo-a"
 SC_B="project-b/repo-b"
 
+# sc_default_cap — drops sc_env's cap pin so the config.sh default applies (the tests of the default itself)
+sc_default_cap() { perl -ni -e 'print unless /^SENTRY_AUTO_GO_DAILY_CAP=3$/' "$SC_HOME/.claude/pipeline/config.local.sh"; }
+
 # sc_env [config.local.sh line...] — sets SC_PIPE, SC_HOME, SC_D, SC_RA, SC_RB, SC_LOG (the launch log path)
 sc_env() {
   SC_PIPE=$(new_pipe); SC_HOME=$(new_home); SC_D="$SC_HOME/.local/bin"; mkdir -p "$SC_D"
@@ -30,6 +33,7 @@ sc_env() {
   : > "$SC_D/gh-calls.log"; : > "$SC_D/claude.log"; : > "$SC_D/curl.log"
   { echo 'MEM_FLOOR_MB=0'; echo 'CLAIM_SETTLE_SECS=0'
     printf 'DISPATCH_REPOS=("%s:%s" "%s:%s")\n' "$SC_A" "$SC_RA" "$SC_B" "$SC_RB"
+    echo 'SENTRY_AUTO_GO_DAILY_CAP=3'   # #761: the fixtures' launch logs are sized for a cap of 3; sc_default_cap removes this pin
     local l; for l in "$@"; do printf '%s\n' "$l"; done
   } > "$SC_HOME/.claude/pipeline/config.local.sh"
   cat > "$SC_D/pmset" <<'X'
