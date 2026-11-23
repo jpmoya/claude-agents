@@ -98,8 +98,8 @@ EOF
 }
 
 # deleted_later <ref> <path> <want blob> — the path is absent on <ref>: was that a later change moving the file on? Yes when the want blob
-# appeared in the path's history and the commit that deleted the path is not a revert (subject starting "Revert", or a "This reverts commit"
-# line in the message): a reverted addition is NOT shipped.
+# appeared in the path's history and the commit that deleted the path is not a revert (subject starting "Revert", or a line STARTING
+# "This reverts commit "): a reverted addition is NOT shipped.
 deleted_later() {
   local c b seen=0 d
   while read -r c b; do
@@ -109,31 +109,40 @@ $(hist "$1" "$2")
 EOF
   [ "$seen" = 1 ] || return 1
   d=$(git_ log --full-history --diff-filter=D -n 1 --format=%B "$1" -- "$2" 2>/dev/null)
-  case "$d" in Revert*|*"This reverts commit "*) return 1 ;; esac
+  case "$d" in Revert*|*$'\n'"This reverts commit "*) return 1 ;; esac
   return 0
 }
 
 # promoted_blob <ref> <path> <PR#> <merge commit> — when the PR's merge commit is not on <ref>, the file's blob at the oldest non-revert
 # <ref> commit that names the PR and changed <path> (and still has it); empty when the merge commit is on <ref>, or no commit names the PR.
-# "Names the PR" = "(#N)" in the commit SUBJECT, a squash-release bullet in the body ("* <title> (#N)", the line ending in the PR number: how
-# GitHub lists the PRs a release squash carries), or an explicit "cherry picked from commit <merge sha>" line; a "(#N)" mentioned in prose
-# ("Follow-up to (#N)") does not count. A revert (subject "Revert...", or a "This reverts commit" line) never counts.
-# The commits naming the PR are listed once per (ref, PR) and reused for every file.
+# A commit "names the PR" when ONE line carries both the PR number and the PR's title: its subject, or a squash-release bullet in its body
+# ("* <title> (#N)", how GitHub lists the PRs a release squash carries), where the line contains "(#N)" and, compared case- and
+# whitespace-insensitively with every "(#digits)" marker dropped, the PR's title (PR_TITLE, from the PR JSON; with no title nothing matches).
+# Or when its message has an explicit "cherry picked from commit <merge sha>" line. A line that only mentions "(#N)" in prose
+# ("Follow-up to (#N)") does not count. A revert (subject "Revert...", or a line STARTING "This reverts commit ", git revert's own) never
+# counts. The commits naming the PR are listed once per (ref, PR) and reused for every file.
+PR_TITLE=""
 PB_KEY=""; PB_COMMITS=""
 promoted_blob() {
-  local ref=$1 path=$2 n=$3 mc=$4 c b trailer bullets reverts
+  local ref=$1 path=$2 n=$3 mc=$4 c b
   if [ "$PB_KEY" != "$ref $n $mc" ]; then
     PB_KEY="$ref $n $mc"; PB_COMMITS=""
     if ! git_ merge-base --is-ancestor "$mc" "$ref" 2>/dev/null; then
-      trailer=$(git_ log -F --grep="cherry picked from commit $mc" --format=%H "$ref" 2>/dev/null)
-      bullets=$(git_ log -E --grep="^\* .*[(]#${n}[)]\$" --format=%H "$ref" 2>/dev/null)
-      reverts=$(git_ log -F --grep="This reverts commit " --format=%H "$ref" 2>/dev/null)
-      PB_COMMITS=$(git_ log --reverse --format='%H %s' -F --grep="(#$n)" --grep="cherry picked from commit $mc" "$ref" 2>/dev/null |
-        PB_TR="$trailer
-$bullets" PB_RV="$reverts" awk -v pat="(#$n)" 'BEGIN { split(ENVIRON["PB_TR"], a, "\n"); for (i in a) t[a[i]] = 1; split(ENVIRON["PB_RV"], r, "\n"); for (i in r) v[r[i]] = 1 }
-          { h = $1; subj = substr($0, 42) }
-          subj ~ /^Revert/ || (h in v) { next }
-          index(subj, pat) || (h in t) { print h }')
+      PB_COMMITS=$(git_ log --reverse --format='%x01%H%n%B' -F --grep="(#$n)" --grep="cherry picked from commit $mc" "$ref" 2>/dev/null |
+        PB_TITLE="$PR_TITLE" awk -v pat="(#$n)" -v cp="cherry picked from commit $mc" '
+          function norm(x) { x = tolower(x); gsub(/\(#[0-9]+\)/, " ", x); gsub(/[ \t]+/, " ", x); sub(/^ /, "", x); sub(/ $/, "", x); return x }
+          function flush() { if (h != "" && !rev && (named || trail)) print h; h = ""; rev = 0; named = 0; trail = 0 }
+          BEGIN { title = norm(ENVIRON["PB_TITLE"]) }
+          index($0, "\001") == 1 { flush(); h = substr($0, 2); first = 1; next }
+          {
+            line = $0; sub(/[ \t\r]+$/, "", line)
+            if (first && line ~ /^Revert/) rev = 1
+            if (line ~ /^This reverts commit /) rev = 1
+            if (index(line, cp)) trail = 1
+            if (title != "" && index(line, pat) && (first || (line ~ /^\* / && substr(line, length(line) - length(pat) + 1) == pat)) && index(norm(line), title)) named = 1
+            first = 0
+          }
+          END { flush() }')
     fi
   fi
   for c in $PB_COMMITS; do
@@ -209,6 +218,7 @@ for n in $PRS; do
   pj=$($GH api "repos/$REPO/pulls/$n" 2>/dev/null) || { echo "$tag: NOT SHIPPED (cannot read the PR from GitHub)"; NS=1; continue; }
   merged=$(printf '%s' "$pj" | jq -r '.merged // false')
   mc=$(printf '%s' "$pj" | jq -r '.merge_commit_sha // empty')
+  PR_TITLE=$(printf '%s' "$pj" | jq -r '.title // empty')
   if [ "$merged" != true ] || [ -z "$mc" ]; then echo "$tag: NOT SHIPPED (PR is not merged)"; NS=1; continue; fi
   files=$($GH api --paginate "repos/$REPO/pulls/$n/files?per_page=100" 2>/dev/null) || { echo "$tag: NOT SHIPPED (cannot read the PR files)"; NS=1; continue; }
   # rows: status, path, merge commit, PR number; a rename is the new path plus the old path (gone)
