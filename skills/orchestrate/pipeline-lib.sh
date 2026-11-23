@@ -847,8 +847,8 @@ sentry_cap_held_clear() { rm -f "$(sentry_cap_held_file "$1")" 2>/dev/null; retu
 # SENTRY_CAP_COUNTED (1 when <issue> already has an unreleased launch line in the window: such a relaunch passes with the
 # window full and the caller must not append a second line, #688).
 sentry_cap_gate() {
-  SENTRY_CAP_MAX=${SENTRY_AUTO_GO_DAILY_CAP:-3}; SENTRY_CAP_N=""; SENTRY_CAP_COUNTED=0
-  case "$SENTRY_CAP_MAX" in ''|*[!0-9]*) SENTRY_CAP_MAX=3 ;; esac
+  SENTRY_CAP_MAX=${SENTRY_AUTO_GO_DAILY_CAP:-10}; SENTRY_CAP_N=""; SENTRY_CAP_COUNTED=0
+  case "$SENTRY_CAP_MAX" in ''|*[!0-9]*) SENTRY_CAP_MAX=10 ;; esac
   SENTRY_CAP_N=$(sentry_launch_count "$1") || { SENTRY_CAP_N=""; sentry_cap_fail "$1" "$2" "launch log read failed, not launched"; return 1; }
   local mine
   mine=$(sentry_launch_count "$1" "$2") || { SENTRY_CAP_N=""; sentry_cap_fail "$1" "$2" "launch log read failed, not launched"; return 1; }

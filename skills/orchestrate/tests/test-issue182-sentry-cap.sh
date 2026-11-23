@@ -4,7 +4,7 @@
 #
 #   AC1  fixture 5: `intake-labels.sh bug sentry` with SENTRY_AUTO_GO=1 -> agent-go + sentry-auto-go; 0 -> agent-proposed,
 #        no sentry-auto-go; every other #176 output unchanged
-#   AC2  config.sh defines SENTRY_AUTO_GO_DAILY_CAP=3 with a comment stating the worst-case spend (cap x COST_CEILING_USD)
+#   AC2  config.sh defines SENTRY_AUTO_GO_DAILY_CAP=10 with a comment stating the worst-case spend (cap x COST_CEILING_USD)
 #   AC4  the launch log is append-only; a missing file counts as zero launches
 #   PM   launcher.sh on a sentry-auto-go issue with a full log -> exit 3 with the exact message, no claim comment, no
 #        process; --force does not bypass; SENTRY_CAP_BYPASS=1 does; a source:sentry issue without the label launches;
@@ -82,24 +82,24 @@ test_sc_intake_md_leaves_the_label_to_the_supervisor() {
 test_sc_config_defines_the_cap_with_the_worst_case_spend() {
   local cfg="$RS_SC/config.sh" line n block
   line=$(grep -E '^SENTRY_AUTO_GO_DAILY_CAP=' "$cfg")
-  assert_eq "${line%%[[:space:]#]*}" "SENTRY_AUTO_GO_DAILY_CAP=3" "AC2: config.sh sets SENTRY_AUTO_GO_DAILY_CAP=3" || return 1
+  assert_eq "${line%%[[:space:]#]*}" "SENTRY_AUTO_GO_DAILY_CAP=10" "AC2: config.sh sets SENTRY_AUTO_GO_DAILY_CAP=10" || return 1
   n=$(grep -nE '^SENTRY_AUTO_GO_DAILY_CAP=' "$cfg" | cut -d: -f1)
   # the comment block directly above the key (consecutive # lines)
   block=$(awk -v n="$n" 'NR < n {if ($0 ~ /^#/) buf = buf $0 "\n"; else buf = ""} NR == n {printf "%s", buf}' "$cfg")
   assert_contains "$block" "COST_CEILING_USD" "AC2: the comment names COST_CEILING_USD" || return 1
   printf '%s' "$block" | grep -qi 'worst' || { fail "AC2: the comment states the worst-case spend"; return 1; }
-  # cap 3 x COST_CEILING_USD 40 = 120 (hand arithmetic from the ticket)
+  # cap 10 x COST_CEILING_USD 40 = 400 (hand arithmetic from the ticket)
   assert_eq "$(grep -E '^COST_CEILING_USD=' "$cfg" | sed -E 's/^COST_CEILING_USD=([0-9]+).*/\1/')" "40" "control: per-ticket ceiling is 40" || return 1
-  assert_contains "$block" '$120' "AC2: the comment gives the worst case in dollars (3 x \$40)" || return 1
+  assert_contains "$block" '$400' "AC2: the comment gives the worst case in dollars (10 x \$40)" || return 1
 }
 
 test_sc_config_cap_is_overridable_in_config_local() {
-  sc_env; local d o
+  sc_env; sc_default_cap; local d o
   d=$(sc_lib 'echo "$SENTRY_AUTO_GO_DAILY_CAP"')
   echo 'SENTRY_AUTO_GO_DAILY_CAP=7' >> "$SC_HOME/.claude/pipeline/config.local.sh"
   o=$(sc_lib 'echo "$SENTRY_AUTO_GO_DAILY_CAP"')
   sc_cleanup
-  assert_eq "$d" "3" "default cap is 3" || return 1
+  assert_eq "$d" "10" "default cap is 10" || return 1
   assert_eq "$o" "7" "config.local.sh overrides the cap" || return 1
 }
 
@@ -164,21 +164,21 @@ test_sc_no_script_truncates_or_removes_the_launch_log() {
 }
 
 test_sc_gate_under_cap_at_cap_and_unreadable() {
-  sc_env; local under at over zero bad
-  sc_seed "$SC_A" 60 120
+  sc_env; sc_default_cap; local under at over zero bad
+  sc_seed "$SC_A" 60 120 180 240 300 360 420 480 540
   under=$(sc_lib "sentry_cap_gate $SC_A 7; echo \"rc=\$? n=\$SENTRY_CAP_N max=\$SENTRY_CAP_MAX\"")
-  sc_seed "$SC_A" 180
+  sc_seed "$SC_A" 600
   at=$(sc_lib "sentry_cap_gate $SC_A 7; echo \"rc=\$? n=\$SENTRY_CAP_N max=\$SENTRY_CAP_MAX\"")
-  sc_seed "$SC_A" 240
+  sc_seed "$SC_A" 660
   over=$(sc_lib "sentry_cap_gate $SC_A 7; echo \"rc=\$? n=\$SENTRY_CAP_N max=\$SENTRY_CAP_MAX\"")
   echo 'SENTRY_AUTO_GO_DAILY_CAP=0' >> "$SC_HOME/.claude/pipeline/config.local.sh"
   zero=$(sc_lib "sentry_cap_gate $SC_B 7; echo \"rc=\$? n=\$SENTRY_CAP_N max=\$SENTRY_CAP_MAX\"")
   rm -f "$SC_LOG"; mkdir "$SC_LOG"   # a path that exists but is not a readable file (works for root too)
   bad=$(sc_lib "sentry_cap_gate $SC_A 7 2>/dev/null; echo \"rc=\$?\"")
   sc_cleanup
-  assert_eq "$under" "rc=0 n=2 max=3" "2 of 3: may launch" || return 1
-  assert_eq "$at" "rc=3 n=3 max=3" "3 of 3: at the cap" || return 1
-  assert_eq "$over" "rc=3 n=4 max=3" "4 of 3: above the cap" || return 1
+  assert_eq "$under" "rc=0 n=9 max=10" "9 of 10: may launch" || return 1
+  assert_eq "$at" "rc=3 n=10 max=10" "10 of 10: at the cap" || return 1
+  assert_eq "$over" "rc=3 n=11 max=10" "11 of 10: above the cap" || return 1
   assert_eq "$zero" "rc=3 n=0 max=0" "cap 0: nothing launches automatically" || return 1
   assert_eq "$bad" "rc=1" "unreadable log: neither 'may launch' nor 'at the cap' (fail closed)" || return 1
 }

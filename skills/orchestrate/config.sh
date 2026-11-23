@@ -60,7 +60,7 @@ SENTRY_AUTO_GO=1
 # Daily launch cap for automatically released Sentry tickets (#182). With SENTRY_AUTO_GO=1 the label helper adds
 # LABEL_SENTRY_GO next to agent-go; at most this many tickets carrying it are launched per repo in any rolling 24 h
 # (launcher.sh refuses with exit 3, supervisor step 5 leaves the ticket queued). Worst-case spend = cap x
-# COST_CEILING_USD per app per day: 3 x $40 = $120. The count is this host's own $PIPE/sentry-launches.log (no GitHub
+# COST_CEILING_USD per app per day: 10 x $40 = $400. The count is this host's own $PIPE/sentry-launches.log (no GitHub
 # call), so two dispatching hosts each allow the cap. 0 = no automatic Sentry launch. A ticket JP releases by hand (after
 # intake is done) never carries the label and is never throttled; SENTRY_CAP_BYPASS=1 in the environment lets one hand
 # launch through. The cap bounds new tickets: any relaunch of a ticket that already launched in the window (an
@@ -68,7 +68,9 @@ SENTRY_AUTO_GO=1
 # again (COST_CEILING_USD bounds what one ticket can spend across its restarts). A ticket that also carries
 # LABEL_CI_CRITICAL (#781) is exempt: it launches with the cap full, is not counted (its log line ends in `exempt`), and an
 # unreadable launch log does not block it; the label is the only test, and only on a sentry-auto-go ticket.
-SENTRY_AUTO_GO_DAILY_CAP=3
+# When more are queued than the cap frees, supervisor step 5 launches them by impact (#761, lib/sentry-rank.jq): users, then
+# events, then older first-seen.
+SENTRY_AUTO_GO_DAILY_CAP=10
 
 # Shared dispatch: "owner/repo:/local/checkout" entries. Empty = this machine never dispatches from labels.
 DISPATCH_REPOS=()
