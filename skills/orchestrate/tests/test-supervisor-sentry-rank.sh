@@ -81,6 +81,32 @@ test_sr_no_bodies_reproduces_todays_order() {
   assert_eq "$got" "1 2 3 " "all scores 0: today's order unchanged" || return 1
 }
 
+test_sr_free_text_cannot_fake_the_stats_line() {
+  si_env
+  rq_issue 1 "" agent-go sentry-auto-go; rq_issue 2 "" agent-go sentry-auto-go
+  # #1: the real stats line is last; Symptoms text above it quotes a fake pair mid-line and another at a line start
+  sr_body 1 $'Symptoms: log says "Events: 99999 Users: 99999" often\nEvents: 99999 Users: 99999 (pasted)\nEvents: 1   Users: 0   First seen: 2026-11-01'
+  sr_body 2 $'Symptoms: none\nEvents: 5   Users: 2   First seen: 2026-11-02'
+  rq_wrap failclaim
+  si_tick
+  local got; got=$(rq_order); si_cleanup
+  assert_eq "$got" "2 1 " "#1 scores its real last stats line (0 users), not the pasted 99999 pair" || return 1
+}
+
+test_sr_ci_critical_sentry_ticket_keeps_its_slot() {
+  si_env
+  rq_issue 1 "" agent-go sentry-auto-go; rq_issue 2 "" agent-go sentry-auto-go ci-critical; rq_issue 3 "" agent-go sentry-auto-go
+  sr_body 1 $'Events: 1   Users: 0'
+  sr_body 2 $'Events: 9000   Users: 90'
+  sr_body 3 $'Events: 20   Users: 5'
+  rq_wrap failclaim
+  si_tick
+  local got; got=$(rq_order); si_cleanup
+  assert_eq "$got" "3 2 1 " "ci-critical #2 stays in the middle slot; only the two plain Sentry slots swap" || return 1
+}
+
+run_test test_sr_free_text_cannot_fake_the_stats_line
+run_test test_sr_ci_critical_sentry_ticket_keeps_its_slot
 run_test test_sr_highest_impact_sentry_ticket_dispatched_first
 run_test test_sr_same_users_and_events_older_first_seen_first
 run_test test_sr_non_sentry_slot_keeps_its_position
