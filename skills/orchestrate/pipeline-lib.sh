@@ -287,6 +287,19 @@ claim_alert() {
     "$SLACK_WEBHOOK_URL" >/dev/null 2>&1 </dev/null || true
 }
 
+# classify_migration_alert <reason> — classify-migration-sql.sh (#820) could not do its job (unreadable file, crash): the caller fails
+# closed to BLOCKED needs_jp. Records a classify_migration_failed event (release = commit SHA, environment, route tags; the reason is
+# one of two fixed phrases, never SQL or a path) and posts to the existing SLACK_WEBHOOK_URL. Never fails the caller.
+classify_migration_alert() {
+  local rel; rel=$(git -C "$_CLAIM_LIB_DIR" rev-parse HEAD 2>/dev/null || echo unknown)
+  pipeline_event classify_migration_failed --arg reason "${1:-unknown}" --arg release "$rel" \
+    --arg environment "$(pipeline_host)" --arg route classify-migration
+  [ -n "${SLACK_WEBHOOK_URL:-}" ] || return 0
+  curl -s --max-time 10 -X POST -H 'Content-Type: application/json' \
+    --data "{\"text\":\"classify-migration-sql.sh failed (${1:-unknown}, host $(hostname -s), route classify-migration, release ${rel:0:7}); the deployer falls back to BLOCKED needs_jp\"}" \
+    "$SLACK_WEBHOOK_URL" >/dev/null 2>&1 </dev/null || true
+}
+
 # launch_alert <goal id> <issue> [route] [outcome] — best-effort Slack alert (existing SLACK_WEBHOOK_URL) when deliver.sh could not
 # launch a goal (route deliver-register, outcome "closed as stopped"; resume --now passes its own). Goal id, issue number, host, route and
 # release (commit SHA) only: no instruction text. Never fails the caller.

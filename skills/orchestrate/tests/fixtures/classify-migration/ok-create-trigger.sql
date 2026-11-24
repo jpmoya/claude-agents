@@ -1,0 +1,2 @@
+CREATE TRIGGER widgets_touch BEFORE UPDATE OR DELETE ON widgets
+  FOR EACH ROW EXECUTE FUNCTION widget_touch();
