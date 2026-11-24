@@ -14,10 +14,12 @@
 # itself renamed or rewrote the file before the promotion, so main never holds the merge commit's blob under any path it has. In
 # that one case ONLY (a naming commit exists but did not carry the path), "moved on" is judged a second time against the base
 # branch's own history of the SAME path, with the same deleted_later/in_history rules (a revert on the base branch still fails),
-# PLUS main must actually hold content the base branch itself produced for this file (a rename: the exact blob somewhere in main's
-# CURRENT tree, any path; a rewrite: the SAME path's current main blob somewhere in the base branch's OWN history of that path) —
-# the base branch merely moving the file on is not by itself proof the move reached main. When no main commit names the PR at
-# all, behaviour is unchanged (still not shipped; the base branch is not consulted).
+# PLUS main must actually hold content the base branch itself produced for this file (a rename: git's OWN rename detection
+# (diff-tree -M) on the base branch's deleting commit must name a new path, and that exact new path must hold the blob on main —
+# a blob merely existing SOMEWHERE in main's tree is not proof, since two unrelated identical blobs (e.g. two empty files) could
+# coincide and make a genuine drop read as shipped; a rewrite: the SAME path's current main blob somewhere in the base branch's
+# OWN history of that path) — the base branch merely moving the file on is not by itself proof the move reached main. When no
+# main commit names the PR at all, behaviour is unchanged (still not shipped; the base branch is not consulted).
 # The latest prod deploy run on main (workflow file deploy.yml or named "Deploy to Vercel") must be green AND be for a commit that already carries the PR's files.
 #
 # Output, one line per PR:   <owner/repo>#<N>: SHIPPED | NOT SHIPPED (<file>) | DEPLOY PENDING (<why>) | DEPLOY FAILED (<why>)
@@ -167,10 +169,17 @@ promoted_blob() {
   return 1
 }
 
-# blob_anywhere <ref> <blob> — does <blob> exist under ANY path in <ref>'s tree? (#822: proof the base branch's moved-on
-# content actually reached main under its new name, not just that the base branch moved it somewhere.)
-blob_anywhere() {
-  git_ ls-tree -r "$1" 2>/dev/null | awk -v b="$2" '{ if ($3 == b) f = 1 } END { exit !f }'
+# rename_target <ref> <path> — the commit on <ref> that deleted <path> (the same commit deleted_later inspects): does THAT
+# commit's OWN diff (git's -M rename detection, run on the deleting commit itself) show a rename FROM <path>? Prints the new
+# path on stdout when yes; nothing (status 1) when the deletion is a plain drop or -M finds no match. This is the #822 HIGH fix
+# (code-reviewer): "the blob exists somewhere in main" was not proof of a rename — two unrelated identical blobs (e.g. two empty
+# files, or duplicate boilerplate) could coincide and make a genuinely-dropped file read as shipped.
+rename_target() {
+  local ref=$1 path=$2 d
+  d=$(git_ log --full-history --diff-filter=D -n 1 --format=%H "$ref" -- "$path" 2>/dev/null)
+  [ -n "$d" ] || return 1
+  git_ diff-tree -r -M --name-status "$d^" "$d" 2>/dev/null | awk -F'\t' -v p="$path" '
+    $1 ~ /^R/ && $2 == p { print $3; f = 1; exit } END { exit !f }'
 }
 
 # held_after <ref> <path> <blob> — does <ref>'s OWN history of <path> hold <blob> at some commit? (used with the base branch:
@@ -195,7 +204,7 @@ base_ref_of() {
 # PR_BASE_REF (set per PR by the caller) is the #822 fallback: only consulted when promoted_blob's exit status is 2 (a commit
 # names the PR but did not carry this path — see promoted_blob's header comment).
 check_at() {
-  local ref=$1 f=$2 st path mc n want got named_only pb_rc base_ref
+  local ref=$1 f=$2 st path mc n want got named_only pb_rc base_ref new_path
   while IFS="$(printf '\t')" read -r st path mc n; do
     [ -n "$path" ] || continue
     got=$(blob_at "$ref" "$path")
@@ -210,7 +219,8 @@ check_at() {
          [ -n "$want" ] || { printf '%s (missing at merge commit)' "$path"; return 1; }
          if [ -z "$got" ]; then
            if deleted_later "$ref" "$path" "$want"; then :
-           elif [ "$named_only" = 1 ] && base_ref=$(base_ref_of "$PR_BASE_REF") && deleted_later "$base_ref" "$path" "$want" && blob_anywhere "$ref" "$want"; then :
+           elif [ "$named_only" = 1 ] && base_ref=$(base_ref_of "$PR_BASE_REF") && deleted_later "$base_ref" "$path" "$want" &&
+                new_path=$(rename_target "$base_ref" "$path") && [ -n "$new_path" ] && [ "$(blob_at "$ref" "$new_path")" = "$want" ]; then :
            else printf '%s (absent on %s)' "$path" "$BASE"; return 1
            fi
          else

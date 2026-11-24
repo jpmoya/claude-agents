@@ -250,6 +250,27 @@ test_vs_renamed_on_base_but_never_promoted_is_not_shipped() {
   vs_cleanup
 }
 
+# code-reviewer (#824 FAIL): a PLAIN deletion on the base branch (git rm, not a rename) must not pass just because main happens
+# to hold some UNRELATED file with an identical blob (e.g. two empty files, or duplicate boilerplate) — that coincidence is not
+# proof the base branch's drop ever reached main. Staging adds an empty placeholder.txt then plain-deletes it (no mv); main has
+# an unrelated empty file plus a naming commit that never touches placeholder.txt at all. Must read NOT SHIPPED, not SHIPPED.
+test_vs_plain_deletion_on_base_coincidental_blob_on_main_is_not_shipped() {
+  vs_setup
+  : > "$VS_D/remote/placeholder.txt"; vs_git add -A && vs_git commit -q -m "feature on staging"
+  local s; s=$(vs_git rev-parse HEAD)
+  vs_git rm -q placeholder.txt && vs_git commit -q -m "drop placeholder.txt from staging (not a rename)"
+  vs_git checkout -q main
+  printf 'main moved on\n' > "$VS_D/remote/other.txt"; vs_git add -A && vs_git commit -q -m "unrelated main commit"
+  : > "$VS_D/remote/unrelated-empty.txt"; vs_git add -A && vs_git commit -q -am "release v1.9.0 (#20)
+
+* feature on staging (#7)"
+  VS_PR_TITLE="feature on staging" vs_pr 7 true "$s" added:placeholder.txt
+  vs_run --no-deploy 7; local rc=$?
+  assert_eq "$rc" "1" "plain drop on staging; main's identical blob elsewhere is an unrelated coincidence: not shipped" || { vs_cleanup; return 1; }
+  assert_contains "$VS_OUT" "NOT SHIPPED (placeholder.txt (absent on main))" "names the file" || { vs_cleanup; return 1; }
+  vs_cleanup
+}
+
 # The base-branch fallback is gated on a main commit actually naming the PR (promoted_blob's exit status 2). Here main holds
 # the exact renamed-to content AND staging legitimately renamed the file (both of which, on their own, the fallback would
 # accept) — but NO main commit mentions PR 7 at all, so the fallback must never run and behaviour must stay exactly as
@@ -667,6 +688,7 @@ run_test test_vs_squash_promoted_with_different_base_is_shipped
 run_test test_vs_cherry_pick_x_onto_a_different_base_is_shipped
 run_test test_vs_renamed_on_base_before_promotion_is_shipped
 run_test test_vs_renamed_on_base_but_never_promoted_is_not_shipped
+run_test test_vs_plain_deletion_on_base_coincidental_blob_on_main_is_not_shipped
 run_test test_vs_renamed_on_base_and_present_on_main_but_no_naming_commit_is_not_shipped
 run_test test_vs_cherry_pick_noop_because_main_already_has_a_later_rewrite_is_shipped
 run_test test_vs_squash_by_title_lacks_file_later_plain_commit_adds_staging_rewrite_is_shipped
