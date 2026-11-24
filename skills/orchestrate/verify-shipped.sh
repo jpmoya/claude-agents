@@ -76,6 +76,10 @@ ensure() { have "$1" || git_fetch "$1"; have "$1"; }
 # blob_at <ref> <path> -> blob sha or empty
 blob_at() { git_ rev-parse -q --verify "$1:$2" 2>/dev/null; }
 
+# the hash git gives every empty file — never usable as rename-proof content (see rename_target): two unrelated empty files
+# are always "100% similar" to git's -M detector, so matching this blob alone proves nothing about either file.
+EMPTY_BLOB=e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+
 # hist <ref> <path> [--reverse] -> one "<commit> <blob>" line per commit (last 200, path-touching, full history), blob empty when the path is
 # absent at that commit. One git process for all blobs (git cat-file --batch-check), not one per commit.
 hist() {
@@ -169,17 +173,33 @@ promoted_blob() {
   return 1
 }
 
-# rename_target <ref> <path> — the commit on <ref> that deleted <path> (the same commit deleted_later inspects): does THAT
-# commit's OWN diff (git's -M rename detection, run on the deleting commit itself) show a rename FROM <path>? Prints the new
+# rename_target <ref> <path> <want blob> — the commit on <ref> that deleted <path> (the same commit deleted_later inspects): does
+# THAT commit's OWN diff (git's -M rename detection, run on the deleting commit itself) show a rename FROM <path>? Prints the new
 # path on stdout when yes; nothing (status 1) when the deletion is a plain drop or -M finds no match. This is the #822 HIGH fix
 # (code-reviewer): "the blob exists somewhere in main" was not proof of a rename — two unrelated identical blobs (e.g. two empty
 # files, or duplicate boilerplate) could coincide and make a genuinely-dropped file read as shipped.
+# <want blob> is the content the caller needs this rename to prove moved on: when it is $EMPTY_BLOB this function always refuses
+# (#824 second HIGH, code-reviewer) — git's -M detector treats any two empty files as 100% similar (there is no content to
+# differ), so a commit that deletes one empty file and adds a different, unrelated empty file reads as a rename even though the
+# two files are unrelated; "same empty content" is never proof a deletion was really a rename.
+# Uses -z (NUL-terminated, unquoted) rather than the default --name-status, whose quoting of non-ASCII paths (e.g. a wrapped,
+# escaped path) would otherwise make a REAL rename of a non-ASCII filename fail to match <path> (#824 LOW). Parsed with a plain
+# `read -d ''` state machine (not `mapfile -d`, a bash 4.4+ builtin) to stay bash 3.2 compatible, like the rest of this file.
 rename_target() {
-  local ref=$1 path=$2 d
+  local ref=$1 path=$2 want=$3 d tok state=status old new
+  [ "$want" != "$EMPTY_BLOB" ] || return 1
   d=$(git_ log --full-history --diff-filter=D -n 1 --format=%H "$ref" -- "$path" 2>/dev/null)
   [ -n "$d" ] || return 1
-  git_ diff-tree -r -M --name-status "$d^" "$d" 2>/dev/null | awk -F'\t' -v p="$path" '
-    $1 ~ /^R/ && $2 == p { print $3; f = 1; exit } END { exit !f }'
+  while IFS= read -r -d '' tok; do
+    case "$state" in
+      status) case "$tok" in R*|C*) state=old ;; *) state=path ;; esac ;;
+      path) state=status ;;
+      old) old=$tok; state=new ;;
+      new) new=$tok; state=status
+           [ "$old" = "$path" ] && { printf '%s\n' "$new"; return 0; } ;;
+    esac
+  done < <(git_ diff-tree -r -M -z --name-status "$d^" "$d" 2>/dev/null)
+  return 1
 }
 
 # held_after <ref> <path> <blob> — does <ref>'s OWN history of <path> hold <blob> at some commit? (used with the base branch:
@@ -220,7 +240,7 @@ check_at() {
          if [ -z "$got" ]; then
            if deleted_later "$ref" "$path" "$want"; then :
            elif [ "$named_only" = 1 ] && base_ref=$(base_ref_of "$PR_BASE_REF") && deleted_later "$base_ref" "$path" "$want" &&
-                new_path=$(rename_target "$base_ref" "$path") && [ -n "$new_path" ] && [ "$(blob_at "$ref" "$new_path")" = "$want" ]; then :
+                new_path=$(rename_target "$base_ref" "$path" "$want") && [ -n "$new_path" ] && [ "$(blob_at "$ref" "$new_path")" = "$want" ]; then :
            else printf '%s (absent on %s)' "$path" "$BASE"; return 1
            fi
          else

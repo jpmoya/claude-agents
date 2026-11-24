@@ -271,6 +271,96 @@ test_vs_plain_deletion_on_base_coincidental_blob_on_main_is_not_shipped() {
   vs_cleanup
 }
 
+# Non-empty sibling of the case above: confirms the cycle-1 HIGH fix (a plain drop — deletion with no add in the SAME commit —
+# never pairs as a rename, whatever the content) still holds on its own, independent of the $EMPTY_BLOB guard added in fix
+# cycle 2 (which would otherwise mask this case, since the guard alone now short-circuits every empty-file example before
+# diff-tree even runs). Also exercises rename_target's parser on a plain "D <path>" (single-field, non-rename) diff-tree entry.
+test_vs_plain_deletion_on_base_coincidental_nonempty_blob_on_main_is_not_shipped() {
+  vs_setup
+  printf 'boilerplate\n' > "$VS_D/remote/placeholder.txt"; vs_git add -A && vs_git commit -q -m "feature on staging"
+  local s; s=$(vs_git rev-parse HEAD)
+  vs_git rm -q placeholder.txt && vs_git commit -q -m "drop placeholder.txt from staging (not a rename)"
+  vs_git checkout -q main
+  printf 'main moved on\n' > "$VS_D/remote/other.txt"; vs_git add -A && vs_git commit -q -m "unrelated main commit"
+  printf 'boilerplate\n' > "$VS_D/remote/unrelated-boilerplate.txt"; vs_git add -A && vs_git commit -q -am "release v1.9.0 (#20)
+
+* feature on staging (#7)"
+  VS_PR_TITLE="feature on staging" vs_pr 7 true "$s" added:placeholder.txt
+  vs_run --no-deploy 7; local rc=$?
+  assert_eq "$rc" "1" "plain drop (non-empty content), no add in the same commit: not a rename, main's identical blob elsewhere is coincidence: not shipped" || { vs_cleanup; return 1; }
+  assert_contains "$VS_OUT" "NOT SHIPPED (placeholder.txt (absent on main))" "names the file" || { vs_cleanup; return 1; }
+  vs_cleanup
+}
+
+# code-reviewer (#824 second HIGH, fix cycle 2): git's own -M rename detection treats two EMPTY files as 100% similar by
+# definition (there is no content to differ), so a SINGLE commit that deletes one empty file and ALSO adds a different,
+# unrelated empty file reads as a rename to git itself — unlike the plain-deletion case above, here rename_target's underlying
+# diff-tree -M genuinely reports "R100 placeholder.txt -> other-empty.txt". Staging adds placeholder.txt (empty) for the PR, then
+# one later commit deletes placeholder.txt and adds an unrelated other-empty.txt (both empty); main's naming commit never
+# touches placeholder.txt (promoted_blob falls back) but happens to also hold an other-empty.txt with the same (empty) content.
+# Trusting the rename here would wrongly confirm it and report SHIPPED; "same empty content" proves nothing. Must read NOT SHIPPED.
+test_vs_rename_detection_on_two_empty_files_is_not_shipped() {
+  vs_setup
+  : > "$VS_D/remote/placeholder.txt"; vs_git add -A && vs_git commit -q -m "feature on staging"
+  local s; s=$(vs_git rev-parse HEAD)
+  vs_git rm -q placeholder.txt
+  : > "$VS_D/remote/other-empty.txt"; vs_git add -A && vs_git commit -q -m "unrelated cleanup on staging (deletes and adds in one commit)"
+  vs_git checkout -q main
+  printf 'main moved on\n' > "$VS_D/remote/other.txt"; vs_git add -A && vs_git commit -q -m "unrelated main commit"
+  : > "$VS_D/remote/other-empty.txt"; vs_git add -A && vs_git commit -q -am "release v1.9.0 (#20)
+
+* feature on staging (#7)"
+  VS_PR_TITLE="feature on staging" vs_pr 7 true "$s" added:placeholder.txt
+  vs_run --no-deploy 7; local rc=$?
+  assert_eq "$rc" "1" "git's -M detector matched two unrelated empty files as a rename; same empty content proves nothing: not shipped" || { vs_cleanup; return 1; }
+  assert_contains "$VS_OUT" "NOT SHIPPED (placeholder.txt (absent on main))" "names the file" || { vs_cleanup; return 1; }
+  vs_cleanup
+}
+
+# code-reviewer (#824 LOW, fix cycle 2): git's default --name-status quotes non-ASCII paths (wraps them in quotes with octal
+# escapes), so a naive rename_target that compares <path> against that quoted form would fail to match a REAL rename whose old
+# path has a non-ASCII filename, and wrongly report NOT SHIPPED (fail-closed, but still wrong). Staging legitimately renames a
+# non-ASCII-named file before promotion, exactly like the ASCII case above. Must still read SHIPPED.
+test_vs_renamed_on_base_with_non_ascii_filename_is_shipped() {
+  vs_setup
+  printf 'feature\n' > "$VS_D/remote/café.txt"; vs_git add -A && vs_git commit -q -m "feature on staging"
+  local s; s=$(vs_git rev-parse HEAD)
+  vs_git mv café.txt renamed.txt && vs_git commit -q -m "rename café to renamed on staging"
+  vs_git checkout -q main
+  printf 'main moved on\n' > "$VS_D/remote/other.txt"; vs_git add -A && vs_git commit -q -m "unrelated main commit"
+  printf 'feature\n' > "$VS_D/remote/renamed.txt"; vs_git add -A && vs_git commit -q -m "release v1.3.0 (#20)
+
+* feature on staging (#7)"
+  VS_PR_TITLE="feature on staging" vs_pr 7 true "$s" added:café.txt
+  vs_run --no-deploy 7; local rc=$?
+  assert_eq "$rc" "0" "renamed non-ASCII filename on staging before promotion, same content under the new name on main: shipped" || { vs_cleanup; return 1; }
+  assert_contains "$VS_OUT" "#7: SHIPPED" "reports SHIPPED" || { vs_cleanup; return 1; }
+  vs_cleanup
+}
+
+# Parser robustness: the deleting/renaming commit on the base branch also touches an unrelated file in the SAME commit, so
+# rename_target's diff-tree -M output carries more than one entry (an "M a.txt" row alongside the "R feature.txt -> renamed.txt"
+# row — "a.txt" sorts before "feature.txt", so the non-rename row comes first). The read -d '' state machine must skip the
+# unrelated single-path entry and still find the rename among several rows, not just the first one. Must still read SHIPPED.
+test_vs_renamed_on_base_alongside_other_changes_in_same_commit_is_shipped() {
+  vs_setup
+  printf 'feature\n' > "$VS_D/remote/feature.txt"; vs_git add -A && vs_git commit -q -m "feature on staging"
+  local s; s=$(vs_git rev-parse HEAD)
+  vs_git mv feature.txt renamed.txt
+  printf 'a changed\n' > "$VS_D/remote/a.txt"
+  vs_git add -A && vs_git commit -q -m "rename feature to renamed on staging, alongside an unrelated a.txt edit"
+  vs_git checkout -q main
+  printf 'main moved on\n' > "$VS_D/remote/other.txt"; vs_git add -A && vs_git commit -q -m "unrelated main commit"
+  printf 'feature\n' > "$VS_D/remote/renamed.txt"; vs_git add -A && vs_git commit -q -m "release v1.4.0 (#20)
+
+* feature on staging (#7)"
+  VS_PR_TITLE="feature on staging" vs_pr 7 true "$s" added:feature.txt
+  vs_run --no-deploy 7; local rc=$?
+  assert_eq "$rc" "0" "rename shares a commit with an unrelated edit; the parser must still find it among several diff-tree rows: shipped" || { vs_cleanup; return 1; }
+  assert_contains "$VS_OUT" "#7: SHIPPED" "reports SHIPPED" || { vs_cleanup; return 1; }
+  vs_cleanup
+}
+
 # The base-branch fallback is gated on a main commit actually naming the PR (promoted_blob's exit status 2). Here main holds
 # the exact renamed-to content AND staging legitimately renamed the file (both of which, on their own, the fallback would
 # accept) — but NO main commit mentions PR 7 at all, so the fallback must never run and behaviour must stay exactly as
@@ -689,6 +779,10 @@ run_test test_vs_cherry_pick_x_onto_a_different_base_is_shipped
 run_test test_vs_renamed_on_base_before_promotion_is_shipped
 run_test test_vs_renamed_on_base_but_never_promoted_is_not_shipped
 run_test test_vs_plain_deletion_on_base_coincidental_blob_on_main_is_not_shipped
+run_test test_vs_plain_deletion_on_base_coincidental_nonempty_blob_on_main_is_not_shipped
+run_test test_vs_rename_detection_on_two_empty_files_is_not_shipped
+run_test test_vs_renamed_on_base_with_non_ascii_filename_is_shipped
+run_test test_vs_renamed_on_base_alongside_other_changes_in_same_commit_is_shipped
 run_test test_vs_renamed_on_base_and_present_on_main_but_no_naming_commit_is_not_shipped
 run_test test_vs_cherry_pick_noop_because_main_already_has_a_later_rewrite_is_shipped
 run_test test_vs_squash_by_title_lacks_file_later_plain_commit_adds_staging_rewrite_is_shipped
