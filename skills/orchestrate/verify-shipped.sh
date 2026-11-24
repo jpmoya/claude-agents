@@ -9,6 +9,15 @@
 # or cherry-pick release PR), the version to look for is the file as of the first non-revert main commit that names the PR ("(#N)" in its
 # message, or a "cherry picked from commit <merge sha>" line) and touched the file; if no main commit names it, the merge commit's blob is used
 # and the PR reads as not shipped. A file a later change deleted from main counts as moved on (a deletion by a Revert commit does not).
+# #822: a main commit can name the PR without carrying the file at all (its diff doesn't touch the path, or touches it but leaves
+# it unchanged vs its own parent) — this happens when the PR's base branch (PR_BASE_REF, its .base.ref, typically "staging")
+# itself renamed or rewrote the file before the promotion, so main never holds the merge commit's blob under any path it has. In
+# that one case ONLY (a naming commit exists but did not carry the path), "moved on" is judged a second time against the base
+# branch's own history of the SAME path, with the same deleted_later/in_history rules (a revert on the base branch still fails),
+# PLUS main must actually hold content the base branch itself produced for this file (a rename: the exact blob somewhere in main's
+# CURRENT tree, any path; a rewrite: the SAME path's current main blob somewhere in the base branch's OWN history of that path) —
+# the base branch merely moving the file on is not by itself proof the move reached main. When no main commit names the PR at
+# all, behaviour is unchanged (still not shipped; the base branch is not consulted).
 # The latest prod deploy run on main (workflow file deploy.yml or named "Deploy to Vercel") must be green AND be for a commit that already carries the PR's files.
 #
 # Output, one line per PR:   <owner/repo>#<N>: SHIPPED | NOT SHIPPED (<file>) | DEPLOY PENDING (<why>) | DEPLOY FAILED (<why>)
@@ -121,6 +130,10 @@ EOF
 # Or when its message has an explicit "cherry picked from commit <merge sha>" line. A line that only mentions "(#N)" in prose
 # ("Follow-up to (#N)") does not count. A revert (subject "Revert...", or a line STARTING "This reverts commit ", git revert's own) never
 # counts. The commits naming the PR are listed once per (ref, PR) and reused for every file.
+# Exit status distinguishes the two "no blob" cases the caller (check_at, #822) must tell apart: 1 = no commit on <ref> names the PR at
+# all (or the merge commit is already on <ref>, so naming does not apply) — behaviour must stay exactly as before. 2 = at least one
+# commit names the PR, but none of them actually carried <path> (not present, or present unchanged from its parent) — this is the
+# #822 gap, where the caller falls back to judging "moved on" against the PR's base branch too.
 PR_TITLE=""
 PB_KEY=""; PB_COMMITS=""
 promoted_blob() {
@@ -150,25 +163,62 @@ promoted_blob() {
     [ "$b" != "$(blob_at "$c^" "$path")" ] || continue
     printf '%s\n' "$b"; return 0
   done
-  return 0
+  [ -n "$PB_COMMITS" ] && return 2
+  return 1
+}
+
+# blob_anywhere <ref> <blob> — does <blob> exist under ANY path in <ref>'s tree? (#822: proof the base branch's moved-on
+# content actually reached main under its new name, not just that the base branch moved it somewhere.)
+blob_anywhere() {
+  git_ ls-tree -r "$1" 2>/dev/null | awk -v b="$2" '{ if ($3 == b) f = 1 } END { exit !f }'
+}
+
+# held_after <ref> <path> <blob> — does <ref>'s OWN history of <path> hold <blob> at some commit? (used with the base branch:
+# confirms the base branch itself produced this content for this path, not just that it isn't provably older than the PR's version.)
+held_after() {
+  hist "$1" "$2" | awk -v b="$3" '{ if ($2 == b) f = 1 } END { exit !f }'
+}
+
+# base_ref_of <branch name> -> a usable ref for <branch name> on stdout (the already-fetched refs/remotes/origin/<name>, or
+# $MAIN when it IS $BASE), or nothing with status 1 when it cannot be resolved (never fetches: the main loop fetches each
+# PR_BASE_REF once, before check_at runs, so this stays a cheap local lookup).
+base_ref_of() {
+  local b=$1
+  [ -n "$b" ] || return 1
+  if [ "$b" = "$BASE" ]; then printf '%s' "$MAIN"; return 0; fi
+  have "refs/remotes/origin/$b" || return 1
+  printf '%s' "refs/remotes/origin/$b"
 }
 
 # check_at <ref> <changes file> -> prints the first offending file (and returns 1), or returns 0.
 # Each change row: <status>\t<path>\t<merge commit>\t<PR#>. Added/modified/renamed: same blob; removed/gone: absent.
+# PR_BASE_REF (set per PR by the caller) is the #822 fallback: only consulted when promoted_blob's exit status is 2 (a commit
+# names the PR but did not carry this path — see promoted_blob's header comment).
 check_at() {
-  local ref=$1 f=$2 st path mc n want got
+  local ref=$1 f=$2 st path mc n want got named_only pb_rc base_ref
   while IFS="$(printf '\t')" read -r st path mc n; do
     [ -n "$path" ] || continue
     got=$(blob_at "$ref" "$path")
     case "$st" in
       removed|gone) [ -z "$got" ] || { printf '%s (still on %s)' "$path" "$BASE"; return 1; } ;;
-      *) want=$(promoted_blob "$ref" "$path" "$n" "$mc")
-         [ -n "$want" ] || want=$(blob_at "$mc" "$path")
+      *) want=$(promoted_blob "$ref" "$path" "$n" "$mc"); pb_rc=$?
+         named_only=0
+         if [ -z "$want" ]; then
+           [ "$pb_rc" = 2 ] && named_only=1
+           want=$(blob_at "$mc" "$path")
+         fi
          [ -n "$want" ] || { printf '%s (missing at merge commit)' "$path"; return 1; }
          if [ -z "$got" ]; then
-           deleted_later "$ref" "$path" "$want" || { printf '%s (absent on %s)' "$path" "$BASE"; return 1; }
+           if deleted_later "$ref" "$path" "$want"; then :
+           elif [ "$named_only" = 1 ] && base_ref=$(base_ref_of "$PR_BASE_REF") && deleted_later "$base_ref" "$path" "$want" && blob_anywhere "$ref" "$want"; then :
+           else printf '%s (absent on %s)' "$path" "$BASE"; return 1
+           fi
          else
-           [ "$got" = "$want" ] || in_history "$ref" "$path" "$want" "$got" || { printf '%s (differs on %s)' "$path" "$BASE"; return 1; }
+           if [ "$got" = "$want" ]; then :
+           elif in_history "$ref" "$path" "$want" "$got"; then :
+           elif [ "$named_only" = 1 ] && base_ref=$(base_ref_of "$PR_BASE_REF") && in_history "$base_ref" "$path" "$want" "$got" && held_after "$base_ref" "$path" "$got"; then :
+           else printf '%s (differs on %s)' "$path" "$BASE"; return 1
+           fi
          fi ;;
     esac
   done < "$f"
@@ -212,6 +262,7 @@ NS=0   # a PR is not on main
 DP=0   # on main, deploy pending / failed
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/verify-shipped.XXXXXX") || die "mktemp failed"
 trap 'rm -rf "$TMP"' EXIT
+BASE_REFS_FETCHED=""   # #822: branch names already fetched this run, so a shared base branch (e.g. "staging") is fetched once
 
 for n in $PRS; do
   tag="$REPO#$n"
@@ -219,6 +270,13 @@ for n in $PRS; do
   merged=$(printf '%s' "$pj" | jq -r '.merged // false')
   mc=$(printf '%s' "$pj" | jq -r '.merge_commit_sha // empty')
   PR_TITLE=$(printf '%s' "$pj" | jq -r '.title // empty')
+  PR_BASE_REF=$(printf '%s' "$pj" | jq -r '.base.ref // empty')
+  if [ -n "$PR_BASE_REF" ] && [ "$PR_BASE_REF" != "$BASE" ]; then
+    case " $BASE_REFS_FETCHED " in
+      *" $PR_BASE_REF "*) ;;
+      *) git_fetch "+refs/heads/$PR_BASE_REF:refs/remotes/origin/$PR_BASE_REF"; BASE_REFS_FETCHED="$BASE_REFS_FETCHED $PR_BASE_REF" ;;
+    esac
+  fi
   if [ "$merged" != true ] || [ -z "$mc" ]; then echo "$tag: NOT SHIPPED (PR is not merged)"; NS=1; continue; fi
   files=$($GH api --paginate "repos/$REPO/pulls/$n/files?per_page=100" 2>/dev/null) || { echo "$tag: NOT SHIPPED (cannot read the PR files)"; NS=1; continue; }
   # rows: status, path, merge commit, PR number; a rename is the new path plus the old path (gone)
