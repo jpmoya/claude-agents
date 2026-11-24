@@ -1,0 +1,1 @@
+CREATE FUNCTION g() RETURNS void LANGUAGE plpgsql AS $$ BEGIN INSERT INTO some_table VALUES (1); END $$;

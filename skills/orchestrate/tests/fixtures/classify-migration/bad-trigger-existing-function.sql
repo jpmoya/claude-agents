@@ -1,0 +1,2 @@
+CREATE TABLE new_tbl (a int);
+CREATE TRIGGER tr AFTER INSERT ON new_tbl FOR EACH ROW EXECUTE FUNCTION wipe_table();

@@ -1,0 +1,1 @@
+CREATE OR REPLACE VIEW v_existing AS SELECT 1 AS a;

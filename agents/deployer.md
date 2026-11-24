@@ -132,6 +132,25 @@ The repo holds the agent definitions, hooks and orchestrate skill. Integration b
 
          When it does not print `licensed`:
          - **Path-gated jobs** → `ci_red` with `<check> skipped, but this PR changes <path>, which is not on its skip allowlist; the job must run`. Nothing on the PR side makes the job run (no manual trigger; editing `ci.yml` changes the PR's route), so say which fix applies: if the job reads that path, the ops tool's `scripts/ci-changes.sh` misses it and must run the job for it (a pipeline ticket), then the base is merged into the PR and CI re-runs; if the job provably never reads it, the path is added to this list with that evidence.
+         - **`destructive-migration-approval`, classifier first (#820)** → before posting the BLOCKED below, check whether this PR's migrations are purely additive. A purely additive migration has only one possible answer, so JP is not asked. This branch applies only when the unlicensed reason is **non-SQL files that are not the linter or CI**, decided on the whole file list (new and old paths), never on the single path `skip_licence` prints. Run this exactly as written; it prints `eligible`, or `ineligible: <path>`:
+           ```bash
+           classifier_guard() {  # stdin = the same file list as skip_licence (new and old paths)
+             local files p
+             files=$(cat)
+             printf '%s\n' "$files" | grep -Eq '^supabase/migrations/.*\.sql$' || { echo "ineligible: no migration in the list"; return 1; }
+             while IFS= read -r p; do
+               case "$p" in
+                 scripts/lint-migrations.ts|scripts/lib/*|.github/workflows/*|.github/migration-policy/*) echo "ineligible: $p"; return 1 ;;
+               esac
+             done <<< "$files"
+             echo eligible
+           }
+           ```
+           A PR that edits `scripts/lint-migrations.ts`, its imports in `scripts/lib/`, `.github/workflows/*` (`ci.yml` included) or `.github/migration-policy/*` is never auto-approved: go to the BLOCKED below. When `eligible`:
+           1. Read the head SHA (`gh pr view <N> --json headRefOid`) and the base SHA (`baseRefOid`). Fetch every `supabase/migrations/*.sql` in the file list at the **head SHA** (`gh api "repos/<owner>/<repo>/contents/<path>?ref=<head SHA>" -H 'Accept: application/vnd.github.raw'`) into one temp directory, and the risky list `.github/migration-policy/shared-tables.txt` at the **base SHA** (never the PR's copy). **Fail closed:** a path that does not exist at the head (a rename's old path, a removed migration), a file under `supabase/migrations/` that is not `.sql`, or a fetch that fails, means the classifier cannot see it: go to the BLOCKED below.
+           2. From inside that temp directory (so the output names each migration by its bare file name), run `~/.claude/skills/orchestrate/classify-migration-sql.sh --shared-tables <risky list> <every fetched migration>`. It reads only the files, so run it from the installed copy, never one the PR carries. Exit `0` means every migration is purely additive and none touches a risky-list table; any other exit (not additive, unparseable, unreadable, crash) is a failure: go to the BLOCKED below and append the classifier's output lines to it. The classifier records its own crashes and unreadable files (event plus the existing Slack webhook).
+           3. On exit `0`, post one comment on the PR whose line 1 is `**[deployer] NOTE**`, then one line per migration (`<path>` and the statement kinds the classifier printed), then the line `Classified additive by deployer; no JP approval needed`. The destructive-migration-approval gate is then satisfied: continue with the remaining gates. This satisfies that one gate only: the Checks gate otherwise, the staging apply and ledger steps, a GATED migration's own rule, the shared-table refuse list, the RLS rule and every prod `go` stay as written.
+           Otherwise (not eligible, or the classifier did not approve) the next bullet applies unchanged.
          - **`destructive-migration-approval`** → `**[deployer] BLOCKED**` with `Blocked on: needs_jp — destructive-migration-approval skipped while this PR changes migrations plus <path>, so the linter's verdict cannot be trusted; JP confirms the migrations are not destructive`.
 
          This replaces the older recompute of the classifier: the licence rests only on "nothing this job reads changed", so what any classifier prints, the PR's copy or the base's, no longer matters. A PR that edits `ci.yml` is never licensed. One that edits `scripts/ci-changes.sh` may still skip the payroll jobs, because they do not read it: a tampered classifier can then only make a later payroll PR block. With a migration in the list, one that edits the linter is never licensed.

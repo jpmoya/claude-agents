@@ -1,0 +1,1 @@
+CREATE FUNCTION f() RETURNS void LANGUAGE sql AS $$ select 1;

@@ -1,0 +1,1 @@
+DELETE FROM widgets WHERE id IS NULL;

@@ -1,0 +1,2 @@
+CREATE TABLE t2 (a int);
+CREATE POLICY p ON t2 FOR ALL USING (true) WITH CHECK (true);

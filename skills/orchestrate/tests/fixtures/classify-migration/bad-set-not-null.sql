@@ -1,0 +1,1 @@
+ALTER TABLE widgets ALTER COLUMN label SET NOT NULL;
