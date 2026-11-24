@@ -18,8 +18,12 @@
 # (diff-tree -M) on the base branch's deleting commit must name a new path, and that exact new path must hold the blob on main —
 # a blob merely existing SOMEWHERE in main's tree is not proof, since two unrelated identical blobs (e.g. two empty files) could
 # coincide and make a genuine drop read as shipped; a rewrite: the SAME path's current main blob somewhere in the base branch's
-# OWN history of that path) — the base branch merely moving the file on is not by itself proof the move reached main. When no
-# main commit names the PR at all, behaviour is unchanged (still not shipped; the base branch is not consulted).
+# OWN history of that path) — the base branch merely moving the file on is not by itself proof the move reached main. The rename
+# case ALSO requires the old path to be genuinely absent on the base branch's CURRENT tip, not just absent at the deleting
+# commit's own history (#824 third HIGH): the base branch re-adding the old path later, or `git revert`ing the rename commit
+# (itself a rename back, so it is not the "last deletion commit" the history check inspects), would otherwise read as shipped
+# even though the base branch currently disagrees with main. When no main commit names the PR at all, behaviour is unchanged
+# (still not shipped; the base branch is not consulted).
 # The latest prod deploy run on main (workflow file deploy.yml or named "Deploy to Vercel") must be green AND be for a commit that already carries the PR's files.
 #
 # Output, one line per PR:   <owner/repo>#<N>: SHIPPED | NOT SHIPPED (<file>) | DEPLOY PENDING (<why>) | DEPLOY FAILED (<why>)
@@ -239,7 +243,17 @@ check_at() {
          [ -n "$want" ] || { printf '%s (missing at merge commit)' "$path"; return 1; }
          if [ -z "$got" ]; then
            if deleted_later "$ref" "$path" "$want"; then :
-           elif [ "$named_only" = 1 ] && base_ref=$(base_ref_of "$PR_BASE_REF") && deleted_later "$base_ref" "$path" "$want" &&
+           # #824 third HIGH (code-reviewer): the base branch's rename proof below (deleted_later + rename_target, both read
+           # from the LAST commit that deleted <path>) only ever looked at base branch HISTORY — it never confirmed <path> is
+           # still actually absent on the base branch's CURRENT tip. Two false positives this missed: (1) the base branch
+           # re-adds <path> under the old name after the rename (the same, or any, content under the old path again); (2) the rename commit itself
+           # is later `git revert`ed on the base branch (the revert is itself a RENAME back to <path>, so it is never the
+           # "last deletion commit" deleted_later's own revert-detection inspects, and slips past it). In both cases the base
+           # branch's tip disagrees with main (it holds <path> again) even though the stale history-only proof would pass.
+           # `[ -z "$(blob_at "$base_ref" "$path")" ]` requires the old path to be genuinely gone RIGHT NOW before the
+           # rename-based verdict is trusted at all.
+           elif [ "$named_only" = 1 ] && base_ref=$(base_ref_of "$PR_BASE_REF") && [ -z "$(blob_at "$base_ref" "$path")" ] &&
+                deleted_later "$base_ref" "$path" "$want" &&
                 new_path=$(rename_target "$base_ref" "$path" "$want") && [ -n "$new_path" ] && [ "$(blob_at "$ref" "$new_path")" = "$want" ]; then :
            else printf '%s (absent on %s)' "$path" "$BASE"; return 1
            fi

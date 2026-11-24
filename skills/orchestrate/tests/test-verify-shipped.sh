@@ -250,6 +250,53 @@ test_vs_renamed_on_base_but_never_promoted_is_not_shipped() {
   vs_cleanup
 }
 
+# code-reviewer (#824 third HIGH): the rename-fallback proof (deleted_later + rename_target on the base branch) never checked
+# that the OLD path is still actually absent on the base branch's CURRENT tip — only that its LAST deletion commit looked like
+# a rename. Staging renames feature.txt to renamed.txt, then a LATER staging commit re-adds feature.txt (the same content
+# as before, reintroduced under the old name); staging's tip now holds BOTH feature.txt and renamed.txt, disagreeing with
+# main (which holds only renamed.txt). Trusting the stale rename proof would wrongly report SHIPPED; must read NOT SHIPPED.
+test_vs_renamed_on_base_then_readded_is_not_shipped() {
+  vs_setup
+  printf 'feature\n' > "$VS_D/remote/feature.txt"; vs_git add -A && vs_git commit -q -m "feature on staging"
+  local s; s=$(vs_git rev-parse HEAD)
+  vs_git mv feature.txt renamed.txt && vs_git commit -q -m "rename feature to renamed on staging"
+  printf 'feature\n' > "$VS_D/remote/feature.txt"; vs_git add -A && vs_git commit -q -m "re-add feature.txt on staging"
+  vs_git checkout -q main
+  printf 'main moved on\n' > "$VS_D/remote/other.txt"; vs_git add -A && vs_git commit -q -m "unrelated main commit"
+  printf 'feature\n' > "$VS_D/remote/renamed.txt"; vs_git add -A && vs_git commit -q -m "release v1.3.0 (#20)
+
+* feature on staging (#7)"
+  VS_PR_TITLE="feature on staging" vs_pr 7 true "$s" added:feature.txt
+  vs_run --no-deploy 7; local rc=$?
+  assert_eq "$rc" "1" "staging re-added feature.txt after the rename; the old path is not actually gone on staging's tip: not shipped" || { vs_cleanup; return 1; }
+  assert_contains "$VS_OUT" "NOT SHIPPED (feature.txt (absent on main))" "names the file" || { vs_cleanup; return 1; }
+  vs_cleanup
+}
+
+# Sibling of the above: staging renames the file, then `git revert`s the rename commit — staging's tip now holds the OLD file
+# back under the OLD name (not the new one). The revert itself is a rename in git's eyes (renamed.txt -> feature.txt), so it is
+# never the "last deletion commit" for feature.txt that deleted_later's revert-detection inspects (that is still the original
+# rename commit, whose message says nothing about reverting) — the revert slips past deleted_later's own safeguard. Only the
+# "is the old path still absent on the base branch's tip" check (added by this fix) catches it.
+test_vs_rename_reverted_on_base_is_not_shipped() {
+  vs_setup
+  printf 'feature\n' > "$VS_D/remote/feature.txt"; vs_git add -A && vs_git commit -q -m "feature on staging"
+  local s; s=$(vs_git rev-parse HEAD)
+  vs_git mv feature.txt renamed.txt && vs_git commit -q -m "rename feature to renamed on staging"
+  local rename_sha; rename_sha=$(vs_git rev-parse HEAD)
+  vs_git revert --no-edit "$rename_sha" >/dev/null 2>&1
+  vs_git checkout -q main
+  printf 'main moved on\n' > "$VS_D/remote/other.txt"; vs_git add -A && vs_git commit -q -m "unrelated main commit"
+  printf 'feature\n' > "$VS_D/remote/renamed.txt"; vs_git add -A && vs_git commit -q -m "release v1.3.0 (#20)
+
+* feature on staging (#7)"
+  VS_PR_TITLE="feature on staging" vs_pr 7 true "$s" added:feature.txt
+  vs_run --no-deploy 7; local rc=$?
+  assert_eq "$rc" "1" "the rename was reverted on staging; feature.txt is back under its old name there: not shipped" || { vs_cleanup; return 1; }
+  assert_contains "$VS_OUT" "NOT SHIPPED (feature.txt (absent on main))" "names the file" || { vs_cleanup; return 1; }
+  vs_cleanup
+}
+
 # code-reviewer (#824 FAIL): a PLAIN deletion on the base branch (git rm, not a rename) must not pass just because main happens
 # to hold some UNRELATED file with an identical blob (e.g. two empty files, or duplicate boilerplate) — that coincidence is not
 # proof the base branch's drop ever reached main. Staging adds an empty placeholder.txt then plain-deletes it (no mv); main has
@@ -778,6 +825,8 @@ run_test test_vs_squash_promoted_with_different_base_is_shipped
 run_test test_vs_cherry_pick_x_onto_a_different_base_is_shipped
 run_test test_vs_renamed_on_base_before_promotion_is_shipped
 run_test test_vs_renamed_on_base_but_never_promoted_is_not_shipped
+run_test test_vs_renamed_on_base_then_readded_is_not_shipped
+run_test test_vs_rename_reverted_on_base_is_not_shipped
 run_test test_vs_plain_deletion_on_base_coincidental_blob_on_main_is_not_shipped
 run_test test_vs_plain_deletion_on_base_coincidental_nonempty_blob_on_main_is_not_shipped
 run_test test_vs_rename_detection_on_two_empty_files_is_not_shipped
