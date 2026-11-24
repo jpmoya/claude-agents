@@ -11,9 +11,14 @@
 # Exit 0 only when EVERY file is additive; exit 1 otherwise (also: no arguments, unreadable file, classifier crash).
 #
 # Additive: CREATE TABLE / [UNIQUE] INDEX / [OR REPLACE] FUNCTION / POLICY / [OR REPLACE] VIEW / TRIGGER, ALTER TABLE ... ADD COLUMN
-# (nullable, or with a DEFAULT; never NOT NULL without one), ALTER TABLE ... ENABLE ROW LEVEL SECURITY, GRANT on objects created in
-# the files passed together (the PR's migrations). Everything else is not additive: DROP, TRUNCATE, DELETE, UPDATE, INSERT, REVOKE,
-# RENAME, ALTER COLUMN, ADD CONSTRAINT, DO blocks, dynamic SQL, GRANT on a pre-existing object, BEGIN/COMMIT, SET, ...
+# (nullable, or with a DEFAULT; never NOT NULL without one), ALTER TABLE ... ENABLE ROW LEVEL SECURITY, GRANT. Everything else is not
+# additive: DROP, TRUNCATE, DELETE, UPDATE, INSERT, REVOKE, RENAME, ALTER COLUMN, ADD CONSTRAINT, DO blocks, dynamic SQL, BEGIN/COMMIT, SET, ...
+# Only what the files passed together create can be touched further (code review of #821):
+#   - OR REPLACE of a function / view / trigger, a trigger's EXECUTE FUNCTION target and a POLICY's table must be created in those files;
+#   - a policy needs a real condition (no true / 1=1 / empty), and function calls in a new function body, view or policy must be to
+#     functions created there or a small builtin list (SAFE_CALLS); anything else is not additive;
+#   - GRANT: object created there; grantee service_role / postgres, or anon / authenticated only on a table created there with row level
+#     security enabled there and only SELECT/INSERT/UPDATE/DELETE; PUBLIC, other roles, WITH GRANT OPTION: not additive.
 # A function body ($tag$ ... $tag$ or a quoted AS body) is scanned too: a destructive keyword anywhere in it is not additive.
 # --shared-tables FILE: the risky list (one table name per line, # comments; the base branch's
 # .github/migration-policy/shared-tables.txt). A statement that mentions a listed table is not additive. An unreadable list fails closed.
@@ -228,7 +233,7 @@ def words_of(items, n=2):
             break
     return " ".join(out)
 
-def classify_alter_table(items, created):
+def classify_alter_table(items, created, record):
     i = 2
     if kw(items, i, "IF", "EXISTS"):
         i += 2
@@ -254,6 +259,7 @@ def classify_alter_table(items, created):
             raise Unparseable("empty ALTER TABLE action")
         if kw(a, 0, "ENABLE", "ROW", "LEVEL", "SECURITY") and len(a) == 4:
             kinds.append("alter table enable row level security")
+            record.add(("rls", name))
             continue
         if kw(a, 0, "ADD"):
             j = 1
@@ -292,11 +298,19 @@ def split_commas(items):
     parts.append(cur)
     return parts
 
+ROW_PRIVS = {"SELECT", "INSERT", "UPDATE", "DELETE"}
+SERVER_ROLES = {"service_role", "postgres"}
+API_ROLES = {"anon", "authenticated"}
+
 def classify_grant(items, created):
-    # GRANT <privileges> ON [TABLE|SEQUENCE|FUNCTION|SCHEMA|TYPE] <names> TO <grantees> ...
+    # GRANT <privileges> ON [TABLE|SEQUENCE|FUNCTION|SCHEMA|TYPE] <names> TO <grantees>
+    # Object side: only objects created in the files passed together. Grantee side: service_role / postgres for anything; anon and
+    # authenticated only on a TABLE created here whose row level security is enabled here, and only with row privileges
+    # (SELECT/INSERT/UPDATE/DELETE; ALL, TRUNCATE, TRIGGER and REFERENCES are not governed by RLS); PUBLIC and every other role: not additive.
     on = next((k for k, x in enumerate(items) if is_w(x, "ON")), None)
     if on is None:
         raise NotAdditive("grant role membership")
+    privs = [x[1] for x in items[1:on] if x[0] == "w"]
     j = on + 1
     kind = "relation"
     if at(items, j) and at(items, j)[0] == "w" and items[j][1] in ("TABLE", "FUNCTION", "SCHEMA", "TYPE", "SEQUENCE"):
@@ -307,16 +321,37 @@ def classify_grant(items, created):
     to = next((k for k in range(j, len(items)) if is_w(items[k], "TO")), None)
     if to is None:
         raise Unparseable("GRANT without TO")
-    targets = split_commas(items[j:to])
-    for t in targets:
+    names = []
+    for t in split_commas(items[j:to]):
         name, k = parse_name(t, 0)
-        if kind == "function":
-            if k < len(t) and t[k][0] == "g":
-                k += 1
+        if kind == "function" and k < len(t) and t[k][0] == "g":
+            k += 1
         if k != len(t):
             raise Unparseable("GRANT target")
         if kind == "sequence" or (kind, name) not in created:
             raise NotAdditive("grant on pre-existing object")
+        names.append(name)
+    rest = items[to + 1:]
+    end = next((k for k, x in enumerate(rest) if is_w(x, "WITH", "GRANTED")), len(rest))
+    if end != len(rest):
+        raise NotAdditive("grant with grant option or granted by")
+    grantees = []
+    for t in split_commas(rest[:end]):
+        if len(t) != 1 or t[0][0] not in ("w", "q"):
+            raise NotAdditive("grant to an unrecognised grantee")
+        grantees.append(t[0][1].lower())
+    if not grantees:
+        raise Unparseable("GRANT without grantee")
+    for g in grantees:
+        if g in SERVER_ROLES:
+            continue
+        if g in API_ROLES:
+            if kind != "relation" or any(("table", n) not in created or ("rls", n) not in created for n in names):
+                raise NotAdditive("grant to " + g + " on an object without row level security")
+            if not privs or any(x not in ROW_PRIVS for x in privs):
+                raise NotAdditive("grant to " + g + " beyond row privileges")
+            continue
+        raise NotAdditive("grant to " + ("public" if g == "public" else "an unlisted role"))
     return ["grant"]
 
 def classify_create(items, created, record, shared):
@@ -344,6 +379,7 @@ def classify_create(items, created, record, shared):
             raise NotAdditive("create table as select")
         if not ine:
             record.add(("relation", name))
+            record.add(("table", name))
         return "create table"
     if o == "INDEX" and not or_replace:
         if kw(items, i, "CONCURRENTLY"):
@@ -361,25 +397,116 @@ def classify_create(items, created, record, shared):
         name, i = parse_name(items, i)
         if at(items, i) is None or at(items, i)[0] != "g":
             raise Unparseable("CREATE FUNCTION without parameter list")
+        if or_replace and ("function", name) not in created:
+            raise NotAdditive("create or replace function on a function not created here")
         if not or_replace:
             record.add(("function", name))
         return "create or replace function" if or_replace else "create function"
     if o == "VIEW":
         name, i = parse_name(items, i)
+        if or_replace and ("relation", name) not in created:
+            raise NotAdditive("create or replace view on a view not created here")
         if not or_replace:
             record.add(("relation", name))
         return "create or replace view" if or_replace else "create view"
     if o == "TRIGGER":
-        _, i = parse_name(items, i)
-        if not any(is_w(x, "ON") for x in items[i:]) or not any(is_w(x, "EXECUTE") for x in items[i:]):
+        tname, i = parse_name(items, i)
+        ex = next((k for k, x in enumerate(items) if k >= i and is_w(x, "EXECUTE")), None)
+        if ex is None or not any(is_w(x, "ON") for x in items[i:ex]) or not (is_w(at(items, ex + 1), "FUNCTION", "PROCEDURE")):
             raise Unparseable("CREATE TRIGGER shape")
+        fname, _ = parse_name(items, ex + 2)
+        if ("function", fname) not in created:
+            raise NotAdditive("create trigger calling a function not created here")
+        if or_replace and ("trigger", tname) not in created:
+            raise NotAdditive("create or replace trigger on a trigger not created here")
+        if not or_replace:
+            record.add(("trigger", tname))
         return "create or replace trigger" if or_replace else "create trigger"
     if o == "POLICY" and not or_replace:
         _, i = parse_name(items, i)
         if not kw(items, i, "ON"):
             raise Unparseable("CREATE POLICY without ON")
+        tbl, _ = parse_name(items, i + 1)
+        if ("table", tbl) not in created:
+            raise NotAdditive("create policy on a table not created here")
         return "create policy"
     raise NotAdditive("create " + (words_of([obj] + items[i:], 2) or "unrecognised"))
+
+NOT_CALLS = {"IF", "ELSIF", "ELSEIF", "WHEN", "WHERE", "AND", "OR", "NOT", "ON", "USING", "OVER", "FILTER", "RETURN", "RETURNS", "AS",
+             "SELECT", "THEN", "ELSE", "IN", "FROM", "JOIN", "VALUES", "EXISTS", "ANY", "ALL", "SOME", "LATERAL", "CASE", "BETWEEN", "LIKE",
+             "ILIKE", "WITH", "BY", "HAVING", "UNION", "INTERSECT", "EXCEPT", "LIMIT", "OFFSET", "ORDER", "GROUP", "DISTINCT", "WHILE",
+             "LOOP", "FOR", "FOREACH", "IS", "ROW", "ARRAY", "LEFT", "RIGHT", "INNER", "OUTER", "CROSS", "CHECK", "DEFAULT", "NULL",
+             "VARCHAR", "CHAR", "CHARACTER", "NUMERIC", "DECIMAL", "TIMESTAMP", "TIMESTAMPTZ", "TIME", "TIMETZ", "BIT", "VARBIT",
+             "FLOAT", "INTERVAL", "RETURNING", "EXCEPTION", "RAISE", "BEGIN", "END", "DECLARE", "OR", "TO", "SIMILAR", "OPERATOR"}
+SAFE_CALLS = {"now", "clock_timestamp", "statement_timestamp", "transaction_timestamp", "current_timestamp", "gen_random_uuid",
+              "uuid_generate_v4", "coalesce", "nullif", "greatest", "least", "lower", "upper", "length", "char_length", "trim", "btrim",
+              "ltrim", "rtrim", "concat", "concat_ws", "format", "substr", "substring", "replace", "position", "left", "right", "split_part",
+              "count", "sum", "min", "max", "avg", "abs", "round", "floor", "ceil", "ceiling", "random", "extract", "date_trunc", "age",
+              "to_char", "to_date", "to_timestamp", "date", "array_length", "array_agg", "unnest", "string_agg", "cardinality",
+              "to_json", "to_jsonb", "json_build_object", "jsonb_build_object", "jsonb_build_array", "row_to_json", "jsonb_agg",
+              "json_agg", "jsonb_array_elements", "jsonb_extract_path_text", "jsonb_typeof", "current_setting", "auth.uid", "auth.jwt",
+              "auth.role", "md5", "regexp_replace", "regexp_match", "mod", "power", "sqrt", "cast"}
+
+def call_name(parts):
+    n = ".".join(p.lower() for p in parts)
+    for pre in ("public.", "pg_catalog."):
+        if n.startswith(pre):
+            n = n[len(pre):]
+    return n
+
+def check_calls(toks, created, what):
+    """every NAME( in these tokens must be a keyword/type, a small safe builtin, or a function created in the same files."""
+    i, n = 0, len(toks)
+    while i < n:
+        t = toks[i]
+        if t[0] in ("w", "q"):
+            parts, j = [t[1]], i + 1
+            while j + 1 < n and toks[j] == ("p", ".") and toks[j + 1][0] in ("w", "q"):
+                parts.append(toks[j + 1][1])
+                j += 2
+            if j < n and toks[j] == ("p", "(") and not (len(parts) == 1 and t[0] == "w" and t[1] in NOT_CALLS):
+                name = call_name(parts)
+                if name not in SAFE_CALLS and ("function", name) not in created:
+                    raise NotAdditive(what + " calls " + name)
+            i = j
+        else:
+            i += 1
+
+def body_streams(toks, after_as_only=True):
+    """token lists of every function body in a statement: $tag$ bodies (nested ones too) and a quoted body right after AS."""
+    prev = None
+    for t in toks:
+        if t[0] == "d" or (t[0] == "s" and prev == ("w", "AS")):
+            inner = tokenize(t[1])
+            yield inner
+            for deeper in body_streams(inner):
+                yield deeper
+        prev = t
+
+def check_policy(toks, created):
+    exprs, k = [], 0
+    for k, t in enumerate(toks):
+        if t in (("w", "USING"), ("w", "CHECK")) and k + 1 < len(toks) and toks[k + 1] == ("p", "("):
+            depth, j, inner = 0, k + 1, []
+            while j < len(toks):
+                if toks[j] == ("p", "("):
+                    depth += 1
+                elif toks[j] == ("p", ")"):
+                    depth -= 1
+                    if depth == 0:
+                        break
+                inner.append(toks[j])
+                j += 1
+            exprs.append(inner[1:])
+    if not exprs:
+        raise NotAdditive("create policy without a condition")
+    for e in exprs:
+        words = [t[1] for t in e if t[0] == "w"]
+        if "TRUE" in words:
+            raise NotAdditive("create policy with an unconditional clause")
+        if not [w for w in words if w not in ("FALSE", "NULL", "NOT", "AND", "OR", "IS") and not w[0].isdigit()] and not any(t[0] == "q" for t in e):
+            raise NotAdditive("create policy with an unconditional clause")
+        check_calls(e, created, "create policy")
 
 def classify_statement(toks, created, record, shared):
     """-> list of statement kinds (usually one). Raises NotAdditive / Unparseable."""
@@ -401,9 +528,21 @@ def classify_statement(toks, created, record, shared):
             bad = sorted(set(all_words(toks, True)) & BODY_BAD)
             if bad:
                 raise NotAdditive(kind + " body contains " + bad[0].lower())
+            if kind.endswith("function"):
+                if any(is_w(x, "ATOMIC") for x in items):
+                    raise NotAdditive(kind + " with an unquoted body")
+                for body in body_streams(toks):
+                    check_calls(body, created, kind + " body")
+            else:
+                a = next((k for k, x in enumerate(toks) if x == ("w", "AS")), None)
+                if a is None:
+                    raise Unparseable("CREATE VIEW without AS")
+                check_calls(toks[a + 1:], created, kind)
+        if kind == "create policy":
+            check_policy(toks, created)
         return [kind]
     if v == "ALTER" and kw(items, 1, "TABLE"):
-        return classify_alter_table(items, created)
+        return classify_alter_table(items, created, record)
     if v == "GRANT":
         return classify_grant(items, created)
     if v == "DROP":
@@ -477,14 +616,18 @@ def main(argv):
             results[p] = "UNPARSEABLE"
             unreadable += 1
     created = set()
-    for p, stmts in parsed.items():           # pass 1: everything the PR creates (GRANT may name a later file's table)
-        for s in stmts:
-            rec = set()
-            try:
-                classify_statement(s, set(), rec, None)
-            except (NotAdditive, Unparseable):
-                pass
-            created |= rec
+    while True:                               # pass 1: everything the PR creates (a GRANT may name a later file's table), to a fixed point
+        before = len(created)
+        for p, stmts in parsed.items():
+            for s in stmts:
+                rec = set()
+                try:
+                    classify_statement(s, created, rec, None)
+                except (NotAdditive, Unparseable):
+                    pass
+                created |= rec
+        if len(created) == before:
+            break
     for p, stmts in parsed.items():           # pass 2: the verdicts
         kinds = []
         try:

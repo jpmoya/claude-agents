@@ -3,6 +3,12 @@
 # stands in for the Slack webhook; LOGDIR is a mktemp dir so no event lands in the host's real events.jsonl.
 
 HERE_CMS=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# Runnable on its own (bash test-classify-migration-sql.sh) as well as sourced by run-tests.sh.
+if ! declare -F run_test >/dev/null 2>&1; then
+  CMS_STANDALONE=1
+  . "$HERE_CMS/lib/assert.sh"
+  . "$HERE_CMS/lib/fixture.sh"
+fi
 ROOT_CMS=$(cd "$HERE_CMS/../../.." && pwd)
 SH_CMS="$ROOT_CMS/skills/orchestrate/classify-migration-sql.sh"
 FX_CMS="$HERE_CMS/fixtures/classify-migration"
@@ -36,7 +42,9 @@ test_cms_ok_create_view()           { cms_additive ok-create-view.sql "create or
 test_cms_ok_create_trigger()        { cms_additive ok-create-trigger.sql "create trigger"; }
 test_cms_ok_add_column_nullable()   { cms_additive ok-add-column-nullable.sql "alter table add column"; }
 test_cms_ok_add_column_default()    { cms_additive ok-add-column-default.sql "alter table add column"; }
-test_cms_ok_grant_created()         { cms_additive ok-grant-created.sql "create table, grant"; }
+test_cms_ok_grant_created()         { cms_additive ok-grant-created.sql "create table, alter table enable row level security, grant"; }
+test_cms_ok_grant_service_role_without_rls() { cms_additive ok-grant-service-role-no-rls.sql "create table, grant"; }
+test_cms_ok_lowercase()             { cms_additive ok-lowercase.sql "create table, alter table enable row level security, create index"; }
 test_cms_ok_enable_rls()            { cms_additive ok-enable-rls.sql "enable row level security"; }
 test_cms_ok_multi_statement()       { cms_additive ok-multi.sql "create table, alter table enable row level security, create index, create policy, grant, alter table add column"; }
 test_cms_ok_comments_with_drop()    { cms_additive ok-comments-with-drop.sql "create table"; }
@@ -69,6 +77,35 @@ test_cms_bad_unterminated_string()  { cms_blocked bad-unterminated-string.sql "U
 test_cms_bad_unterminated_dollar()  { cms_blocked bad-unterminated-dollar.sql "UNPARSEABLE"; }
 test_cms_bad_empty_file()           { cms_blocked bad-empty.sql "UNPARSEABLE"; }
 test_cms_bad_only_comment()         { cms_blocked bad-only-comment.sql "UNPARSEABLE"; }
+
+# --- code-review round 1 (PR #821): grantees, policies, OR REPLACE, calls from new bodies, body statements, case ---
+test_cms_bad_grant_anon_without_rls()        { cms_blocked bad-grant-anon-no-rls.sql "NOT additive (grant to anon on an object without row level security)"; }
+test_cms_bad_grant_public()                  { cms_blocked bad-grant-public.sql "NOT additive (grant to public)"; }
+test_cms_bad_grant_all_to_authenticated()    { cms_blocked bad-grant-all-to-authenticated.sql "NOT additive (grant to authenticated beyond row privileges)"; }
+test_cms_bad_grant_truncate_to_anon()        { cms_blocked bad-grant-truncate-to-anon.sql "NOT additive (grant to anon beyond row privileges)"; }
+test_cms_bad_grant_view_to_authenticated()   { cms_blocked bad-grant-view-to-authenticated.sql "NOT additive (grant to authenticated on an object without row level security)"; }
+test_cms_bad_grant_unlisted_role()           { cms_blocked bad-grant-unlisted-role.sql "NOT additive (grant to an unlisted role)"; }
+test_cms_bad_grant_option()                  { cms_blocked bad-grant-option.sql "NOT additive (grant with grant option or granted by)"; }
+test_cms_bad_policy_on_existing_table()      { cms_blocked bad-policy-existing-table.sql "NOT additive (create policy on a table not created here)"; }
+test_cms_bad_policy_using_true()             { cms_blocked bad-policy-using-true.sql "NOT additive (create policy with an unconditional clause)"; }
+test_cms_bad_policy_or_true()                { cms_blocked bad-policy-or-true.sql "NOT additive (create policy with an unconditional clause)"; }
+test_cms_bad_policy_literal_condition()      { cms_blocked bad-policy-literal-condition.sql "NOT additive (create policy with an unconditional clause)"; }
+test_cms_bad_policy_calls_existing_function() { cms_blocked bad-policy-calls-existing-function.sql "NOT additive (create policy calls is_admin_somewhere)"; }
+test_cms_bad_replace_existing_function()     { cms_blocked bad-replace-function-existing.sql "NOT additive (create or replace function on a function not created here)"; }
+test_cms_bad_replace_existing_view()         { cms_blocked bad-replace-view-existing.sql "NOT additive (create or replace view on a view not created here)"; }
+test_cms_bad_replace_existing_trigger()      { cms_blocked bad-replace-trigger-existing.sql "NOT additive (create or replace trigger on a trigger not created here)"; }
+test_cms_bad_body_perform_existing()         { cms_blocked bad-body-perform-existing.sql "NOT additive (create function body calls wipe_table)"; }
+test_cms_bad_body_select_existing()          { cms_blocked bad-body-select-existing.sql "NOT additive (create function body calls wipe_table)"; }
+test_cms_bad_trigger_calls_existing_function() { cms_blocked bad-trigger-existing-function.sql "NOT additive (create trigger calling a function not created here)"; }
+test_cms_bad_view_calls_existing_function()  { cms_blocked bad-view-calls-existing-function.sql "NOT additive (create view calls wipe_table)"; }
+test_cms_bad_body_update()                   { cms_blocked bad-body-update.sql "NOT additive (create function body contains update)"; }
+test_cms_bad_body_truncate()                 { cms_blocked bad-body-truncate.sql "NOT additive (create function body contains truncate)"; }
+test_cms_bad_body_insert()                   { cms_blocked bad-body-insert.sql "NOT additive (create function body contains insert)"; }
+test_cms_bad_drop_policy()                   { cms_blocked bad-drop-policy.sql "NOT additive (drop policy)"; }
+test_cms_bad_drop_index()                    { cms_blocked bad-drop-index.sql "NOT additive (drop index)"; }
+test_cms_bad_drop_function()                 { cms_blocked bad-drop-function.sql "NOT additive (drop function)"; }
+test_cms_bad_mixed_case_drop()               { cms_blocked bad-mixed-case-drop.sql "NOT additive (drop table)"; }
+test_cms_bad_mixed_case_body()               { cms_blocked bad-mixed-case-body.sql "NOT additive (create function body contains delete)"; }
 
 test_cms_risky_list_statement_blocks() {
   cms_run "$FX_CMS/bad-risky-list.sql"                      # without the list the statement is a plain additive ADD COLUMN
@@ -195,3 +232,7 @@ test_cms_deployer_guard_snippet_behaves() {
 
 echo "-- classify-migration-sql.sh (issue #820)"
 for t in $(grep -oE '^test_cms_[a-z0-9_]+' "${BASH_SOURCE[0]}"); do run_test "$t"; done
+if [ -n "${CMS_STANDALONE:-}" ]; then
+  echo "TOTAL: $ASSERT_PASS passed, $ASSERT_FAIL failed"
+  [ "$ASSERT_FAIL" -eq 0 ] && exit 0 || exit 1
+fi

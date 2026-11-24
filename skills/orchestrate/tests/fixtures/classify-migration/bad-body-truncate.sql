@@ -1,0 +1,1 @@
+CREATE FUNCTION g() RETURNS void LANGUAGE plpgsql AS $$ BEGIN TRUNCATE some_table; END $$;

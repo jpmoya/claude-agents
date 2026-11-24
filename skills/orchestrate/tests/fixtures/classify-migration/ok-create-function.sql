@@ -1,4 +1,4 @@
-CREATE OR REPLACE FUNCTION widget_touch() RETURNS trigger
+CREATE FUNCTION widget_touch() RETURNS trigger
 LANGUAGE plpgsql
 AS $body$
 BEGIN
@@ -6,6 +6,15 @@ BEGIN
   IF TG_OP = 'UPDATE' THEN
     NEW.updated_at := now();
   END IF;
+  RETURN NEW;
+END;
+$body$;
+-- replacing a function this same file created is still additive
+CREATE OR REPLACE FUNCTION widget_touch() RETURNS trigger
+LANGUAGE plpgsql
+AS $body$
+BEGIN
+  NEW.updated_at := now();
   RETURN NEW;
 END;
 $body$;

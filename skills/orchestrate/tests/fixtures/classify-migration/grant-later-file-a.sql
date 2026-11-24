@@ -1,1 +1,1 @@
-GRANT SELECT ON sprockets2 TO authenticated;
+GRANT SELECT ON sprockets2 TO service_role;
