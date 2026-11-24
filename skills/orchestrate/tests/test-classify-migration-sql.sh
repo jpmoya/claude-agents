@@ -140,6 +140,20 @@ test_cms_crash_is_captured_and_fails_closed() {
   CMS_PY=/nonexistent/python3 cms_failure_case "crash" "classifier crash (exit 127)" "$FX_CMS/ok-create-table.sql"
 }
 
+test_cms_python_exit_1_is_a_crash_not_a_verdict() {  # a syntax error / uncaught exception exits 1: must be captured, never read as "not additive"
+  local stub; stub=$(mktemp "${TMPDIR:-/tmp}/cms-stub.XXXXXX")
+  printf '#!/bin/bash\necho "Traceback (most recent call last):" >&2\nexit 1\n' > "$stub"; chmod +x "$stub"
+  CMS_PY="$stub" cms_failure_case "python exit 1" "classifier crash (exit 1)" "$FX_CMS/ok-create-table.sql"
+  local r=$?; rm -f "$stub"; return $r
+}
+
+test_cms_silent_exit_0_is_not_an_approval() {  # exit 0 with no additive line per file must not approve
+  local stub; stub=$(mktemp "${TMPDIR:-/tmp}/cms-stub.XXXXXX")
+  printf '#!/bin/bash\nexit 0\n' > "$stub"; chmod +x "$stub"
+  CMS_PY="$stub" cms_failure_case "silent exit 0" "classifier output did not match its exit code" "$FX_CMS/ok-create-table.sql"
+  local r=$?; rm -f "$stub"; return $r
+}
+
 test_cms_verdicts_do_not_raise_an_alert() {  # a NOT additive verdict is normal operation, not a tool failure
   local d; d=$(mktemp -d "${TMPDIR:-/tmp}/cms-test.XXXXXX")
   LOGDIR="$d/logs" SLACK_WEBHOOK_URL="" bash "$SH_CMS" "$FX_CMS/bad-drop-table.sql" >/dev/null 2>&1

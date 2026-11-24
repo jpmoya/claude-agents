@@ -25,7 +25,9 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 . "$HERE/pipeline-lib.sh"
 PY=${CLASSIFY_MIGRATION_PYTHON:-python3}
 
-"$PY" -I - "$@" <<'PY'
+# Exit codes of the python half: 0 every file additive, 10 a verdict of not additive, 3 an unreadable file or risky list, anything
+# else (1 included: a syntax error, an uncaught exception, a kill) is a crash. Only 0 with one `additive` line per file is an approval.
+out=$("$PY" -I - "$@" <<'PY'
 import os, re, sys
 
 class Unparseable(Exception):
@@ -452,19 +454,19 @@ def main(argv):
     args = list(argv)
     if args[:1] == ["--shared-tables"]:
         if len(args) < 2:
-            return 1, 0
+            return 10, 0
         try:
             shared = load_shared(args[1])
         except (OSError, UnicodeDecodeError):
             print("--shared-tables: UNPARSEABLE (risky list unreadable)")
-            return 1, 1
+            return 10, 1
         if not shared:
             print("--shared-tables: UNPARSEABLE (risky list empty)")
-            return 1, 1
+            return 10, 1
         args = args[2:]
     if not args:
         print("usage: classify-migration-sql.sh [--shared-tables FILE] <file.sql>...", file=sys.stderr)
-        return 1, 0
+        return 10, 0
     parsed, results, unreadable = {}, {}, 0
     for p in args:
         try:
@@ -499,18 +501,32 @@ def main(argv):
     for p in args:
         print("%s: %s" % (p, results[p]))
         ok = ok and results[p].startswith("additive")
-    return (0 if ok else 1), unreadable
+    return (0 if ok else 10), unreadable
 
 try:
     rc, unreadable = main(sys.argv[1:])
 except Exception as e:                        # a crash is never an approval
     sys.stderr.write("classify-migration-sql.sh: internal error (%s)\n" % type(e).__name__)
     sys.exit(70)
-sys.exit(3 if unreadable and rc == 1 else rc)
+sys.exit(3 if unreadable else rc)
 PY
+)
 rc=$?
 case "$rc" in
-  0|1) exit "$rc" ;;
-  3) classify_migration_alert "unreadable file"; exit 1 ;;
+  0)
+    # exit 0 is an approval, so it must be backed by exactly one additive verdict line per file argument
+    want=0; skip=0
+    for a in "$@"; do
+      if [ "$skip" = 1 ]; then skip=0; continue; fi
+      if [ "$a" = --shared-tables ]; then skip=1; continue; fi
+      want=$((want + 1))
+    done
+    got=$(printf '%s\n' "$out" | grep -c ': additive (')
+    if [ "$want" -gt 0 ] && [ "$got" = "$want" ] && [ "$(printf '%s\n' "$out" | grep -c .)" = "$want" ]; then
+      printf '%s\n' "$out"; exit 0
+    fi
+    classify_migration_alert "classifier output did not match its exit code"; exit 1 ;;
+  10) printf '%s\n' "$out"; exit 1 ;;
+  3) printf '%s\n' "$out"; classify_migration_alert "unreadable file"; exit 1 ;;
   *) classify_migration_alert "classifier crash (exit $rc)"; exit 1 ;;
 esac
