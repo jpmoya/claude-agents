@@ -278,4 +278,22 @@ describe('#825: pipeline text carries no copy of the risky-list categories, only
     expect(deliveryLead).toMatch(/2026-11-24\/25/);
     expect(deliveryLead).toMatch(/#2940/);
   });
+
+  it("deployer.md: a release with risky-list changes is held until JP's go is on every risky-list ticket, then the merge is not JP's click", () => {
+    const deployer = read('agents/deployer.md');
+    expect(deployer).not.toMatch(/always needs JP's own merge/);
+    expect(deployer).toMatch(/held until JP's `go` is on every risky-list ticket/);
+    expect(deployer).toMatch(/the merge is not JP's click/);
+  });
+
+  it('deployer.md no longer calls shared-tables.txt "the risky list"', () => {
+    const deployer = read('agents/deployer.md');
+    expect(deployer).not.toMatch(/risky list `\.github\/migration-policy/);
+    expect(deployer).not.toMatch(/--shared-tables <risky list>/);
+  });
+
+  it('delivery-lead.md keeps the 2026-10-24 permission-only quote and defers to the routing file', () => {
+    expect(deliveryLead).toContain('then yes C should stop needing my approval');
+    expect(deliveryLead).toMatch(/decided by the app repo's `\.github\/release-routing\.txt`/);
+  });
 });
