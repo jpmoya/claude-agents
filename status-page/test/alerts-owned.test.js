@@ -3,7 +3,7 @@
 // published by the host). Expected values are hand-written from the ticket: grace 10 minutes (2 supervisor ticks).
 
 import { describe, it, expect } from 'vitest';
-import { deriveAlerts, ANSWER_GRACE_MINUTES } from '../src/alerts.js';
+import { deriveAlerts, ANSWER_GRACE_MINUTES, JP_GO_GRACE_HOURS } from '../src/alerts.js';
 import { validateBeatPayload } from '../src/validate.js';
 import { validRun, validPayload, hostRecord } from './fixtures.js';
 
@@ -74,5 +74,34 @@ describe('#780 unowned-tickets alert: owned tickets are left out', () => {
     expect(r.ok).toBe(true);
     expect(r.value.runs.find((x) => x.issue === 70).answered_at).toBe(ago(3));
     expect(r.value.runs.find((x) => x.issue === 71).answered_at).toBeUndefined();
+  });
+});
+
+describe('#827 a held ticket whose newest marker is JP GO is owned by the promotion for 24 hours', () => {
+  const goRun = (issue, minsAgo) => run(issue, { state: 'held', marker: 'GO', parked_reason: 'jp_go', last_activity_at: ago(minsAgo) });
+
+  it('the grace is 24 hours', () => {
+    expect(JP_GO_GRACE_HOURS).toBe(24);
+  });
+
+  it('a fresh GO is not listed, not counted', () => {
+    expect(unowned(host([goRun(40, 60)]))).toBeUndefined();
+    expect(unowned(host([goRun(41, 24 * 60)]))).toBeUndefined(); // exactly at the grace is still owned
+  });
+
+  it('past the grace it counts as paused again, so a GO that never shipped is not hidden for ever', () => {
+    const a = unowned(host([goRun(42, 24 * 60 + 1), goRun(43, 60)]));
+    expect(a.title).toBe('1 paused ticket has no one working on it');
+    expect(a.items.map((i) => i.text)).toEqual(['#42 Ticket number 42 about something (paused, no one on it)']);
+  });
+
+  it('a held ticket without the jp_go label is still paused (control)', () => {
+    const a = unowned(host([run(44, { state: 'held', marker: 'GO', last_activity_at: ago(60) })]));
+    expect(a.title).toBe('1 paused ticket has no one working on it');
+  });
+
+  it('the payload validator keeps the label', () => {
+    const v = validateBeatPayload(validPayload({ runs: [goRun(45, 5)] }));
+    expect(JSON.stringify(v)).toContain('jp_go');
   });
 });

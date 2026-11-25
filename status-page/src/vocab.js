@@ -61,7 +61,7 @@ export const MARKER_VOCAB = [
 // Fixed "what JP has to do" labels (issue #139; #712 added the display-only 'mockups skipped (default or JP)' that build-runs-json.py's NEEDS_LABELS already publishes) — the only values `runs[].needs` may carry — and the
 // reasons a held ticket is demoted out of Needs JP by the host (`runs[].parked_reason`).
 export const NEEDS_VOCAB = ['mockups skipped (default or JP)', 'Approve mockups', 'Say go', 'Approve effort', 'Missing credential', 'Decision needed'];
-export const PARKED_REASON_VOCAB = ['answered', 'out_of_scope', 'auto_retry'];
+export const PARKED_REASON_VOCAB = ['answered', 'out_of_scope', 'auto_retry', 'jp_go'];
 export const BLOCK_CLASS_VOCAB = ['ci_pending', 'ci_red', 'merge_conflict', 'dependency', 'unsupported_project', 'other'];
 
 // `ci_queue.categories[].key` / `ci_queue.oldest.key` (issue #643, split by #657): a closed
