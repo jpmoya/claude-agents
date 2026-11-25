@@ -37,14 +37,16 @@ EOF
 
 vs_cleanup() { rm -rf "$VS_D"; }
 
-# vs_pr <n> <merged true|false> <merge sha> <status:path>...   (e.g. added:feature.txt removed:old.txt); VS_PR_TITLE sets the PR's title
+# vs_pr <n> <merged true|false> <merge sha> <status:path>...   (e.g. added:feature.txt removed:old.txt); VS_PR_TITLE sets
+# the PR's title; VS_PR_BASE sets its base.ref (default "staging", as on the real repos — every fixture carries one).
 vs_pr() {
   local n=$1 merged=$2 sha=$3 spec files="[]"
   shift 3
   for spec in "$@"; do
     files=$(printf '%s' "$files" | jq -c --arg s "${spec%%:*}" --arg f "${spec#*:}" '. + [{status:$s, filename:$f}]')
   done
-  jq -nc --argjson m "$merged" --arg sha "$sha" --arg t "${VS_PR_TITLE:-}" '{merged:$m, merge_commit_sha:$sha} + (if $t == "" then {} else {title:$t} end)' > "$VS_D/gh/pull-$n.json"
+  jq -nc --argjson m "$merged" --arg sha "$sha" --arg t "${VS_PR_TITLE:-}" --arg base "${VS_PR_BASE:-staging}" \
+    '{merged:$m, merge_commit_sha:$sha, base:{ref:$base}} + (if $t == "" then {} else {title:$t} end)' > "$VS_D/gh/pull-$n.json"
   printf '%s\n' "$files" > "$VS_D/gh/files-$n.json"
 }
 
@@ -204,6 +206,474 @@ test_vs_cherry_pick_x_onto_a_different_base_is_shipped() {
   vs_pr 7 true "$s" modified:a.txt
   vs_run --no-deploy 7; local rc=$?
   assert_eq "$rc" "0" "the 'cherry picked from commit' trailer ships it" || { vs_cleanup; return 1; }
+  vs_cleanup
+}
+
+# #822: a main commit names the PR but the squash picked up staging's CURRENT tree, which had already renamed the PR's file —
+# the squash commit's diff never touches the original path at all. "Moved on" is judged against the PR's base branch
+# (PR_BASE_REF, here "staging"): staging itself renamed the file with a plain (non-revert) commit, and the renamed-to blob
+# is actually present on main (under its new name) — not just "staging moved it somewhere", which could still be a real drop.
+test_vs_renamed_on_base_before_promotion_is_shipped() {
+  vs_setup
+  printf 'feature\n' > "$VS_D/remote/feature.txt"; vs_git add -A && vs_git commit -q -m "feature on staging"
+  local s; s=$(vs_git rev-parse HEAD)
+  vs_git mv feature.txt renamed.txt && vs_git commit -q -m "rename feature to renamed on staging"
+  vs_git checkout -q main
+  printf 'main moved on\n' > "$VS_D/remote/other.txt"; vs_git add -A && vs_git commit -q -m "unrelated main commit"
+  printf 'feature\n' > "$VS_D/remote/renamed.txt"; vs_git add -A && vs_git commit -q -m "release v1.3.0 (#20)
+
+* feature on staging (#7)"
+  VS_PR_TITLE="feature on staging" vs_pr 7 true "$s" added:feature.txt
+  vs_run --no-deploy 7; local rc=$?
+  assert_eq "$rc" "0" "renamed on staging before promotion, same content under the new name on main: shipped" || { vs_cleanup; return 1; }
+  assert_contains "$VS_OUT" "#7: SHIPPED" "reports SHIPPED" || { vs_cleanup; return 1; }
+  vs_cleanup
+}
+
+# Negative counterpart: staging renamed the file (a non-revert commit deletes the old path), but the renamed-to content never
+# actually reached main — the naming commit carries some unrelated file, not the rename. A bare "staging deleted the old path"
+# must not be read as "shipped"; the exact content must be found on main too.
+test_vs_renamed_on_base_but_never_promoted_is_not_shipped() {
+  vs_setup
+  printf 'feature\n' > "$VS_D/remote/feature.txt"; vs_git add -A && vs_git commit -q -m "feature on staging"
+  local s; s=$(vs_git rev-parse HEAD)
+  vs_git mv feature.txt renamed.txt && vs_git commit -q -m "rename feature to renamed on staging"
+  vs_git checkout -q main
+  printf 'main moved on\n' > "$VS_D/remote/other.txt"; vs_git add -A && vs_git commit -q -m "unrelated main commit"
+  printf 'something unrelated\n' > "$VS_D/remote/unrelated.txt"; vs_git add -A && vs_git commit -q -am "release v1.3.0 (#20)
+
+* feature on staging (#7)"
+  VS_PR_TITLE="feature on staging" vs_pr 7 true "$s" added:feature.txt
+  vs_run --no-deploy 7; local rc=$?
+  assert_eq "$rc" "1" "staging renamed it, but the content never reached main: not shipped" || { vs_cleanup; return 1; }
+  assert_contains "$VS_OUT" "NOT SHIPPED (feature.txt (absent on main))" "names the file" || { vs_cleanup; return 1; }
+  vs_cleanup
+}
+
+# code-reviewer (#824 third HIGH): the rename-fallback proof (deleted_later + rename_target on the base branch) never checked
+# that the OLD path is still actually absent on the base branch's CURRENT tip — only that its LAST deletion commit looked like
+# a rename. Staging renames feature.txt to renamed.txt, then a LATER staging commit re-adds feature.txt (the same content
+# as before, reintroduced under the old name); staging's tip now holds BOTH feature.txt and renamed.txt, disagreeing with
+# main (which holds only renamed.txt). Trusting the stale rename proof would wrongly report SHIPPED; must read NOT SHIPPED.
+test_vs_renamed_on_base_then_readded_is_not_shipped() {
+  vs_setup
+  printf 'feature\n' > "$VS_D/remote/feature.txt"; vs_git add -A && vs_git commit -q -m "feature on staging"
+  local s; s=$(vs_git rev-parse HEAD)
+  vs_git mv feature.txt renamed.txt && vs_git commit -q -m "rename feature to renamed on staging"
+  printf 'feature\n' > "$VS_D/remote/feature.txt"; vs_git add -A && vs_git commit -q -m "re-add feature.txt on staging"
+  vs_git checkout -q main
+  printf 'main moved on\n' > "$VS_D/remote/other.txt"; vs_git add -A && vs_git commit -q -m "unrelated main commit"
+  printf 'feature\n' > "$VS_D/remote/renamed.txt"; vs_git add -A && vs_git commit -q -m "release v1.3.0 (#20)
+
+* feature on staging (#7)"
+  VS_PR_TITLE="feature on staging" vs_pr 7 true "$s" added:feature.txt
+  vs_run --no-deploy 7; local rc=$?
+  assert_eq "$rc" "1" "staging re-added feature.txt after the rename; the old path is not actually gone on staging's tip: not shipped" || { vs_cleanup; return 1; }
+  assert_contains "$VS_OUT" "NOT SHIPPED (feature.txt (absent on main))" "names the file" || { vs_cleanup; return 1; }
+  vs_cleanup
+}
+
+# Sibling of the above: staging renames the file, then `git revert`s the rename commit — staging's tip now holds the OLD file
+# back under the OLD name (not the new one). The revert itself is a rename in git's eyes (renamed.txt -> feature.txt), so it is
+# never the "last deletion commit" for feature.txt that deleted_later's revert-detection inspects (that is still the original
+# rename commit, whose message says nothing about reverting) — the revert slips past deleted_later's own safeguard. Only the
+# "is the old path still absent on the base branch's tip" check (added by this fix) catches it.
+test_vs_rename_reverted_on_base_is_not_shipped() {
+  vs_setup
+  printf 'feature\n' > "$VS_D/remote/feature.txt"; vs_git add -A && vs_git commit -q -m "feature on staging"
+  local s; s=$(vs_git rev-parse HEAD)
+  vs_git mv feature.txt renamed.txt && vs_git commit -q -m "rename feature to renamed on staging"
+  local rename_sha; rename_sha=$(vs_git rev-parse HEAD)
+  vs_git revert --no-edit "$rename_sha" >/dev/null 2>&1
+  vs_git checkout -q main
+  printf 'main moved on\n' > "$VS_D/remote/other.txt"; vs_git add -A && vs_git commit -q -m "unrelated main commit"
+  printf 'feature\n' > "$VS_D/remote/renamed.txt"; vs_git add -A && vs_git commit -q -m "release v1.3.0 (#20)
+
+* feature on staging (#7)"
+  VS_PR_TITLE="feature on staging" vs_pr 7 true "$s" added:feature.txt
+  vs_run --no-deploy 7; local rc=$?
+  assert_eq "$rc" "1" "the rename was reverted on staging; feature.txt is back under its old name there: not shipped" || { vs_cleanup; return 1; }
+  assert_contains "$VS_OUT" "NOT SHIPPED (feature.txt (absent on main))" "names the file" || { vs_cleanup; return 1; }
+  vs_cleanup
+}
+
+# code-reviewer (#824 FAIL): a PLAIN deletion on the base branch (git rm, not a rename) must not pass just because main happens
+# to hold some UNRELATED file with an identical blob (e.g. two empty files, or duplicate boilerplate) — that coincidence is not
+# proof the base branch's drop ever reached main. Staging adds an empty placeholder.txt then plain-deletes it (no mv); main has
+# an unrelated empty file plus a naming commit that never touches placeholder.txt at all. Must read NOT SHIPPED, not SHIPPED.
+test_vs_plain_deletion_on_base_coincidental_blob_on_main_is_not_shipped() {
+  vs_setup
+  : > "$VS_D/remote/placeholder.txt"; vs_git add -A && vs_git commit -q -m "feature on staging"
+  local s; s=$(vs_git rev-parse HEAD)
+  vs_git rm -q placeholder.txt && vs_git commit -q -m "drop placeholder.txt from staging (not a rename)"
+  vs_git checkout -q main
+  printf 'main moved on\n' > "$VS_D/remote/other.txt"; vs_git add -A && vs_git commit -q -m "unrelated main commit"
+  : > "$VS_D/remote/unrelated-empty.txt"; vs_git add -A && vs_git commit -q -am "release v1.9.0 (#20)
+
+* feature on staging (#7)"
+  VS_PR_TITLE="feature on staging" vs_pr 7 true "$s" added:placeholder.txt
+  vs_run --no-deploy 7; local rc=$?
+  assert_eq "$rc" "1" "plain drop on staging; main's identical blob elsewhere is an unrelated coincidence: not shipped" || { vs_cleanup; return 1; }
+  assert_contains "$VS_OUT" "NOT SHIPPED (placeholder.txt (absent on main))" "names the file" || { vs_cleanup; return 1; }
+  vs_cleanup
+}
+
+# Non-empty sibling of the case above: confirms the cycle-1 HIGH fix (a plain drop — deletion with no add in the SAME commit —
+# never pairs as a rename, whatever the content) still holds on its own, independent of the $EMPTY_BLOB guard added in fix
+# cycle 2 (which would otherwise mask this case, since the guard alone now short-circuits every empty-file example before
+# diff-tree even runs). Also exercises rename_target's parser on a plain "D <path>" (single-field, non-rename) diff-tree entry.
+test_vs_plain_deletion_on_base_coincidental_nonempty_blob_on_main_is_not_shipped() {
+  vs_setup
+  printf 'boilerplate\n' > "$VS_D/remote/placeholder.txt"; vs_git add -A && vs_git commit -q -m "feature on staging"
+  local s; s=$(vs_git rev-parse HEAD)
+  vs_git rm -q placeholder.txt && vs_git commit -q -m "drop placeholder.txt from staging (not a rename)"
+  vs_git checkout -q main
+  printf 'main moved on\n' > "$VS_D/remote/other.txt"; vs_git add -A && vs_git commit -q -m "unrelated main commit"
+  printf 'boilerplate\n' > "$VS_D/remote/unrelated-boilerplate.txt"; vs_git add -A && vs_git commit -q -am "release v1.9.0 (#20)
+
+* feature on staging (#7)"
+  VS_PR_TITLE="feature on staging" vs_pr 7 true "$s" added:placeholder.txt
+  vs_run --no-deploy 7; local rc=$?
+  assert_eq "$rc" "1" "plain drop (non-empty content), no add in the same commit: not a rename, main's identical blob elsewhere is coincidence: not shipped" || { vs_cleanup; return 1; }
+  assert_contains "$VS_OUT" "NOT SHIPPED (placeholder.txt (absent on main))" "names the file" || { vs_cleanup; return 1; }
+  vs_cleanup
+}
+
+# code-reviewer (#824 second HIGH, fix cycle 2): git's own -M rename detection treats two EMPTY files as 100% similar by
+# definition (there is no content to differ), so a SINGLE commit that deletes one empty file and ALSO adds a different,
+# unrelated empty file reads as a rename to git itself — unlike the plain-deletion case above, here rename_target's underlying
+# diff-tree -M genuinely reports "R100 placeholder.txt -> other-empty.txt". Staging adds placeholder.txt (empty) for the PR, then
+# one later commit deletes placeholder.txt and adds an unrelated other-empty.txt (both empty); main's naming commit never
+# touches placeholder.txt (promoted_blob falls back) but happens to also hold an other-empty.txt with the same (empty) content.
+# Trusting the rename here would wrongly confirm it and report SHIPPED; "same empty content" proves nothing. Must read NOT SHIPPED.
+test_vs_rename_detection_on_two_empty_files_is_not_shipped() {
+  vs_setup
+  : > "$VS_D/remote/placeholder.txt"; vs_git add -A && vs_git commit -q -m "feature on staging"
+  local s; s=$(vs_git rev-parse HEAD)
+  vs_git rm -q placeholder.txt
+  : > "$VS_D/remote/other-empty.txt"; vs_git add -A && vs_git commit -q -m "unrelated cleanup on staging (deletes and adds in one commit)"
+  vs_git checkout -q main
+  printf 'main moved on\n' > "$VS_D/remote/other.txt"; vs_git add -A && vs_git commit -q -m "unrelated main commit"
+  : > "$VS_D/remote/other-empty.txt"; vs_git add -A && vs_git commit -q -am "release v1.9.0 (#20)
+
+* feature on staging (#7)"
+  VS_PR_TITLE="feature on staging" vs_pr 7 true "$s" added:placeholder.txt
+  vs_run --no-deploy 7; local rc=$?
+  assert_eq "$rc" "1" "git's -M detector matched two unrelated empty files as a rename; same empty content proves nothing: not shipped" || { vs_cleanup; return 1; }
+  assert_contains "$VS_OUT" "NOT SHIPPED (placeholder.txt (absent on main))" "names the file" || { vs_cleanup; return 1; }
+  vs_cleanup
+}
+
+# code-reviewer (#824 LOW, fix cycle 2): git's default --name-status quotes non-ASCII paths (wraps them in quotes with octal
+# escapes), so a naive rename_target that compares <path> against that quoted form would fail to match a REAL rename whose old
+# path has a non-ASCII filename, and wrongly report NOT SHIPPED (fail-closed, but still wrong). Staging legitimately renames a
+# non-ASCII-named file before promotion, exactly like the ASCII case above. Must still read SHIPPED.
+test_vs_renamed_on_base_with_non_ascii_filename_is_shipped() {
+  vs_setup
+  printf 'feature\n' > "$VS_D/remote/café.txt"; vs_git add -A && vs_git commit -q -m "feature on staging"
+  local s; s=$(vs_git rev-parse HEAD)
+  vs_git mv café.txt renamed.txt && vs_git commit -q -m "rename café to renamed on staging"
+  vs_git checkout -q main
+  printf 'main moved on\n' > "$VS_D/remote/other.txt"; vs_git add -A && vs_git commit -q -m "unrelated main commit"
+  printf 'feature\n' > "$VS_D/remote/renamed.txt"; vs_git add -A && vs_git commit -q -m "release v1.3.0 (#20)
+
+* feature on staging (#7)"
+  VS_PR_TITLE="feature on staging" vs_pr 7 true "$s" added:café.txt
+  vs_run --no-deploy 7; local rc=$?
+  assert_eq "$rc" "0" "renamed non-ASCII filename on staging before promotion, same content under the new name on main: shipped" || { vs_cleanup; return 1; }
+  assert_contains "$VS_OUT" "#7: SHIPPED" "reports SHIPPED" || { vs_cleanup; return 1; }
+  vs_cleanup
+}
+
+# Parser robustness: the deleting/renaming commit on the base branch also touches an unrelated file in the SAME commit, so
+# rename_target's diff-tree -M output carries more than one entry (an "M a.txt" row alongside the "R feature.txt -> renamed.txt"
+# row — "a.txt" sorts before "feature.txt", so the non-rename row comes first). The read -d '' state machine must skip the
+# unrelated single-path entry and still find the rename among several rows, not just the first one. Must still read SHIPPED.
+test_vs_renamed_on_base_alongside_other_changes_in_same_commit_is_shipped() {
+  vs_setup
+  printf 'feature\n' > "$VS_D/remote/feature.txt"; vs_git add -A && vs_git commit -q -m "feature on staging"
+  local s; s=$(vs_git rev-parse HEAD)
+  vs_git mv feature.txt renamed.txt
+  printf 'a changed\n' > "$VS_D/remote/a.txt"
+  vs_git add -A && vs_git commit -q -m "rename feature to renamed on staging, alongside an unrelated a.txt edit"
+  vs_git checkout -q main
+  printf 'main moved on\n' > "$VS_D/remote/other.txt"; vs_git add -A && vs_git commit -q -m "unrelated main commit"
+  printf 'feature\n' > "$VS_D/remote/renamed.txt"; vs_git add -A && vs_git commit -q -m "release v1.4.0 (#20)
+
+* feature on staging (#7)"
+  VS_PR_TITLE="feature on staging" vs_pr 7 true "$s" added:feature.txt
+  vs_run --no-deploy 7; local rc=$?
+  assert_eq "$rc" "0" "rename shares a commit with an unrelated edit; the parser must still find it among several diff-tree rows: shipped" || { vs_cleanup; return 1; }
+  assert_contains "$VS_OUT" "#7: SHIPPED" "reports SHIPPED" || { vs_cleanup; return 1; }
+  vs_cleanup
+}
+
+# The base-branch fallback is gated on a main commit actually naming the PR (promoted_blob's exit status 2). Here main holds
+# the exact renamed-to content AND staging legitimately renamed the file (both of which, on their own, the fallback would
+# accept) — but NO main commit mentions PR 7 at all, so the fallback must never run and behaviour must stay exactly as
+# before #822: still NOT SHIPPED.
+test_vs_renamed_on_base_and_present_on_main_but_no_naming_commit_is_not_shipped() {
+  vs_setup
+  printf 'feature\n' > "$VS_D/remote/feature.txt"; vs_git add -A && vs_git commit -q -m "feature on staging"
+  local s; s=$(vs_git rev-parse HEAD)
+  vs_git mv feature.txt renamed.txt && vs_git commit -q -m "rename feature to renamed on staging"
+  vs_git checkout -q main
+  printf 'feature\n' > "$VS_D/remote/renamed.txt"; vs_git add -A && vs_git commit -q -m "add renamed.txt (unrelated to any PR)"
+  VS_PR_TITLE="feature on staging" vs_pr 7 true "$s" added:feature.txt
+  vs_run --no-deploy 7; local rc=$?
+  assert_eq "$rc" "1" "no main commit names (#7): the fallback never runs, even though main happens to hold the content" || { vs_cleanup; return 1; }
+  assert_contains "$VS_OUT" "NOT SHIPPED (feature.txt (absent on main))" "names the file" || { vs_cleanup; return 1; }
+  vs_cleanup
+}
+
+# A cherry-pick trailer names the PR but the picked commit is a no-op for this file (main already holds a LATER staging
+# rewrite of the same path from an earlier, unrelated sync) — promoted_blob skips it as "unchanged vs parent". The base
+# branch's own history shows the later rewrite came after the PR's commit, so it is moved on, not dropped.
+test_vs_cherry_pick_noop_because_main_already_has_a_later_rewrite_is_shipped() {
+  vs_setup; vs_multiline_base
+  sed -i.bak 's/^line12$/line12 changed by the PR/' "$VS_D/remote/a.txt" && rm -f "$VS_D/remote/a.txt.bak"
+  vs_git commit -q -am "feature on staging"
+  local s; s=$(vs_git rev-parse HEAD)
+  printf 'line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12 rewritten by staging\n' > "$VS_D/remote/a.txt"
+  vs_git commit -q -am "staging rewrites a.txt again"
+  vs_git checkout -q main
+  printf 'line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12 rewritten by staging\n' > "$VS_D/remote/a.txt"
+  vs_git commit -q -am "already synced a.txt from staging"
+  printf 'marker\n' > "$VS_D/remote/cp-marker.txt"; vs_git add -A
+  vs_git commit -q -am "cherry pick marker
+
+(cherry picked from commit $s)"
+  vs_pr 7 true "$s" modified:a.txt
+  vs_run --no-deploy 7; local rc=$?
+  assert_eq "$rc" "0" "main already holds a later staging rewrite of the same path: shipped" || { vs_cleanup; return 1; }
+  vs_cleanup
+}
+
+# #822 AC: a squash commit NAMES the PR by its title bullet (not a cherry-pick trailer) and does not carry the file at all
+# (the path does not exist on main yet) — the content later reaches main through a SEPARATE, non-naming commit that just
+# happens to match what staging had rewritten the file to. Shipped.
+test_vs_squash_by_title_lacks_file_later_plain_commit_adds_staging_rewrite_is_shipped() {
+  vs_setup
+  printf 'v1 by the PR\n' > "$VS_D/remote/newfile.txt"; vs_git add -A && vs_git commit -q -m "feature on staging"
+  local s; s=$(vs_git rev-parse HEAD)
+  printf 'v2 rewritten by staging\n' > "$VS_D/remote/newfile.txt"; vs_git commit -q -am "staging rewrites newfile.txt"
+  vs_git checkout -q main
+  printf 'squash marker\n' > "$VS_D/remote/squash-marker.txt"; vs_git add -A && vs_git commit -q -m "release v1.5.0 (#20)
+
+* feature on staging (#7)"
+  printf 'v2 rewritten by staging\n' > "$VS_D/remote/newfile.txt"; vs_git add -A && vs_git commit -q -m "unrelated later sync of newfile.txt"
+  VS_PR_TITLE="feature on staging" vs_pr 7 true "$s" added:newfile.txt
+  vs_run --no-deploy 7; local rc=$?
+  assert_eq "$rc" "0" "the naming squash lacked the file; a later plain commit's content matches staging's rewrite: shipped" || { vs_cleanup; return 1; }
+  vs_cleanup
+}
+
+# #822 negative (AC): the naming commit exists, but staging's later change that superseded the PR's content never reached
+# main at all — main still holds the PRE-PR version. in_history on the base branch must see "got" as an ancestor of "want"
+# (an earlier version) and refuse to call it moved on, exactly as it already does when checked against main's own history.
+test_vs_named_but_main_still_holds_the_pre_pr_version_is_not_shipped() {
+  vs_setup; vs_multiline_base
+  sed -i.bak 's/^line12$/line12 changed by the PR/' "$VS_D/remote/a.txt" && rm -f "$VS_D/remote/a.txt.bak"
+  vs_git commit -q -am "feature on staging"
+  local s; s=$(vs_git rev-parse HEAD)
+  printf 'line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12 superseded by staging\n' > "$VS_D/remote/a.txt"
+  vs_git commit -q -am "staging supersedes it again, never promoted"
+  vs_git checkout -q main
+  printf 'squash marker\n' > "$VS_D/remote/squash-marker.txt"; vs_git add -A && vs_git commit -q -m "release v1.6.0 (#20)
+
+* feature on staging (#7)"
+  VS_PR_TITLE="feature on staging" vs_pr 7 true "$s" modified:a.txt
+  vs_run --no-deploy 7; local rc=$?
+  assert_eq "$rc" "1" "main still holds the pre-PR version; staging's later change never reached main: not shipped" || { vs_cleanup; return 1; }
+  assert_contains "$VS_OUT" "NOT SHIPPED (a.txt (differs on main))" "names the file" || { vs_cleanup; return 1; }
+  vs_cleanup
+}
+
+# #822: in_history on the base branch alone only proves "got" is not an EARLIER version of "want" — it does not prove the base
+# branch ever produced "got" at all. Here main's content for a.txt is a main-only edit staging never held, before or after the
+# PR's commit; in_history(base) would pass (it just isn't found as an ancestor), so held_after must catch it.
+test_vs_main_only_content_never_held_by_base_is_not_shipped() {
+  vs_setup; vs_multiline_base
+  sed -i.bak 's/^line12$/line12 changed by the PR/' "$VS_D/remote/a.txt" && rm -f "$VS_D/remote/a.txt.bak"
+  vs_git commit -q -am "feature on staging"
+  local s; s=$(vs_git rev-parse HEAD)
+  vs_git checkout -q main
+  sed -i.bak 's/^line12$/line12 invented independently on main/' "$VS_D/remote/a.txt" && rm -f "$VS_D/remote/a.txt.bak"
+  vs_git commit -q -am "main's own independent edit, never on staging"
+  printf 'squash marker\n' > "$VS_D/remote/squash-marker.txt"; vs_git add -A && vs_git commit -q -m "release v1.7.0 (#20)
+
+* feature on staging (#7)"
+  VS_PR_TITLE="feature on staging" vs_pr 7 true "$s" modified:a.txt
+  vs_run --no-deploy 7; local rc=$?
+  assert_eq "$rc" "1" "main's content was never produced by the base branch at all: not shipped" || { vs_cleanup; return 1; }
+  assert_contains "$VS_OUT" "NOT SHIPPED (a.txt (differs on main))" "names the file" || { vs_cleanup; return 1; }
+  vs_cleanup
+}
+
+# Negative: the PR's change was reverted on staging (a real "Revert" commit, not a plain move) before any promotion; a later
+# main commit names the PR but does not carry the file. The base-branch fallback must see the revert and refuse to call it
+# moved on.
+test_vs_reverted_on_base_then_named_by_main_is_not_shipped() {
+  vs_setup
+  printf 'feature\n' > "$VS_D/remote/feature.txt"; vs_git add -A && vs_git commit -q -m "feature on staging (#7)"
+  local s; s=$(vs_git rev-parse HEAD)
+  vs_git revert --no-edit HEAD >/dev/null 2>&1
+  vs_git checkout -q main
+  printf 'main moved on\n' > "$VS_D/remote/other.txt"; vs_git add -A && vs_git commit -q -m "unrelated main commit"
+  printf 'something unrelated\n' > "$VS_D/remote/unrelated.txt"; vs_git add -A && vs_git commit -q -am "release v1.3.0 (#20)
+
+* feature on staging (#7)"
+  VS_PR_TITLE="feature on staging" vs_pr 7 true "$s" added:feature.txt
+  vs_run --no-deploy 7; local rc=$?
+  assert_eq "$rc" "1" "reverted on staging before promotion: not shipped" || { vs_cleanup; return 1; }
+  assert_contains "$VS_OUT" "NOT SHIPPED (feature.txt (absent on main))" "names the file" || { vs_cleanup; return 1; }
+  vs_cleanup
+}
+
+# code-reviewer (#824 fourth HIGH, 4th review cycle): the differs-branch fallback (in_history + held_after) proved only that
+# the base branch's own history ONCE held main's current content somewhere — it never checked whether the base branch had,
+# since then, reverted BACK to the PR's own content. Repro: main's own a.txt history is Y -> X -> (no-op naming squash,
+# doesn't touch a.txt) -> Y again, so main's CURRENT tip is Y; staging's own history is X (the PR's merge commit) -> Y
+# (staging moves on, matching main) -> X again (staging reverts back to the PR's original content). Staging's CURRENT tip is
+# X, disagreeing with main's Y, yet the old fallback (in_history passes: Y is not an ancestor of X's first appearance on
+# staging; held_after passes: staging once held Y) would read SHIPPED. Must read NOT SHIPPED.
+test_vs_base_reverted_to_pr_content_after_holding_mains_blob_is_not_shipped() {
+  vs_setup
+  vs_git checkout -q main
+  printf 'y content\n' > "$VS_D/remote/a.txt"; vs_git commit -q -am "sync Y on main"
+  printf 'x content\n' > "$VS_D/remote/a.txt"; vs_git commit -q -am "sync X on main"
+  printf 'squash marker\n' > "$VS_D/remote/squash-marker.txt"; vs_git add -A && vs_git commit -q -m "release v1.8.0 (#20)
+
+* feature on staging (#7)"
+  printf 'y content\n' > "$VS_D/remote/a.txt"; vs_git commit -q -am "sync Y on main again"
+  vs_git checkout -q staging
+  printf 'x content\n' > "$VS_D/remote/a.txt"; vs_git commit -q -am "feature on staging"
+  local s; s=$(vs_git rev-parse HEAD)
+  printf 'y content\n' > "$VS_D/remote/a.txt"; vs_git commit -q -am "staging moves on to y"
+  printf 'x content\n' > "$VS_D/remote/a.txt"; vs_git commit -q -am "staging reverts back to x"
+  VS_PR_TITLE="feature on staging" vs_pr 7 true "$s" modified:a.txt
+  vs_run --no-deploy 7; local rc=$?
+  assert_eq "$rc" "1" "staging reverted back to the PR's own content after once holding main's blob: not shipped" || { vs_cleanup; return 1; }
+  assert_contains "$VS_OUT" "NOT SHIPPED (a.txt (differs on main))" "names the file" || { vs_cleanup; return 1; }
+  vs_cleanup
+}
+
+# Positive mirror of the case above: staging moves on to main's content and STAYS there (no later reversion). Must still read
+# SHIPPED — staging legitimately running ahead of (or matching) main is not itself a problem.
+test_vs_base_moved_on_to_mains_blob_and_stays_is_shipped() {
+  vs_setup
+  vs_git checkout -q main
+  printf 'y content\n' > "$VS_D/remote/a.txt"; vs_git commit -q -am "sync Y on main"
+  printf 'x content\n' > "$VS_D/remote/a.txt"; vs_git commit -q -am "sync X on main"
+  printf 'squash marker\n' > "$VS_D/remote/squash-marker.txt"; vs_git add -A && vs_git commit -q -m "release v1.8.0 (#20)
+
+* feature on staging (#7)"
+  printf 'y content\n' > "$VS_D/remote/a.txt"; vs_git commit -q -am "sync Y on main again"
+  vs_git checkout -q staging
+  printf 'x content\n' > "$VS_D/remote/a.txt"; vs_git commit -q -am "feature on staging"
+  local s; s=$(vs_git rev-parse HEAD)
+  printf 'y content\n' > "$VS_D/remote/a.txt"; vs_git commit -q -am "staging moves on to y"
+  VS_PR_TITLE="feature on staging" vs_pr 7 true "$s" modified:a.txt
+  vs_run --no-deploy 7; local rc=$?
+  assert_eq "$rc" "0" "staging moved on to main's content and stayed there: shipped" || { vs_cleanup; return 1; }
+  vs_cleanup
+}
+
+# Pins the exact ordering semantics chosen (newest-first "which of want/got appears most recently", not "does want ever
+# reappear anywhere after got's first appearance"): staging oscillates X -> Y -> X -> Y and SETTLES on Y (main's content) as
+# its current tip. A naive "want must never reappear after got's first appearance" rule would wrongly fail this (X does
+# reappear, at the third commit, after Y's first appearance at the second) even though staging's own CURRENT state agrees
+# with main. Must read SHIPPED.
+test_vs_base_oscillates_and_settles_on_mains_blob_is_shipped() {
+  vs_setup
+  vs_git checkout -q main
+  printf 'y content\n' > "$VS_D/remote/a.txt"; vs_git commit -q -am "sync Y on main"
+  printf 'x content\n' > "$VS_D/remote/a.txt"; vs_git commit -q -am "sync X on main"
+  printf 'squash marker\n' > "$VS_D/remote/squash-marker.txt"; vs_git add -A && vs_git commit -q -m "release v1.8.0 (#20)
+
+* feature on staging (#7)"
+  printf 'y content\n' > "$VS_D/remote/a.txt"; vs_git commit -q -am "sync Y on main again"
+  vs_git checkout -q staging
+  printf 'x content\n' > "$VS_D/remote/a.txt"; vs_git commit -q -am "feature on staging"
+  local s; s=$(vs_git rev-parse HEAD)
+  printf 'y content\n' > "$VS_D/remote/a.txt"; vs_git commit -q -am "staging moves to y"
+  printf 'x content\n' > "$VS_D/remote/a.txt"; vs_git commit -q -am "staging reverts to x"
+  printf 'y content\n' > "$VS_D/remote/a.txt"; vs_git commit -q -am "staging moves to y again, settling there"
+  VS_PR_TITLE="feature on staging" vs_pr 7 true "$s" modified:a.txt
+  vs_run --no-deploy 7; local rc=$?
+  assert_eq "$rc" "0" "staging oscillated but its current tip agrees with main: shipped" || { vs_cleanup; return 1; }
+  vs_cleanup
+}
+
+# Holistic-pass fix (same ordering principle as the fourth HIGH above, applied to the rename branch — not separately flagged
+# by the code-reviewer, found by re-reading every "moved on" verdict in this script): rename_target's own diff-tree -M proof
+# only confirms THIS commit paired the old path with some new path — it never checked that the content THAT commit actually
+# moved there is the PR's own content. Staging plain-deletes feature.txt (the PR's content, X, not a rename), re-adds a
+# DIFFERENT, unrelated feature.txt (content W), then renames THAT one to renamed.txt — a genuine rename, but of W, not X.
+# Main independently (and coincidentally, via an unrelated commit) holds renamed.txt = X. The old per-call-site check
+# (`blob_at ref new_path == want`) only reads main's CURRENT state, which happens to match by coincidence; it never tied the
+# rename's own commit to the content it actually carried. Must read NOT SHIPPED.
+test_vs_renamed_on_base_but_rename_carried_unrelated_content_is_not_shipped() {
+  vs_setup
+  printf 'x content\n' > "$VS_D/remote/feature.txt"; vs_git add -A && vs_git commit -q -m "feature on staging"
+  local s; s=$(vs_git rev-parse HEAD)
+  vs_git rm -q feature.txt && vs_git commit -q -m "staging drops the original feature.txt (not a rename)"
+  printf 'w content\n' > "$VS_D/remote/feature.txt"; vs_git add -A && vs_git commit -q -m "staging adds an unrelated new feature.txt"
+  vs_git mv feature.txt renamed.txt && vs_git commit -q -m "staging renames the unrelated file"
+  vs_git checkout -q main
+  printf 'main moved on\n' > "$VS_D/remote/other.txt"; vs_git add -A && vs_git commit -q -m "unrelated main commit"
+  printf 'x content\n' > "$VS_D/remote/renamed.txt"; vs_git add -A && vs_git commit -q -am "release v1.9.0 (#20)
+
+* feature on staging (#7)"
+  VS_PR_TITLE="feature on staging" vs_pr 7 true "$s" added:feature.txt
+  vs_run --no-deploy 7; local rc=$?
+  assert_eq "$rc" "1" "staging's rename carried an unrelated file's content, not the PR's: main's match at the new path is coincidence: not shipped" || { vs_cleanup; return 1; }
+  assert_contains "$VS_OUT" "NOT SHIPPED (feature.txt (absent on main))" "names the file" || { vs_cleanup; return 1; }
+  vs_cleanup
+}
+
+# code-reviewer (#824 MEDIUM): a failed fetch of the base branch must fail closed, not fall back to a tip an EARLIER run
+# already cached under the same ref name in the shared git-dir cache. First run: staging legitimately moved on to main's
+# content (the positive-mirror shape above) — shipped, and the fetch populates $VS_GIT_DIR's cache of
+# refs/remotes/origin/staging. Second run: the remote's "staging" branch is renamed away (standing in for a transient fetch
+# failure — this run genuinely cannot re-fetch it), but the cache from the first run still holds the old, now-stale tip.
+# Must now read NOT SHIPPED (fail closed), not silently trust the stale cached tip and still say SHIPPED.
+test_vs_base_fetch_failure_does_not_trust_a_stale_cached_tip() {
+  vs_setup
+  vs_git checkout -q main
+  printf 'y content\n' > "$VS_D/remote/a.txt"; vs_git commit -q -am "sync Y on main"
+  printf 'x content\n' > "$VS_D/remote/a.txt"; vs_git commit -q -am "sync X on main"
+  printf 'squash marker\n' > "$VS_D/remote/squash-marker.txt"; vs_git add -A && vs_git commit -q -m "release v1.8.0 (#20)
+
+* feature on staging (#7)"
+  printf 'y content\n' > "$VS_D/remote/a.txt"; vs_git commit -q -am "sync Y on main again"
+  vs_git checkout -q staging
+  printf 'x content\n' > "$VS_D/remote/a.txt"; vs_git commit -q -am "feature on staging"
+  local s; s=$(vs_git rev-parse HEAD)
+  printf 'y content\n' > "$VS_D/remote/a.txt"; vs_git commit -q -am "staging moves on to y"
+  VS_PR_TITLE="feature on staging" vs_pr 7 true "$s" modified:a.txt
+  vs_run --no-deploy 7; local rc=$?
+  assert_eq "$rc" "0" "first run: staging reachable, legitimately matches main: shipped (populates the cache)" || { vs_cleanup; return 1; }
+  vs_git branch -m staging staging-renamed
+  vs_run --no-deploy 7; rc=$?
+  assert_eq "$rc" "1" "second run: staging cannot be refetched; must not trust the stale cached tip" || { vs_cleanup; return 1; }
+  assert_contains "$VS_OUT" "NOT SHIPPED (a.txt (cannot refresh base branch staging))" "names the reason" || { vs_cleanup; return 1; }
+  vs_cleanup
+}
+
+# A fetch failure for one PR's base branch must not affect a DIFFERENT file that does not need the fallback at all (its
+# content matches main directly through a cherry-pick) — fail-closed is scoped to files that actually consult the base branch.
+test_vs_base_fetch_failure_does_not_affect_a_pr_that_needs_no_fallback() {
+  vs_setup
+  local s; s=$(vs_staging_feature)
+  vs_git checkout -q main && vs_git cherry-pick "$s" >/dev/null 2>&1
+  vs_pr 1 true "$s" added:feature.txt
+  # vs_pr 1's base.ref defaults to "staging" (vs_pr's VS_PR_BASE default), but its file matches main directly via the
+  # cherry-pick; promoted_blob/in_history/the fallback are never consulted for it. Rename "staging" away so its one fetch
+  # attempt this run fails.
+  vs_git branch -m staging staging-renamed
+  vs_run --no-deploy 1; local rc=$?
+  assert_eq "$rc" "0" "the file matches main directly; an unfetchable base branch is irrelevant to it: shipped" || { vs_cleanup; return 1; }
   vs_cleanup
 }
 
@@ -500,6 +970,27 @@ run_test test_vs_not_on_main_beats_deploy_pending_in_the_exit_code
 run_test test_vs_reverted_pr_is_not_shipped
 run_test test_vs_squash_promoted_with_different_base_is_shipped
 run_test test_vs_cherry_pick_x_onto_a_different_base_is_shipped
+run_test test_vs_renamed_on_base_before_promotion_is_shipped
+run_test test_vs_renamed_on_base_but_never_promoted_is_not_shipped
+run_test test_vs_renamed_on_base_then_readded_is_not_shipped
+run_test test_vs_rename_reverted_on_base_is_not_shipped
+run_test test_vs_plain_deletion_on_base_coincidental_blob_on_main_is_not_shipped
+run_test test_vs_plain_deletion_on_base_coincidental_nonempty_blob_on_main_is_not_shipped
+run_test test_vs_rename_detection_on_two_empty_files_is_not_shipped
+run_test test_vs_renamed_on_base_with_non_ascii_filename_is_shipped
+run_test test_vs_renamed_on_base_alongside_other_changes_in_same_commit_is_shipped
+run_test test_vs_renamed_on_base_and_present_on_main_but_no_naming_commit_is_not_shipped
+run_test test_vs_cherry_pick_noop_because_main_already_has_a_later_rewrite_is_shipped
+run_test test_vs_squash_by_title_lacks_file_later_plain_commit_adds_staging_rewrite_is_shipped
+run_test test_vs_named_but_main_still_holds_the_pre_pr_version_is_not_shipped
+run_test test_vs_main_only_content_never_held_by_base_is_not_shipped
+run_test test_vs_reverted_on_base_then_named_by_main_is_not_shipped
+run_test test_vs_base_reverted_to_pr_content_after_holding_mains_blob_is_not_shipped
+run_test test_vs_base_moved_on_to_mains_blob_and_stays_is_shipped
+run_test test_vs_base_oscillates_and_settles_on_mains_blob_is_shipped
+run_test test_vs_renamed_on_base_but_rename_carried_unrelated_content_is_not_shipped
+run_test test_vs_base_fetch_failure_does_not_trust_a_stale_cached_tip
+run_test test_vs_base_fetch_failure_does_not_affect_a_pr_that_needs_no_fallback
 run_test test_vs_staging_only_pr_on_a_moved_on_file_is_not_shipped
 run_test test_vs_pr_number_must_match_exactly
 run_test test_vs_pr_number_in_a_commit_body_only_is_not_shipped
