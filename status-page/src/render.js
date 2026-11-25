@@ -1426,7 +1426,7 @@ function renderStory() {
       <li><strong>Someone classifies it.</strong> The feedback-form and Sentry paths go through the <code>intake</code> agent first, which reads it, decides bug vs. idea vs. duplicate vs. noise, and applies labels. Every other path — JP direct, the backlog scan, the adjudicator's own ticket — skips intake entirely and goes straight to <code>product-manager</code>, which classifies and labels it the same way intake would have.</li>
       <li><strong>Labels decide the lane.</strong> See "What intake decides, and where it lands" just below for the exact mapping. In short: a clear bug usually ends up in the Fast lane; anything bigger, unclear, or needing a spec goes through product-manager's own full review before a lane is picked.</li>
       <li><strong>The lane does the work.</strong> The full lane adds design and architecture gates where a ticket needs them, then locks in tests before the developer builds; the fast lane skips those gates and the developer works as a single loop: regression test first, run the checks, self-review, then open the PR. Both end in a code review.</li>
-      <li><strong>It ships.</strong> Every lane finishes at the same release step: the deployer merges once both reviewers pass, and a risky-list change (a destructive database change, for instance) still waits on JP's own go-ahead — everything else goes out on its own.</li>
+      <li><strong>It ships.</strong> Every lane finishes at the same release step: the deployer merges once both reviewers pass, and a risky-list change (one the app repo's <code>.github/release-routing.txt</code> routes to staging) still waits on JP's own go-ahead — everything else goes out on its own.</li>
     </ol>
   </section>`;
 }

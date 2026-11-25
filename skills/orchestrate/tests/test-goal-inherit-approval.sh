@@ -46,7 +46,7 @@ dgi_line() {
 }
 
 DGI_GATES=("production" "spending money" "third-party systems of record" "deleting data" "external communications" \
-           "private artefact" "infra" "mockup" "risky-list")
+           "private artefact" "infra" "mockup" "release-routing.txt")
 
 # ------------------------------------------------------------------ AC1: product-manager.md
 
