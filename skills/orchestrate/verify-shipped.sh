@@ -17,13 +17,22 @@
 # PLUS main must actually hold content the base branch itself produced for this file (a rename: git's OWN rename detection
 # (diff-tree -M) on the base branch's deleting commit must name a new path, and that exact new path must hold the blob on main —
 # a blob merely existing SOMEWHERE in main's tree is not proof, since two unrelated identical blobs (e.g. two empty files) could
-# coincide and make a genuine drop read as shipped; a rewrite: the SAME path's current main blob somewhere in the base branch's
-# OWN history of that path) — the base branch merely moving the file on is not by itself proof the move reached main. The rename
+# coincide and make a genuine drop read as shipped, AND the rename's own commit must itself show the new path holding the PR's
+# content right after the rename (#824 fourth-cycle holistic fix) — a base branch that plain-deleted the PR's file and only
+# LATER renamed some OTHER, unrelated file to the same new path must not borrow a coincidental match on main; a rewrite: the
+# SAME path's current main blob somewhere in the base branch's OWN history of that path, confirmed ORDERED (superseded, below)
+# not just present) — the base branch merely moving the file on is not by itself proof the move reached main. The rename
 # case ALSO requires the old path to be genuinely absent on the base branch's CURRENT tip, not just absent at the deleting
 # commit's own history (#824 third HIGH): the base branch re-adding the old path later, or `git revert`ing the rename commit
 # (itself a rename back, so it is not the "last deletion commit" the history check inspects), would otherwise read as shipped
-# even though the base branch currently disagrees with main. When no main commit names the PR at all, behaviour is unchanged
-# (still not shipped; the base branch is not consulted).
+# even though the base branch currently disagrees with main. A rewrite (content differs rather than the path moving) is proven
+# with `in_history` (main's blob is not an ancestor that pre-dates the PR's content) PLUS `superseded` (the base branch's own
+# history, read newest-first, must reach main's blob no later than it last reaches the PR's own content — #824 fourth HIGH,
+# code-reviewer: a base branch that moved past the PR's content and then reverted BACK to it is not "moved on", even though it
+# once held main's blob too). A failed fetch of the base branch (transient network error, or the branch has been deleted/renamed
+# since an earlier run cached it) never falls back to a stale cached tip (#824 MEDIUM): the base-branch fallback is refused for
+# that PR's files that need it, same fail-closed shape as the top-level base-branch fetch failing closed via `die`. When no
+# main commit names the PR at all, behaviour is unchanged (still not shipped; the base branch is not consulted).
 # The latest prod deploy run on main (workflow file deploy.yml or named "Deploy to Vercel") must be green AND be for a commit that already carries the PR's files.
 #
 # Output, one line per PR:   <owner/repo>#<N>: SHIPPED | NOT SHIPPED (<file>) | DEPLOY PENDING (<why>) | DEPLOY FAILED (<why>)
@@ -179,13 +188,22 @@ promoted_blob() {
 
 # rename_target <ref> <path> <want blob> — the commit on <ref> that deleted <path> (the same commit deleted_later inspects): does
 # THAT commit's OWN diff (git's -M rename detection, run on the deleting commit itself) show a rename FROM <path>? Prints the new
-# path on stdout when yes; nothing (status 1) when the deletion is a plain drop or -M finds no match. This is the #822 HIGH fix
-# (code-reviewer): "the blob exists somewhere in main" was not proof of a rename — two unrelated identical blobs (e.g. two empty
-# files, or duplicate boilerplate) could coincide and make a genuinely-dropped file read as shipped.
+# path on stdout when yes; nothing (status 1) when the deletion is a plain drop, -M finds no match, or (see below) the rename did
+# not actually carry <want blob>. This is the #822 HIGH fix (code-reviewer): "the blob exists somewhere in main" was not proof of
+# a rename — two unrelated identical blobs (e.g. two empty files, or duplicate boilerplate) could coincide and make a
+# genuinely-dropped file read as shipped.
 # <want blob> is the content the caller needs this rename to prove moved on: when it is $EMPTY_BLOB this function always refuses
 # (#824 second HIGH, code-reviewer) — git's -M detector treats any two empty files as 100% similar (there is no content to
 # differ), so a commit that deletes one empty file and adds a different, unrelated empty file reads as a rename even though the
 # two files are unrelated; "same empty content" is never proof a deletion was really a rename.
+# The new path's blob AT THE DELETING COMMIT ITSELF must equal <want blob> (#824 fourth-cycle holistic fix): git's -M pairing
+# only proves THIS commit paired <path> with some new path, not that the content it carried there was the PR's own content — a
+# base branch that plain-deleted <path> (its own non-revert commit) and only LATER, in a SEPARATE commit, renamed some OTHER,
+# unrelated file onto that same new path would otherwise pass merely because main's current blob at the new path happens to
+# equal <want blob> by coincidence (the very gap the #822 HIGH fix closed for "anywhere in main", reopened here one commit over
+# for "anywhere in the new path's own history", since the caller's own tip-blob check on <ref> only confirms the CURRENT state,
+# not that the rename event itself is what produced <want blob>). Checking the blob at the deleting commit itself ties the
+# rename's own diff to the content it actually moved.
 # Uses -z (NUL-terminated, unquoted) rather than the default --name-status, whose quoting of non-ASCII paths (e.g. a wrapped,
 # escaped path) would otherwise make a REAL rename of a non-ASCII filename fail to match <path> (#824 LOW). Parsed with a plain
 # `read -d ''` state machine (not `mapfile -d`, a bash 4.4+ builtin) to stay bash 3.2 compatible, like the rest of this file.
@@ -200,25 +218,56 @@ rename_target() {
       path) state=status ;;
       old) old=$tok; state=new ;;
       new) new=$tok; state=status
-           [ "$old" = "$path" ] && { printf '%s\n' "$new"; return 0; } ;;
+           if [ "$old" = "$path" ]; then
+             [ "$(blob_at "$d" "$new")" = "$want" ] || return 1
+             printf '%s\n' "$new"; return 0
+           fi ;;
     esac
   done < <(git_ diff-tree -r -M -z --name-status "$d^" "$d" 2>/dev/null)
   return 1
 }
 
-# held_after <ref> <path> <blob> — does <ref>'s OWN history of <path> hold <blob> at some commit? (used with the base branch:
-# confirms the base branch itself produced this content for this path, not just that it isn't provably older than the PR's version.)
-held_after() {
-  hist "$1" "$2" | awk -v b="$3" '{ if ($2 == b) f = 1 } END { exit !f }'
+# superseded <ref> <path> <want blob> <got blob> — scanning <ref>'s OWN history of <path> children-before-parents (`--topo-order`,
+# NOT calendar/commit-date order, which `in_history`'s own header above already notes is "arbitrary across parallel branches" —
+# plain `git log`'s default newest-commit-date-first order is not reliably "last changed" across merges), is the FIRST of
+# <want>/<got> encountered <got>, not <want>? Confirms the base branch itself produced <got> for this path (not just that <got>
+# isn't provably older than <want> — that half is `in_history`'s job, which walks the OTHER direction, from <want>'s first
+# appearance backward) AND that the base branch has not, since producing <got>, reverted BACK to <want> (the PR's own content)
+# — replaces a bare "does <ref> ever hold <got> anywhere" (the prior `held_after`), which said nothing about order and would
+# wrongly pass a base branch that moved past <want> and then reverted to it (#824 fourth HIGH, code-reviewer): base holds
+# <got>, main's current blob, is a real detour, but base's own history AFTER that detour shows a later return to <want> — main
+# is now stale relative to base's own timeline, not "moved on" from it. Deliberately NOT "any later <want> anywhere
+# disqualifies": a base branch that oscillates and settles back on <got> (e.g. <want> -> <got> -> <want> -> <got>, base's
+# CURRENT tip is <got>) must still pass — only the MOST RECENT of the two blobs to appear matters, which is exactly what
+# scanning children-before-parents and stopping at the first match gives. Neither blob appearing within the window `hist` caps
+# at (200 commits) fails closed.
+superseded() {
+  local ref=$1 path=$2 want=$3 got=$4 c b
+  while read -r c b; do
+    [ "$b" = "$got" ] && return 0
+    [ "$b" = "$want" ] && return 1
+  done <<EOF
+$(hist "$ref" "$path" --topo-order)
+EOF
+  return 1
 }
+
+# base_ref_fetch_failed <branch name> — did the per-run fetch of <branch name> (done once per run, see the main loop below) fail?
+# Tracked separately from "already fetched" so a failure is remembered for the rest of the run (#824 MEDIUM, code-reviewer): a
+# transient fetch error must not silently fall back to whatever tip a PRIOR run already cached in $GD under the same ref name —
+# that would trust stale content exactly where freshness is the whole point of the third-HIGH and fourth-HIGH tip/order checks.
+BASE_REFS_FAILED=""
+base_ref_fetch_failed() { case " $BASE_REFS_FAILED " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
 # base_ref_of <branch name> -> a usable ref for <branch name> on stdout (the already-fetched refs/remotes/origin/<name>, or
 # $MAIN when it IS $BASE), or nothing with status 1 when it cannot be resolved (never fetches: the main loop fetches each
-# PR_BASE_REF once, before check_at runs, so this stays a cheap local lookup).
+# PR_BASE_REF once, before check_at runs, so this stays a cheap local lookup). Refuses (even when a stale ref object is still
+# present in the cache from an earlier run) when this run's own fetch of <branch name> failed — see base_ref_fetch_failed.
 base_ref_of() {
   local b=$1
   [ -n "$b" ] || return 1
   if [ "$b" = "$BASE" ]; then printf '%s' "$MAIN"; return 0; fi
+  base_ref_fetch_failed "$b" && return 1
   have "refs/remotes/origin/$b" || return 1
   printf '%s' "refs/remotes/origin/$b"
 }
@@ -255,12 +304,22 @@ check_at() {
            elif [ "$named_only" = 1 ] && base_ref=$(base_ref_of "$PR_BASE_REF") && [ -z "$(blob_at "$base_ref" "$path")" ] &&
                 deleted_later "$base_ref" "$path" "$want" &&
                 new_path=$(rename_target "$base_ref" "$path" "$want") && [ -n "$new_path" ] && [ "$(blob_at "$ref" "$new_path")" = "$want" ]; then :
+           elif [ "$named_only" = 1 ] && base_ref_fetch_failed "$PR_BASE_REF"; then
+                printf '%s (cannot refresh base branch %s)' "$path" "$PR_BASE_REF"; return 1
            else printf '%s (absent on %s)' "$path" "$BASE"; return 1
            fi
          else
            if [ "$got" = "$want" ]; then :
            elif in_history "$ref" "$path" "$want" "$got"; then :
-           elif [ "$named_only" = 1 ] && base_ref=$(base_ref_of "$PR_BASE_REF") && in_history "$base_ref" "$path" "$want" "$got" && held_after "$base_ref" "$path" "$got"; then :
+           # #824 fourth HIGH (code-reviewer): `in_history` alone only proves <got> is not an ancestor that pre-dates <want>'s
+           # first appearance on the base branch — it says nothing about what happened to the file AFTER the base branch
+           # produced <got>. A base branch that moved on to <got> and then reverted BACK to <want> (the PR's own content) would
+           # still pass `in_history`, and the prior `held_after` (bare "does <got> ever appear") would also pass, since <got>
+           # genuinely did appear at some point — just not most recently. `superseded` (newest-first scan) adds the missing
+           # ordering: main's blob must still be the LAST of the two the base branch actually settled on.
+           elif [ "$named_only" = 1 ] && base_ref=$(base_ref_of "$PR_BASE_REF") && in_history "$base_ref" "$path" "$want" "$got" && superseded "$base_ref" "$path" "$want" "$got"; then :
+           elif [ "$named_only" = 1 ] && base_ref_fetch_failed "$PR_BASE_REF"; then
+                printf '%s (cannot refresh base branch %s)' "$path" "$PR_BASE_REF"; return 1
            else printf '%s (differs on %s)' "$path" "$BASE"; return 1
            fi
          fi ;;
@@ -316,9 +375,16 @@ for n in $PRS; do
   PR_TITLE=$(printf '%s' "$pj" | jq -r '.title // empty')
   PR_BASE_REF=$(printf '%s' "$pj" | jq -r '.base.ref // empty')
   if [ -n "$PR_BASE_REF" ] && [ "$PR_BASE_REF" != "$BASE" ]; then
-    case " $BASE_REFS_FETCHED " in
+    # #824 MEDIUM (code-reviewer): dedupe against BOTH lists, not just BASE_REFS_FETCHED — a ref whose fetch already failed
+    # this run must stay refused for every later PR that shares it too, not get silently retried (or, worse, resolved via
+    # `have()` against a stale object some EARLIER run already cached under this ref name).
+    case " $BASE_REFS_FETCHED $BASE_REFS_FAILED " in
       *" $PR_BASE_REF "*) ;;
-      *) git_fetch "+refs/heads/$PR_BASE_REF:refs/remotes/origin/$PR_BASE_REF"; BASE_REFS_FETCHED="$BASE_REFS_FETCHED $PR_BASE_REF" ;;
+      *) if git_fetch "+refs/heads/$PR_BASE_REF:refs/remotes/origin/$PR_BASE_REF"; then
+           BASE_REFS_FETCHED="$BASE_REFS_FETCHED $PR_BASE_REF"
+         else
+           BASE_REFS_FAILED="$BASE_REFS_FAILED $PR_BASE_REF"
+         fi ;;
     esac
   fi
   if [ "$merged" != true ] || [ -z "$mc" ]; then echo "$tag: NOT SHIPPED (PR is not merged)"; NS=1; continue; fi
