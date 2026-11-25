@@ -54,11 +54,11 @@ describe('AC1: JP decision quoted verbatim in tracked text', () => {
   it.each([
     ['CLAUDE.md', () => claudeMd],
     ['agents/delivery-lead.md', () => deliveryLead],
-  ])('%s says risky-list (destructive DB) changes stay JP-only', (_n, get) => {
+  ])('%s says risky-list changes stay JP-only and points at release-routing.txt as the source of truth (#825)', (_n, get) => {
     const ok = sentences(get()).some(
-      (x) => /on the risky list/i.test(x) && !/not on the risky list/i.test(x) && /destructive database changes/i.test(x) && /stays? JP-only/i.test(x),
+      (x) => /on the risky list/i.test(x) && !/not on the risky list/i.test(x) && /release-routing\.txt/.test(x) && /stays? (fully )?JP-only/i.test(x),
     );
-    expect(ok, 'sentence: a change on the risky list stays JP-only').toBe(true);
+    expect(ok, 'sentence: a change on the risky list (per release-routing.txt) stays JP-only').toBe(true);
   });
 
   it.each([
@@ -226,5 +226,56 @@ describe('#215: sessions run the automatic bump script instead of choosing a ver
 
   it('releases paragraph keeps the pinned literals', () => {
     for (const lit of ['package.json', 'version bump', 'vX.Y.Z', 'stamp-release', 'write-once', 'never hand-edit']) expect(rel).toContain(lit);
+  });
+});
+
+describe('#825: pipeline text carries no copy of the risky-list categories, only a pointer to release-routing.txt', () => {
+  const agentFiles = readdirSync(join(root, 'agents')).filter((f) => f.endsWith('.md')).map((f) => `agents/${f}`);
+
+  it.each(agentFiles)('%s has no inline numbered category list (old wording gone)', (f) => {
+    const t = read(f);
+    expect(t).not.toContain('(8) timesheet');
+    expect(t).not.toContain('background jobs, queues, schedulers');
+  });
+
+  it.each(['CLAUDE.md', 'README.md', 'living.md', 'skills/ticket-intake/SKILL.md', 'skills/supabase-prod-access/SKILL.md'])(
+    '%s has no inline numbered category list',
+    (f) => {
+      const t = read(f);
+      expect(t).not.toContain('(8) timesheet');
+      expect(t).not.toContain('background jobs, queues, schedulers');
+      expect(t).not.toMatch(/categories 1.8/i);
+    },
+  );
+
+  it('delivery-lead.md names release-routing.txt as the source of truth', () => {
+    expect(deliveryLead).toMatch(/release-routing\.txt/);
+    expect(deliveryLead).toMatch(/single source of truth/i);
+  });
+
+  it.each([
+    ['CLAUDE.md', () => claudeMd],
+    ['agents/deployer.md', () => read('agents/deployer.md')],
+    ['agents/orchestrator.md', () => read('agents/orchestrator.md')],
+    ['agents/product-manager.md', () => read('agents/product-manager.md')],
+    ['README.md', () => read('README.md')],
+    ['skills/ticket-intake/SKILL.md', () => read('skills/ticket-intake/SKILL.md')],
+    ['skills/supabase-prod-access/SKILL.md', () => read('skills/supabase-prod-access/SKILL.md')],
+  ])('%s points at each app repo\'s release-routing.txt', (_n, get) => {
+    expect(get()).toMatch(/release-routing\.txt/);
+  });
+
+  it('delivery-lead.md merges once every staging-route ticket has JP\'s go, never waits on non-risky tickets, never hands the merge to a session', () => {
+    const ok = sentences(deliveryLead).some(
+      (x) =>
+        /every (risky-list|staging-route)/i.test(x) &&
+        /carries? JP's `go`/.test(x) &&
+        /without waiting for a go marker/i.test(x) &&
+        /never hand/i.test(x) &&
+        /interactive session/i.test(x),
+    );
+    expect(ok, 'sentence: merge on risky-ticket go, no wait on non-risky tickets, no hand-off').toBe(true);
+    expect(deliveryLead).toMatch(/2026-11-24\/25/);
+    expect(deliveryLead).toMatch(/#2940/);
   });
 });

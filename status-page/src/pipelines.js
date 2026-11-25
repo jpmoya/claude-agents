@@ -229,7 +229,7 @@ export const PIPELINES = [
         name: "JP-only",
         when: { label: "risky list" },
         inputs: [
-          "Risky-list change (destructive DB change, etc.)",
+          "Risky-list change (routed to staging by release-routing.txt)",
           "JP's explicit go",
         ],
       },

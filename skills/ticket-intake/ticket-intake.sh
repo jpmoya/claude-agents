@@ -12,7 +12,7 @@
 #       --none:    no project (standalone / feedback goal), then agent-go.
 #       --no-go "<reason>": do NOT add agent-go (history-only ticket; reason required, logged).
 #   agent-go is LAUNCH permission only: it never answers a JP-only gate (production, spending money, third-party systems of record,
-#   deleting data, external communications, access, infra prod go, mockup approvals, risky-list migrations) — those gates still stop the run.
+#   deleting data, external communications, access, infra prod go, mockup approvals, anything the app repo's .github/release-routing.txt routes to staging) — those gates still stop the run.
 #
 # Never touches the direct-route repo (DIRECT_ROUTE_REPOS: jpmoya/claude-agents) and never adds agent-go in Business-Intelligence
 # (JP adds that one himself). Exit: 0 done / nothing to do, 2 refused (bad input, unregistered project), 3 usage or tooling,

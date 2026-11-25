@@ -39,7 +39,7 @@ curl -s "https://api.supabase.com/v1/projects/ywwnprpncqrqfiskmoot/database/quer
   -d '{"query":"select count(*) from public.visits;"}'
 ```
 
-Only applying a change (not reading) to production is governed by the ops tool repo's own migration policy and JP-approval rules (destructive DDL, risky list, etc. — see `~/dev/benjis-ops-tool/CLAUDE.md` "Database Standards" / "Migration policy"). This skill is about *how to reach* production, not about when you're allowed to.
+Only applying a change (not reading) to production is governed by the ops tool repo's own migration policy and JP-approval rules (destructive DDL, the risky list in `.github/release-routing.txt`, etc. — see `~/dev/benjis-ops-tool/CLAUDE.md` "Database Standards" / "Migration policy"). This skill is about *how to reach* production, not about when you're allowed to.
 
 ## Recording an apply in the migration ledger
 

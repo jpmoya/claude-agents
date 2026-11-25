@@ -192,6 +192,9 @@ describe("content (AC5) — seven items from the ticket", () => {
     );
     expect(text).toMatch(/risky/i);
     expect(text).toMatch(/JP/);
+    // #825: points at the routing file, no inline category example
+    expect(text).toMatch(/release-routing\.txt/);
+    expect(text).not.toMatch(/destructive DB/i);
   });
 
   it("places conditional stages behind their condition and keeps the fast lane free of designers/test-writer", () => {

@@ -60,7 +60,7 @@ Exit 0 = done (or already done); 2 = refused (not a registered goal's project; t
 ## What agent-go means here (read before adding it)
 
 - **Always added, whatever the goal's go.** A ticket in a go-true goal would inherit approval anyway; for a **go-false** goal or no goal, JP asking for the ticket to be logged is the instruction to work it, so `agent-go` is still added. Tickets in a goal are worked by the goal's delivery lead (the supervisor's shared dispatch skips goal tickets); standalone ones are dispatched by the supervisor.
-- **agent-go is launch permission only.** It never answers a JP-only gate: production (merge, deploy, promotion), spending money, third-party systems of record, deleting data, external communications, where a private artefact is stored / who gets access, every infra prod `go`, mockup approvals, risky-list database changes. Those gates still stop the run and still wait for JP's own `**[jp] GO**` / `**[jp] MOCKUPS APPROVED**`. Never post those on his behalf from this skill.
+- **agent-go is launch permission only.** It never answers a JP-only gate: production (merge, deploy, promotion), spending money, third-party systems of record, deleting data, external communications, where a private artefact is stored / who gets access, every infra prod `go`, mockup approvals, any change the app repo's `.github/release-routing.txt` routes to staging. Those gates still stop the run and still wait for JP's own `**[jp] GO**` / `**[jp] MOCKUPS APPROVED**`. Never post those on his behalf from this skill.
 - **Not for the direct-route repo** (`jpmoya/claude-agents`) and **not for Business-Intelligence** (above).
 
 ## Final line to JP
