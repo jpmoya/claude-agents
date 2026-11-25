@@ -290,6 +290,10 @@ RCFACTS
         fi
       fi
     fi
+    # #827: a held ticket whose NEWEST routing marker is JP's relayed `**[jp] GO**` (the gate before it was a machine-class
+    # BLOCKED held_answer does not relay) is shipped by the interactive session's promotion, not the orchestrator: label it
+    # jp_go so the status page stops calling it "paused, no one on it" while the GO is fresh. A fixed label, never comment text.
+    if [ -z "$reason" ] && [ "$state" = "held" ] && [ "$marker" = "GO" ]; then reason="jp_go"; fi
     # #780: when JP's answer to the gate is on the issue and the supervisor has not relaunched on it yet (its loop-guard id in
     # orch-<rk>.answered is lower), the answer's createdAt: the status page's "answered, pending within grace" clock. Same detector
     # as the supervisor's relaunch (held_answer). A fixed-format timestamp only, never comment text.

@@ -32,6 +32,7 @@ const HOST_KEYS = ['mac', 'vm'];
 const HOST_LABELS = { mac: 'Mac', vm: 'VM' };
 const FINISHED_PARKED = ['auto_retry', 'out_of_scope']; // the supervisor owns an auto-retry; an out-of-scope repo is not ours to run
 const ANSWER_MARKERS = ['DECISION', 'JP CONFIRMED'];
+export const JP_GO_GRACE_HOURS = 24; // #827: a held ticket whose newest marker is JP's relayed GO is owned by the session's promotion this long, then it counts as paused again
 
 function epoch(iso) {
   const ms = typeof iso === 'string' ? Date.parse(iso) : NaN;
@@ -189,6 +190,11 @@ function unownedAlert(liveHosts, nowEpochSecs) {
     const at = epoch(run.answered_at);
     return at !== null && nowEpochSecs - at <= ANSWER_GRACE_MINUTES * 60;
   };
+  const goFresh = (run) => {
+    if (run.parked_reason !== 'jp_go') return false;
+    const at = epoch(run.last_activity_at);
+    return at === null || nowEpochSecs - at <= JP_GO_GRACE_HOURS * 3600;
+  };
   const stuck = (run) => epoch(run.answered_at) !== null; // answered, and past the grace (the pending ones were dropped above)
   const rows = [];
   for (const run of needsJp) {
@@ -197,7 +203,7 @@ function unownedAlert(liveHosts, nowEpochSecs) {
   }
   for (const run of parked) {
     if (run.state !== 'held' || FINISHED_PARKED.includes(run.parked_reason)) continue;
-    if (live.has(keyOf(run)) || pending(run)) continue;
+    if (live.has(keyOf(run)) || pending(run) || goFresh(run)) continue;
     const answered = run.parked_reason === 'answered' || ANSWER_MARKERS.includes(run.marker) || stuck(run);
     rows.push({ run, kind: answered ? 'answered' : 'paused' });
   }

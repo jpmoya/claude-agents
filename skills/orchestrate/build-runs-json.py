@@ -221,7 +221,7 @@ def build_list(kind):
 # #272: a ticket whose mockups are skipped (SKIP MOCKUPS marker, or #701's skip-by-default with no REVIEW MOCKUPS) shows "mockups skipped (default or JP)", never "Approve mockups"
 MOCKUPS_SKIPPED_LABEL = "mockups skipped (default or JP)"
 NEEDS_LABELS = (MOCKUPS_SKIPPED_LABEL, "Approve mockups", "Say go", "Approve effort", "Missing credential", "Decision needed")
-PARKED_REASONS = ("answered", "out_of_scope", "auto_retry")
+PARKED_REASONS = ("answered", "out_of_scope", "auto_retry", "jp_go")
 BLOCK_CLASS_RE = re.compile(r"^[a-z_]{1,30}$")  # the class list lives in hooks/pipeline-markers.sh; status-page validate drops unknowns
 ISO_Z_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 
