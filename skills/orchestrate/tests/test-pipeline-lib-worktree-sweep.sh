@@ -1,6 +1,6 @@
 # Issue #492 — sweep_stale_worktrees (skills/orchestrate/pipeline-lib.sh) must never remove a worktree/branch whose
-# GitHub issue is still OPEN, even when its PR has merged (a multi-PR ticket, or one back in a fix cycle after its
-# first PR merged). This was the gap found by JP's diagnostician -> adjudicator pipeline-stall review: the sweep's
+# GitHub issue is still OPEN, even when its PR has merged (e.g. a ticket back in a fix cycle after its
+# PR merged). This was the gap found by JP's diagnostician -> adjudicator pipeline-stall review: the sweep's
 # only "safe to delete" signal was "branch has a merged PR", never whether the issue itself is still open.
 #
 # sweep_stale_worktrees had no test file before this ticket (there was nothing green to preserve); every case here
