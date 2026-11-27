@@ -281,6 +281,10 @@ test_da_668_orchestrator_names_the_approval_url_on_full_lane_only() {
   assert_contains "$(da_validation_row)" 'on the full lane only, the prompt names that approval' "#668: validation row names the URL on full-lane dispatches only" || return 1
 }
 
+test_da_668_validation_row_requires_the_test_lock_line_on_full_lane_only() {
+  assert_contains "$(da_validation_row)" 'on the full lane, the last test-lock validate line for this issue is `pass`' "#668: the fast lane has no lock check, so the test-lock line is a full-lane requirement" || return 1
+}
+
 run_test test_da_ac1_routing_row_requires_commit_pinned_approval
 run_test test_da_ac1_validation_row_requires_commit_pinned_approval
 run_test test_da_ac1_older_commit_fail_or_no_verdict_do_not_satisfy
@@ -308,3 +312,4 @@ run_test test_da_ac7_short_sha_approval_is_not_released
 run_test test_da_668_deployer_md_requires_approval_on_full_lane_only
 run_test test_da_668_deployer_md_reads_the_lane_from_the_ticket
 run_test test_da_668_orchestrator_names_the_approval_url_on_full_lane_only
+run_test test_da_668_validation_row_requires_the_test_lock_line_on_full_lane_only
