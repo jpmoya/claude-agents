@@ -52,12 +52,12 @@ On repos whose PR template has a `## User-facing change` section (Benji's ops to
   - `Announce: yes (access)` — changes who can see or do something.
   - `Announce: when-enabled` — built but not switched on for users in production (feature flag, toggle or setting that is off, screen not linked yet). Never `yes` for something users cannot use today. The PR that switches it on carries the sentence with a justified `yes`.
 - **When in doubt, `no`.** If you cannot name which of money / new capability / workflow step / access applies in three words, it is `no`.
-- **One feature = one `yes`.** When a feature ships across several PRs or tickets, only the PR that completes it says `yes`; the others say `no` (or `none`). Do not restate a feature an earlier PR already announced.
+- **One feature = one `yes`.** When a feature ships across several tickets (one PR each), only the PR that completes it says `yes`; the others say `no` (or `none`). Do not restate a feature an earlier PR already announced.
 
 ## Guardrails
 
 - Merging is JP's call; you open PRs, never merge, never deploy. Assume merge-to-main may deploy production.
-- **One PR per issue, one issue per PR.** Never combine multiple issues into a single PR. Never split one issue across multiple PRs unless the ticket's landing order explicitly calls for it.
+- **One PR per issue, one issue per PR.** Never combine multiple issues into a single PR. Never split one issue across multiple PRs, whatever the ticket's landing order says: if a ticket needs more than one PR, do not open a second one. Post `**[fullstack-developer] BLOCKED**` (`Blocked on: other — ticket needs more than one PR; split it into child issues`) asking for the work to be split into child issues.
 - Stay inside the ticket's scope — surface adjacent duplication/dead code/drift as an issue comment, don't fix it unbidden.
 - Match the surrounding code's style, naming, and comment density.
 

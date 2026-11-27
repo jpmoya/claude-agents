@@ -382,8 +382,8 @@ _issue_num_from() {
 # slog, same as cleanup_finished_worktree.
 #
 # #492 issue-open guard: on top of the merge check above, a worktree/branch that maps to a GitHub issue number is
-# never removed while that issue is still OPEN — even when its PR has merged (a multi-PR ticket, or one back in a
-# fix cycle after its first PR merged, must survive a sweep). The number is resolved from EITHER the worktree
+# never removed while that issue is still OPEN — even when its PR has merged (e.g. a ticket back in a
+# fix cycle after its PR merged, must survive a sweep). The number is resolved from EITHER the worktree
 # directory's own name (the `issue-<N>-*` / `issue-<N>` convention cleanup_finished_worktree also matches on) OR
 # the branch name (which may differ from the directory — deployer.md: "directories are issue-N-slug, branches may
 # differ" — and may itself carry a prefix, e.g. `fix/issue-492-retry`), via _issue_num_from. Checking both, not
