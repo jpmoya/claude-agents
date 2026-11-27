@@ -9,6 +9,8 @@
 #   AC5  da_ac5_*   characterisation (pass before and after): parallel build, fast lane, post-merge mode, first-dispatch row
 #   AC6  da_ac6_*   prose that restates the gate agrees with the rows
 #   AC7  da_ac7_*   marker-trail replay (scheduler#1030, benjis-quoting-tool#531) through the executable gate
+#   #668 da_668_*   deployer.md requires the approval on the full lane only and reads the lane from the ticket (not the
+#                   brief); orchestrator.md names the approval URL on full-lane deployer dispatches only
 #
 # EXECUTABLE-GATE CONTRACT (ticket AC7 says "a test replays the trail and shows the rows do not release the deployer";
 # prose rows cannot be executed, so — like the "**Gate marker**" snippet — the rows must point at a bash block):
@@ -150,7 +152,8 @@ test_da_ac4_deployer_md_input_wording_names_the_test_approval() {
 }
 
 test_da_ac4_deployer_md_has_no_marker_check_of_its_own() {
-  # static: the aligned input line states what must be received, with no marker query of its own
+  # static: the aligned input line states what must be received, with no approval-marker query of its own
+  # (#668: it does read the ticket for the lane; it still never looks up the approval or TESTS WRITTEN)
   local l; l=$(grep -n 'Validate inputs' "$DEPL_DA")
   assert_contains "$l" 'TESTS APPROVED' "AC4: deployer.md names TESTS APPROVED" || return 1
   assert_contains "$l" 'code-reviewer' "AC4: deployer.md names the code-reviewer PASS" || return 1
@@ -252,6 +255,32 @@ test_da_ac7_short_sha_approval_is_not_released() {
   assert_eq "$g" "NOT APPROVED" "AC7: approval must carry the full sha of the latest TESTS WRITTEN" || return 1
 }
 
+# ------------------------------------------------------------------ #668 (fast lane has no TESTS APPROVED)
+
+test_da_668_deployer_md_requires_approval_on_full_lane_only() {
+  local l; l=$(grep -n 'Validate inputs' "$DEPL_DA")
+  assert_contains "$l" 'on the full lane only' "#668: deployer.md requires TESTS APPROVED on the full lane only" || return 1
+  assert_contains "$l" 'A fast-lane ticket has no test lock and so no `TESTS APPROVED`' "#668: fast lane named as exempt" || return 1
+  assert_contains "$l" 'needs only the code-reviewer `PASS`' "#668: fast lane needs only the code-reviewer PASS" || return 1
+  assert_contains "$l" 'only where a narrow post-implementation review ran' "#668: narrow-PASS clause unchanged" || return 1
+}
+
+test_da_668_deployer_md_reads_the_lane_from_the_ticket() {
+  local l; l=$(grep -n 'Validate inputs' "$DEPL_DA")
+  assert_contains "$l" 'Read the lane from the ticket itself' "#668: lane comes from the ticket" || return 1
+  assert_contains "$l" "never from the prompt" "#668: brief wording does not decide the lane" || return 1
+  assert_contains "$l" 'product-manager `READY FOR' "#668: PM READY comment is the first signal" || return 1
+  assert_contains "$l" '`Lane: fast`' "#668: PM Lane: fast selects the fast lane" || return 1
+  assert_contains "$l" '`fast-lane` label' "#668: the fast-lane label also selects it" || return 1
+  assert_contains "$l" 'does not say `Lane: full`' "#668: the PM's Lane: full wins over the label" || return 1
+  assert_contains "$l" 'otherwise it is the full lane' "#668: neither signal -> approval still required" || return 1
+}
+
+test_da_668_orchestrator_names_the_approval_url_on_full_lane_only() {
+  assert_contains "$(da_routing_row)" 'on the full lane only, the `TESTS APPROVED` comment URL' "#668: routing row names the URL on full-lane dispatches only" || return 1
+  assert_contains "$(da_validation_row)" 'on the full lane only, the prompt names that approval' "#668: validation row names the URL on full-lane dispatches only" || return 1
+}
+
 run_test test_da_ac1_routing_row_requires_commit_pinned_approval
 run_test test_da_ac1_validation_row_requires_commit_pinned_approval
 run_test test_da_ac1_older_commit_fail_or_no_verdict_do_not_satisfy
@@ -276,3 +305,6 @@ run_test test_da_ac7_tests_fail_after_the_approval_is_not_released
 run_test test_da_ac7_non_marker_comment_quoting_the_sha_is_not_an_approval
 run_test test_da_ac7_old_commit_tests_fail_then_new_commit_approved_releases
 run_test test_da_ac7_short_sha_approval_is_not_released
+run_test test_da_668_deployer_md_requires_approval_on_full_lane_only
+run_test test_da_668_deployer_md_reads_the_lane_from_the_ticket
+run_test test_da_668_orchestrator_names_the_approval_url_on_full_lane_only
