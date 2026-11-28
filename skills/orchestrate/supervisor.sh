@@ -2439,8 +2439,7 @@ spec_pm_markers_json() {  # same count, from `--json comments` output on stdin (
 for idf in "$PIPE"/spec-*.id; do   # exited PM runs: marker posted -> hand the spec to JP; none -> one retry, then park
   [ -e "$idf" ] || break
   k=$(basename "$idf" .id); read -r s_repo s_num < "$idf"
-  kill -0 "$(cat "$PIPE/$k.pid" 2>/dev/null)" 2>/dev/null && continue
-  agents_down_exit "$PIPE/$k.log" "$PIPE/$k.exit"   # #837
+  kill -0 "$(cat "$PIPE/$k.pid" 2>/dev/null)" 2>/dev/null && continue; agents_down_exit "$PIPE/$k.log" "$PIPE/$k.exit"   # #837
   # The PM's last word is a closing REJECTED (e.g. duplicate of #N, found by its pre-spec duplicate check): close, don't retry or propose.
   s_c=$(gh issue view "$s_num" --repo "$s_repo" --json comments 2>/dev/null) || continue
   s_rj=$(printf '%s' "$s_c" | pm_closing_reject)
@@ -2475,8 +2474,7 @@ if [ "$launched" -eq 0 ] && [ "$HAS_CAP" -eq 1 ] && [ "${#DISPATCH_REPOS[@]}" -g
       sleep "$CLAIM_SETTLE_SECS"
       winner=$(claim_winner "$local_path" "$num")
       [ "$winner" = "$HOST" ] || { slog "[spec] $owner_repo#$num — lost claim to ${winner:-?}"; continue; }
-      gh issue edit "$num" --repo "$owner_repo" --add-label "$LABEL_IN_PROGRESS" >/dev/null 2>&1; rm -f "$PIPE/$k.exit" "$PIPE/$k.retry-after"; date +%s > "$PIPE/$k.launched-at"   # #676: this run's own exit code; launch epoch
-      printf '\n===== [%s] LAUNCH spec=%s#%s =====\n' "$(date -u +%FT%TZ)" "$owner_repo" "$num" >> "$PIPE/$k.log"
+      gh issue edit "$num" --repo "$owner_repo" --add-label "$LABEL_IN_PROGRESS" >/dev/null 2>&1; rm -f "$PIPE/$k.exit" "$PIPE/$k.retry-after"; date +%s > "$PIPE/$k.launched-at"; printf '\n===== [%s] LAUNCH spec=%s#%s =====\n' "$(date -u +%FT%TZ)" "$owner_repo" "$num" >> "$PIPE/$k.log"   # #676: this run's own exit code; launch epoch; #837: its own log segment
       ( cd "$PIPE" && PIPELINE_ISSUE="$num" PIPELINE_AGENT=product-manager PIPELINE_REPO="$owner_repo" PIPE="$PIPE" CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 \
         nohup $SETSID bash -c 'claude --dangerously-skip-permissions --agent product-manager -p "$1"; echo $? > "$2"' _ \
         "Write the spec for $owner_repo#$num as the product-manager (spec-only run for a user-feedback idea): do not add agent-go; do not file dependency follow-ups on this issue; post your READY marker." "$PIPE/$k.exit" \

@@ -252,7 +252,7 @@ sentry_report() {
 # the account's email and org) and never log text.
 _ad_on() { [ "${AGENTS_DOWN_CHECK_ENABLED:-1}" = 1 ] && [ -n "${PIPE:-}" ]; }
 _ad_log() { if type slog >/dev/null 2>&1; then slog "$*"; else echo "$*" >&2; fi; }
-_ad_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
+_ad_mtime() { python3 -c 'import os,sys; print(int(os.path.getmtime(sys.argv[1])))' "$1" 2>/dev/null; }
 
 # agents_down_kind_of <file> — auth (a line STARTING with one of the CLI's two auth failures) | weekly | monthly_spend | nothing.
 # Short ("other") limits never count.
