@@ -1397,11 +1397,17 @@ PY
 
   # Detect transient exit: use per-launch timestamp (.launched-at), not the original .start
   # .start is preserved across restarts (used by BLOCKED grace window); .launched-at tracks this launch only
+  # The run ended when .exit was written, not when this tick handles it (#753, same rule as log_run_exit);
+  # "now" only when there is no .exit (killed run).
   run_duration=0
-  if [ -f "$PIPE/orch-$rk.launched-at" ]; then
-    run_duration=$(( $(date +%s) - $(to_epoch "$(cat "$PIPE/orch-$rk.launched-at")") ))
-  elif [ -f "$PIPE/orch-$rk.start" ]; then
-    run_duration=$(( $(date +%s) - $(to_epoch "$(cat "$PIPE/orch-$rk.start")") ))
+  run_base="$PIPE/orch-$rk.launched-at"
+  [ -f "$run_base" ] || run_base="$PIPE/orch-$rk.start"
+  if [ -f "$run_base" ]; then
+    run_end=""
+    [ -f "$PIPE/orch-$rk.exit" ] && run_end=$(file_mtime "$PIPE/orch-$rk.exit")
+    [ -n "$run_end" ] || run_end=$(date +%s)
+    run_duration=$(( run_end - $(to_epoch "$(cat "$run_base")") ))
+    [ "$run_duration" -ge 0 ] || run_duration=0
   fi
   transient=false
   [ "$run_duration" -lt "$MIN_RUN_SECS" ] && transient=true
