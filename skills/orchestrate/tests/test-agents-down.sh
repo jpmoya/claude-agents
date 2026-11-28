@@ -434,11 +434,13 @@ test_ad_intake_and_spec_launches_start_a_log_segment() {
   si_env; si_issue 7 project-a/repo-a user-feedback-intake
   si_tick
   local i; i=$(grep -c '^===== .* LAUNCH .* =====$' "$SI_PIPE/intake-project-a_repo-a-7.log" 2>/dev/null)
+  sleep 1
   si_cleanup
   assert_eq "$i" 1 "intake launch header" || return 1
   si_env; si_issue 8 project-a/repo-a user-feedback-needs-spec
   si_tick
   local s; s=$(grep -c '^===== .* LAUNCH .* =====$' "$SI_PIPE/spec-project-a_repo-a-8.log" 2>/dev/null)
+  sleep 1
   si_cleanup
   assert_eq "$s" 1 "spec launch header" || return 1
 }
