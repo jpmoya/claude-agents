@@ -1418,9 +1418,36 @@ def _gh_scope_stall():
     if len(parts) < 3 or not re.match(r"^[A-Za-z0-9:_,.-]+$", parts[2]):
         return []
     missing = parts[2].split(",")
-    host = re.sub(r"[^a-z0-9_.-]", "", socket.gethostname().split(".")[0].lower()) or "this machine"   # lowercase, like gh-scope.sh's alert text
+    host = _short_host()
     return [{"kind": "token_scope", "goal": host, "reason": ", ".join(missing),
              "hint": "run gh auth refresh -h github.com -s %s on %s" % (",".join(missing), host)}]
+
+
+# #837: fixed phrases only, the same as pipeline-lib.sh agents_down_reason / agents_down_action
+_AGENTS_DOWN = {
+    "auth": ("Claude is logged out or its sign-in failed", "Log in on that host: claude auth login"),
+    "weekly": ("Claude weekly usage limit reached", "Wait for the reset or raise the limit"),
+    "monthly_spend": ("Claude monthly spend limit reached", "Wait for the reset or raise the limit"),
+}
+
+
+def _short_host():
+    return re.sub(r"[^a-z0-9_.-]", "", socket.gethostname().split(".")[0].lower()) or "this machine"   # lowercase, like the shell alerts' text
+
+
+def _agents_down_stall():
+    """This host cannot run agents (#837): one `agents_down` entry from $PIPE/agents-down.state ("down <since> <cause> <last probe>"),
+    [] when no alert stands. `since` is a constant timestamp (the page computes the duration): nothing here changes during one outage."""
+    try:
+        with open(os.path.join(pipe_dir, "agents-down.state"), encoding="utf-8") as f:
+            parts = f.read().split()
+        if len(parts) < 3 or parts[0] != "down" or parts[2] not in _AGENTS_DOWN:
+            return []
+        since = datetime.datetime.fromtimestamp(int(parts[1]), tz=datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except (OSError, ValueError, OverflowError):
+        return []
+    reason, hint = _AGENTS_DOWN[parts[2]]
+    return [{"kind": "agents_down", "goal": _short_host(), "reason": reason, "hint": hint, "since": since}]
 
 
 def build_goal_stall():
@@ -1429,7 +1456,9 @@ def build_goal_stall():
     informational: the status page shows each amber as "<goal> cannot be read (reason); it is skipped, other goals unaffected"."""
     if not pipe_dir:
         return []
-    scope = _gh_scope_stall()   # first, and ahead of the goal-queue early exits below: a lost token scope must show even when no queue file is readable
+    # host alerts first (a host that cannot run agents leads), ahead of the goal-queue early exits below: they must show even
+    # when no queue file is readable
+    scope = _agents_down_stall() + _gh_scope_stall()
     try:
         with open(os.path.join(pipe_dir, "goalqueue.json"), encoding="utf-8") as f:
             q = json.load(f)

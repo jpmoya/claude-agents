@@ -203,12 +203,207 @@ limit_kind_of() {
   esac
 }
 
-# last_launch_segment_line <log> — prints the last non-empty line after the last `===== … LAUNCH … =====` header of a
-# run/goal log (the whole file when there is no header); nothing when the log is missing. Used to classify an exit.
+# last_launch_segment <log> — prints everything after the last `===== … LAUNCH … =====` header of a run/goal log (the whole
+# file when there is no header); nothing when the log is missing.
+last_launch_segment() {
+  [ -f "$1" ] || return 0
+  awk '/^===== .* LAUNCH .* =====$/ {buf=""; next} {buf = buf $0 "\n"} END {printf "%s", buf}' "$1" 2>/dev/null
+}
+
+# last_launch_segment_line <log> — the last non-empty line of that segment. Used to classify an exit.
 last_launch_segment_line() {
   [ -f "$1" ] || return 0
-  awk '/^===== .* LAUNCH .* =====$/ {buf=""; next} {buf = buf $0 "\n"} END {printf "%s", buf}' "$1" 2>/dev/null \
-    | awk 'NF {l=$0} END {print l}' 2>/dev/null
+  last_launch_segment "$1" | awk 'NF {l=$0} END {print l}' 2>/dev/null
+}
+
+# redact / sentry_report — shared by infra/ci-runners/ci-queue-collect.sh (#643) and agents_down_error below (#837).
+redact() {  # stdin -> stdout, with GH_TOKEN / SLACK_WEBHOOK_URL values stripped
+  local s; s=$(cat)
+  [ -z "${GH_TOKEN:-}" ] || s=${s//"$GH_TOKEN"/***}
+  [ -z "${SLACK_WEBHOOK_URL:-}" ] || s=${s//"$SLACK_WEBHOOK_URL"/***}
+  printf '%s' "$s"
+}
+
+# sentry_report <message> [route] [release] [environment] — one error event to SENTRY_DSN; silent no-op without a valid DSN.
+# The optional arguments default to $SENTRY_ROUTE, $RELEASE and $ENVIRONMENT. Never fails the caller.
+sentry_report() {
+  local dsn=${SENTRY_DSN:-} body id msg route=${2:-${SENTRY_ROUTE:-pipeline}} rel=${3:-${RELEASE:-unknown}} env=${4:-${ENVIRONMENT:-unknown}}
+  [[ $dsn =~ ^(https?)://([^@:/]+)@([^/]+)/([0-9]+)/?$ ]] || return 0
+  local proto=${BASH_REMATCH[1]} key=${BASH_REMATCH[2]} hostpart=${BASH_REMATCH[3]} project=${BASH_REMATCH[4]}
+  msg=$(printf '%s' "$1" | redact)
+  id=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+  body=$(jq -cn --arg m "$msg" --arg r "$rel" --arg e "$env" --arg route "$route" --arg id "$id" \
+    '{event_id:$id,message:$m,level:"error",platform:"other",release:$r,environment:$e,tags:{route:$route}}')
+  curl -sS --max-time 10 -o /dev/null -X POST "$proto://$hostpart/api/$project/store/" \
+    -H "X-Sentry-Auth: Sentry sentry_version=7, sentry_key=$key, sentry_client=claude-agents-pipeline/1" \
+    -H "Content-Type: application/json" --data "$body" >/dev/null 2>&1 </dev/null || true
+}
+
+# ---- agents down (#837): this host cannot run agents --------------------------------------------------------------------
+# Incident 2026-11-25: the VM's Claude session expired and every launch failed for ~38 h with nothing saying why.
+# One host-level state file, $PIPE/agents-down.state:
+#     down <since epoch> <cause: auth|weekly|monthly_spend> <last probe epoch>
+#     ok <cleared epoch>
+# Raised by `claude auth status` reporting logged out (agents_down_check, every supervisor tick) or by a failed run whose last
+# launch segment shows an auth failure or a weekly / monthly spend limit (agents_down_exit, orchestrator, lead, intake, spec).
+# Cleared by a successful run, or by a successful probe run (only while the alert stands, at most every AGENTS_DOWN_PROBE_SECS).
+# A log last written before the clear never raises it again. Shown by `launcher.sh status`, posted to Slack once per outage and
+# published to the status page (build-runs-json.py goalstall). Only fixed phrases leave this code: never CLI output (it carries
+# the account's email and org) and never log text.
+_ad_on() { [ "${AGENTS_DOWN_CHECK_ENABLED:-1}" = 1 ] && [ -n "${PIPE:-}" ]; }
+_ad_log() { if type slog >/dev/null 2>&1; then slog "$*"; else echo "$*" >&2; fi; }
+_ad_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
+
+# agents_down_kind_of <file> — auth (a line STARTING with one of the CLI's two auth failures) | weekly | monthly_spend | nothing.
+# Short ("other") limits never count.
+agents_down_kind_of() {
+  local lk
+  if grep -qE '^(Failed to authenticate|Not logged in)' "$1" 2>/dev/null; then echo auth; return 0; fi
+  lk=$(limit_kind_of "$1")
+  case "$lk" in weekly|monthly_spend) echo "$lk" ;; esac
+}
+
+agents_down_reason() {  # <cause> — the same phrases as build-runs-json.py _AGENTS_DOWN
+  case "$1" in
+    weekly) echo "Claude weekly usage limit reached" ;;
+    monthly_spend) echo "Claude monthly spend limit reached" ;;
+    *) echo "Claude is logged out or its sign-in failed" ;;
+  esac
+}
+agents_down_action() {  # <cause>
+  case "$1" in
+    weekly|monthly_spend) echo "Wait for the reset or raise the limit" ;;
+    *) echo "Log in on that host: claude auth login" ;;
+  esac
+}
+
+# _ad_read — sets AD_STATE (down|ok|""), AD_SINCE, AD_CAUSE, AD_PROBE, AD_CLEARED from the state file
+_ad_read() {
+  local a="" b="" c="" d=""
+  AD_STATE=""; AD_SINCE=0; AD_CAUSE=auth; AD_PROBE=0; AD_CLEARED=0
+  [ -f "$PIPE/agents-down.state" ] && read -r a b c d < "$PIPE/agents-down.state" 2>/dev/null
+  case "$b" in ''|*[!0-9]*) return 0 ;; esac
+  case "$a" in
+    down) AD_STATE=down; AD_SINCE=$b; AD_CAUSE=${c:-auth}; case "$d" in ''|*[!0-9]*) ;; *) AD_PROBE=$d ;; esac ;;
+    ok) AD_STATE=ok; AD_CLEARED=$b ;;
+  esac
+}
+
+# agents_down_error <fixed message> — a failure of this mechanism itself: log line + Sentry (release = commit SHA, environment, route)
+agents_down_error() {
+  local rel env; rel=$(git -C "$_CLAIM_LIB_DIR" rev-parse HEAD 2>/dev/null || echo unknown); env=$(pipeline_host)
+  _ad_log "[agents-down] error: $1 release=$rel environment=$env route=supervisor/agents-down"
+  [ -n "${SENTRY_DSN:-}" ] || _ad_log "[agents-down] SENTRY_DSN unset: the error above is logged only"
+  sentry_report "agents-down: $1" supervisor/agents-down "$rel" "$env"
+}
+
+_ad_write() {  # <state line> — temp + mv, so readers never see a half-written file
+  local f="$PIPE/agents-down.state"
+  if [ ! -d "$f" ] && mkdir -p "$PIPE" 2>/dev/null && { printf '%s\n' "$1" > "$f.$$"; } 2>/dev/null && mv -f "$f.$$" "$f" 2>/dev/null; then return 0; fi
+  rm -f "$f.$$" 2>/dev/null
+  agents_down_error "state write failed"
+  return 1
+}
+
+agents_down_raise() {  # <cause> — no-op while the alert already stands (since, cause and the one Slack post are per outage)
+  local host
+  _ad_read
+  [ "$AD_STATE" != down ] || return 0
+  _ad_write "down $(date +%s) $1 0" || return 0
+  host=$(pipeline_host)
+  _ad_log "[agents-down] $host cannot run agents: $(agents_down_reason "$1")"
+  type _cs_slack >/dev/null 2>&1 || . "$_CLAIM_LIB_DIR/code-sync.sh"
+  _cs_slack "$host cannot run agents: $(agents_down_reason "$1"). $(agents_down_action "$1"). release=$(git -C "$_CLAIM_LIB_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown) environment=$host route=supervisor/agents-down"
+}
+
+agents_down_clear() {  # <what proved the host works again>
+  _ad_read
+  [ "$AD_STATE" = down ] || return 0
+  _ad_write "ok $(date +%s)" || return 0
+  _ad_log "[agents-down] cleared by a successful $1"
+}
+
+# agents_down_exit <log> <exit file> — one exit of a launched run (orchestrator, lead, intake, spec). A failed run (non-zero or
+# no exit code) may raise; a successful one may clear. Safe to call again for the same exit: a log last written before the clear
+# raises nothing, and an exit older than the alert clears nothing.
+agents_down_exit() {
+  local log=$1 exf=$2 code="" seg kind lk at
+  _ad_on || return 0
+  [ -f "$exf" ] && code=$(tr -dc '0-9' < "$exf" 2>/dev/null)
+  seg=$(mktemp "${TMPDIR:-/tmp}/agents-down.XXXXXX" 2>/dev/null) || return 0
+  last_launch_segment "$log" > "$seg"
+  _ad_read
+  if [ "$code" = 0 ]; then
+    lk=$(limit_kind_of "$seg"); at=$(_ad_mtime "$exf")
+    [ -z "$lk" ] && [ "$AD_STATE" = down ] && [ "${at:-0}" -gt "$AD_SINCE" ] && agents_down_clear run
+  else
+    kind=$(agents_down_kind_of "$seg"); at=$(_ad_mtime "$log")
+    [ -n "$kind" ] && [ "${at:-0}" -gt "$AD_CLEARED" ] && agents_down_raise "$kind"
+  fi
+  rm -f "$seg"
+  return 0
+}
+
+# _ad_bounded <secs> <cmd...> — the command's output (stdout + stderr), its exit code, or 124 when it ran past <secs> (its whole
+# process group is killed). python3: macOS ships no `timeout`.
+_ad_bounded() {
+  python3 -c '
+import os, signal, subprocess, sys
+try:
+    p = subprocess.Popen(sys.argv[2:], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
+except OSError:
+    sys.exit(127)
+try:
+    out = p.communicate(timeout=float(sys.argv[1]))[0]
+except subprocess.TimeoutExpired:
+    try:
+        os.killpg(p.pid, signal.SIGKILL)
+    except OSError:
+        pass
+    p.communicate()
+    sys.exit(124)
+sys.stdout.buffer.write(out)
+sys.exit(p.returncode if p.returncode >= 0 else 128 - p.returncode)
+' "$@" 9>&-
+}
+
+# agents_down_check — once per supervisor tick, in the environment launches use. `claude auth status` (free) exiting 1 with
+# "loggedIn": false raises; any other answer (logged in, unreadable, unsupported, hung) raises and clears nothing, because it can
+# report logged in while the session cannot be refreshed. While the alert stands: one minimal probe run per AGENTS_DOWN_PROBE_SECS.
+# Healthy host: no probe. Returns 0 always.
+agents_down_check() {
+  local out rc now kind tmp
+  _ad_on || return 0
+  command -v claude >/dev/null 2>&1 || return 0
+  out=$(_ad_bounded "${AGENTS_DOWN_STATUS_TIMEOUT_SECS:-30}" claude auth status); rc=$?
+  [ "$rc" = 1 ] && [ "$(printf '%s' "$out" | jq -r '.loggedIn' 2>/dev/null)" = false ] && agents_down_raise auth
+  _ad_read
+  [ "$AD_STATE" = down ] || return 0
+  now=$(date +%s)
+  [ $((now - AD_PROBE)) -ge "${AGENTS_DOWN_PROBE_SECS:-900}" ] || return 0
+  _ad_write "down $AD_SINCE $AD_CAUSE $now" || return 0   # recorded before the run: a tick stopped mid-probe still waits
+  out=$(cd "${TMPDIR:-/tmp}" && _ad_bounded "${AGENTS_DOWN_PROBE_TIMEOUT_SECS:-90}" env -u PIPELINE_ISSUE -u PIPELINE_AGENT -u PIPELINE_REPO \
+    claude --model "${AGENTS_DOWN_PROBE_MODEL:-haiku}" --setting-sources "" --strict-mcp-config --tools "" --no-session-persistence -p "Reply with OK."); rc=$?
+  if [ "$rc" = 0 ]; then agents_down_clear probe; return 0; fi
+  if [ "$rc" = 124 ]; then agents_down_error "probe timed out"; return 0; fi
+  # the newest evidence names the cause (a re-login that then hits a spend limit changes the action shown)
+  tmp=$(mktemp "${TMPDIR:-/tmp}/agents-down.XXXXXX" 2>/dev/null) || tmp=""
+  if [ -n "$tmp" ]; then
+    printf '%s\n' "$out" > "$tmp"; kind=$(agents_down_kind_of "$tmp"); rm -f "$tmp"
+    [ -z "$kind" ] || [ "$kind" = "$AD_CAUSE" ] || _ad_write "down $AD_SINCE $kind $now"
+  fi
+  agents_down_error "probe failed (exit $rc)"
+  return 0
+}
+
+# agents_down_line — one line for `launcher.sh status` while the alert stands, nothing otherwise
+agents_down_line() {
+  [ -n "${PIPE:-}" ] || return 0
+  _ad_read
+  [ "$AD_STATE" = down ] || return 0
+  printf '!! AGENTS DOWN: %s cannot run agents since %s: %s. %s\n' "$(pipeline_host)" \
+    "$(python3 -c "import datetime,sys; print(datetime.datetime.fromtimestamp(int(sys.argv[1]), tz=datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))" "$AD_SINCE" 2>/dev/null)" \
+    "$(agents_down_reason "$AD_CAUSE")" "$(agents_down_action "$AD_CAUSE")"
 }
 
 # pipeline_event <event> [jq --arg/--argjson pairs…] — appends one row (v, ts, host, event + the given fields) to

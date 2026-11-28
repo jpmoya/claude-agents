@@ -250,7 +250,7 @@ function sanitiseGoal(raw) {
 
 // ---- goal_stall[] (status-page alert banner): goals the queue skips because they cannot be read (they block nothing else). By reconstruction: a closed
 // `kind` enum, short plain-text fields (no markup characters), at most MAX_GOAL_STALL items and MAX_GOAL_STALL_BLOCKED names each.
-const GOAL_STALL_KINDS = ['unreadable', 'project_error', 'token_scope'];
+const GOAL_STALL_KINDS = ['unreadable', 'project_error', 'token_scope', 'agents_down'];
 const MAX_GOAL_STALL = 5;
 const MAX_GOAL_STALL_BLOCKED = 10;
 
@@ -260,6 +260,10 @@ function sanitiseGoalStall(raw) {
   const reason = sanitiseGoalText(raw.reason);
   const hint = sanitiseGoalText(raw.hint);
   if (goal === null || reason === null || hint === null) return null;
+  // agents_down (#837): `since` is when the outage started (the page computes the duration); a malformed one is dropped, the entry kept
+  if (raw.kind === 'agents_down') {
+    return isIsoTimestamp(raw.since) ? { kind: raw.kind, goal, reason, hint, since: raw.since } : { kind: raw.kind, goal, reason, hint };
+  }
   // `blocked` is optional since 2026-11-19: a goal that cannot be read is skipped and blocks nothing but itself, so a current reporter sends none.
   // An older reporter's names are still kept (cleaned), but never required.
   const blocked = Array.isArray(raw.blocked) ? raw.blocked.slice(0, MAX_GOAL_STALL_BLOCKED).map(sanitiseGoalText).filter((b) => b !== null) : [];

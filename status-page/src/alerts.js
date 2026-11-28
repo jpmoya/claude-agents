@@ -12,7 +12,9 @@
 //   4. a supervisor slow, or a host not reporting (tick-to-report gap > TICK_SLOW_MINUTES; heartbeat older than the stale threshold)
 //   5. the release router has not fired       (host `scheduled_triggers[]`, auto-release entries, newest fire across live hosts, #769)
 //   6. GitHub webhooks stopped arriving       (the VM host's `webhook_last_event_at`, the receiver's newest event, published only while stale, #773/#782)
+//   7. a host cannot run agents                (live host `goal_stall[]` kind agents_down: Claude logged out or out of usage, #837)
 // A stale or offline host is reported once (family 4) and its old data raises no other alert.
+// Entries of family 7 and an offline host (family 4, red) carry `down`: the page shows them in the big banner above the alert list.
 
 import { isIssueUrl } from './validate.js';
 import { groupTickets, keyOf, liveTicketKeys } from './group.js';
@@ -65,15 +67,50 @@ function goalName(g) {
   return g.title || g.spec || g.id;
 }
 
+/** `down` of a banner entry: when the outage started (null when unknown) and how long ago that was, in words. */
+function downSince(iso, nowEpochSecs) {
+  const at = epoch(iso);
+  return at === null ? { since: null, duration: null } : { since: iso, duration: formatDuration(nowEpochSecs - at) };
+}
+
+/** 7. a host that cannot run agents (#837). Read from every live host, named after the record it came in (Mac / VM), once per host. */
+function agentsDownAlerts(liveRecords, nowEpochSecs) {
+  const out = [];
+  for (const { key, record } of liveRecords) {
+    const s = (Array.isArray(record.goal_stall) ? record.goal_stall : []).find((x) => x && x.kind === 'agents_down');
+    if (!s) continue;
+    out.push({
+      id: `agents-down-${key}`,
+      severity: 'red',
+      title: `${HOST_LABELS[key]} cannot run agents`,
+      detail: s.reason,
+      hint: s.hint,
+      down: downSince(s.since, nowEpochSecs),
+    });
+  }
+  return out;
+}
+
 function hostAlerts(key, record, thresholds, nowEpochSecs) {
   const label = HOST_LABELS[key];
   const out = [];
   const fresh = freshness(record, thresholds, nowEpochSecs);
-  if (fresh.state !== 'live') {
+  if (fresh.state === 'offline') {
+    out.push({
+      id: `host-offline-${key}`,
+      severity: 'red',
+      title: `${label} is offline`,
+      detail: `The ${label} has stopped reporting, so nothing is known to be running on it and what this page shows for it is out of date.`,
+      hint: 'Wake the host and check its supervisor is running',
+      down: downSince(record.received_at, nowEpochSecs),
+    });
+    return { alerts: out, live: false };
+  }
+  if (fresh.state === 'stale') {
     const since = fresh.ageSecs === null ? 'for a long time' : `for ${formatDuration(fresh.ageSecs)}`;
     out.push({
-      id: `host-${fresh.state}-${key}`,
-      severity: fresh.state === 'offline' ? 'red' : 'amber',
+      id: `host-stale-${key}`,
+      severity: 'amber',
       title: `${label} has stopped reporting`,
       detail: `The ${label} has not sent a status update ${since}, so what this page shows for it is out of date.`,
       hint: `Check that the ${label} is awake and online and that its supervisor is running.`,
@@ -145,7 +182,7 @@ function goalStallAlerts(liveRecords, nowEpochSecs) {
       const key = `${s.kind}|${s.goal}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      if (s.kind === 'token_scope') continue; // its own alert (tokenScopeAlerts), read from every live host, not only the goal snapshot's
+      if (s.kind === 'token_scope' || s.kind === 'agents_down') continue; // their own alerts (tokenScopeAlerts, agentsDownAlerts), read from every live host, not only the goal snapshot's
       // A goal that cannot be read is skipped by the queue and blocks nothing but itself (JP, 2026-11-19): amber, not a stall.
       out.push({
         id: `goal-stall-${out.length + 1}`,
@@ -293,7 +330,8 @@ function webhookStaleAlerts(liveRecords, nowEpochSecs) {
  * @param {{ staleSecs: number, offlineSecs: number }} thresholds
  * @param {number} nowEpochSecs
  * @returns {{ id: string, severity: 'red'|'amber', title: string, detail: string, hint: string,
- *   items?: { text: string, url: string|null }[], more?: number }[]} most urgent first; [] when healthy
+ *   items?: { text: string, url: string|null }[], more?: number, down?: { since: string|null, duration: string|null } }[]}
+ *   most urgent first, the `down` entries (a host that cannot run agents, or is offline) ahead of everything; [] when healthy
  */
 export function deriveAlerts(hosts, thresholds, nowEpochSecs) {
   const stale = [];
@@ -313,7 +351,8 @@ export function deriveAlerts(hosts, thresholds, nowEpochSecs) {
     }
   }
   const goalSel = selectGoalSnapshot(hosts, thresholds, nowEpochSecs); // #795: goal alerts read the one fresh snapshot, not every live host
-  const out = [...tokenScopeAlerts(liveRecords), ...goalStallAlerts(goalAlertSources(goalSel, liveRecords), nowEpochSecs), ...goalSnapshotAlerts(goalSel, HOST_LABELS), ...releaseRouterAlerts(liveRecords, nowEpochSecs), ...webhookStaleAlerts(liveRecords, nowEpochSecs), ...stale];
+  const offline = stale.filter((a) => a.down);
+  const out = [...agentsDownAlerts(liveRecords, nowEpochSecs), ...offline, ...tokenScopeAlerts(liveRecords), ...goalStallAlerts(goalAlertSources(goalSel, liveRecords), nowEpochSecs), ...goalSnapshotAlerts(goalSel, HOST_LABELS), ...releaseRouterAlerts(liveRecords, nowEpochSecs), ...webhookStaleAlerts(liveRecords, nowEpochSecs), ...stale.filter((a) => !a.down)];
   const unowned = unownedAlert(liveHosts, nowEpochSecs);
   const rank = (a) => (a.severity === 'red' ? 0 : 1);
   return [...out, ...perHost, ...(unowned ? [unowned] : [])].sort((a, b) => rank(a) - rank(b));

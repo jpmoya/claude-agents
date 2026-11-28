@@ -127,6 +127,14 @@ STALE_WORK_HOURS=4
 GH_REQUIRED_SCOPES=${GH_REQUIRED_SCOPES:-repo workflow project read:org}
 GH_SCOPE_CHECK_ENABLED=${GH_SCOPE_CHECK_ENABLED:-1}
 
+# Host cannot run agents (#837, pipeline-lib.sh agents_down_*): `claude auth status` every tick, failed-run logs, and while an
+# alert stands one minimal probe run per AGENTS_DOWN_PROBE_SECS. AGENTS_DOWN_CHECK_ENABLED=0 turns it off.
+AGENTS_DOWN_CHECK_ENABLED=${AGENTS_DOWN_CHECK_ENABLED:-1}
+AGENTS_DOWN_PROBE_SECS=${AGENTS_DOWN_PROBE_SECS:-900}
+AGENTS_DOWN_PROBE_MODEL=${AGENTS_DOWN_PROBE_MODEL:-haiku}
+AGENTS_DOWN_STATUS_TIMEOUT_SECS=${AGENTS_DOWN_STATUS_TIMEOUT_SECS:-30}
+AGENTS_DOWN_PROBE_TIMEOUT_SECS=${AGENTS_DOWN_PROBE_TIMEOUT_SECS:-90}
+
 [ -f "$HOME/.claude/pipeline/config.local.sh" ] && source "$HOME/.claude/pipeline/config.local.sh"
 
 # #660: this default itself is set unconditionally below (plain `:-`, after config.local.sh is

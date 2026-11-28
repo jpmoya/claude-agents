@@ -199,6 +199,8 @@ PER_PAGE=${CI_QUEUE_PER_PAGE:-100}   # GitHub's max; free (same single call), sh
 MAX_RUN_LOOKUPS_PER_REPO=5
 RELEASE=${CI_QUEUE_RELEASE:-$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo unknown)}
 ENVIRONMENT=${CI_QUEUE_ENVIRONMENT:-$(hostname -s 2>/dev/null || echo unknown)}
+SENTRY_ROUTE=ci-queue/collect
+source "$HERE/../../skills/orchestrate/pipeline-lib.sh"   # redact, sentry_report
 # #663 AC3: per-`gh api`-call timeout, safely under the 60s stale-lock-reclaim window in main().
 GH_TIMEOUT_SECS=${CI_QUEUE_GH_TIMEOUT_SECS:-55}
 
@@ -1468,26 +1470,8 @@ _ciq_write_fails() {  # <n>
   python3 -c "import json; json.dump({'fails': $1}, open('$STATE_FILE', 'w'))" 2>/dev/null
 }
 
-# ---- observability (adapted from scripts/ci-metrics.sh's sentry_report/redact; not shared —
-# ci-report.sh doesn't share one with ci-metrics.sh either) ------------------------------------
-redact() {  # stdin -> stdout, with GH_TOKEN / SLACK_WEBHOOK_URL values stripped
-  local s; s=$(cat)
-  [ -z "${GH_TOKEN:-}" ] || s=${s//"$GH_TOKEN"/***}
-  [ -z "${SLACK_WEBHOOK_URL:-}" ] || s=${s//"$SLACK_WEBHOOK_URL"/***}
-  printf '%s' "$s"
-}
-
-sentry_report() {  # <message> — every failure, isolated or part of a streak (never Slack-gated)
-  local dsn=${SENTRY_DSN:-} body id msg
-  [[ $dsn =~ ^(https?)://([^@:/]+)@([^/]+)/([0-9]+)/?$ ]] || return 0
-  msg=$(printf '%s' "$1" | redact)
-  id=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
-  body=$(jq -cn --arg m "$msg" --arg r "$RELEASE" --arg e "$ENVIRONMENT" --arg route "ci-queue/collect" --arg id "$id" \
-    '{event_id:$id,message:$m,level:"error",platform:"other",release:$r,environment:$e,tags:{route:$route}}')
-  curl -sS --max-time 10 -o /dev/null -X POST "${BASH_REMATCH[1]}://${BASH_REMATCH[3]}/api/${BASH_REMATCH[4]}/store/" \
-    -H "X-Sentry-Auth: Sentry sentry_version=7, sentry_key=${BASH_REMATCH[2]}, sentry_client=ci-queue-collect/1" \
-    -H "Content-Type: application/json" --data "$body" >/dev/null 2>&1 || true
-}
+# ---- observability: redact / sentry_report live in skills/orchestrate/pipeline-lib.sh (shared with the supervisor, #837), sourced
+# near the top of this file; every report here carries route ci-queue/collect -------------------
 
 slack_post() {  # <text> — only on a failure streak (gated by the caller), never per-tick
   [ -n "${SLACK_WEBHOOK_URL:-}" ] || return 1

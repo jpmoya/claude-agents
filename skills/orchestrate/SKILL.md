@@ -116,6 +116,17 @@ gh project item-add <n> --owner Benjis-Plants --url <issue URL>               # 
 
 The issue's latest marker is the truth; the log is for diagnosing a stall. Stage logs the orchestrator writes are in `~/.claude/pipeline/state/run-<issue>-<agent>.log`, and its run log is `~/.claude/pipeline/runs.jsonl`.
 
+## Host cannot run agents (#837)
+
+A host whose Claude is logged out or out of usage stops all delivery. The pipeline raises one alert per outage, state in `$PIPE/agents-down.state` (functions `agents_down_*` in `pipeline-lib.sh`):
+
+- **Raised** when `claude auth status` (free, every supervisor tick, in the environment launches use) exits 1 with `"loggedIn": false`; or when a failed orchestrator, lead, intake or spec run has, in its last launch segment, a line starting with `Failed to authenticate` or `Not logged in`, or a weekly / monthly spend limit. Short ("other") limits never raise it. A logged-in or unreadable status raises and clears nothing.
+- **Shown** by `launcher.sh status` (`!! AGENTS DOWN: …`), one Slack post on `SLACK_WEBHOOK_URL`, and a large red status-page banner (`goal_stall[]` kind `agents_down`).
+- **Cleared** by any successful run on that host, or by a minimal probe run (`claude -p`, `AGENTS_DOWN_PROBE_MODEL`=haiku, bounded by `AGENTS_DOWN_PROBE_TIMEOUT_SECS`) made at most every `AGENTS_DOWN_PROBE_SECS` (900) while the alert stands. A healthy host makes no probe. Logs written before the clear never raise it again.
+- **Fix:** logged out, run `claude auth login` on that host (a host that exports `CLAUDE_CODE_OAUTH_TOKEN` from a token file needs that token renewed with `claude setup-token`); usage limit, wait for the reset or raise the limit.
+
+A failed or timed-out probe and a state write failure go to Sentry (`SENTRY_DSN`; a log line when unset; release = commit SHA, environment = host, route `supervisor/agents-down`). `AGENTS_DOWN_CHECK_ENABLED=0` turns it all off. It does not resume goals parked during the outage.
+
 ## Resume after a crash
 
 The supervisor handles this automatically now. If you need to force-restart immediately (instead of waiting for the next supervisor tick), just launch again — it clears any tombstones and restart state.

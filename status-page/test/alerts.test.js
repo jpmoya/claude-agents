@@ -227,7 +227,10 @@ describe('render.js - banner', () => {
   });
   it('the banner is amber unless an alert is red', () => {
     expect(render(host({ tickGapMins: 20 }))).toContain('<section class="alerts" data-testid');
-    expect(render(host({ reportedMinsAgo: 80 }))).toContain('<section class="alerts alerts-red" data-testid');
+    const scope = { kind: 'token_scope', goal: 'mac', reason: 'project', hint: 'refresh' };
+    expect(render(host({ goal_stall: [scope] }))).toContain('<section class="alerts alerts-red" data-testid');
+    // #837: an offline host moved to the big host-down banner (host-down.test.js)
+    expect(render(host({ reportedMinsAgo: 80 }))).not.toContain('data-testid="pipeline-alerts"');
   });
   it('escapes every alert value (a stall reason containing a script tag renders inert)', () => {
     const evil = { kind: 'project_error', goal: '<img src=x onerror=1>', reason: '<script>alert(1)</script>', hint: '"><b>' };

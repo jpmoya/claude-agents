@@ -1611,6 +1611,7 @@ goal_tick_one() {  # <id>
   if [ -f "$PIPE/goal-$id.exit" ]; then
     ec=$(tr -dc '0-9' < "$PIPE/goal-$id.exit"); [ "$ec" = 0 ] && clean=1
   fi
+  ! type agents_down_exit >/dev/null 2>&1 || agents_down_exit "$PIPE/goal-$id.log" "$PIPE/goal-$id.exit"   # #837
   if [ -f "$PIPE/goal-$id.yielded" ]; then
     # #527: ended by goal_fb_yield (another goal took a ticket over), not a crash or a launch failure: relaunch at once
     # with a fresh brief; the exit code the kill left is ignored and no backoff, restart or launch-failure is counted

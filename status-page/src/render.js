@@ -742,13 +742,36 @@ function renderAlert(a) {
     </li>`;
 }
 
-/** The one banner area at the top of the page: every active alert, or a small green "all clear" line. Nothing before any host has reported. */
+/** The big solid-red banner (#837): one entry per host that cannot run agents or is offline: host, reason, since when, one action. */
+function renderHostDown(entries) {
+  if (entries.length === 0) return "";
+  const items = entries
+    .map((a) => {
+      const at = formatCet(a.down.since);
+      const since = at
+        ? `Since ${esc(at)} (${esc(a.down.duration)})`
+        : "Since an unknown time";
+      return `<div class="host-down-entry" data-testid="host-down-entry" data-alert-id="${esc(a.id)}">
+      <h2>${esc(a.title)}</h2>
+      <p>${esc(a.detail)}</p>
+      <p>${since}</p>
+      <p class="host-down-action">${esc(a.hint)}</p>
+    </div>`;
+    })
+    .join("");
+  return `<section class="host-down" data-testid="host-down-banner" role="alert" aria-label="Hosts that cannot run agents">${items}</section>`;
+}
+
+/** The banner area at the top of the page: hosts that are down (big red), then every other active alert; a small green "all clear" line when there is neither. Nothing before any host has reported. */
 function renderAlertsBanner(hosts, thresholds, nowEpochSecs) {
   if (!hosts.mac && !hosts.vm) return "";
-  const alerts = deriveAlerts(hosts, thresholds, nowEpochSecs);
-  if (alerts.length === 0) return `<p class="alerts-clear" data-testid="alerts-clear">All clear: no pipeline alerts.</p>`;
+  const all = deriveAlerts(hosts, thresholds, nowEpochSecs);
+  if (all.length === 0) return `<p class="alerts-clear" data-testid="alerts-clear">All clear: no pipeline alerts.</p>`;
+  const hostDown = renderHostDown(all.filter((a) => a.down));
+  const alerts = all.filter((a) => !a.down);
+  if (alerts.length === 0) return hostDown;
   const tone = alerts.some((a) => a.severity === "red") ? " alerts-red" : "";
-  return `<section class="alerts${tone}" data-testid="pipeline-alerts" aria-label="Pipeline alerts">
+  return `${hostDown}<section class="alerts${tone}" data-testid="pipeline-alerts" aria-label="Pipeline alerts">
     <h2>${esc(alerts.length)} pipeline ${alerts.length === 1 ? "alert" : "alerts"}</h2>
     <ul>${alerts.map(renderAlert).join("")}</ul>
   </section>`;
@@ -1176,6 +1199,11 @@ ${ROOT_VARS_CSS}
   .slot-icon { flex: none; vertical-align: -2px; }
   .slot-legend { display: flex; flex-wrap: wrap; gap: 0.35rem 1rem; margin: 0 0 0.6rem; font-size: 0.8rem; color: var(--muted); }
   .slot-key { display: inline-flex; align-items: center; gap: 0.3rem; }
+  .host-down { margin-bottom: 1.25rem; padding: 1.5rem; border-radius: 0.75rem; background: #b91c1c; color: #ffffff; }
+  .host-down h2 { font-size: 1.6rem; font-weight: 800; line-height: 1.2; margin: 0 0 0.5rem; }
+  .host-down p { margin: 0.25rem 0 0; font-size: 1.05rem; }
+  .host-down .host-down-action { font-size: 1.2rem; font-weight: 700; }
+  .host-down-entry + .host-down-entry { margin-top: 1.25rem; padding-top: 1.25rem; border-top: 2px solid rgba(255, 255, 255, 0.5); }
   .alerts { margin-bottom: 1.25rem; padding: 1rem 1.25rem; border-radius: 0.75rem; background: var(--surface); border: 1px solid var(--amber); }
   .alerts h2 { color: var(--amber); margin-bottom: 0.6rem; }
   .alerts.alerts-red { border-color: var(--red); }

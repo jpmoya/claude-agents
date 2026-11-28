@@ -50,6 +50,9 @@ export STATUS_PAGE_DEPLOY_TEST_DISABLE=1
 export WEBHOOK_EVENTS_ENABLED=0
 # gh-scope.sh reads the scopes gh-budget.sh saved; supervisor suites must not alert on a stub's headers. test-gh-scope.sh switches it on per call.
 export GH_SCOPE_CHECK_ENABLED=0
+# #837: the tick's `claude auth status` check and probe run must never reach the real CLI (or add calls to a suite's claude stub);
+# test-agents-down.sh switches it on per call.
+export AGENTS_DOWN_CHECK_ENABLED=0
 # #756: report-status.sh reads the host user's real crontab (`crontab -l`) for the payload's optional `cron[]`;
 # a suite must never publish (or depend on) whatever the machine running it happens to schedule. `true` is an empty crontab.
 # test-status-cron.sh overrides this per call with its own fixtures.

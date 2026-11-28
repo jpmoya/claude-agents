@@ -426,6 +426,11 @@ describe("existing status view unchanged (AC3)", () => {
   .slot-icon { flex: none; vertical-align: -2px; }
   .slot-legend { display: flex; flex-wrap: wrap; gap: 0.35rem 1rem; margin: 0 0 0.6rem; font-size: 0.8rem; color: var(--muted); }
   .slot-key { display: inline-flex; align-items: center; gap: 0.3rem; }
+  .host-down { margin-bottom: 1.25rem; padding: 1.5rem; border-radius: 0.75rem; background: #b91c1c; color: #ffffff; }
+  .host-down h2 { font-size: 1.6rem; font-weight: 800; line-height: 1.2; margin: 0 0 0.5rem; }
+  .host-down p { margin: 0.25rem 0 0; font-size: 1.05rem; }
+  .host-down .host-down-action { font-size: 1.2rem; font-weight: 700; }
+  .host-down-entry + .host-down-entry { margin-top: 1.25rem; padding-top: 1.25rem; border-top: 2px solid rgba(255, 255, 255, 0.5); }
   .alerts { margin-bottom: 1.25rem; padding: 1rem 1.25rem; border-radius: 0.75rem; background: var(--surface); border: 1px solid var(--amber); }
   .alerts h2 { color: var(--amber); margin-bottom: 0.6rem; }
   .alerts.alerts-red { border-color: var(--red); }

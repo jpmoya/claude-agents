@@ -125,6 +125,8 @@ except Exception: print('?')
     # Host-level: the supervisor's code-sync guard is refusing every tick (no run starts on this host until fixed).
     # Absent file -> no output, so the AC14 golden stays byte-identical.
     [ -s "$PIPE/code-sync.alert" ] && echo "!! CODE SYNC: $(cat "$PIPE/code-sync.alert")"
+    # Host-level: this host cannot run agents (#837, logged out or out of usage). No standing alert -> no output.
+    agents_down_line
     # Host-level: this host's gh token lost a required scope (gh-scope.sh). Absent file -> no output.
     [ -s "$PIPE/gh-scope.alert" ] && echo "!! GH TOKEN: $(cat "$PIPE/gh-scope.alert")"
     # Surface any unresolved alerts

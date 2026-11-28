@@ -873,6 +873,7 @@ log_run_exit() {
   local repo=$1 issue=$2 rk=$3 rid ex="" cls lk="" last_line seg exf="$PIPE/orch-$3.exit" lf="$PIPE/orch-$3.log"
   local launched dur now owner_repo
   rid=$(cat "$PIPE/orch-$rk.run-id" 2>/dev/null) || return 0
+  ! type agents_down_exit >/dev/null 2>&1 || agents_down_exit "$lf" "$exf"   # #837: an auth / spend-limit exit raises, a success clears
   [ -f "$exf" ] && ex=$(tr -dc '0-9' < "$exf")
   last_line=""; seg=$(mktemp "${TMPDIR:-/tmp}/run-exit.XXXXXX" 2>/dev/null) || seg=""
   if [ -n "$seg" ] && [ -f "$lf" ]; then
@@ -1151,6 +1152,9 @@ PY
   return 0
 }
 # --- Main tick ---
+
+# #837: can this host run agents at all? Every tick, ahead of the GitHub quota gate below (it makes no GitHub call).
+agents_down_check
 
 # GitHub API budget (gh-budget.sh): one quota line per tick (times in Europe/Madrid) and the tier flags the steps
 # below consult. Core (REST) at 0 = nothing can be read or written until the reset, so the tick ends quietly instead of
@@ -2143,6 +2147,7 @@ intake_launch() {  # <owner/repo> <local path> <issue> <prompt>
     --setting-sources "" --strict-mcp-config
     --settings '{"hooks":{"SessionStart":[{"matcher":"","hooks":[{"type":"command","command":"~/.claude/hooks/report-status-hook.sh"}]}],"Stop":[{"matcher":"","hooks":['"$hm"'{"type":"command","command":"~/.claude/hooks/report-status-hook.sh"}]}]}}'
     --agents "$agents" --agent intake)
+  printf '\n===== [%s] LAUNCH intake=%s#%s =====\n' "$(date -u +%FT%TZ)" "$1" "$3" >> "$PIPE/$k.log"
   ( cd "$tmp" && PIPELINE_ISSUE="$3" PIPELINE_AGENT=intake PIPELINE_REPO="$1" PIPE="$PIPE" INTAKE_TMP="$tmp" CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 \
     nohup $SETSID bash -c 'p=$1; x=$2; shift 2; claude "$@" -p "$p"; echo $? > "$x"' _ "$4 INTAKE_TMP=$tmp INTAKE_WRITES=$mode" "$PIPE/$k.exit" "${args[@]}" \
     >> "$PIPE/$k.log" 2>&1 9>&- & echo $! > "$PIPE/$k.pid" ) 9>&-
@@ -2353,6 +2358,7 @@ for idf in "$PIPE"/intake-*.id; do   # runs that have exited: healthy -> clear s
     sentry_label_gate "$i_repo" "$i_num" live || { launched=1; dispatch_hold=1; }   # live run: an agent-go the supervisor did not write goes before step 5 can dispatch it (also a hand-added one until intake finishes); a failed gate holds dispatch this tick
     continue
   fi
+  agents_down_exit "$PIPE/$k.log" "$PIPE/$k.exit"   # #837
   # #186: an exited source:sentry run wrote nothing to GitHub: apply the decision file it left (validated, this issue only) before
   # looking for the marker. Nothing valid to apply leaves no marker, so the run goes down the failed-attempt path below.
   if [ -e "$PIPE/$k.sentry" ]; then intake_apply_decision "$i_repo" "$i_num"; [ $? -eq 2 ] && continue; fi
@@ -2434,6 +2440,7 @@ for idf in "$PIPE"/spec-*.id; do   # exited PM runs: marker posted -> hand the s
   [ -e "$idf" ] || break
   k=$(basename "$idf" .id); read -r s_repo s_num < "$idf"
   kill -0 "$(cat "$PIPE/$k.pid" 2>/dev/null)" 2>/dev/null && continue
+  agents_down_exit "$PIPE/$k.log" "$PIPE/$k.exit"   # #837
   # The PM's last word is a closing REJECTED (e.g. duplicate of #N, found by its pre-spec duplicate check): close, don't retry or propose.
   s_c=$(gh issue view "$s_num" --repo "$s_repo" --json comments 2>/dev/null) || continue
   s_rj=$(printf '%s' "$s_c" | pm_closing_reject)
@@ -2469,6 +2476,7 @@ if [ "$launched" -eq 0 ] && [ "$HAS_CAP" -eq 1 ] && [ "${#DISPATCH_REPOS[@]}" -g
       winner=$(claim_winner "$local_path" "$num")
       [ "$winner" = "$HOST" ] || { slog "[spec] $owner_repo#$num — lost claim to ${winner:-?}"; continue; }
       gh issue edit "$num" --repo "$owner_repo" --add-label "$LABEL_IN_PROGRESS" >/dev/null 2>&1; rm -f "$PIPE/$k.exit" "$PIPE/$k.retry-after"; date +%s > "$PIPE/$k.launched-at"   # #676: this run's own exit code; launch epoch
+      printf '\n===== [%s] LAUNCH spec=%s#%s =====\n' "$(date -u +%FT%TZ)" "$owner_repo" "$num" >> "$PIPE/$k.log"
       ( cd "$PIPE" && PIPELINE_ISSUE="$num" PIPELINE_AGENT=product-manager PIPELINE_REPO="$owner_repo" PIPE="$PIPE" CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 \
         nohup $SETSID bash -c 'claude --dangerously-skip-permissions --agent product-manager -p "$1"; echo $? > "$2"' _ \
         "Write the spec for $owner_repo#$num as the product-manager (spec-only run for a user-feedback idea): do not add agent-go; do not file dependency follow-ups on this issue; post your READY marker." "$PIPE/$k.exit" \

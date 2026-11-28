@@ -129,10 +129,15 @@ and use up the KV write budget). Tunables are constants at the top of `alerts.js
 | Free slots while work waits (amber, per host) | `capacity.running < max` and the oldest `queued` run is older than `IDLE_SLOT_MINUTES` (10); approved tickets do not count | `capacity`, `runs[].started_at` (= queued_at) |
 | Paused tickets nobody works on (amber) | held tickets that are waiting on JP, answered but not relaunched (`parked_reason: answered`, marker `DECISION`/`JP CONFIRMED`) or parked; not auto-retry, out-of-scope or finished ones. Count plus the first 6, each `#n first five words (why)` linked to the issue | `runs[]`, same winner and group rules as the status groups |
 | Supervisor slow (amber, per host) | `sent_at - supervisor_last_tick` is over `TICK_SLOW_MINUTES` (15): the gap measured at report time, not `now - tick` (keep-alive lag would raise false alarms) | `sent_at`, `supervisor_last_tick` |
-| Host not reporting (amber stale, red offline) | `received_at` older than the existing stale / offline thresholds | `received_at` |
+| Host not reporting (amber stale, red offline) | `received_at` older than the existing stale / offline thresholds. Stale stays amber in the alert list; offline shows in the big banner (since = last heartbeat, action "Wake the host and check its supervisor is running") and not in the list | `received_at` |
+| Host cannot run agents (big red banner) | a live host publishes a `goal_stall[]` entry of kind `agents_down`: Claude logged out or its sign-in failed (action "Log in on that host: claude auth login"), or a weekly / monthly spend limit (action "Wait for the reset or raise the limit"). Shown with host, since, duration, reason and action; it disappears by itself when the host publishes it no more | `goal_stall[]` (`build-runs-json.py goalstall`, from `$PIPE/agents-down.state`; `since` is constant for the outage, the duration is computed on the page) |
+
+**Big banner (#837).** A host that cannot run agents or is offline is shown above every other alert in a large solid-red banner
+(`data-testid="host-down-banner"`), one entry per host. These entries are not repeated in the alert list, and the page never says
+"All clear" while one stands. A stale or offline host's old `agents_down` entry is ignored (the host is reported once).
 
 A stale or offline host is reported once and its old data raises no other alert. The reporter publishes `goal_stall` only when non-empty;
-`validate.js` rebuilds it (closed `kind` enum (`unreadable`, `project_error`, `token_scope`), plain-text fields, max 5 entries; `blocked` names, up to 10, are optional and no longer sent) and drops anything malformed.
+`validate.js` rebuilds it (closed `kind` enum (`unreadable`, `project_error`, `token_scope`, `agents_down`), plain-text fields, max 5 entries; `agents_down` keeps an ISO `since` and drops a malformed one; `blocked` names, up to 10, are optional and no longer sent) and drops anything malformed.
 
 ## Backlog priority (reorder view)
 
